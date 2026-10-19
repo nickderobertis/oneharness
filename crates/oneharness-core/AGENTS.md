@@ -302,6 +302,21 @@ boundary every surface (the CLI, the SDKs, an embedder) drives.
   first one, which is why no declared mechanism has to refuse `--input`. So every
   backend must keep its turn (and stdin) OPEN while a redirection is pending; a
   mechanism whose terminal signal ends the run unconditionally would drop it.
+  The interrupt is answered on **delivery**, not on the abort (#1405): it waits
+  on a `RedirectDelivery` in `io::control` that only the writer of the
+  replacement turn settles `Delivered` (stdin/ACP on the successful write,
+  codex on its `turn/start` ack, HTTP on the session's admission); after a
+  successful write the message is never handed back. A double records a stdin
+  write only once it reads it, so journeys prove the write precedes the answer
+  through `ONEHARNESS_INTERNAL_REDIRECT_TRACE` (the run appends
+  `REDIRECT_WRITTEN` to it after the write), never through stdout. The
+  redirect client has no read timeout: once a write is claimed only the run
+  can settle it, which can take as long as the harness withholds its answer. Every path that ends a
+  turn or a candidate without that write must settle it as undelivered
+  (`no_active_turn` turn ended / `not_running` run gone) — a new backend that
+  forgets leaves the supervisor waiting out the 60s deadline. A writer claims
+  the ticket BEFORE writing and never writes an unclaimable one, which is what
+  keeps a withdrawn message from landing.
   *When* the run learns the aborted turn ended is per mechanism and measured:
   most announce it, but **opencode announces nothing** — its stream just stops,
   so there the served interrupt is the ending and the message goes out as soon as

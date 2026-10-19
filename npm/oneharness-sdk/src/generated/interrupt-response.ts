@@ -10,7 +10,7 @@ export type InterruptResponse =
       ok: true;
       reason?: never | undefined;
       /**
-       * Whether the request's redirection was committed with the abort. Omitted rather than sent as `false`, so a plain interrupt's answer gains no field the supervisor did not ask for.
+       * Whether the request's redirection was delivered: written as the prompt of the turn that replaces the aborted one. A redirect is answered only once that is so; one whose turn ended or whose run exited first is refused instead. Omitted rather than sent as `false`, so a plain interrupt's answer gains no field the supervisor did not ask for.
        */
       redirected?: boolean | undefined;
       v: 2;

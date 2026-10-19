@@ -28475,6 +28475,52 @@ fn a_redirection_refused_by_an_idle_run_is_not_reported_as_delivered() {
     drop(listener);
 }
 
+#[cfg(not(unix))]
+#[test]
+fn a_redirection_on_a_platform_without_control_sockets_is_refused_as_undelivered() {
+    // No run on this platform can bind a control socket, so a redirection
+    // reaches no turn. The supervisor must hear that its message was not
+    // delivered, and a bare interrupt must not be told about a message it
+    // never carried.
+    let store = control_store_dir("redirect-nosock");
+    let store_arg = store.display().to_string();
+    let interrupt = |extra: &[&str]| {
+        let mut args = vec![
+            "interrupt",
+            "--session",
+            "nosock",
+            "--session-dir",
+            &store_arg,
+            "--compact",
+        ];
+        args.extend_from_slice(extra);
+        run(&args, &[])
+    };
+
+    let redirected = interrupt(&["--input", "do X instead"]);
+    assert_eq!(redirected.status.code(), Some(1), "{redirected:?}");
+    let frame = json_stdout(&redirected);
+    assert_eq!(frame["ok"], false);
+    assert_eq!(frame["reason"], "not_running");
+    assert!(frame.get("redirected").is_none(), "{frame}");
+    let error = frame["error"]
+        .as_str()
+        .expect("a refusal carries its error");
+    assert!(
+        error.contains("the redirection was not delivered"),
+        "{error}"
+    );
+
+    let bare = interrupt(&[]);
+    assert_eq!(bare.status.code(), Some(1), "{bare:?}");
+    let frame = json_stdout(&bare);
+    assert_eq!(frame["reason"], "not_running");
+    let error = frame["error"]
+        .as_str()
+        .expect("a refusal carries its error");
+    assert!(!error.contains("redirection"), "{error}");
+}
+
 #[cfg(unix)]
 #[test]
 fn a_previous_version_supervisor_is_refused_across_the_socket_rather_than_half_understood() {
@@ -31520,13 +31566,25 @@ fn a_refused_redirection_is_reported_rather_than_leaving_a_run_that_did_nothing(
         ],
         &[],
     );
-    // The interrupt itself succeeded: the turn really was stopped and the run
-    // really did take the message. What follows is about the delivery.
-    assert!(interrupt.status.success(), "{interrupt:?}");
-    assert_eq!(json_stdout(&interrupt)["redirected"], true);
+    // The turn really was stopped, but the session would not take the message
+    // as its next turn — so the supervisor is told it was not delivered, in the
+    // server's own words, rather than that the run took it.
+    assert_eq!(interrupt.status.code(), Some(1), "{interrupt:?}");
+    let frame = json_stdout(&interrupt);
+    assert_eq!(frame["reason"], "no_active_turn", "{frame}");
+    let said = frame["error"].as_str().unwrap_or_default();
+    assert!(
+        said.contains("503") && said.contains("the redirection was not delivered"),
+        "{frame}"
+    );
 
     let output = child.wait_with_output().expect("run did not finish");
     let report: Value = serde_json::from_slice(&output.stdout).expect("a JSON report");
+    assert_eq!(report["control"]["interrupts"][0]["outcome"], "refused");
+    assert_eq!(
+        report["control"]["interrupts"][0]["reason"],
+        "no_active_turn"
+    );
     assert_eq!(report["results"][0]["status"], "nonzero", "{report}");
     let error = report["results"][0]["error"]
         .as_str()
@@ -31609,24 +31667,786 @@ fn a_redirection_the_harness_is_no_longer_there_for_ends_the_run_rather_than_han
         ],
         &[],
     );
-    assert!(interrupt.status.success(), "{interrupt:?}");
+    // The aborted turn ended with nowhere left to write the message, so the
+    // supervisor is told it was not delivered rather than that it was taken.
+    assert_eq!(interrupt.status.code(), Some(1), "{interrupt:?}");
+    let frame = json_stdout(&interrupt);
+    assert_eq!(frame["reason"], "no_active_turn", "{frame}");
+    assert!(
+        frame["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("the redirection was not delivered")),
+        "{frame}"
+    );
 
     // Finishing at all is the assertion: the deadline is 60s and this returns
     // as soon as the harness is gone.
     let output = child.wait_with_output().expect("run did not finish");
     let report: Value = serde_json::from_slice(&output.stdout).expect("a JSON report");
     assert_ne!(report["results"][0]["status"], "timeout", "{report}");
-    assert_eq!(report["control"]["interrupts"][0]["redirected"], true);
+    assert_eq!(report["control"]["interrupts"][0]["outcome"], "refused");
+    assert_eq!(
+        report["control"]["interrupts"][0]["reason"],
+        "no_active_turn"
+    );
     // The harness never ran it — asserted at the harness, because "the run
     // finished" and "the redirected work happened" are different claims and
     // only the log can tell them apart.
     let log = std::fs::read_to_string(&turn_log).unwrap();
     assert!(!log.contains("do X instead"), "turn log:\n{log}");
-    // The stderr warning is deliberately NOT asserted: whether the write fails
-    // is a race with the child's exit — a redirection written into the pipe of
-    // a process that has stopped reading is accepted by the kernel — so the run
-    // either warns or discovers the loss at EOF. Both end the run without the
-    // message being done, which is what this pins.
+}
+
+/// A control mechanism a redirect journey drives through its harness double,
+/// over the real `oneharness run --control` and `oneharness interrupt`.
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RedirectDouble {
+    Claude,
+    Codex,
+    Acp,
+    Opencode,
+}
+
+#[cfg(unix)]
+impl RedirectDouble {
+    const ALL: [RedirectDouble; 4] = [
+        RedirectDouble::Claude,
+        RedirectDouble::Codex,
+        RedirectDouble::Acp,
+        RedirectDouble::Opencode,
+    ];
+
+    fn harness(self) -> &'static str {
+        match self {
+            RedirectDouble::Claude => "claude-code",
+            RedirectDouble::Codex => "codex",
+            RedirectDouble::Acp => "copilot",
+            RedirectDouble::Opencode => "opencode",
+        }
+    }
+
+    fn mechanism(self) -> &'static str {
+        match self {
+            RedirectDouble::Claude => "claude-control-request",
+            RedirectDouble::Codex => "codex-app-server",
+            RedirectDouble::Acp => "acp-cancel",
+            RedirectDouble::Opencode => "opencode-http",
+        }
+    }
+
+    /// The variable that names the double's log of everything it received.
+    fn log_var(self) -> &'static str {
+        match self {
+            RedirectDouble::Claude => "MOCK_TURN_LOG",
+            RedirectDouble::Codex => "MOCK_CODEX_APP_SERVER_LOG",
+            RedirectDouble::Acp => "MOCK_ACP_LOG",
+            RedirectDouble::Opencode => "MOCK_HTTP_CONTROL_LOG",
+        }
+    }
+
+    /// What the double logs once the run's own turn is genuinely in flight.
+    fn in_flight(self) -> &'static str {
+        match self {
+            RedirectDouble::Claude => "keep working on the wrong thing",
+            RedirectDouble::Codex => "turn/start",
+            RedirectDouble::Acp | RedirectDouble::Opencode => "PERMISSION_ANSWERED",
+        }
+    }
+
+    /// What the double logs once the interrupt's abort has reached it.
+    fn aborted(self) -> &'static str {
+        match self {
+            RedirectDouble::Claude => "INTERRUPTED",
+            RedirectDouble::Codex => "turn/interrupt",
+            RedirectDouble::Acp => "session/cancel",
+            RedirectDouble::Opencode => "/interrupt",
+        }
+    }
+}
+
+/// A controlled run of one double, held open on its first turn.
+#[cfg(unix)]
+struct RedirectJourney {
+    double: RedirectDouble,
+    child: std::process::Child,
+    store: ScratchDir,
+    _cwd: ScratchDir,
+    log: PathBuf,
+}
+
+#[cfg(unix)]
+impl RedirectJourney {
+    const SESSION: &'static str = "redirected";
+    const MESSAGE: &'static str = "stop and do the right thing";
+
+    /// Start `double`'s controlled run with `envs` on top of its own, and wait
+    /// until its first turn is in flight.
+    fn start(double: RedirectDouble, tag: &str, envs: &[(&str, &str)]) -> Self {
+        Self::start_within(double, tag, envs, "60")
+    }
+
+    /// [`Self::start`] under a run timeout of `timeout` seconds, for a journey
+    /// that holds the run longer than a minute on purpose.
+    fn start_within(
+        double: RedirectDouble,
+        tag: &str,
+        envs: &[(&str, &str)],
+        timeout: &str,
+    ) -> Self {
+        let store = control_store_dir(&format!("{tag}-{}", double.harness()));
+        let cwd = control_store_dir(&format!("{tag}-{}-cwd", double.harness()));
+        let log = store.join("double.log");
+        let mut command = oneharness_without_env_overrides();
+        let mut args = vec!["run".to_string()];
+        if double == RedirectDouble::Codex {
+            let config = store.join("per-dispatch.toml");
+            std::fs::write(&config, codex_per_dispatch("")).unwrap();
+            args.extend(["--config".to_string(), config.display().to_string()]);
+            command.env_remove("ONEHARNESS_NO_CONFIG");
+        } else {
+            command.env("ONEHARNESS_NO_CONFIG", "1");
+        }
+        match double {
+            RedirectDouble::Claude => {
+                command.env("MOCK_TURN_HOLD", "1").env(
+                    "MOCK_STDOUT",
+                    r#"{"type":"system","subtype":"init","session_id":"sess-redirect"}"#,
+                );
+            }
+            RedirectDouble::Opencode => {
+                command.env("XDG_STATE_HOME", store.join("pool").display().to_string());
+            }
+            RedirectDouble::Codex | RedirectDouble::Acp => {}
+        }
+        command.env(double.log_var(), log.display().to_string());
+        // The run records each successful replacement-prompt write into the
+        // same log, so a journey reads the write in order with everything the
+        // double received and with the answer it appends.
+        command.env(
+            "ONEHARNESS_INTERNAL_REDIRECT_TRACE",
+            log.display().to_string(),
+        );
+        for (key, value) in envs {
+            command.env(key, value);
+        }
+        args.extend(
+            [
+                "--harness",
+                double.harness(),
+                "--control",
+                "--session",
+                Self::SESSION,
+                "--session-dir",
+                &store.display().to_string(),
+                "--cwd",
+                &cwd.display().to_string(),
+                "--mode",
+                "bypass",
+                "--prompt",
+                "keep working on the wrong thing",
+                "--bin",
+                &bin_override(double.harness()),
+                "--timeout",
+                timeout,
+                "--compact",
+                "--env",
+                &mock_profile_redirect(),
+            ]
+            .map(str::to_string),
+        );
+        let child = command
+            .args(&args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn the controlled run");
+        let journey = RedirectJourney {
+            double,
+            child,
+            store,
+            _cwd: cwd,
+            log,
+        };
+        wait_until("the control socket", || {
+            journey
+                .store
+                .join("control")
+                .join(format!("{}.sock", Self::SESSION))
+                .exists()
+        });
+        wait_until("the turn to be in flight", || {
+            journey.received().contains(double.in_flight())
+        });
+        journey
+    }
+
+    /// Everything the double has logged so far.
+    fn received(&self) -> String {
+        std::fs::read_to_string(&self.log).unwrap_or_default()
+    }
+
+    /// `oneharness interrupt --input`, started and left to answer: a redirect
+    /// is answered on delivery, so the journey reads what happens before it.
+    fn redirect(&self) -> std::process::Child {
+        Command::new(oneharness_bin())
+            .env("ONEHARNESS_NO_CONFIG", "1")
+            .args([
+                "interrupt",
+                "--session",
+                Self::SESSION,
+                "--session-dir",
+                &self.store.display().to_string(),
+                "--input",
+                Self::MESSAGE,
+                "--format",
+                "json",
+                "--compact",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn the interrupt")
+    }
+
+    /// [`Self::redirect`], whose answer is appended to the double's own log as
+    /// one `ANSWERED` line the moment the interrupt exits — from its own
+    /// thread, so an early answer lands early. The double logs what it
+    /// receives and the run logs each successful replacement-prompt write
+    /// (`REDIRECT_WRITTEN`), so that file is ONE ordered stream of the write
+    /// and the answer.
+    fn redirect_recorded(&self) -> std::thread::JoinHandle<Output> {
+        let interrupt = self.redirect();
+        let log = self.log.clone();
+        std::thread::spawn(move || {
+            use std::io::Write as _;
+            let answer = interrupt.wait_with_output().unwrap();
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&log)
+                .expect("the double's log exists once its turn is in flight");
+            // One write, so the line cannot interleave with the double's own.
+            file.write_all(
+                format!(
+                    "ANSWERED {}\n",
+                    String::from_utf8_lossy(&answer.stdout).trim()
+                )
+                .as_bytes(),
+            )
+            .expect("record the answer in the double's log");
+            answer
+        })
+    }
+
+    /// The run's report, once it has finished.
+    fn finish(self) -> (Output, Value, String) {
+        let output = self.child.wait_with_output().expect("run did not finish");
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|err| {
+            panic!(
+                "{err}: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+        });
+        let received = std::fs::read_to_string(&self.log).unwrap_or_default();
+        if self.double == RedirectDouble::Opencode {
+            wait_for_pooled_server_to_exit(&self.store.join("pool"));
+        }
+        (output, report, received)
+    }
+}
+
+/// How many lines of `log` carry the redirection.
+#[cfg(unix)]
+fn carried(log: &str) -> usize {
+    log.lines()
+        .filter(|line| line.contains(RedirectJourney::MESSAGE))
+        .count()
+}
+
+/// A redirect refused because its message was never delivered: exit 1, the
+/// `reason` named, an error that says so, and a report recording the refusal.
+#[cfg(unix)]
+fn assert_undelivered(answer: &Output, report: &Value, reason: &str, case: &str) {
+    assert_eq!(answer.status.code(), Some(1), "{case}: {answer:?}");
+    let frame = json_stdout(answer);
+    assert_eq!(frame["ok"], false, "{case}: {frame}");
+    assert_eq!(frame["reason"], reason, "{case}: {frame}");
+    assert!(frame.get("redirected").is_none(), "{case}: {frame}");
+    assert!(
+        frame["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("the redirection was not delivered")),
+        "{case}: {frame}"
+    );
+    let interrupts = report["control"]["interrupts"].as_array().unwrap();
+    assert_eq!(interrupts.len(), 1, "{case}: {report}");
+    assert_eq!(interrupts[0]["outcome"], "refused", "{case}: {report}");
+    assert_eq!(interrupts[0]["reason"], reason, "{case}: {report}");
+    assert!(
+        interrupts[0].get("redirected").is_none(),
+        "{case}: {report}"
+    );
+}
+
+/// The contract a supervisor relies on, on every mechanism a double reaches:
+/// `redirected: true` arrives only once the message is the prompt of the turn
+/// that replaces the aborted one. Each double holds the aborted turn's end
+/// behind a gate, so the journey reads the two events in order — the answer
+/// still outstanding while the turn it aborted is not over, and arriving only
+/// once the gate let the replacement turn open with the message.
+#[cfg(unix)]
+#[test]
+fn a_redirect_is_answered_only_once_the_replacement_turn_opened_with_it() {
+    for double in RedirectDouble::ALL {
+        let gate_dir = control_store_dir(&format!("gate-{}", double.harness()));
+        let gate = gate_dir.join("open");
+        let gate_arg = gate.display().to_string();
+        // A harness slow to read the message that replaces the turn, so its
+        // own record of it trails the write: the ordering is read off the
+        // run's record of the write, never off what the harness says later.
+        let mut envs = vec![
+            ("MOCK_INTERRUPT_GATE", gate_arg.as_str()),
+            ("MOCK_SLOW_NEXT_READ_MS", "500"),
+        ];
+        if double == RedirectDouble::Opencode {
+            envs.push(("MOCK_HTTP_CONTROL_FAULT", "redirected-turn"));
+        }
+        let journey = RedirectJourney::start(double, "delivered", &envs);
+        let interrupt = journey.redirect_recorded();
+        wait_until("the abort to reach the harness", || {
+            journey.received().contains(double.aborted())
+        });
+        // The abort has landed, the aborted turn has not ended, so nothing can
+        // have carried the message yet — and the supervisor has no answer.
+        assert!(
+            !interrupt.is_finished(),
+            "{double:?}: answered before the replacement turn could open"
+        );
+        // The HTTP server records a submission as it arrives and holds only
+        // its admission, so only the other doubles can be read for the text.
+        if double != RedirectDouble::Opencode {
+            assert_eq!(carried(&journey.received()), 0, "{double:?}");
+            assert!(!journey.received().contains("GATE_OPENED"), "{double:?}");
+        }
+        std::fs::write(&gate, "").unwrap();
+
+        let answer = interrupt.join().unwrap();
+        assert!(answer.status.success(), "{double:?}: {answer:?}");
+        let frame = json_stdout(&answer);
+        assert_eq!(frame["redirected"], true, "{double:?}: {frame}");
+        assert_eq!(
+            frame["mechanism"],
+            double.mechanism(),
+            "{double:?}: {frame}"
+        );
+        let (output, report, received) = journey.finish();
+        assert!(output.status.success(), "{double:?}: {output:?}");
+        let interrupts = report["control"]["interrupts"].as_array().unwrap();
+        assert_eq!(interrupts.len(), 1, "{double:?}: {report}");
+        assert_eq!(interrupts[0]["outcome"], "served", "{double:?}: {report}");
+        assert_eq!(interrupts[0]["redirected"], true, "{double:?}: {report}");
+        // Exactly once, as the replacement turn's prompt, and after the gate
+        // let the aborted turn end — or, for the HTTP server whose aborted
+        // turn ends silently, after the gate let the session admit it.
+        assert_eq!(carried(&received), 1, "{double:?}:\n{received}");
+        let at = |needle: &str| {
+            received
+                .lines()
+                .position(|line| line.contains(needle))
+                .unwrap_or_else(|| panic!("{double:?}: no `{needle}` in:\n{received}"))
+        };
+        // The ordering IS the contract, read off one stream: the replacement
+        // prompt was delivered — written to the harness on the stdin and ACP
+        // mechanisms, taken by the server where it acknowledges or admits it
+        // — and only then did the supervisor hear so.
+        let delivered = match double {
+            RedirectDouble::Claude | RedirectDouble::Acp => at("REDIRECT_WRITTEN"),
+            RedirectDouble::Codex | RedirectDouble::Opencode => at(RedirectJourney::MESSAGE),
+        };
+        assert!(
+            delivered < at("ANSWERED {"),
+            "{double:?}: answered before the prompt was delivered:\n{received}"
+        );
+        assert!(
+            at(double.aborted()) < at("GATE_OPENED"),
+            "{double:?}:\n{received}"
+        );
+        if double == RedirectDouble::Opencode {
+            assert!(
+                at(RedirectJourney::MESSAGE) < at("GATE_OPENED"),
+                "{double:?}:\n{received}"
+            );
+        } else {
+            assert!(
+                at("GATE_OPENED") < at(RedirectJourney::MESSAGE),
+                "{double:?}:\n{received}"
+            );
+        }
+    }
+}
+
+/// The other half of the contract: an aborted turn that ends before its
+/// redirection can be written refuses it `no_active_turn`, says it was not
+/// delivered, exits 1, records the refusal — and the message never reaches
+/// the harness afterwards. Each double makes the write impossible its own way:
+/// a stdin closed before the turn's end, or (opencode) a turn the stream ends
+/// before the abort it rides has even been answered.
+#[cfg(unix)]
+#[test]
+fn a_redirect_whose_turn_ends_before_it_is_written_is_refused_and_never_delivered() {
+    for (double, knob, value) in [
+        (RedirectDouble::Claude, "MOCK_TURN_ONCE", "1"),
+        (RedirectDouble::Codex, "MOCK_CODEX_CLOSE_ON_INTERRUPT", "1"),
+        (RedirectDouble::Acp, "MOCK_ACP_CLOSE_ON_CANCEL", "1"),
+        (
+            RedirectDouble::Opencode,
+            "MOCK_HTTP_CONTROL_FAULT",
+            "end-before-interrupt",
+        ),
+    ] {
+        let journey = RedirectJourney::start(double, "turn-ended", &[(knob, value)]);
+        let answer = journey.redirect().wait_with_output().unwrap();
+        let (_, report, received) = journey.finish();
+        assert_undelivered(&answer, &report, "no_active_turn", &format!("{double:?}"));
+        assert_eq!(carried(&received), 0, "{double:?}:\n{received}");
+    }
+}
+
+/// And when the run's harness is gone before the aborted turn could end, the
+/// refusal is `not_running` — with the same guarantees: said, exit 1,
+/// recorded, and never delivered afterwards.
+#[cfg(unix)]
+#[test]
+fn a_redirect_whose_run_exits_first_is_refused_and_never_delivered() {
+    for (double, knob, value) in [
+        (RedirectDouble::Claude, "MOCK_TURN_DIE_ON_INTERRUPT", "1"),
+        (RedirectDouble::Codex, "MOCK_CODEX_DIE_ON_INTERRUPT", "1"),
+        (RedirectDouble::Acp, "MOCK_ACP_DIE_ON_CANCEL", "1"),
+        (
+            RedirectDouble::Opencode,
+            "MOCK_HTTP_CONTROL_FAULT",
+            "die-after-interrupt",
+        ),
+    ] {
+        let journey = RedirectJourney::start(double, "run-exited", &[(knob, value)]);
+        let answer = journey.redirect().wait_with_output().unwrap();
+        let (_, report, received) = journey.finish();
+        assert_undelivered(&answer, &report, "not_running", &format!("{double:?}"));
+        assert!(
+            received.contains("DIED_AFTER_INTERRUPT"),
+            "{double:?}:\n{received}"
+        );
+        assert_eq!(carried(&received), 0, "{double:?}:\n{received}");
+    }
+}
+
+/// A redirect whose aborted turn never ends would hold the supervisor
+/// forever, so past the run's delivery deadline a message nothing has claimed
+/// is taken back: the answer is a `not_running` refusal saying it was not
+/// delivered, the report records it, and when the aborted turn does end later
+/// the run writes nothing for it — on the stdin mechanism and on both
+/// conversations, whose replacement turn would otherwise be opened then. The
+/// deadline is shortened through the run's internal override so the journey
+/// waits a fraction of a second rather than a minute.
+#[cfg(unix)]
+#[test]
+fn a_redirect_still_unwritten_at_the_deadline_is_taken_back_and_never_delivered() {
+    for double in [
+        RedirectDouble::Claude,
+        RedirectDouble::Codex,
+        RedirectDouble::Acp,
+    ] {
+        let gate_dir = control_store_dir(&format!("dl-gate-{}", double.harness()));
+        let gate = gate_dir.join("open");
+        let gate_arg = gate.display().to_string();
+        let journey = RedirectJourney::start(
+            double,
+            "deadline",
+            &[
+                ("MOCK_INTERRUPT_GATE", gate_arg.as_str()),
+                ("ONEHARNESS_INTERNAL_REDIRECT_DELIVERY_MS", "300"),
+            ],
+        );
+        let answer = journey.redirect().wait_with_output().unwrap();
+        // The aborted turn is still live behind the gate, and the message has
+        // been taken back: nothing has written it, and nothing will.
+        assert_eq!(carried(&journey.received()), 0, "{double:?}");
+        let frame = json_stdout(&answer);
+        assert!(
+            frame["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("did not end within 300ms")),
+            "{double:?}: {frame}"
+        );
+        std::fs::write(&gate, "").unwrap();
+        let (_, report, received) = journey.finish();
+        assert_undelivered(&answer, &report, "not_running", &format!("{double:?}"));
+        assert!(received.contains("GATE_OPENED"), "{double:?}:\n{received}");
+        assert_eq!(carried(&received), 0, "{double:?}:\n{received}");
+    }
+}
+
+/// The deadline takes back only a message nothing has claimed. Once the run
+/// has submitted the redirection to the HTTP server, whether it landed is the
+/// server's answer to that submission, so the interrupt waits past its
+/// deadline for it — and answers with what the server did, never a refusal
+/// for a message the session may be about to run. The server is held past the
+/// 10s an ordinary interrupt waits for its answer, too: a redirect's client
+/// waits as long as the run's own delivery can take.
+#[cfg(unix)]
+#[test]
+fn a_redirect_already_submitted_at_the_deadline_is_answered_by_the_server() {
+    let gate_dir = control_store_dir("dl-claimed-gate");
+    let gate = gate_dir.join("open");
+    let gate_arg = gate.display().to_string();
+    let deadline = std::time::Duration::from_millis(4000);
+    let deadline_ms = deadline.as_millis().to_string();
+    let journey = RedirectJourney::start(
+        RedirectDouble::Opencode,
+        "dl-claimed",
+        &[
+            ("MOCK_HTTP_CONTROL_FAULT", "redirected-turn"),
+            ("MOCK_INTERRUPT_GATE", gate_arg.as_str()),
+            (
+                "ONEHARNESS_INTERNAL_REDIRECT_DELIVERY_MS",
+                deadline_ms.as_str(),
+            ),
+        ],
+    );
+    let asked = std::time::Instant::now();
+    let mut interrupt = journey.redirect();
+    // Submitted: the server holds its admission behind the gate.
+    wait_until("the redirection to be submitted", || {
+        carried(&journey.received()) == 1
+    });
+    // Past the deadline — and past the ordinary client's 10s — the submitted
+    // message is still unanswered rather than taken back or given up on.
+    let held = deadline.max(std::time::Duration::from_secs(10)) + std::time::Duration::from_secs(1);
+    std::thread::sleep((asked + held).saturating_duration_since(std::time::Instant::now()));
+    assert!(
+        interrupt.try_wait().unwrap().is_none(),
+        "a submitted redirection was answered before the server said what became of it"
+    );
+    std::fs::write(&gate, "").unwrap();
+    let answer = interrupt.wait_with_output().unwrap();
+    assert!(answer.status.success(), "{answer:?}");
+    assert_eq!(json_stdout(&answer)["redirected"], true, "{answer:?}");
+    let (_, report, received) = journey.finish();
+    assert_eq!(
+        report["control"]["interrupts"][0]["outcome"], "served",
+        "{report}"
+    );
+    assert_eq!(
+        report["control"]["interrupts"][0]["redirected"], true,
+        "{report}"
+    );
+    assert_eq!(carried(&received), 1, "{received}");
+}
+
+/// Delivery is the successful write of the replacement prompt, and after it
+/// the message is never handed back: a harness that receives the redirection
+/// and then exits without another word still had it delivered. On both
+/// mechanisms that send no acknowledgement — Claude Code's stdin and ACP —
+/// the supervisor is told `redirected: true`, exit 0, and the report records
+/// the interrupt served.
+#[cfg(unix)]
+#[test]
+fn a_redirect_received_by_a_harness_that_then_exits_silently_was_delivered() {
+    for double in [RedirectDouble::Claude, RedirectDouble::Acp] {
+        let journey =
+            RedirectJourney::start(double, "silent-exit", &[("MOCK_EXIT_ON_REDIRECT", "1")]);
+        let answer = journey.redirect().wait_with_output().unwrap();
+        let (_, report, received) = journey.finish();
+        assert!(answer.status.success(), "{double:?}: {answer:?}");
+        assert_eq!(
+            json_stdout(&answer)["redirected"],
+            true,
+            "{double:?}: {answer:?}"
+        );
+        let interrupts = report["control"]["interrupts"].as_array().unwrap();
+        assert_eq!(interrupts.len(), 1, "{double:?}: {report}");
+        assert_eq!(interrupts[0]["outcome"], "served", "{double:?}: {report}");
+        assert_eq!(interrupts[0]["redirected"], true, "{double:?}: {report}");
+        // Received exactly once, and the harness said nothing after it.
+        assert_eq!(carried(&received), 1, "{double:?}:\n{received}");
+        let lines: Vec<&str> = received.lines().collect();
+        let at = lines
+            .iter()
+            .position(|line| line.contains(RedirectJourney::MESSAGE))
+            .unwrap();
+        let after: Vec<&str> = lines[at + 1..]
+            .iter()
+            .copied()
+            .filter(|line| *line != "REDIRECT_WRITTEN")
+            .collect();
+        assert_eq!(after, ["EXITED_SILENTLY"], "{double:?}:\n{received}");
+    }
+}
+
+/// Once a redirect's replacement turn is written, only the harness's answer
+/// says whether it landed — so the supervisor waits for that answer however
+/// long it takes, and is never left with a failed interrupt for a message that
+/// lands afterwards. Codex here holds its acknowledgement of the replacement
+/// `turn/start` past the 80s a redirect's client used to give up after.
+#[cfg(unix)]
+#[test]
+fn a_redirect_whose_replacement_is_acknowledged_slowly_is_still_answered_definitively() {
+    let gate_dir = control_store_dir("slow-ack-gate");
+    let gate = gate_dir.join("open");
+    let gate_arg = gate.display().to_string();
+    let journey = RedirectJourney::start_within(
+        RedirectDouble::Codex,
+        "slow-ack",
+        &[("MOCK_CODEX_ACK_GATE", gate_arg.as_str())],
+        "300",
+    );
+    let asked = std::time::Instant::now();
+    let mut interrupt = journey.redirect();
+    wait_until("the replacement turn to be written", || {
+        carried(&journey.received()) == 1
+    });
+    let held = std::time::Duration::from_secs(85);
+    std::thread::sleep((asked + held).saturating_duration_since(std::time::Instant::now()));
+    assert!(
+        interrupt.try_wait().unwrap().is_none(),
+        "the supervisor gave up on a redirect whose outcome was still pending: {:?}",
+        interrupt.wait_with_output()
+    );
+    std::fs::write(&gate, "").unwrap();
+    let answer = interrupt.wait_with_output().unwrap();
+    assert!(answer.status.success(), "{answer:?}");
+    assert_eq!(json_stdout(&answer)["redirected"], true, "{answer:?}");
+    let (_, report, received) = journey.finish();
+    assert_eq!(
+        report["control"]["interrupts"][0]["outcome"], "served",
+        "{report}"
+    );
+    assert_eq!(
+        report["control"]["interrupts"][0]["redirected"], true,
+        "{report}"
+    );
+    assert_eq!(carried(&received), 1, "{received}");
+    assert!(received.contains("ACK_GATE_OPENED"), "{received}");
+}
+
+/// A replacement submission that never reaches the server — its connection
+/// dropped unanswered — is a run whose harness is gone: the redirect is
+/// refused `not_running`, saying it was not delivered, and recorded so.
+#[cfg(unix)]
+#[test]
+fn a_redirect_whose_submission_cannot_reach_the_server_is_refused_not_running() {
+    let journey = RedirectJourney::start(
+        RedirectDouble::Opencode,
+        "dropped-submit",
+        &[("MOCK_HTTP_CONTROL_FAULT", "drop-redirect")],
+    );
+    let answer = journey.redirect().wait_with_output().unwrap();
+    let (_, report, received) = journey.finish();
+    assert_undelivered(&answer, &report, "not_running", "drop-redirect");
+    assert!(
+        json_stdout(&answer)["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("could not be reached to open the redirected turn")),
+        "{answer:?}"
+    );
+    assert!(received.contains("DROPPED_CONNECTION"), "{received}");
+    assert_eq!(carried(&received), 0, "{received}");
+}
+
+/// Codex acknowledges the turn a redirection opens, and that answer — not the
+/// write — is what says the turn exists. A thread that refuses the replacement
+/// `turn/start` leaves the message undelivered: `no_active_turn`, in the
+/// server's own words, recorded as a refusal, and no turn ever runs it.
+///
+/// An answer that names no turn is no acknowledgement either: the same
+/// refusal, and the run ends there rather than waiting for a turn nobody opened.
+#[cfg(unix)]
+#[test]
+fn a_codex_redirect_whose_replacement_turn_is_refused_is_not_delivered() {
+    for (knob, marker, said) in [
+        (
+            "MOCK_CODEX_REFUSE_SECOND_TURN",
+            "REFUSED_SECOND_TURN",
+            "thread not found",
+        ),
+        (
+            "MOCK_CODEX_UNNAMED_SECOND_TURN",
+            "UNNAMED_SECOND_TURN",
+            "without naming a turn",
+        ),
+    ] {
+        let journey =
+            RedirectJourney::start(RedirectDouble::Codex, "codex-refused", &[(knob, "1")]);
+        let answer = journey.redirect().wait_with_output().unwrap();
+        let (output, report, received) = journey.finish();
+        assert_undelivered(&answer, &report, "no_active_turn", knob);
+        assert!(
+            json_stdout(&answer)["error"]
+                .as_str()
+                .is_some_and(|error| error.contains(said)),
+            "{knob}: {answer:?}"
+        );
+        assert_ne!(
+            report["results"][0]["status"], "timeout",
+            "{knob}: {output:?}"
+        );
+        // The server received the request and did not open a turn for it.
+        let refused_at = received
+            .lines()
+            .position(|line| line == marker)
+            .unwrap_or_else(|| panic!("{knob}: the replacement turn was not refused:\n{received}"));
+        assert_eq!(carried(&received), 1, "{knob}: {received}");
+        assert!(
+            received
+                .lines()
+                .position(|line| line.contains(RedirectJourney::MESSAGE))
+                .is_some_and(|at| at < refused_at),
+            "{knob}: {received}"
+        );
+    }
+}
+
+/// A delivery-deadline override that is not whole milliseconds is said and
+/// ignored, never taken as some other deadline: the run warns and waits the
+/// default — so a redirect held well past any deadline the value could have
+/// been misread as (none, or zero) is still delivered when its turn ends.
+#[cfg(unix)]
+#[test]
+fn a_malformed_delivery_deadline_override_is_warned_about_and_ignored() {
+    let gate_dir = control_store_dir("bad-deadline-gate");
+    let gate = gate_dir.join("open");
+    let gate_arg = gate.display().to_string();
+    let journey = RedirectJourney::start(
+        RedirectDouble::Claude,
+        "bad-deadline",
+        &[
+            ("MOCK_INTERRUPT_GATE", gate_arg.as_str()),
+            ("ONEHARNESS_INTERNAL_REDIRECT_DELIVERY_MS", "soon"),
+        ],
+    );
+    let mut interrupt = journey.redirect();
+    wait_until("the abort to reach the harness", || {
+        journey.received().contains("INTERRUPTED")
+    });
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    assert!(
+        interrupt.try_wait().unwrap().is_none(),
+        "a malformed override shortened the delivery deadline"
+    );
+    std::fs::write(&gate, "").unwrap();
+    let answer = interrupt.wait_with_output().unwrap();
+    assert!(answer.status.success(), "{answer:?}");
+    assert_eq!(json_stdout(&answer)["redirected"], true, "{answer:?}");
+    let (output, _, received) = journey.finish();
+    assert_eq!(carried(&received), 1, "{received}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(
+            "ignoring ONEHARNESS_INTERNAL_REDIRECT_DELIVERY_MS=\"soon\": not whole milliseconds; \
+             a redirect waits the default 60s"
+        ),
+        "{stderr}"
+    );
 }
 
 #[cfg(unix)]
@@ -33424,10 +34244,18 @@ fn a_redirection_its_candidate_never_delivered_is_said_and_dropped_at_the_fall_t
         ],
         &[],
     );
-    assert!(interrupt.status.success(), "{interrupt:?}");
-    // The supervisor is told the run took their message, so they stop owning it
-    // — which is exactly why its loss has to be announced.
-    assert_eq!(json_stdout(&interrupt)["redirected"], true);
+    // The head's turn ended at EOF without the message ever being written, so
+    // the supervisor is told it was not delivered: the message is still theirs,
+    // never quietly carried on to the reserve.
+    assert_eq!(interrupt.status.code(), Some(1), "{interrupt:?}");
+    let frame = json_stdout(&interrupt);
+    assert_eq!(frame["reason"], "not_running", "{frame}");
+    assert!(
+        frame["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("the redirection was not delivered")),
+        "{frame}"
+    );
 
     let output = child.wait_with_output().expect("run did not finish");
     assert!(
@@ -33445,7 +34273,8 @@ fn a_redirection_its_candidate_never_delivered_is_said_and_dropped_at_the_fall_t
     );
     assert_eq!(report["fallback"]["fell_through"][0]["reason"], "quota");
     assert_eq!(report["fallback"]["ran"], "claude-code:reserve");
-    assert_eq!(report["control"]["interrupts"][0]["redirected"], true);
+    assert_eq!(report["control"]["interrupts"][0]["outcome"], "refused");
+    assert_eq!(report["control"]["interrupts"][0]["reason"], "not_running");
 
     // Said: a message the run accepted and could not deliver is never lost in
     // silence — the supervisor learns their redirection did not run.
@@ -34556,14 +35385,25 @@ fn a_redirection_a_dead_conversation_still_held_is_reported_rather_than_lost() {
         ],
         &[],
     );
-    assert!(interrupt.status.success(), "{interrupt:?}");
-    // The supervisor is told the conversation took their message.
-    assert_eq!(json_stdout(&interrupt)["redirected"], true);
+    // The supervisor is answered only once the message is delivered or known
+    // never to be — and here the conversation died first, so the answer is a
+    // refusal: the message is still theirs.
+    assert_eq!(interrupt.status.code(), Some(1), "{interrupt:?}");
+    let frame = json_stdout(&interrupt);
+    assert_eq!(frame["reason"], "not_running", "{frame}");
+    assert!(
+        frame["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("the redirection was not delivered")),
+        "{frame}"
+    );
 
     let output = child.wait_with_output().expect("run did not finish");
     let report: Value = serde_json::from_slice(&output.stdout).expect("a JSON report");
     assert_eq!(report["control"]["mechanism"], "codex-app-server");
-    assert_eq!(report["control"]["interrupts"][0]["redirected"], true);
+    assert_eq!(report["control"]["interrupts"][0]["outcome"], "refused");
+    assert_eq!(report["control"]["interrupts"][0]["reason"], "not_running");
+    assert_ne!(report["control"]["interrupts"][0]["redirected"], true);
     // Said — the same notice a stdin-borne mechanism gives, because the promise
     // is the run's and not any one mechanism's.
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -36676,7 +37516,7 @@ fn interrupt_text_view_says_served_and_whether_a_redirection_was_taken() {
     assert!(interrupt.status.success(), "{interrupt:?}");
     assert_eq!(
         String::from_utf8_lossy(&interrupt.stdout),
-        "interrupt served via claude-control-request · redirection taken\n"
+        "interrupt served via claude-control-request · redirection delivered\n"
     );
 
     // The controlled run's own text view carries the control block.

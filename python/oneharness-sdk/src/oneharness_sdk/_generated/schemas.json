@@ -13590,7 +13590,7 @@
           },
           "reason": false,
           "redirected": {
-            "description": "Whether the request's redirection was committed with the abort. Omitted rather than sent as `false`, so a plain interrupt's answer gains no field the supervisor did not ask for.",
+            "description": "Whether the request's redirection was delivered: written as the prompt of the turn that replaces the aborted one. A redirect is answered only once that is so; one whose turn ended or whose run exited first is refused instead. Omitted rather than sent as `false`, so a plain interrupt's answer gains no field the supervisor did not ask for.",
             "type": "boolean"
           },
           "v": {
@@ -14500,7 +14500,7 @@
                 "type": "string"
               },
               "redirected": {
-                "description": "Whether a redirection was committed with the abort. Omitted when it\nwas a plain stop, so an older consumer reads the same record it\nalways did.",
+                "description": "Whether a redirection was delivered as the prompt of the turn that\nreplaced the aborted one \u2014 the same outcome the interrupt was\nanswered with; one that was not delivered is a `Refused` record.\nOmitted when it was a plain stop, so an older consumer reads the\nsame record it always did.",
                 "type": "boolean"
               },
               "verb": {
@@ -15750,7 +15750,7 @@
                 "type": "string"
               },
               "redirected": {
-                "description": "Whether a redirection was committed with the abort. Omitted when it\nwas a plain stop, so an older consumer reads the same record it\nalways did.",
+                "description": "Whether a redirection was delivered as the prompt of the turn that\nreplaced the aborted one \u2014 the same outcome the interrupt was\nanswered with; one that was not delivered is a `Refused` record.\nOmitted when it was a plain stop, so an older consumer reads the\nsame record it always did.",
                 "type": "boolean"
               },
               "verb": {

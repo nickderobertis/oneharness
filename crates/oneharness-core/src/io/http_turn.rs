@@ -313,6 +313,81 @@ pub fn run(
     timeout: Duration,
     take_redirect: &dyn Fn() -> Option<RedirectInput>,
 ) -> TurnOutcome {
+    drive(turn, prompt, decision, timeout, &TakeOnly(take_redirect))
+}
+
+/// Where a driven turn gets the redirection an interrupt committed, and where
+/// it says what became of it.
+///
+/// The interrupt that committed a redirection is answered only once the driver
+/// says the message became the next turn or never will, so `redirected: true`
+/// is never said of a message the session did not take.
+pub(crate) trait RedirectSource {
+    /// The committed redirection, once its abort has landed — claimed, so it
+    /// is handed over once.
+    fn take(&self) -> Option<RedirectInput>;
+    /// The redirection taken last is the prompt of the turn that replaces the
+    /// aborted one: the server took the submission, or began the turn.
+    fn delivered(&self) {}
+    /// The redirection taken last could not become a turn, for this reason.
+    fn refused(&self, _why: &str, _failure: SubmitFailure) {}
+    /// The turn ended and the driver opens nothing after it.
+    fn turn_ended(&self) {}
+}
+
+/// How a prompt submission failed: the two are different facts about the run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SubmitFailure {
+    /// The server answered, and would not take the prompt: the session will
+    /// not open this turn.
+    Refused,
+    /// The server could not be reached at all: the run's harness is gone.
+    Unreachable,
+}
+
+/// A submission that gave up: which one, why, and how.
+#[derive(Debug, Clone)]
+struct GaveUp {
+    submission: usize,
+    why: String,
+    failure: SubmitFailure,
+}
+
+/// A caller of [`run`] hands over a closure and hears nothing back.
+struct TakeOnly<'a>(&'a dyn Fn() -> Option<RedirectInput>);
+
+impl RedirectSource for TakeOnly<'_> {
+    fn take(&self) -> Option<RedirectInput> {
+        (self.0)()
+    }
+}
+
+impl RedirectSource for crate::io::control::ControlHandle {
+    fn take(&self) -> Option<RedirectInput> {
+        self.take_redirect()
+    }
+    fn delivered(&self) {
+        self.redirect_delivered();
+    }
+    fn refused(&self, why: &str, failure: SubmitFailure) {
+        match failure {
+            SubmitFailure::Unreachable => self.redirect_lost(why),
+            SubmitFailure::Refused => self.redirect_refused(why),
+        }
+    }
+    fn turn_ended(&self) {
+        self.redirect_turn_ended();
+    }
+}
+
+/// [`run`], telling `redirects` what became of each redirection it hands over.
+pub(crate) fn drive(
+    turn: &HttpTurn,
+    prompt: &str,
+    decision: PermissionDecision,
+    timeout: Duration,
+    redirects: &dyn RedirectSource,
+) -> TurnOutcome {
     let started = Instant::now();
     let started_at = utc_now();
     let deadline = (!timeout.is_zero()).then(|| started + timeout);
@@ -350,8 +425,12 @@ pub fn run(
     // describes the turn the supervisor deliberately stopped — treating it as
     // the run's outcome ends the run before the redirection it committed can
     // become the next turn, which is the message being lost by another route.
-    let gave_up = Arc::new(Mutex::new(None::<(usize, String)>));
+    let gave_up = Arc::new(Mutex::new(None::<GaveUp>));
     let current = Arc::new(AtomicUsize::new(0));
+    // How many submissions the server has answered `ok`, by number: one past
+    // the highest. A redirection's submission answered `ok` is a turn the
+    // session took — the first of two ways the run learns it was delivered.
+    let accepted = Arc::new(AtomicUsize::new(0));
     // Every prompt this turn submits — its own, and any redirection an
     // interrupt hands over — goes out on its own thread. Opencode holds the
     // prompt request open for the whole turn, so submitting from the reader
@@ -360,6 +439,7 @@ pub fn run(
         let turn = turn.clone();
         let finished = Arc::clone(&finished);
         let gave_up = Arc::clone(&gave_up);
+        let accepted = Arc::clone(&accepted);
         let mine = current.load(Ordering::SeqCst);
         std::thread::spawn(move || {
             let request = http::prompt_request(&turn.address, &prompt);
@@ -367,16 +447,29 @@ pub fn run(
             // follow, so the reader is released rather than left waiting out the
             // whole timeout for events that can never arrive.
             let refusal = match turn.client.send(&request) {
-                Ok(response) if response.ok() => None,
-                Ok(response) => Some(format!(
-                    "the control server refused the prompt ({}): {}",
-                    response.status,
-                    response.body.trim()
+                Ok(response) if response.ok() => {
+                    accepted.fetch_max(mine + 1, Ordering::SeqCst);
+                    None
+                }
+                Ok(response) => Some((
+                    format!(
+                        "the control server refused the prompt ({}): {}",
+                        response.status,
+                        response.body.trim()
+                    ),
+                    SubmitFailure::Refused,
                 )),
-                Err(err) => Some(format!("could not submit the prompt: {err}")),
+                Err(err) => Some((
+                    format!("could not submit the prompt: {err}"),
+                    SubmitFailure::Unreachable,
+                )),
             };
-            if let Some(refusal) = refusal {
-                *gave_up.lock().unwrap_or_else(|e| e.into_inner()) = Some((mine, refusal));
+            if let Some((why, failure)) = refusal {
+                *gave_up.lock().unwrap_or_else(|e| e.into_inner()) = Some(GaveUp {
+                    submission: mine,
+                    why,
+                    failure,
+                });
                 finished.store(true, Ordering::SeqCst);
             }
         })
@@ -387,8 +480,8 @@ pub fn run(
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
-            .filter(|(who, _)| *who == current.load(Ordering::SeqCst))
-            .map(|(_, why)| why.clone())
+            .filter(|gave_up| gave_up.submission == current.load(Ordering::SeqCst))
+            .map(|gave_up| gave_up.why.clone())
     };
     let mut submitters = vec![spawn_submit(prompt.to_string())];
 
@@ -407,18 +500,43 @@ pub fn run(
     // end. Both callers reach this from a *turn* ending — the harness saying so
     // on the stream, or its prompt request coming back — because those are the
     // two ways this run learns the session will accept a prompt again.
-    let redirect_next = |submitters: &mut Vec<std::thread::JoinHandle<()>>| {
-        let Some(redirect) = take_redirect() else {
+    //
+    // `awaiting` is the submission a redirection went out as, until the run
+    // knows whether the session took it.
+    let redirect_next = |submitters: &mut Vec<std::thread::JoinHandle<()>>,
+                         awaiting: &mut Option<usize>| {
+        let Some(redirect) = redirects.take() else {
             return false;
         };
         // The new submission is current, so the aborted one's refusal is no
         // longer the run's outcome — and a `finished` it raised is no longer
         // this run's reason to stop.
-        current.fetch_add(1, Ordering::SeqCst);
+        let submission = current.fetch_add(1, Ordering::SeqCst) + 1;
         finished.store(false, Ordering::SeqCst);
         submitters.push(spawn_submit(redirect.as_str().to_string()));
+        *awaiting = Some(submission);
         true
     };
+    // Say what became of a redirection still awaiting its answer: the server
+    // took its submission, or refused it. Neither yet leaves it awaiting.
+    let settle = |awaiting: &mut Option<usize>| {
+        let Some(submission) = *awaiting else {
+            return;
+        };
+        if accepted.load(Ordering::SeqCst) > submission {
+            redirects.delivered();
+            *awaiting = None;
+        } else if let Some(gave_up) = gave_up
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .filter(|gave_up| gave_up.submission == submission)
+        {
+            redirects.refused(&gave_up.why, gave_up.failure);
+            *awaiting = None;
+        }
+    };
+    let mut awaiting: Option<usize> = None;
 
     // Opencode's aborted turn ends with NO event at all — the stream simply
     // stops — so a redirection waiting for one would never be delivered and the
@@ -428,14 +546,18 @@ pub fn run(
     // nothing is deliverable early and this never fires for it.
     let abort_is_silent = turn.shape().abort_ends_turn_silently();
     while !ended {
+        settle(&mut awaiting);
         if abort_is_silent {
-            redirect_next(&mut submitters);
+            redirect_next(&mut submitters, &mut awaiting);
         }
         if finished.load(Ordering::SeqCst) {
-            // A submission gave up. When that was the turn an interrupt
-            // aborted, its redirection is what happens next; otherwise there is
-            // genuinely nothing more to follow.
-            if !redirect_next(&mut submitters) {
+            // A submission gave up. When that was a redirection's, it was not
+            // delivered; when it was the turn an interrupt aborted, its
+            // redirection is what happens next; otherwise there is genuinely
+            // nothing more to follow.
+            settle(&mut awaiting);
+            if !redirect_next(&mut submitters, &mut awaiting) {
+                redirects.turn_ended();
                 break;
             }
             in_flight = false;
@@ -457,7 +579,16 @@ pub fn run(
                             .unwrap_or_else(|e| e.into_inner())
                             .push_str(&chunk);
                     }
-                    TurnEvent::Started => in_flight = true,
+                    // A turn began after a redirection went out: the session
+                    // took it — the second way the run learns it was delivered,
+                    // and the only one on a server that holds the submission
+                    // open for the whole turn.
+                    TurnEvent::Started => {
+                        in_flight = true;
+                        if awaiting.take().is_some() {
+                            redirects.delivered();
+                        }
+                    }
                     TurnEvent::Finished => {
                         if in_flight {
                             // The turn is over, so the session will accept a
@@ -465,9 +596,10 @@ pub fn run(
                             // interrupt committed can actually become a turn.
                             // Until its own `Started` arrives, the same idle
                             // this arm read must not end the run again.
-                            if redirect_next(&mut submitters) {
+                            if redirect_next(&mut submitters, &mut awaiting) {
                                 in_flight = false;
                             } else {
+                                redirects.turn_ended();
                                 ended = true;
                             }
                         }
@@ -511,6 +643,10 @@ pub fn run(
             let _ = submitter.join();
         }
     }
+    // Every submission has answered, so a redirection still awaiting one is
+    // settled from it; one still unanswered past a timeout is left to the
+    // candidate's release, which says the run ended first.
+    settle(&mut awaiting);
 
     // A stream that ended before the turn did is not a turn that ended: the
     // server stopped talking mid-flight. Reported rather than passed off as a
@@ -831,5 +967,370 @@ mod tests {
         assert!(is_usable_id("ses_01d2"));
         assert!(!is_usable_id("../elsewhere"));
         assert!(!is_usable_id(""));
+    }
+}
+
+/// The redirect contract on crush's HTTP mechanism, which no harness double
+/// reaches: the run's own control socket and turn driver, against a crush-shaped
+/// stand-in this test binds on a unix socket. A redirect is answered
+/// `redirected` only once the session took the replacement turn; a turn that
+/// ends before its abort lands, or a server gone first, refuses it — and the
+/// stand-in never receives the message afterwards.
+#[cfg(all(test, unix))]
+mod crush_redirects {
+    use super::*;
+    use crate::domain::control::{
+        socket_path, ControlEvent, ControlReason, ControlRequest, ControlResponse, ControlShape,
+    };
+    use crate::io::control::{self as control_io, Binding};
+    use crate::io::scratch::ScratchDir;
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::sync::{mpsc, Condvar};
+
+    const MESSAGE: &str = "stop and do the right thing";
+
+    /// How the stand-in answers the cancel that aborts the first turn.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Cancel {
+        /// Answer it; end the aborted turn on the stream once the gate opens.
+        Answer,
+        /// End the turn on the stream first; answer once the gate opens.
+        EndFirst,
+        /// Answer it and go away: the stream closes, nothing more is served.
+        Vanish,
+    }
+
+    /// A latch the test opens.
+    #[derive(Default)]
+    struct Gate(Mutex<bool>, Condvar);
+
+    impl Gate {
+        fn open(&self) {
+            *self.0.lock().unwrap() = true;
+            self.1.notify_all();
+        }
+        fn wait(&self) {
+            let mut open = self.0.lock().unwrap();
+            while !*open {
+                open = self.1.wait(open).unwrap();
+            }
+        }
+    }
+
+    struct Standin {
+        cancel: Cancel,
+        gate: Gate,
+        prompts: Mutex<Vec<String>>,
+        /// Made before anything connects, so an event emitted before the
+        /// client's stream arrives waits for it rather than being lost.
+        events: Mutex<Option<mpsc::Sender<String>>>,
+        stream: Mutex<Option<mpsc::Receiver<String>>>,
+        gone: AtomicBool,
+        /// Every request refused as malformed, and why.
+        rejected: Mutex<Vec<String>>,
+    }
+
+    impl Standin {
+        fn emit(&self, kind: &str) {
+            if let Some(events) = self.events.lock().unwrap().as_ref() {
+                let _ = events.send(format!(
+                    r#"{{"type":"{kind}","payload":{{"type":"created","payload":{{}}}}}}"#
+                ));
+            }
+        }
+
+        fn serve(self: &Arc<Self>, listener: UnixListener) {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { return };
+                // Gone: every later connection is dropped unanswered.
+                if self.gone.load(Ordering::SeqCst) {
+                    continue;
+                }
+                let standin = Arc::clone(self);
+                std::thread::spawn(move || standin.answer(stream));
+            }
+        }
+
+        fn answer(&self, mut stream: UnixStream) {
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let reply = |stream: &mut UnixStream, status: &str, body: &str| {
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            };
+            // A request the client under test framed wrong is its bug: refused
+            // here and recorded, so the contract test fails naming it rather
+            // than a default standing in for what was never sent.
+            let (path, body) = match read_request(&mut reader) {
+                Ok(request) => request,
+                Err(problem) => {
+                    reply(&mut stream, "400 Bad Request", "{}");
+                    self.rejected.lock().unwrap().push(problem);
+                    return;
+                }
+            };
+            if path.contains("/events") {
+                let rx = self.stream.lock().unwrap().take().expect("one stream");
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n"
+                );
+                // Until the stand-in drops the sender, which closes the stream.
+                for event in rx {
+                    if write!(stream, "data: {event}\n\n").is_err() {
+                        return;
+                    }
+                }
+            } else if path.contains("/cancel") {
+                match self.cancel {
+                    Cancel::Answer => {
+                        reply(&mut stream, "200 OK", "{}");
+                        self.gate.wait();
+                        self.emit("run_complete");
+                    }
+                    Cancel::EndFirst => {
+                        self.emit("run_complete");
+                        self.gate.wait();
+                        reply(&mut stream, "200 OK", "{}");
+                    }
+                    Cancel::Vanish => {
+                        reply(&mut stream, "200 OK", "{}");
+                        self.gone.store(true, Ordering::SeqCst);
+                        *self.events.lock().unwrap() = None;
+                    }
+                }
+            } else if path.contains("/agent") {
+                let Some(prompt) = body["prompt"].as_str().map(str::to_string) else {
+                    reply(&mut stream, "400 Bad Request", "{}");
+                    self.rejected
+                        .lock()
+                        .unwrap()
+                        .push(format!("{path} without a string `prompt`: {body}"));
+                    return;
+                };
+                let first = {
+                    let mut prompts = self.prompts.lock().unwrap();
+                    prompts.push(prompt);
+                    prompts.len() == 1
+                };
+                reply(&mut stream, "202 Accepted", "{}");
+                self.emit("message");
+                // The turn a redirection opens runs to its own end.
+                if !first {
+                    self.emit("run_complete");
+                }
+            } else if path == "/v1/workspaces" {
+                reply(&mut stream, "200 OK", r#"{"id":"ws-1"}"#);
+            } else if path.contains("/sessions?") {
+                reply(&mut stream, "200 OK", r#"{"id":"sid-1"}"#);
+            } else {
+                reply(&mut stream, "200 OK", "{}");
+            }
+        }
+    }
+
+    /// Bounds on what the stand-in reads of one request, so a client that
+    /// never ends its head, or claims a huge body, is refused rather than
+    /// allocated for.
+    const MAX_LINE: u64 = 8 * 1024;
+    const MAX_HEADERS: usize = 64;
+    const MAX_BODY: usize = 1024 * 1024;
+
+    /// One HTTP/1.1 request's path and JSON body (`Null` when it has none).
+    fn read_request(reader: &mut impl BufRead) -> Result<(String, serde_json::Value), String> {
+        let mut line = |what: &str| -> Result<String, String> {
+            let mut line = String::new();
+            let read = reader
+                .by_ref()
+                .take(MAX_LINE)
+                .read_line(&mut line)
+                .map_err(|err| format!("{what}: {err}"))?;
+            if read == 0 || !line.ends_with("\r\n") {
+                return Err(format!("{what} unterminated: {line:?}"));
+            }
+            Ok(line)
+        };
+        let head = line("request line")?;
+        let path = match head.split_whitespace().collect::<Vec<_>>()[..] {
+            [_method, path, "HTTP/1.1"] if path.starts_with('/') => path.to_string(),
+            _ => return Err(format!("malformed request line {head:?}")),
+        };
+        let mut length = None;
+        for _ in 0..MAX_HEADERS {
+            let header = line("header")?;
+            if header == "\r\n" {
+                let length = length.unwrap_or(0);
+                let mut body = vec![0u8; length];
+                reader
+                    .read_exact(&mut body)
+                    .map_err(|err| format!("body of {length} bytes: {err}"))?;
+                let body = if body.is_empty() {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::from_slice(&body).map_err(|err| format!("body: {err}"))?
+                };
+                return Ok((path, body));
+            }
+            if let Some(value) = header.to_ascii_lowercase().strip_prefix("content-length:") {
+                let value: usize = value
+                    .trim()
+                    .parse()
+                    .map_err(|err| format!("content-length {value:?}: {err}"))?;
+                if value > MAX_BODY {
+                    return Err(format!("content-length {value} past {MAX_BODY}"));
+                }
+                length = Some(value);
+            }
+        }
+        Err(format!("more than {MAX_HEADERS} headers"))
+    }
+
+    fn wait_for(what: &str, ready: impl Fn() -> bool) {
+        let until = Instant::now() + Duration::from_secs(20);
+        while !ready() {
+            assert!(Instant::now() < until, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Drive one controlled crush turn, redirect it, and let the stand-in
+    /// answer the cancel the `cancel` way: the redirect's answer, the run's
+    /// recorded control events, and every prompt the stand-in received.
+    fn redirect_against(cancel: Cancel) -> (ControlResponse, Vec<ControlEvent>, Vec<String>) {
+        let root = std::fs::canonicalize("/tmp").unwrap();
+        let dir = ScratchDir::under(&root, &format!("crush-{cancel:?}")).unwrap();
+        let server = dir.join("crush.sock");
+        let (events, stream) = mpsc::channel::<String>();
+        let standin = Arc::new(Standin {
+            cancel,
+            gate: Gate::default(),
+            prompts: Mutex::new(Vec::new()),
+            events: Mutex::new(Some(events)),
+            stream: Mutex::new(Some(stream)),
+            gone: AtomicBool::new(false),
+            rejected: Mutex::new(Vec::new()),
+        });
+        let listener = UnixListener::bind(&server).unwrap();
+        std::thread::spawn({
+            let standin = Arc::clone(&standin);
+            move || standin.serve(listener)
+        });
+
+        let control = socket_path(&dir, "crush").unwrap();
+        let mut channel = control_io::bind(&control, ControlShape::CrushHttp).unwrap();
+        let handle = channel.handle();
+        let turn = open(
+            HttpShape::Crush,
+            DialAddress::UnixSocket {
+                path: AbsolutePath::new(&server).unwrap(),
+            },
+            &AbsolutePath::new(dir.path()).unwrap(),
+            PermissionDecision::Allow,
+            &client_id("crush-contract"),
+            None,
+        )
+        .unwrap();
+        handle.bind(Binding::PooledServer(HttpShape::Crush));
+        handle.begin_http_turn(turn.clone());
+        // What `run` does for a pooled candidate: drive, then let go.
+        let driver = std::thread::spawn({
+            let handle = Arc::clone(&handle);
+            move || {
+                drive(
+                    &turn,
+                    "keep working",
+                    PermissionDecision::Allow,
+                    Duration::from_secs(30),
+                    &*handle,
+                );
+                handle.end_http_turn();
+                handle.release();
+            }
+        });
+        wait_for("the turn to be in flight", || {
+            standin.prompts.lock().unwrap().len() == 1
+        });
+
+        let pending = std::thread::spawn(move || {
+            control_io::send(
+                &control,
+                &ControlRequest::redirect(RedirectInput::new(MESSAGE).unwrap()),
+            )
+        });
+        match cancel {
+            Cancel::Answer => {
+                wait_for("the abort to land", || handle.redirect_is_deliverable());
+                // The aborted turn is still live, so nothing can carry the
+                // message yet — and nothing has answered.
+                assert!(!pending.is_finished(), "answered before delivery");
+                assert_eq!(standin.prompts.lock().unwrap().len(), 1);
+                standin.gate.open();
+            }
+            // The turn is over before its abort is answered: the run ends it.
+            Cancel::EndFirst => {
+                wait_for("the turn to end", || driver.is_finished());
+                standin.gate.open();
+            }
+            Cancel::Vanish => {}
+        }
+        let response = pending.join().unwrap();
+        driver.join().unwrap();
+        let events = channel.finish();
+        let prompts = standin.prompts.lock().unwrap().clone();
+        let rejected = standin.rejected.lock().unwrap().clone();
+        assert!(rejected.is_empty(), "malformed requests: {rejected:?}");
+        (response, events, prompts)
+    }
+
+    #[test]
+    fn a_crush_redirect_is_answered_once_the_session_took_its_replacement_turn() {
+        let (response, events, prompts) = redirect_against(Cancel::Answer);
+        assert!(response.is_redirected(), "{response:?}");
+        assert_eq!(response.mechanism(), Some(ControlShape::CrushHttp));
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert!(events[0].is_redirected(), "{events:?}");
+        assert_eq!(
+            prompts,
+            vec!["keep working".to_string(), MESSAGE.to_string()]
+        );
+    }
+
+    #[test]
+    fn a_crush_redirect_whose_turn_ends_before_its_abort_lands_is_refused_and_never_sent() {
+        let (response, events, prompts) = redirect_against(Cancel::EndFirst);
+        assert_eq!(
+            response.reason(),
+            Some(ControlReason::NoActiveTurn),
+            "{response:?}"
+        );
+        assert!(
+            response
+                .to_line()
+                .contains("the redirection was not delivered"),
+            "{response:?}"
+        );
+        assert_eq!(events[0].reason(), Some(ControlReason::NoActiveTurn));
+        assert_eq!(prompts, vec!["keep working".to_string()]);
+    }
+
+    #[test]
+    fn a_crush_redirect_whose_server_goes_first_is_refused_and_never_sent() {
+        let (response, events, prompts) = redirect_against(Cancel::Vanish);
+        assert_eq!(
+            response.reason(),
+            Some(ControlReason::NotRunning),
+            "{response:?}"
+        );
+        assert!(
+            response
+                .to_line()
+                .contains("the redirection was not delivered"),
+            "{response:?}"
+        );
+        assert_eq!(events[0].reason(), Some(ControlReason::NotRunning));
+        assert_eq!(prompts, vec!["keep working".to_string()]);
     }
 }

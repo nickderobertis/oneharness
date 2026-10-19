@@ -1728,7 +1728,15 @@ fn a_pooled_interrupt_with_a_message_redirects_the_turn_or_takes_nothing() {
             .filter(|t| t["thread"] == thread.as_str())
             .cloned()
             .collect();
+        // The journey re-asks while the turn is still unknown, so the event for
+        // the request answered above is the last; every earlier one is a
+        // `no_active_turn` refusal that delivered nothing.
         let interrupts = report["control"]["interrupts"].as_array().unwrap();
+        let (event, earlier) = interrupts.split_last().expect("no interrupt recorded");
+        for refused in earlier {
+            assert_eq!(refused["reason"], "no_active_turn", "{report}");
+            assert_ne!(refused["redirected"], true, "{report}");
+        }
         if refuse {
             assert!(!served, "{answer}");
             assert_eq!(answer["reason"], "not_running", "{answer}");
@@ -1743,12 +1751,14 @@ fn a_pooled_interrupt_with_a_message_redirects_the_turn_or_takes_nothing() {
                 1,
                 "a refused redirect opened a turn: {turns:?}"
             );
-            assert_ne!(interrupts[0]["redirected"], true, "{report}");
+            assert_eq!(event["outcome"], "refused", "{report}");
+            assert_eq!(event["reason"], "not_running", "{report}");
+            assert_ne!(event["redirected"], true, "{report}");
         } else {
             assert!(served, "{answer}");
             assert_eq!(answer["redirected"], true, "{answer}");
-            assert_eq!(interrupts[0]["outcome"], "served", "{report}");
-            assert_eq!(interrupts[0]["redirected"], true, "{report}");
+            assert_eq!(event["outcome"], "served", "{report}");
+            assert_eq!(event["redirected"], true, "{report}");
             assert_eq!(turns.len(), 2, "{turns:?}");
             assert_eq!(pool.turn_of(server, &thread)["turn"], turns[1]["turn"]);
             assert!(
@@ -1757,6 +1767,198 @@ fn a_pooled_interrupt_with_a_message_redirects_the_turn_or_takes_nothing() {
                 turns[1]
             );
         }
+    }
+}
+
+/// `oneharness interrupt --input <message>` against `session`, started and left
+/// to answer: a redirect is answered on delivery, so the journey reads what the
+/// server does before it.
+fn redirect_in_background(pool: &Pool, session: &str, message: &str) -> Child {
+    Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .args([
+            "interrupt",
+            "--session",
+            session,
+            "--session-dir",
+            &pool.file("sess"),
+            "--input",
+            message,
+            "--format",
+            "json",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run oneharness interrupt")
+}
+
+/// [`redirect_in_background`], asked again while the dispatch has not yet read
+/// the reply naming its turn (see [`once_the_turn_is_known`]), and returned once
+/// its abort is on the server. Counted against the interrupts the shared server
+/// held before, so an earlier session's abort cannot stand in for this one's.
+fn redirect_once_its_abort_lands(pool: &Pool, server: u32, session: &str, message: &str) -> Child {
+    let before = interrupts_received(pool, server).len();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let mut answer = redirect_in_background(pool, session, message);
+        wait_for("the abort or its refusal", Duration::from_secs(30), || {
+            interrupts_received(pool, server).len() > before || answer.try_wait().unwrap().is_some()
+        });
+        if interrupts_received(pool, server).len() > before {
+            return answer;
+        }
+        let refused = answer.wait_with_output().unwrap();
+        let frame: Value = serde_json::from_slice(&refused.stdout)
+            .unwrap_or_else(|err| panic!("{session}: {err}: {refused:?}"));
+        assert_eq!(
+            frame["error"], "the run is alive but no turn is in flight",
+            "{session}: answered without an abort reaching the server: {frame}"
+        );
+        assert!(
+            Instant::now() < deadline,
+            "{session}: the turn never became known"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// The turns the server recorded on `thread`, in order.
+fn turns_on(pool: &Pool, server: u32, thread: &str) -> Vec<Value> {
+    pool.state(server)["turns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|t| t["thread"] == thread)
+        .cloned()
+        .collect()
+}
+
+/// On the shared app-server, as on every mechanism: a redirect is answered
+/// `redirected` only once the server has opened the replacement turn with the
+/// message. The server holds the aborted turn's end behind a gate, so the
+/// journey reads the answer still outstanding while that turn is live and
+/// arriving only after the replacement turn carrying the message exists. And
+/// when that turn cannot be opened — the thread refuses it, or the server is
+/// gone first — the answer is a refusal saying the message was not delivered,
+/// and no turn on the server ever carries it.
+#[test]
+fn a_pooled_redirect_is_answered_on_delivery_and_refused_when_it_cannot_be() {
+    let pool = Pool::new("pool-redirect-delivery");
+    for (session, knob) in [
+        ("delivered", "MOCK_INTERRUPT_GATE"),
+        ("refused", "MOCK_CODEX_REFUSE_SECOND_TURN"),
+        ("orphaned", "MOCK_CODEX_DIE_ON_INTERRUPT"),
+    ] {
+        let release = pool.file(&format!("{session}-release"));
+        let gate = pool.file(&format!("{session}-gate"));
+        let value = if knob == "MOCK_INTERRUPT_GATE" {
+            gate.as_str()
+        } else {
+            "1"
+        };
+        // The frames the server received over this dispatch's connection, as
+        // it received them — the stream the answer is recorded into below.
+        let frames = pool.file(&format!("{session}-frames.log"));
+        let envs = [
+            ("MOCK_CODEX_HOLD_UNTIL", release.as_str()),
+            ("MOCK_CODEX_APP_SERVER_LOG", frames.as_str()),
+            (knob, value),
+        ];
+        let child = pool.spawn(pool.command(session, &[], &envs));
+        let server = pool.await_live_turns(1);
+        let message = format!("stop and do the right thing for {session}");
+        let mut answer = redirect_once_its_abort_lands(&pool, server, session, &message);
+        if session == "delivered" {
+            // Accepted, but the aborted turn is still live behind the gate:
+            // nothing can carry the message yet, and nothing has answered.
+            assert!(
+                answer.try_wait().unwrap().is_none(),
+                "answered before the replacement turn existed"
+            );
+            assert_eq!(pool.live_turns(server), 1);
+            std::fs::write(&gate, "").unwrap();
+        }
+        let answered = answer.wait_with_output().unwrap();
+        // Recorded the moment it arrives, into the same log the server writes
+        // each frame to as it takes it: one ordered stream of both events.
+        {
+            use std::io::Write as _;
+            let mut log = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&frames)
+                .unwrap();
+            writeln!(
+                log,
+                "ANSWERED {}",
+                String::from_utf8_lossy(&answered.stdout).trim()
+            )
+            .unwrap();
+        }
+        let frame: Value = serde_json::from_slice(&answered.stdout)
+            .unwrap_or_else(|err| panic!("{session}: {err}: {answered:?}"));
+        std::fs::write(&release, "").unwrap();
+        let (output, report) = Pool::finish(child);
+        let thread = thread_of(&report);
+        let turns = turns_on(&pool, server, &thread);
+        // Every re-ask before the turn was known is an earlier event, refused
+        // as `no_active_turn` with nothing delivered; the last is this answer's.
+        let interrupts = report["control"]["interrupts"].as_array().unwrap();
+        let (event, earlier) = interrupts.split_last().expect("no interrupt recorded");
+        for re_asked in earlier {
+            assert_eq!(re_asked["reason"], "no_active_turn", "{session}: {report}");
+            assert_ne!(re_asked["redirected"], true, "{session}: {report}");
+        }
+        let carried = turns
+            .iter()
+            .filter(|t| t["input"].to_string().contains(&message))
+            .count();
+        if session == "delivered" {
+            succeeded(&output, &report);
+            assert!(answered.status.success(), "{frame}");
+            assert_eq!(frame["redirected"], true, "{frame}");
+            assert_eq!(event["outcome"], "served", "{report}");
+            assert_eq!(event["redirected"], true, "{report}");
+            assert_eq!(turns.len(), 2, "{turns:?}");
+            assert_eq!(carried, 1, "{turns:?}");
+            assert!(
+                turns[1]["input"].to_string().contains(&message),
+                "{turns:?}"
+            );
+            // The server took the replacement `turn/start` carrying the message,
+            // and only then did the supervisor hear it was delivered.
+            let stream = std::fs::read_to_string(&frames).unwrap();
+            let at = |needle: &str| {
+                stream
+                    .lines()
+                    .position(|line| line.contains(needle))
+                    .unwrap_or_else(|| panic!("no `{needle}` in:\n{stream}"))
+            };
+            assert!(
+                at(&message) < at("ANSWERED {"),
+                "answered before the server had the message:\n{stream}"
+            );
+            continue;
+        }
+        let reason = if session == "refused" {
+            "no_active_turn"
+        } else {
+            "not_running"
+        };
+        assert_eq!(answered.status.code(), Some(1), "{session}: {frame}");
+        assert_eq!(frame["reason"], reason, "{session}: {frame}");
+        assert!(frame.get("redirected").is_none(), "{session}: {frame}");
+        assert!(
+            frame["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("the redirection was not delivered")),
+            "{session}: {frame}"
+        );
+        assert_eq!(event["outcome"], "refused", "{session}: {report}");
+        assert_eq!(event["reason"], reason, "{session}: {report}");
+        assert_eq!(turns.len(), 1, "{session}: {turns:?}");
+        assert_eq!(carried, 0, "{session}: {turns:?}");
     }
 }
 

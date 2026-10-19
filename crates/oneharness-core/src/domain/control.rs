@@ -22,8 +22,12 @@
 //! window where the turn is dead and the message is nobody's. Instead the run
 //! takes ownership of the message in the same operation that aborts the turn:
 //! it is parked before the abort is delivered, released again if the abort
-//! fails, and otherwise written by the run itself the moment the turn ends. A
-//! supervisor that reads `ok` is holding a guarantee, not a race it won.
+//! fails, and otherwise written by the run itself the moment the turn ends. The
+//! answer waits for that write: `redirected: true` means the message IS the
+//! next turn's prompt, and a turn that ends — or a run that exits — before it
+//! could be written answers a refusal saying it was not delivered, after which
+//! the run never writes it. A supervisor that reads `ok` is holding a
+//! guarantee, not a race it won.
 //!
 //! This module holds everything with no I/O in it: the wire frames, the
 //! per-harness capability shapes, the sidecar-server declaration and its pool
@@ -809,9 +813,13 @@ pub enum ControlResponse {
     // and a refusal claiming a redirection is rejected while parsing.
     Served {
         mechanism: ControlShape,
-        /// Whether the request's redirection was committed along with the abort.
-        /// Reported rather than left implicit: a supervisor that sent `input`
-        /// needs to read back that the run took it, not infer it from `ok`.
+        /// Whether the request's redirection was delivered: written as the
+        /// prompt of the turn that replaces the aborted one. A redirect is
+        /// answered only once that is so — a turn that ends, or a run that
+        /// exits, before the write answers `Refused` instead (`no_active_turn`
+        /// / `not_running`), and the run then never writes the message. So a
+        /// supervisor that sent `input` reads back whether it landed, exactly
+        /// once, rather than inferring it from `ok`.
         redirected: bool,
     },
     Refused {
@@ -950,7 +958,7 @@ impl JsonSchema for ControlResponse {
                         "mechanism": mechanism,
                         "redirected": {
                             "type": "boolean",
-                            "description": "Whether the request's redirection was committed with the abort. Omitted rather than sent as `false`, so a plain interrupt's answer gains no field the supervisor did not ask for.",
+                            "description": "Whether the request's redirection was delivered: written as the prompt of the turn that replaces the aborted one. A redirect is answered only once that is so; one whose turn ended or whose run exited first is refused instead. Omitted rather than sent as `false`, so a plain interrupt's answer gains no field the supervisor did not ask for.",
                         },
                         // The two fields a served frame must not carry, spelled
                         // per-property rather than as `additionalProperties:
@@ -992,8 +1000,8 @@ impl ControlResponse {
         }
     }
 
-    /// The success frame for an interrupt whose redirection was committed with
-    /// the abort.
+    /// The success frame for an interrupt whose redirection was delivered as
+    /// the prompt of the turn that replaced the aborted one.
     #[must_use]
     pub fn redirected(shape: ControlShape) -> Self {
         ControlResponse::Served {
@@ -1002,7 +1010,7 @@ impl ControlResponse {
         }
     }
 
-    /// Whether a redirection rode along with the abort.
+    /// Whether the redirection was delivered as the next turn's prompt.
     #[must_use]
     pub fn is_redirected(&self) -> bool {
         matches!(self, ControlResponse::Served { redirected, .. } if *redirected)
@@ -1390,9 +1398,11 @@ pub enum ControlEvent {
         verb: ControlVerb,
         /// When the request was handled.
         at: UtcInstant,
-        /// Whether a redirection was committed with the abort. Omitted when it
-        /// was a plain stop, so an older consumer reads the same record it
-        /// always did.
+        /// Whether a redirection was delivered as the prompt of the turn that
+        /// replaced the aborted one — the same outcome the interrupt was
+        /// answered with; one that was not delivered is a `Refused` record.
+        /// Omitted when it was a plain stop, so an older consumer reads the
+        /// same record it always did.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         redirected: bool,
     },
@@ -1427,7 +1437,8 @@ impl ControlEvent {
         matches!(self, ControlEvent::Served { .. })
     }
 
-    /// Whether this request also delivered a redirection.
+    /// Whether this request also delivered a redirection as the next turn's
+    /// prompt.
     #[must_use]
     pub fn is_redirected(&self) -> bool {
         matches!(self, ControlEvent::Served { redirected, .. } if *redirected)

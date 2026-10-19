@@ -335,7 +335,10 @@ pub enum Command {
     /// This is a SEPARATE process from the run — which is the whole reason turn
     /// control is a socket rather than a flag: a supervisor watching a long turn
     /// go sideways can redirect it instead of destroying it. Pass `--input` to
-    /// say what it should do instead, delivered with the stop as one operation.
+    /// say what it should do instead, delivered with the stop as one operation:
+    /// the answer then waits until the message has been written as the prompt
+    /// of the turn that replaces the stopped one, and is a refusal — saying the
+    /// redirection was not delivered — if that turn ends or the run exits first.
     /// Prints the control response frame on stdout (`--format json` for the
     /// JSON frame) and exits 0 when the interrupt was served, 1 when it was
     /// refused (with `reason`: `unsupported`, `not_running`, or

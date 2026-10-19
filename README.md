@@ -1606,7 +1606,9 @@ the message becomes the next turn, on the same live dispatch.
 oneharness interrupt --session triage --input "Stop there — do X instead."
 ```
 
-The answer says the run took the message (see the frames below). *Atomic* here
+The answer says the message was delivered (see the frames below), and is given
+only once it was: `redirected: true` means the message has been written as the
+prompt of the turn that replaces the stopped one. *Atomic* here
 means **committed with the abort, delivered at the turn boundary**: every one of
 these protocols drops a message sent into a turn already in flight (Claude Code
 silently discards a mid-turn `user` frame; codex and ACP refuse a second turn on
@@ -1615,9 +1617,18 @@ so a supervisor doing this by hand has to stop, wait, and then send — and each
 those waits is a window where the turn is dead and the message is nobody's.
 Instead the run takes ownership in the same request that aborts the turn: parked
 before the abort goes out, handed back if the abort fails, and written by the run
-itself the moment the turn ends. So the two answers a supervisor can read are
-"stopped, and your message is mine to deliver" and "nothing happened, and your
-message is still yours" — never a third where both were lost. The redirected turn
+itself the moment the turn ends. `interrupt` answers once the harness has taken
+it — on codex, once the server acknowledged the new turn; on the HTTP servers,
+once the session admitted it; on Claude Code and ACP, once the prompt frame is
+written to the harness — so it answers later than a plain stop, and waits as long
+as that takes rather than giving up on a message that may still land. If the stopped turn
+ends before the message can be written, or the run exits first, the answer is a
+refusal — `no_active_turn` or `not_running`, exit 1 — whose error says the
+redirection was not delivered, and the run never writes it into any later turn;
+the run's report records the same refusal. A message still unwritten after 60s is
+taken back the same way. So the two answers a supervisor can read are "stopped,
+and your message is now the next turn" and "your message was not delivered, and
+is still yours" — never a third where it is lost or delivered twice. The redirected turn
 runs on the same session in the same posture, working directory and model, and
 the run's report covers both turns.
 

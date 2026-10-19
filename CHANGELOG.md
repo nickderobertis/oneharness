@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.25.6](https://github.com/nickderobertis/oneharness/compare/v0.25.5...v0.25.6) - 2026-10-19
+
+### Fixed
+
+- *(codex)* fall through when the account cannot use the model ([#1493](https://github.com/nickderobertis/oneharness/pull/1493))
+
 ## [0.25.5](https://github.com/nickderobertis/oneharness/compare/v0.25.4...v0.25.5) - 2026-10-19
 
 ### Fixed

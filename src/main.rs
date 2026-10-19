@@ -8,7 +8,7 @@ fn main() {
     // sweeper runs as one and exits; any other run records that this binary
     // can host one.
     oneharness_core::io::app_server::serve_sweeper_if_requested();
-    if std::env::var_os("ONEHARNESS_INTERNAL_MOCK_HARNESS").is_some() {
+    if std::env::var_os(oneharness_core::domain::app_server::MOCK_HARNESS_VAR).is_some() {
         oneharness::mock_harness::run();
     }
     let cli = Cli::parse_or_exit();

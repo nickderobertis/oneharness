@@ -810,7 +810,7 @@ pub fn run_supervised(
     let mock_wiring = setup_mock(args, &specs, &project_start, &overrides)?;
     let mut env_args = args.env.clone();
     if !args.mock_harness.is_empty() {
-        env_args.push("ONEHARNESS_INTERNAL_MOCK_HARNESS=1".to_string());
+        env_args.push(format!("{}=1", crate::domain::app_server::MOCK_HARNESS_VAR));
     }
     let cli_env = parse_env(&env_args)?;
     // The effective top-level model for the report/history: the first fan-out

@@ -5830,3 +5830,132 @@ fn a_write_dropped_under_a_live_turn_still_ends_the_run_app_server_lost() {
         "the server read an answer it should have dropped: {approvals}"
     );
 }
+
+/// `oneharness run --control --mock-harness codex` on the default shared
+/// server: the binary swapped in for codex as the mock harness, with nothing
+/// but the dispatch's own environment saying so.
+fn mock_harness_command(pool: &Pool, session: &str, mock: bool, envs: &[(&str, &str)]) -> Command {
+    let mut cmd = Command::new(oneharness_bin());
+    cmd.env("ONEHARNESS_NO_CONFIG", "1");
+    pool.base(&mut cmd);
+    // The consumer's knob alone: MOCK_STDOUT scripts the turn's answer.
+    cmd.env_remove("MOCK_CODEX_ECHO_PROMPT");
+    let swap = if mock {
+        vec!["--mock-harness".to_string(), "codex".to_string()]
+    } else {
+        // The same executable as a real Codex install would be launched: no
+        // mock marker in the dispatch's environment.
+        vec![
+            "--bin".to_string(),
+            format!("codex={}", oneharness_bin().display()),
+        ]
+    };
+    cmd.args([
+        "run",
+        "--control",
+        "--session",
+        session,
+        "--session-dir",
+        &pool.file("sess"),
+        "--format",
+        "json",
+        "--harness",
+        "codex",
+        "--prompt",
+        "hi",
+    ])
+    .args(swap);
+    for (key, value) in envs {
+        cmd.env(key, value);
+    }
+    cmd
+}
+
+/// A controlled Codex turn under `--mock-harness`, scripted by MOCK_STDOUT
+/// alone, runs on the pooled shared server — the default — started as the mock
+/// harness, and answers the mocked output.
+// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run --control` through the real pool; the codex double is oneharness's own shipped `--mock-harness`, the very feature under test.
+#[test]
+fn a_controlled_mock_harness_turn_answers_the_mocked_output_on_the_shared_server() {
+    let pool = Pool::new("pool-mock-harness");
+    let run = pool.spawn(mock_harness_command(
+        &pool,
+        "mocked",
+        true,
+        &[("MOCK_STDOUT", r#"{"result":"mocked answer"}"#)],
+    ));
+    let (out, report) = Pool::finish_within(run, Duration::from_secs(30));
+    succeeded(&out, &report);
+    assert_eq!(result(&report)["text"], "mocked answer");
+    let server = reported_server(&report);
+    assert_eq!(pool.server_pids(), [server]);
+    let record = &pool.mock_servers()[0];
+    assert_eq!(
+        record["env"]["ONEHARNESS_INTERNAL_MOCK_HARNESS"], "1",
+        "the shared server started as the mock harness: {record}"
+    );
+}
+
+/// A mock harness's shared server is never handed to a turn without the mock:
+/// a second dispatch of the same executable, minus the mock marker, keys its
+/// own pool entry while the mock server is live, and there starts the plain
+/// binary, which is no app-server.
+#[test]
+fn a_mock_harness_server_never_serves_a_turn_without_the_mock() {
+    let pool = Pool::new("pool-mock-apart");
+    let release = pool.file("release");
+    let stdout = r#"{"result":"mocked answer"}"#;
+    let mut mocked = pool.spawn(mock_harness_command(
+        &pool,
+        "mocked",
+        true,
+        &[("MOCK_STDOUT", stdout), ("MOCK_CODEX_HOLD_UNTIL", &release)],
+    ));
+    // Live, or failed fast with the run's own account of why it never was.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !(pool.server_pids().len() == 1 && pool.live_turns(pool.server_pids()[0]) == 1) {
+        if mocked.try_wait().unwrap().is_some() {
+            let (_, report) = Pool::finish(mocked);
+            panic!("the mocked run ended before its turn went live: {report}");
+        }
+        assert!(Instant::now() < deadline, "the mocked turn never went live");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let server = pool.the_server();
+
+    let (out, unmocked) = pool.run(mock_harness_command(
+        &pool,
+        "unmocked",
+        false,
+        &[("MOCK_STDOUT", stdout)],
+    ));
+    let live_on_mock = pool.live_turns(server);
+    // Pool entries are directories; an instrumented server's profile lands
+    // beside them as a file.
+    let entries: Vec<String> =
+        std::fs::read_dir(pool.path("state").join("oneharness").join("servers"))
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.path().is_dir())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+    // Released before anything is asserted, so a failure leaves no held run.
+    std::fs::write(&release, b"").unwrap();
+    let (out_mocked, report) = Pool::finish_within(mocked, Duration::from_secs(30));
+
+    assert!(!out.status.success(), "{unmocked}");
+    assert_eq!(result(&unmocked)["status"], "spawn-error", "{unmocked}");
+    let detail = unmocked["fallback"]["fell_through"][0]["detail"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        detail.contains("unrecognized subcommand 'app-server'"),
+        "the unmocked dispatch was handed a server other than its own: {detail}"
+    );
+    assert_eq!(live_on_mock, 1, "the mock server took a second turn");
+    assert_eq!(entries.len(), 2, "one pool entry per server: {entries:?}");
+    succeeded(&out_mocked, &report);
+    assert_eq!(reported_server(&report), server);
+    assert_eq!(result(&report)["text"], "mocked answer");
+}
+// llmlint: ignore-end[e2e_not_mocked]

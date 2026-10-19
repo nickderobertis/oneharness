@@ -97,8 +97,8 @@ disruptor=""
 rounds="$(cat "$scratch/rounds" 2>/dev/null || echo -1)"
 [ "$rounds" -ge 2 ] || fail "the concurrent cargo build finished only $((rounds + 1)) round(s) during the measurement, too few to leave a superseded build in target/debug" "check 'cargo build --offline' works here, then re-run"
 
-# The budget's one host result is a figure: a measured value with a verdict
-# against its threshold, never an error.
+# The budget's one host result is a figure: a measured value, never an error.
+# llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] Reading onebudgetspec's own --json report (the pinned python/uv.lock release) is this test's subject, not a restated copy: `actual` and `error` are the two fields that say whether the budget produced a figure, and a release that renamed them fails this test loudly rather than drifting silently.
 node -e '
   const fs = require("node:fs");
   const [file, status, err] = process.argv.slice(1);
@@ -119,8 +119,8 @@ node -e '
   } catch (error) {
     problem = "printed no JSON report: " + error.message;
   }
-  if (problem === "" && (!["within", "exceeded"].includes(result.verdict) || !Number.isFinite(result.actual) || typeof result.id !== "string" || typeof result.unit !== "string")) {
-    problem = "reported no figure (verdict " + JSON.stringify(result.verdict) + "): " + result.error;
+  if (problem === "" && (result.error !== null || !Number.isFinite(result.actual) || typeof result.id !== "string" || typeof result.unit !== "string")) {
+    problem = "reported no figure: " + result.error;
   }
   if (problem !== "") {
     process.stderr.write(read(err));
@@ -130,6 +130,7 @@ node -e '
   console.log("measure-isolation-test: " + result.id + " " + result.actual.toFixed(3) + " " + result.unit + " (" + result.verdict + ") beside a concurrent cargo build into target/debug");
 ' "$scratch/report.json" "$status" "$scratch/report.err" ||
   fail "the measurement was disturbed by another build in the checkout (above)" "make pool-maintenance/measure.sh build and prune only its own target directory, then re-run"
+# llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 
 # Every entry the other build created, superseded and backdated or not, is
 # still there: the timed pass removed nothing of the checkout's target/.

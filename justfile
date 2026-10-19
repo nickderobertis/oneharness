@@ -66,6 +66,12 @@ pool-maintenance:
     fi
     cargo-prune-superseded --keep-within 2d target
 
+# Really measures (builds the test selections), so never in a tier; `just
+# budgets` runs the measurement beside Nx tasks that build into target/.
+# Prove the pool maintenance budget is unmoved by another build in target/
+pool-maintenance-isolation:
+    bash pool-maintenance/measure-isolation-test.sh
+
 # The onebudgetspec budgets of the Nx projects (each one's `budgets` and
 # uncached host-reading `budgets-host` targets) at the tier, then the root
 # budgets.yaml where one exists. Not part of `check`: the one project budget,

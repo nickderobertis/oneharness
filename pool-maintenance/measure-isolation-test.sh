@@ -24,13 +24,17 @@ cd "$root" || fail "could not enter the repository root $root" "check that it ex
 scratch="$(mktemp -d)" || fail "could not create a scratch directory under ${TMPDIR:-/tmp}" "check that it is writable and has room, then re-run"
 disruptor=""
 # This test's entries in the checkout's target/debug, one path per line.
+# Fails when any listing does, so a partial list is never taken for the whole.
 own_entries() {
-  local kind
-  for kind in deps .fingerprint incremental; do
-    [ ! -d "target/debug/$kind" ] || find "target/debug/$kind" -mindepth 1 -maxdepth 1 -name '*pool_maintenance_disruptor-*'
-  done | sort
+  (
+    for kind in deps .fingerprint incremental; do
+      [ ! -d "target/debug/$kind" ] || find "target/debug/$kind" -mindepth 1 -maxdepth 1 -name '*pool_maintenance_disruptor-*' || exit 1
+    done
+  ) | sort
 }
+# A cleanup that leaves anything behind fails a run that had otherwise passed.
 cleanup() {
+  local status=$? clean=1
   if [ -n "$disruptor" ]; then
     kill "$disruptor" 2>/dev/null || true
     wait "$disruptor" 2>/dev/null || true
@@ -42,8 +46,13 @@ cleanup() {
   fi
   if ! left="$(own_entries)" || [ -n "$left" ]; then
     echo "measure-isolation-test: could not remove this test's pool_maintenance_disruptor entries from target/debug (above); delete them by hand" >&2
+    clean=0
   fi
-  rm -rf "$scratch" || echo "measure-isolation-test: could not remove the scratch directory $scratch (above); delete it by hand" >&2
+  rm -rf "$scratch" || {
+    echo "measure-isolation-test: could not remove the scratch directory $scratch (above); delete it by hand" >&2
+    clean=0
+  }
+  if [ "$clean" -eq 0 ] && [ "$status" -eq 0 ]; then exit 1; fi
 }
 trap cleanup EXIT
 
@@ -96,7 +105,7 @@ uv run --project python --frozen --no-sync onebudgetspec check pool-maintenance/
 
 touch "$scratch/stop" || fail "could not write the stop marker in $scratch (above)" "check that ${TMPDIR:-/tmp} is writable and has room, then re-run"
 wait "$disruptor" || {
-  cat "$scratch/disruptor.log" >&2
+  cat "$scratch/disruptor.log" >&2 || echo "measure-isolation-test: could not read the concurrent build's log $scratch/disruptor.log (above)" >&2
   disruptor=""
   fail "the concurrent build into target/debug failed (above), so the measurement was not exercised beside one" "fix the error it names, then re-run"
 }

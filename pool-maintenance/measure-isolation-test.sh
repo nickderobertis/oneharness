@@ -2,14 +2,9 @@
 # Prove the pool maintenance budget is measured in isolation from the checkout's
 # own target/ (`just pool-maintenance-isolation`; pool-maintenance/AGENTS.md).
 #
-# While `onebudgetspec check pool-maintenance/budgets.yaml --label host` runs,
-# as `just budgets` runs it beside the gate's other Nx tasks, a second cargo
-# build keeps writing into the checkout's ordinary target/debug: a scratch
-# crate rebuilt under a new feature each round, every earlier round's entries
-# backdated past the 2-day window, so the checkout always holds superseded
-# builds a pass over it would remove. The budget must report a figure, and every
-# entry that build created must still be in target/debug afterwards: the timed
-# pass never reached the checkout's builds.
+# Runs the budget while another cargo build keeps leaving superseded, backdated
+# builds in the checkout's target/debug; the budget must report a figure and
+# leave every one of them there.
 #
 # Really runs the measurement (it builds the repository's test selections into
 # target/pool-maintenance); run it only in your own worktree. Silent on success
@@ -53,7 +48,7 @@ crate="$scratch/disruptor"
   mkdir -p "$crate/src" target/debug &&
     {
       printf '[package]\nname = "pool_maintenance_disruptor"\nversion = "0.0.0"\nedition = "2021"\npublish = false\n\n[workspace]\n\n[features]\n'
-      for i in $(seq 0 999); do printf 'f%d = []\n' "$i"; done
+      for ((i = 0; i < 1000; i++)); do printf 'f%d = []\n' "$i"; done
     } >"$crate/Cargo.toml" &&
     echo 'pub fn round() {}' >"$crate/src/lib.rs"
 } || fail "could not write the scratch crate under $scratch (above)" "check that ${TMPDIR:-/tmp} and target/ are writable, then re-run"
@@ -63,7 +58,10 @@ crate="$scratch/disruptor"
     # Every earlier round's builds are superseded once this round's lands.
     if ! {
       own_entries >"$scratch/earlier" &&
-        while IFS= read -r entry; do find "$entry" -exec touch -h -t 200101010000 {} +; done <"$scratch/earlier"
+        while IFS= read -r entry; do find "$entry" -exec touch -h -t 200101010000 {} + || {
+          echo "backdating $entry for round $i failed (above)" >&2
+          exit 1
+        }; done <"$scratch/earlier"
     } 2>>"$scratch/disruptor.log"; then
       echo "backdating round $i's predecessors in target/debug failed (above)" >>"$scratch/disruptor.log"
       exit 1
@@ -89,7 +87,7 @@ status=0
 uv run --project python --frozen --no-sync onebudgetspec check pool-maintenance/budgets.yaml --label host --json \
   >"$scratch/report.json" 2>"$scratch/report.err" || status=$?
 
-touch "$scratch/stop" || fail "could not write the stop marker in $scratch (above)"
+touch "$scratch/stop" || fail "could not write the stop marker in $scratch (above)" "check that ${TMPDIR:-/tmp} is writable and has room, then re-run"
 wait "$disruptor" || {
   cat "$scratch/disruptor.log" >&2
   disruptor=""
@@ -116,11 +114,12 @@ node -e '
   try {
     const results = JSON.parse(read(file)).results;
     if (!Array.isArray(results) || results.length !== 1) problem = "reported " + JSON.stringify(results) + " rather than its one host result";
+    else if (results[0] === null || typeof results[0] !== "object") problem = "reported a result that is not an object: " + JSON.stringify(results[0]);
     else result = results[0];
   } catch (error) {
     problem = "printed no JSON report: " + error.message;
   }
-  if (problem === "" && (!["within", "exceeded"].includes(result.verdict) || !Number.isFinite(result.actual))) {
+  if (problem === "" && (!["within", "exceeded"].includes(result.verdict) || !Number.isFinite(result.actual) || typeof result.id !== "string" || typeof result.unit !== "string")) {
     problem = "reported no figure (verdict " + JSON.stringify(result.verdict) + "): " + result.error;
   }
   if (problem !== "") {
@@ -135,9 +134,9 @@ node -e '
 # Every entry the other build created, superseded and backdated or not, is
 # still there: the timed pass removed nothing of the checkout's target/.
 if ! { sort -u "$scratch/created" >"$scratch/expected" && own_entries >"$scratch/left"; }; then
-  fail "could not list this test's entries in target/debug (above)"
+  fail "could not list this test's entries in target/debug (above)" "check that target/debug and ${TMPDIR:-/tmp} are readable and writable, then re-run"
 fi
-missing="$(comm -23 "$scratch/expected" "$scratch/left")" || fail "could not compare this test's entries (above)"
+missing="$(comm -23 "$scratch/expected" "$scratch/left")" || fail "could not compare this test's entries (above)" "check that comm is on PATH, then re-run"
 [ -z "$missing" ] || {
   printf '%s\n' "$missing" >&2
   fail "the measurement removed the entries above, which the concurrent build created in the checkout's target/debug" \

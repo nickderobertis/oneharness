@@ -34,9 +34,7 @@ exists only to measure it.
   tasks that build there, and their entries appearing in, or being pruned by, a
   timed pass would error the budget. It persists between runs (warm rebuilds;
   the backlog pass bounds it).
-  `just pool-maintenance-isolation` (`measure-isolation-test.sh`) proves it:
-  the budget must report a figure while a scratch crate keeps writing
-  superseded, backdated builds into `target/debug`, and leave them all there.
+  `just pool-maintenance-isolation` (`measure-isolation-test.sh`) proves it.
 - **It really prunes** its own target directory, as the maintenance does a
   slot's: run it only in your own worktree.
 - **One pin.** The pruner's version is the justfile's

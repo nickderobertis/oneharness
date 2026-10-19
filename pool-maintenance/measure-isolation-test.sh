@@ -36,9 +36,13 @@ cleanup() {
     wait "$disruptor" 2>/dev/null || true
   fi
   # Judged by what is left, so no single failed removal can hide behind a later one.
-  own_entries | while IFS= read -r entry; do rm -rf "$entry" || true; done
-  [ -z "$(own_entries)" ] ||
+  local entries left
+  if entries="$(own_entries)"; then
+    while IFS= read -r entry; do [ -z "$entry" ] || rm -rf "$entry" || true; done <<<"$entries"
+  fi
+  if ! left="$(own_entries)" || [ -n "$left" ]; then
     echo "measure-isolation-test: could not remove this test's pool_maintenance_disruptor entries from target/debug (above); delete them by hand" >&2
+  fi
   rm -rf "$scratch" || echo "measure-isolation-test: could not remove the scratch directory $scratch (above); delete it by hand" >&2
 }
 trap cleanup EXIT

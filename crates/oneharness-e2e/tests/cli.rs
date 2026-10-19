@@ -2864,6 +2864,38 @@ fn fallback_falls_through_a_model_codex_refuses_for_its_account() {
                 "{tag}"
             );
         }
+        // The verdict is read from the record that classified the run: an
+        // account refusal followed by a later, generic model rejection is that
+        // generic rejection — a configuration mistake the next harness shares —
+        // so it stops the chain at codex rather than riding the earlier refusal.
+        let tag = format!("codex-account-model-then-generic/{driver}");
+        let generic_after = format!(
+            "{neutral}{}\n",
+            r#"{"type":"result","is_error":true,"result":"model not found: gpt-5.5"}"#
+        );
+        let (output, value) = chain(
+            "codex-account-model-then-generic",
+            &generic_after,
+            "1",
+            driver,
+        );
+        assert_eq!(output.status.code(), Some(1), "{tag}: {value}");
+        assert_eq!(
+            value["results"][0]["failure_kind"], "model_not_found",
+            "{tag}"
+        );
+        assert_eq!(
+            value["results"].as_array().unwrap().len(),
+            1,
+            "{tag}: the next harness must never be spawned: {value}"
+        );
+        assert_eq!(value["fallback"]["ran"], "codex", "{tag}");
+        assert_eq!(
+            value["fallback"]["fell_through"].as_array().unwrap().len(),
+            0,
+            "{tag}"
+        );
+
         // The refusal is bounded like every fall-through: a codex that did
         // billed work before refusing ran the task, so it stops the chain with
         // the refusal still named — the next harness is never spawned.

@@ -783,15 +783,23 @@ pub fn detect_harness_provider_failure(
     dialect: FailureDialect,
     stdout: &str,
 ) -> Option<FailureReading> {
+    terminal_provider_refusal(dialect, stdout).map(|(refusal, _)| FailureReading {
+        kind: refusal.kind,
+        source: "stdout".to_string(),
+        detail: refusal.detail,
+    })
+}
+
+/// The latest record in `stdout` that classifies as a provider failure, with
+/// the refusal read from it — the one scan both
+/// [`detect_harness_provider_failure`] and [`model_refused_for_account`] read,
+/// so a run's kind and its account-refusal verdict come from the same record.
+fn terminal_provider_refusal(dialect: FailureDialect, stdout: &str) -> Option<(Refusal, Value)> {
     json_candidates(stdout).into_iter().rev().find_map(|value| {
         let refusal = error_record_failure(dialect, &value)
             .map(Refusal::plain)
             .or_else(|| codex_turn_failure(dialect, &value))?;
-        Some(FailureReading {
-            kind: refusal.kind,
-            source: "stdout".to_string(),
-            detail: refusal.detail,
-        })
+        Some((refusal, value))
     })
 }
 
@@ -805,18 +813,17 @@ pub fn detect_harness_provider_failure(
 /// it: an unknown model is a configuration mistake every candidate shares, so
 /// on a single-model chain it stops; a model *this account* may not use is a
 /// property of the identity, so the next candidate — another harness or
-/// another account — can still run the task. Read with the same terminal-record
-/// scan that produced the classification, so the two cannot disagree.
+/// another account — can still run the task. Only the record that produced the
+/// classification is read, so an earlier account refusal cannot carry a later
+/// generic model rejection past a single-model chain.
 #[must_use]
 pub fn model_refused_for_account(dialect: FailureDialect, stdout: &str) -> bool {
     dialect == FailureDialect::Codex
-        && json_candidates(stdout)
-            .iter()
-            .rev()
-            .filter_map(|value| {
-                codex_exec_turn_error(value).or_else(|| codex_app_server_turn_error(value))
-            })
-            .any(|error| codex_model_refused_for_account(error).is_some())
+        && terminal_provider_refusal(dialect, stdout).is_some_and(|(_, value)| {
+            codex_exec_turn_error(&value)
+                .or_else(|| codex_app_server_turn_error(&value))
+                .is_some_and(|error| codex_model_refused_for_account(error).is_some())
+        })
 }
 
 fn error_record_failure(dialect: FailureDialect, value: &Value) -> Option<FailureKind> {
@@ -2113,6 +2120,22 @@ mod tests {
         assert!(!model_refused_for_account(
             FailureDialect::ClaudeCode,
             captured
+        ));
+        // Only the record that classified the run is read: a later generic
+        // rejection is the reading, and the earlier refusal does not survive it.
+        let generic_after = format!(
+            "{captured}{}\n",
+            r#"{"type":"result","is_error":true,"result":"model not found: gpt-5.5"}"#
+        );
+        assert_eq!(
+            detect_harness_provider_failure(FailureDialect::Codex, &generic_after)
+                .unwrap()
+                .kind,
+            FailureKind::ModelNotFound
+        );
+        assert!(!model_refused_for_account(
+            FailureDialect::Codex,
+            &generic_after
         ));
     }
 

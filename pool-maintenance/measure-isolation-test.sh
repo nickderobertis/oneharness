@@ -110,7 +110,12 @@ wait "$disruptor" || {
   fail "the concurrent build into target/debug failed (above), so the measurement was not exercised beside one" "fix the error it names, then re-run"
 }
 disruptor=""
-rounds="$(cat "$scratch/rounds" 2>/dev/null || echo -1)"
+# No rounds file means no round finished; one that cannot be read is its own failure.
+rounds=-1
+if [ -e "$scratch/rounds" ]; then
+  rounds="$(cat "$scratch/rounds")" || fail "could not read the concurrent build's round count $scratch/rounds (above)" "check that ${TMPDIR:-/tmp} is readable, then re-run"
+fi
+[[ "$rounds" =~ ^-?[0-9]+$ ]] || fail "the concurrent build's round count $scratch/rounds holds '$rounds', not a number" "re-run; if it recurs, check that ${TMPDIR:-/tmp} is not shared with another writer"
 [ "$rounds" -ge 2 ] || fail "the concurrent cargo build finished only $((rounds + 1)) round(s) during the measurement, too few to leave a superseded build in target/debug" "check 'cargo build --offline' works here, then re-run"
 
 # The budget's one host result is a figure: a measured value, never an error.

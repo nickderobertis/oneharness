@@ -55,10 +55,11 @@ crate="$scratch/disruptor"
 (
   i=0
   while [ ! -e "$scratch/stop" ] && [ "$i" -lt 1000 ]; do
-    # Every earlier round's builds are superseded once this round's lands.
+    # Every earlier round's builds are superseded once this round's lands. One
+    # removed meanwhile is for the survival check at the end, not an error here.
     if ! {
       own_entries >"$scratch/earlier" &&
-        while IFS= read -r entry; do find "$entry" -exec touch -h -t 200101010000 {} + || {
+        while IFS= read -r entry; do find "$entry" -exec touch -h -t 200101010000 {} + || [ ! -e "$entry" ] || {
           echo "backdating $entry for round $i failed (above)" >&2
           exit 1
         }; done <"$scratch/earlier"

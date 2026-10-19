@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.25.5](https://github.com/nickderobertis/oneharness/compare/v0.25.4...v0.25.5) - 2026-10-19
+
+### Fixed
+
+- *(budgets)* measure pool maintenance apart from concurrent builds ([#1502](https://github.com/nickderobertis/oneharness/pull/1502))
+
 ## [0.25.4](https://github.com/nickderobertis/oneharness/compare/v0.25.3...v0.25.4) - 2026-10-19
 
 ### Fixed

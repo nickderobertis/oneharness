@@ -5873,7 +5873,8 @@ fn mock_harness_command(pool: &Pool, session: &str, mock: bool, envs: &[(&str, &
 
 /// A controlled Codex turn under `--mock-harness`, scripted by MOCK_STDOUT
 /// alone, runs on the pooled shared server — the default — started as the mock
-/// harness, and answers the mocked output.
+/// harness, and answers the mocked output: the text oneharness extracts from
+/// it, else it verbatim.
 // llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run --control` through the real pool; the codex double is oneharness's own shipped `--mock-harness`, the very feature under test.
 #[test]
 fn a_controlled_mock_harness_turn_answers_the_mocked_output_on_the_shared_server() {
@@ -5894,6 +5895,17 @@ fn a_controlled_mock_harness_turn_answers_the_mocked_output_on_the_shared_server
         record["env"]["ONEHARNESS_INTERNAL_MOCK_HARNESS"], "1",
         "the shared server started as the mock harness: {record}"
     );
+
+    // Output no extractor reads is answered verbatim.
+    let run = pool.spawn(mock_harness_command(
+        &pool,
+        "verbatim",
+        true,
+        &[("MOCK_STDOUT", "plain mocked words")],
+    ));
+    let (out, report) = Pool::finish_within(run, Duration::from_secs(30));
+    succeeded(&out, &report);
+    assert_eq!(result(&report)["text"], "plain mocked words");
 }
 
 /// A mock harness's shared server is never handed to a turn without the mock:

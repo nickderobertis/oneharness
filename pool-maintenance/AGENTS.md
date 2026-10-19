@@ -27,8 +27,18 @@ exists only to measure it.
   entries kept (`ONEBUDGETSPEC_RESULT` must be the fresh empty file
   onebudgetspec names, and both pruner reports must parse as onebudgetspec's
   `{value, detail}`, or it refuses).
-- **It really prunes** the checkout it runs in, as the maintenance does: run it
-  only in your own worktree.
+- **Its own target directory.** Every build and both passes use
+  `target/pool-maintenance/target` (`CARGO_TARGET_DIR`; the declared recipe
+  runs with `--working-directory target/pool-maintenance`, so its `target` is
+  that one), never the checkout's `target/`: `just budgets` runs it beside Nx
+  tasks that build there, and on release pull request #1500 one's entries
+  appeared and were pruned mid-measurement, erroring the budget. It persists
+  between runs (warm rebuilds; the backlog pass bounds it).
+  `just pool-maintenance-isolation` (`measure-isolation-test.sh`) proves it:
+  the budget must report a figure while a scratch crate keeps writing
+  superseded, backdated builds into `target/debug`, and leave them all there.
+- **It really prunes** its own target directory, as the maintenance does a
+  slot's: run it only in your own worktree.
 - **One pin.** The pruner's version is the justfile's
   `PRUNE_SUPERSEDED_VERSION`; `just bootstrap` installs it (on the `stable`
   toolchain — it needs a newer rustc than `rust-toolchain.toml` pins) and

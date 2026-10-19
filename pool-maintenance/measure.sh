@@ -19,6 +19,10 @@
 # a timed pass that removed nothing, or one that removed any entry the
 # alternative build did not create.
 #
+# Every build and pass uses the measurement's own target directory, never the
+# checkout's target/, which `just budgets`'s concurrent Nx tasks write
+# (pool-maintenance/AGENTS.md).
+#
 # Silent on success. POOL_MAINTENANCE_EVIDENCE, when set, names a file this run
 # writes its evidence to: the selections it built, each pass's pruner lines,
 # and this repository's unit/hash entries before and after the timed pass.
@@ -54,6 +58,16 @@ note() { printf 'measure: %s\n' "$*" >>"$evidence"; }
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
+# The measurement's own checkout-relative layout: `just pool-maintenance` runs in
+# $measured, whose `target` every build below writes to (and whose .just-tmp is
+# the justfile's relative `tempdir` there).
+measured="$root/target/pool-maintenance"
+target="$measured/target"
+mkdir -p "$target" "$measured/.just-tmp" || {
+  echo "measure: could not create the measurement's target directory $target (above); check that target/ is writable and has room, then re-run" >&2
+  exit 1
+}
+export CARGO_TARGET_DIR="$target"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -63,7 +77,7 @@ trap 'rm -rf "$work"' EXIT
 # scripts/with-symlinked-tmp.sh, which changes only the run's TMPDIR) so the
 # measurement cannot drift from the gate: the instrumented ones build into
 # target/llvm-cov-target, the e2e project's `--uninstrumented` one into
-# target/debug, each with its own run's flags (`--build-only`). The alternative adds `sdk-schema` through
+# target/debug (both under $target here), each with its own run's flags (`--build-only`). The alternative adds `sdk-schema` through
 # oneharness-core (or, where a selection does not depend on it directly, the
 # binary crate that enables it), and every crate here depends on that, so every
 # one of them gets a new metadata hash. One selection per line in each.
@@ -108,10 +122,10 @@ alternative="$(cat "$work/selections-alternative")"
 note "$(wc -l <"$work/selections-ordinary" | tr -d ' ') gate Rust test selections:"
 paste -d '|' "$work/selections-ordinary" "$work/selections-alternative" | sed 's/^/measure:   ordinary | alternative: /' >>"$evidence"
 
-# Every top-level build entry of every profile directory under target/, the
+# Every top-level build entry of every profile directory under $target, the
 # entries the pruner selects among, one path per line.
 entries() {
-  find target -type d -name .fingerprint -prune -print | sort | while IFS= read -r fingerprint; do
+  find "$target" -type d -name .fingerprint -prune -print | sort | while IFS= read -r fingerprint; do
     profile="$(dirname "$fingerprint")"
     for kind in deps .fingerprint build incremental; do
       if [ -d "$profile/$kind" ]; then find "$profile/$kind" -mindepth 1 -maxdepth 1; fi
@@ -133,7 +147,7 @@ build() {
 }
 
 prune() {
-  ONEBUDGETSPEC_RESULT="$1" just pool-maintenance >"$1.log" 2>&1 || {
+  ONEBUDGETSPEC_RESULT="$1" just --justfile "$root/justfile" --working-directory "$measured" pool-maintenance >"$1.log" 2>&1 || {
     cat "$1.log" >&2
     echo "measure: the declared pool maintenance failed (above); run 'just bootstrap' to install the pinned pruner, check 'just pool-maintenance' passes alone, then re-run" >&2
     exit 1
@@ -170,7 +184,7 @@ comm -23 "$work/before-pass" "$work/after-pass" >"$work/removed"
 comm -23 "$work/removed" "$work/alternative" >"$work/foreign"
 if [ -s "$work/foreign" ]; then
   cat "$work/foreign" >&2
-  echo "measure: the timed pass removed the entries above, which the alternative build did not create; the steady state was not established; stop any other cargo build writing to target/ in this checkout, then re-run" >&2
+  echo "measure: the timed pass removed the entries above, which the alternative build did not create; the steady state was not established; stop any other cargo build writing to $target (the measurement's own target directory), then re-run" >&2
   exit 1
 fi
 removed="$(wc -l <"$work/removed" | tr -d ' ')"
@@ -192,7 +206,7 @@ own "$work/alternative" >"$work/own-alternative"
 own "$work/after-pass" >"$work/own-survivors"
 if ! cmp -s "$work/own-before" "$work/own-after"; then
   diff "$work/own-before" "$work/own-after" >&2 || true
-  echo "measure: this repository's ordinary build hashes changed across the timed pass (above); stop any other cargo build writing to target/ in this checkout, then re-run" >&2
+  echo "measure: this repository's ordinary build hashes changed across the timed pass (above); stop any other cargo build writing to $target (the measurement's own target directory), then re-run" >&2
   exit 1
 fi
 count() { awk -v p="$1" '$1 == p' "$2" | wc -l | tr -d ' '; }

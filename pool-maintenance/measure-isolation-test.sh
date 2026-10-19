@@ -35,7 +35,9 @@ cleanup() {
     kill "$disruptor" 2>/dev/null || true
     wait "$disruptor" 2>/dev/null || true
   fi
-  own_entries | while IFS= read -r entry; do rm -rf "$entry"; done ||
+  # Judged by what is left, so no single failed removal can hide behind a later one.
+  own_entries | while IFS= read -r entry; do rm -rf "$entry" || true; done
+  [ -z "$(own_entries)" ] ||
     echo "measure-isolation-test: could not remove this test's pool_maintenance_disruptor entries from target/debug (above); delete them by hand" >&2
   rm -rf "$scratch" || echo "measure-isolation-test: could not remove the scratch directory $scratch (above); delete it by hand" >&2
 }

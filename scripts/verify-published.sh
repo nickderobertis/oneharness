@@ -6,16 +6,33 @@
 # A registry's metadata API answers before the index a consumer installs from
 # does, and npm installs the per-platform `@oneharness/cli-<platform>-<arch>`
 # as an OPTIONAL dependency — a `npm install -g` that resolved nothing still
-# exits 0, and only the smoke finds the binary missing.
+# exits 0, and only a look at what it installed finds the platform package
+# missing. npm makes each package's new version visible on its own clock:
+# v0.25.8's wrapper appeared 152 s after publish-npm returned and its
+# @oneharness/cli-linux-x64 411 s after, so an attempt can install the wrapper
+# without the binary it execs and still be a release in flight.
+#
+# An attempt that installed the exact platform package and whose binary then
+# fails is a broken release, not a lag — a published tarball never changes — so
+# it ends the wait at once instead of spending the rest of the bound.
 #
 # Usage: scripts/verify-published.sh <pypi-cli|pypi-sdk|npm-cli|npm-sdk> <version>
-# Reads: VERIFY_ATTEMPTS (default 30), VERIFY_DELAY seconds (default 10).
+# Reads: VERIFY_ATTEMPTS (default 90 for npm, 30 for PyPI), VERIFY_DELAY
+# seconds (default 10).
 set -euo pipefail
 
 target="${1:-}"
 version="${2:-}"
-attempts="${VERIFY_ATTEMPTS:-30}"
+# npm: v0.25.8's last package became visible 458 s after publish-npm returned,
+# past the old 30 x 10 s bound; 90 x 10 s waits 900 s, about twice that worst
+# observed lag. PyPI has never lagged past its first retries, so it keeps 30.
+case "$target" in
+  npm-*) attempts="${VERIFY_ATTEMPTS:-90}" ;;
+  *) attempts="${VERIFY_ATTEMPTS:-30}" ;;
+esac
 delay="${VERIFY_DELAY:-10}"
+# The status an attempt returns when a retry cannot change its answer.
+broken=3
 
 usage() {
   printf 'verify-published: %s\n' "$1" >&2
@@ -142,8 +159,47 @@ PY
 }
 
 attempt_npm_cli() {
+  local global platform
   npm install -g --prefer-online "oneharness-cli@$version" || return 1
-  smoke_cli || return 1
+  global="$(npm root -g)" || return 1
+  # Resolved as the launcher resolves it, from the installed wrapper, and named
+  # on stdout so the smoke's verdict can say which package shipped the binary.
+  platform="$(
+    node - "$global" "$version" "$broken" <<'NODE'
+const { existsSync, readFileSync } = require("node:fs");
+const { createRequire } = require("node:module");
+const path = require("node:path");
+
+const [globalRoot, expected, broken] = process.argv.slice(2);
+const fail = (message, status) => {
+  process.stderr.write(`${message}\n`);
+  process.exit(status);
+};
+const wrapperManifest = path.join(globalRoot, "oneharness-cli", "package.json");
+if (!existsSync(wrapperManifest)) fail(`npm reported success but installed no oneharness-cli under ${globalRoot}`, 1);
+const wrapper = JSON.parse(readFileSync(wrapperManifest, "utf8"));
+if (wrapper?.version !== expected) fail(`npm installed oneharness-cli ${JSON.stringify(wrapper?.version)}, not ${expected}`, 1);
+const platform = `@oneharness/cli-${process.platform}-${process.arch}`;
+const pinned = wrapper.optionalDependencies?.[platform];
+if (pinned !== expected) {
+  fail(`oneharness-cli@${expected} pins ${platform} at ${JSON.stringify(pinned)}, not ${expected}: the published launcher cannot install this host's binary`, Number(broken));
+}
+let installed;
+try {
+  installed = JSON.parse(readFileSync(createRequire(wrapperManifest).resolve(`${platform}/package.json`), "utf8"));
+} catch (error) {
+  if (error.code === "MODULE_NOT_FOUND") {
+    fail(`npm installed oneharness-cli@${expected} without its platform package ${platform}@${expected}: the registry is not serving it yet`, 1);
+  }
+  fail(`npm installed ${platform}, and its package.json cannot be read the way the launcher resolves it: ${error.code ?? error.name}: ${error.message}`, 1);
+}
+if (installed?.version !== expected) fail(`npm installed ${platform} ${JSON.stringify(installed?.version)}, not ${expected}`, 1);
+process.stdout.write(platform);
+NODE
+  )" || return "$?"
+  smoke_cli && return 0
+  printf '%s@%s is installed and the oneharness it ships failed the smoke above: a published package a retry cannot change\n' "$platform" "$version" >&2
+  return "$broken"
 }
 
 attempt_npm_sdk() {
@@ -215,12 +271,14 @@ esac
 last="$work/attempt.log"
 : >"$last"
 for i in $(seq 1 "$attempts"); do
-  if run_attempt >"$last" 2>&1; then
+  run_attempt >"$last" 2>&1 && outcome=0 || outcome=$?
+  if [ "$outcome" -eq 0 ]; then
     # One line on success: the package managers' own chatter is captured, and
     # replayed only when the bound runs out and somebody needs the cause.
     printf 'verify-published: installed and smoke-tested %s on attempt %s of %s.\n' "$what" "$i" "$attempts"
     exit 0
   fi
+  [ "$outcome" -ne "$broken" ] || break
   if [ "$i" -lt "$attempts" ]; then
     sleep "$delay"
   fi
@@ -229,6 +287,11 @@ done
 printf -- '--- what the last attempt said ---\n' >&2
 cat "$last" >&2
 printf -- '--- end of the last attempt ---\n' >&2
+if [ "$outcome" -eq "$broken" ]; then
+  printf '::error::%s is published and broken: attempt %s installed it, and the failure above is in what it installed, which no retry changes.\n' "$what" "$i" >&2
+  printf '  Next: fix the named package and cut a new release; re-running this job cannot pass.\n' >&2
+  exit 1
+fi
 printf '::error::%s was still not installable after %s attempts over ~%s seconds. The last attempt output is above.\n' \
   "$what" "$attempts" "$((attempts * delay))" >&2
 printf '  Next: the publish itself already happened, so this is either a registry still propagating (re-run this job) or a genuinely broken artifact — the last attempt above says which.\n' >&2

@@ -35,6 +35,11 @@ STUB
 cat >"$tmp/bin/npm" <<'STUB'
 #!/usr/bin/env bash
 printf 'npm %s\n' "$*" >>"$CALL_LOG"
+# Where a `-g` install lands, which the CLI target reads its install back from.
+if [ "$*" = "root -g" ]; then
+  echo "$STUB_STATE/global"
+  exit 0
+fi
 # Only `npm install` lags: `npm init` in a fresh directory is local and always
 # works, so a case that makes it fail would be proving the wrong thing.
 [ "${1:-}" = install ] || exit 0
@@ -48,6 +53,22 @@ fi
 # A successful install leaves the package behind, because the Node smoke
 # program this test exists to exercise imports it and reads its manifest.
 case "$*" in
+  *-g*oneharness-cli@*)
+    # The launcher, pinning this host's platform package, and that package
+    # beside it unless the case withholds it. What real npm does with a
+    # withheld one is check-verify-published-npm.sh's to prove.
+    wrapper="$STUB_STATE/global/oneharness-cli"
+    spec="$*"
+    installed="${spec##*@}"
+    platform="@oneharness/cli-$(node -p 'process.platform + "-" + process.arch')"
+    mkdir -p "$wrapper"
+    printf '{"name":"oneharness-cli","version":"%s","optionalDependencies":{"%s":"%s"}}\n' \
+      "$installed" "$platform" "${STUB_PLATFORM_PIN:-$installed}" >"$wrapper/package.json"
+    if [ -z "${STUB_PLATFORM_WITHHELD:-}" ]; then
+      mkdir -p "$wrapper/node_modules/$platform"
+      printf '{"name":"%s","version":"%s"}\n' "$platform" "$installed" >"$wrapper/node_modules/$platform/package.json"
+    fi
+    ;;
   *@oneharness/sdk@*)
     mkdir -p node_modules/@oneharness/sdk
     printf '{"name":"@oneharness/sdk","version":"%s","type":"module","main":"index.js"}\n' \
@@ -73,8 +94,7 @@ PKG
 esac
 STUB
 
-# The installed CLI. It fails while the per-platform package it execs is still
-# unresolvable, which is exactly what an optional-dependency lag looks like.
+# The installed CLI.
 cat >"$tmp/bin/oneharness" <<'STUB'
 #!/usr/bin/env bash
 printf 'oneharness %s\n' "$*" >>"$CALL_LOG"
@@ -83,13 +103,6 @@ if [ -n "${STUB_CLI_BROKEN_SUBCOMMAND:-}" ] && [ "${1:-}" = "$STUB_CLI_BROKEN_SU
   exit 1
 fi
 if [ "${1:-}" = "--version" ]; then
-  count="$STUB_STATE/oneharness.count"
-  n=$(( $(cat "$count" 2>/dev/null || echo 0) + 1 ))
-  printf '%s' "$n" >"$count"
-  if [ "$n" -le "${STUB_CLI_FAILS:-0}" ]; then
-    echo "oneharness: no binary package found for this platform (attempt $n)" >&2
-    exit 1
-  fi
   if [ -n "${STUB_CLI_SILENT_FAILURE:-}" ]; then
     exit 1
   fi
@@ -272,13 +285,38 @@ VERSION_OVERRIDE="$cargo_version" STUB_CLI_VERSION="$cargo_version" run_case npm
 expect_status 0
 expect_calls 1 "npm install -g --prefer-online oneharness-cli@$cargo_version"
 
-# The npm lag this exists for: the meta-package installs every time — an
-# unresolvable optional dependency is not an install failure — and only the
-# smoke notices, for two attempts. The install must be retried WITH it.
-STUB_CLI_FAILS=2 run_case npm-cli "an npm install whose platform package resolves on the third try"
-expect_status 0
-expect_said "$tmp/out" "on attempt 3 of 3"
+# A launcher installed without its platform package is a registry still
+# serving it, retried; the lag recovering inside the bound, through real npm,
+# is check-verify-published-npm.sh's.
+STUB_PLATFORM_WITHHELD=1 run_case npm-cli "an npm install that never brings its platform package"
+unset STUB_PLATFORM_WITHHELD
+expect_status 1
+expect_said "$tmp/err" "without its platform package @oneharness/cli-"
+expect_said "$tmp/err" "was still not installable after 3 attempts"
 expect_calls 3 "npm install -g --prefer-online oneharness-cli@$VERSION_UNDER_TEST"
+expect_calls 0 "oneharness --version"
+
+# A launcher that pins some other platform version was published that way: no
+# retry can change it, so one attempt is the verdict.
+STUB_PLATFORM_PIN=1.1.1 run_case npm-cli "a launcher pinning the wrong platform package version"
+unset STUB_PLATFORM_PIN
+expect_status 1
+expect_said "$tmp/err" "pins @oneharness/cli-"
+expect_said "$tmp/err" 'at "1.1.1", not 9.9.9'
+expect_said "$tmp/err" "is published and broken: attempt 1 installed it"
+expect_calls 1 "npm install -g --prefer-online oneharness-cli@$VERSION_UNDER_TEST"
+
+# The npm bound outlasts the registry's observed per-package lag; PyPI's stays
+# where it was. An empty VERIFY_ATTEMPTS is the default.
+ATTEMPTS_OVERRIDE='' STUB_PLATFORM_WITHHELD=1 run_case npm-cli "the default npm bound"
+unset ATTEMPTS_OVERRIDE STUB_PLATFORM_WITHHELD
+expect_status 1
+expect_said "$tmp/err" "was still not installable after 90 attempts"
+
+ATTEMPTS_OVERRIDE='' STUB_PIP_FAILS=99 run_case pypi-cli "the default PyPI bound"
+unset ATTEMPTS_OVERRIDE STUB_PIP_FAILS
+expect_status 1
+expect_said "$tmp/err" "was still not installable after 30 attempts"
 
 # A pip index that never serves the version: the bound ends the wait and the
 # last attempt's own words are what the reader gets.
@@ -320,6 +358,8 @@ unset STUB_CLI_BROKEN_SUBCOMMAND
 expect_status 1
 expect_said "$tmp/err" "oneharness: list failed against a half-installed package"
 expect_said "$tmp/err" "the installed oneharness could not run list"
+expect_said "$tmp/err" "is installed and the oneharness it ships failed the smoke above"
+expect_calls 1 "npm install -g --prefer-online oneharness-cli@$VERSION_UNDER_TEST"
 
 STUB_CLI_BROKEN_SUBCOMMAND=--help run_case npm-cli "an installed CLI whose help fails"
 unset STUB_CLI_BROKEN_SUBCOMMAND

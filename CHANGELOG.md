@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.25.7](https://github.com/nickderobertis/oneharness/compare/v0.25.6...v0.25.7) - 2026-10-20
+
+### Fixed
+
+- *(mock)* run controlled mock-harness Codex turns on the shared app-server ([#1506](https://github.com/nickderobertis/oneharness/pull/1506))
+
 ## [0.25.6](https://github.com/nickderobertis/oneharness/compare/v0.25.5...v0.25.6) - 2026-10-19
 
 ### Fixed

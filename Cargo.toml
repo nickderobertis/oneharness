@@ -89,6 +89,12 @@ libc = { workspace = true }
 # `IsProcessInJob` is the only thing that can answer it. The version is the
 # workspace's, the one `oneharness-core` inherits too, so it costs no extra
 # download.
+[dev-dependencies]
+# Holds the mock responder's Codex app-server frames to Codex's own generated
+# schema (`tests/fixtures/codex-*.schema.json`); already in the tree through
+# `oneharness-core`, so no extra download.
+jsonschema = { version = "0.33", default-features = false }
+
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",

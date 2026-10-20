@@ -2023,6 +2023,7 @@ fn a_pooled_overload_retries_on_the_shared_server_and_falls_through_once_exhaust
     assert_eq!(results.last().unwrap()["status"], "ok", "{report}");
 }
 
+// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run --control` through the real pool and the dispatch's own child; only codex is the repository's subprocess double, replaying a captured real app-server tool turn, because the gate cannot run real Codex and needs the same tool on both servers.
 /// A pooled turn's frames are observed as they arrive, as a dispatch's own
 /// child's stdout is, so a tool the turn runs reads the same on a shared server
 /// as on the dispatch's own app-server child — in the report and in the
@@ -2108,6 +2109,7 @@ fn a_pooled_turn_s_tool_reads_as_it_does_on_the_dispatch_s_own_child() {
         "the shared server and the own child disagree"
     );
 }
+// llmlint: ignore-end[e2e_not_mocked]
 
 /// A shared server that accepts the connection and never answers the
 /// WebSocket upgrade fails the dispatch within the handshake's deadline,
@@ -6010,7 +6012,8 @@ fn history_run(report: &Value) -> Value {
     serde_json::to_value(record).unwrap()
 }
 
-/// The token counts a result (or history record) carries.
+/// The three counts both usage paths fill — the ones a budget sums; cost is
+/// derived from them, and `cache_write_tokens` neither path reports.
 fn token_counts(value: &Value) -> [Value; 3] {
     let usage = &value["usage"];
     [
@@ -6020,6 +6023,7 @@ fn token_counts(value: &Value) -> [Value; 3] {
     ]
 }
 
+// llmlint: ignore-block[e2e_not_mocked] These drive the real built `oneharness run --control` through the real pool and the dispatch's own child; only codex is the repository's subprocess double, because the gate cannot run real Codex and these assert exact token counts, a broadcast stream, a redirect and a timeout on demand. Its usage frame is held to codex's own generated schema (`the_mocked_usage_notification_speaks_codex_s_schema`).
 /// A controlled Codex turn records the token usage the app-server reported
 /// for it — in the report and its history, in the same fields an exec turn
 /// fills and priced the same way — on the shared server and on the dispatch's
@@ -6076,6 +6080,11 @@ fn a_controlled_codex_turn_records_the_usage_the_app_server_reported() {
         // measured — which is what lets history accept its record at all.
         assert_eq!(
             ran["telemetry"]["source"], "provider_measured",
+            "{session}: {ran}"
+        );
+        // The streamed answer is the turn's first model output.
+        assert!(
+            ran["telemetry"]["time_to_first_token_ms"].is_number(),
             "{session}: {ran}"
         );
         let record = history_run(&report);
@@ -6158,3 +6167,134 @@ fn a_controlled_mock_harness_turn_reports_the_mocked_usage_per_turn() {
         "{uncontrolled}"
     );
 }
+
+/// A held turn's usage on a server that broadcasts every thread's frames to
+/// every connection: each dispatch records its own thread's counts, never the
+/// other's that reached its connection too.
+#[test]
+fn a_controlled_turn_counts_only_its_own_thread_s_usage_on_a_broadcasting_server() {
+    let pool = Pool::new("pool-usage-broadcast").with_env("CODEX_MOCK_BROADCAST", "1");
+    let release = pool.file("release");
+    let small = concat!(
+        "{\"type\":\"turn.completed\",\"usage\":",
+        "{\"input_tokens\":7,\"cached_input_tokens\":0,\"output_tokens\":3}}\n"
+    );
+    let big = pool.spawn(pool.command(
+        "big",
+        &[],
+        &[
+            ("MOCK_STDOUT", USAGE_STDOUT),
+            ("MOCK_CODEX_HOLD_UNTIL", &release),
+        ],
+    ));
+    pool.await_live_turns(1);
+    let little = pool.spawn(pool.command(
+        "little",
+        &[],
+        &[("MOCK_STDOUT", small), ("MOCK_CODEX_HOLD_UNTIL", &release)],
+    ));
+    pool.await_live_turns(2);
+    std::fs::write(&release, b"").unwrap();
+    let (out_big, big) = Pool::finish_within(big, Duration::from_secs(30));
+    let (out_little, little) = Pool::finish_within(little, Duration::from_secs(30));
+    succeeded(&out_big, &big);
+    succeeded(&out_little, &little);
+    assert_eq!(reported_server(&big), reported_server(&little));
+    assert_eq!(
+        token_counts(result(&big)),
+        [json!(1000), json!(400), json!(100)],
+        "{big}"
+    );
+    assert_eq!(
+        token_counts(result(&little)),
+        [json!(7), json!(0), json!(3)],
+        "{little}"
+    );
+}
+
+/// A turn an interrupt redirected is the run's work too: the run records both
+/// turns' usage, the aborted one and the one carrying the message.
+#[test]
+fn a_redirected_controlled_turn_records_both_turns_usage() {
+    let pool = Pool::new("pool-usage-redirect");
+    let release = pool.file("release");
+    let child = pool.spawn(pool.command(
+        "steered",
+        &[],
+        &[
+            ("MOCK_STDOUT", USAGE_STDOUT),
+            ("MOCK_CODEX_HOLD_UNTIL", &release),
+        ],
+    ));
+    pool.await_live_turns(1);
+    let (answer, served) = once_the_turn_is_known(
+        || redirect(&pool, "steered", "do the other thing"),
+        |(a, _)| a,
+    );
+    std::fs::write(&release, b"").unwrap();
+    let (output, report) = Pool::finish_within(child, Duration::from_secs(30));
+    succeeded(&output, &report);
+    assert!(served, "{answer}");
+    assert_eq!(answer["redirected"], true, "{answer}");
+    assert_eq!(
+        token_counts(result(&report)),
+        [json!(2000), json!(800), json!(200)],
+        "{report}"
+    );
+}
+
+/// A turn cut off by `--timeout` keeps the usage the server reported before
+/// the cut, and that usage is its evidence of work — in the report and the
+/// history record, which the trace's start alone lets history accept. A tool
+/// that fails is timed off the same trace.
+#[test]
+fn a_timed_out_controlled_turn_keeps_its_usage_as_work_evidence() {
+    let pool = Pool::new("pool-usage-timeout");
+    let never = pool.file("never");
+    let history = pool.file("history");
+    let (output, report) = pool.run(pool.command(
+        "timed",
+        &["--timeout", "2", "--history", "--history-dir", &history],
+        &[
+            ("MOCK_STDOUT", USAGE_STDOUT),
+            ("MOCK_CODEX_HOLD_UNTIL", &never),
+        ],
+    ));
+    let ran = result(&report);
+    assert_eq!(
+        ran["status"],
+        "timeout",
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        token_counts(ran),
+        [json!(1000), json!(400), json!(100)],
+        "{ran}"
+    );
+    // No tool ran: the server's accounting is the only sign of work.
+    assert_eq!(ran["work"], "done", "{ran}");
+    let record = history_run(&report);
+    assert_eq!(record["status"], "timeout", "{record}");
+    assert_eq!(token_counts(&record), token_counts(ran), "{record}");
+    assert_eq!(record["work"], "done", "{record}");
+
+    let (output, report) = pool.run(pool.command(
+        "failing-tool",
+        &["--mode", "bypass"],
+        &[("MOCK_CODEX_RUN_COMMAND", "exit 3")],
+    ));
+    succeeded(&output, &report);
+    let ran = result(&report);
+    let call = ran["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["kind"] == "tool_call")
+        .cloned()
+        .unwrap_or_else(|| panic!("no tool call in {ran}"));
+    assert_eq!(call["status"], "failed", "{call}");
+    assert!(call["duration_ms"].is_number(), "{call}");
+    assert_eq!(ran["telemetry"]["source"], "provider_measured", "{ran}");
+}
+// llmlint: ignore-end[e2e_not_mocked]

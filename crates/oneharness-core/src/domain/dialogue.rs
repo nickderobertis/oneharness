@@ -115,6 +115,17 @@ impl DialogueResume {
     }
 }
 
+/// A codex turn identifier as the server named it: never empty, and a type of
+/// its own so a thread id cannot be filed among a dialogue's turns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TurnId(String);
+
+impl TurnId {
+    fn new(id: &str) -> Option<Self> {
+        (!id.is_empty()).then(|| Self(id.to_string()))
+    }
+}
+
 /// One `TokenUsageBreakdown` from codex's app-server: the counts oneharness
 /// normalizes into the same [`Usage`] fields a `codex exec` turn's
 /// `turn.completed` fills (`inputTokens` includes `cachedInputTokens`).
@@ -231,7 +242,7 @@ pub struct Dialogue {
     turn_id: Option<String>,
     /// Every turn this dialogue opened, the redirected one included — the
     /// turns whose token usage is this run's.
-    own_turns: Vec<String>,
+    own_turns: Vec<TurnId>,
     /// The thread's cumulative token totals the server reported before any of
     /// this dialogue's turns (its replay on `thread/resume`), subtracted so a
     /// continued conversation's earlier turns are not billed to this run.
@@ -591,11 +602,10 @@ impl Dialogue {
         }
     }
 
-    /// Record the turn the server just named as one this dialogue opened.
     fn own_current_turn(&mut self) {
-        if let Some(turn) = &self.turn_id {
-            if !self.own_turns.contains(turn) {
-                self.own_turns.push(turn.clone());
+        if let Some(turn) = self.turn_id.as_deref().and_then(TurnId::new) {
+            if !self.own_turns.contains(&turn) {
+                self.own_turns.push(turn);
             }
         }
     }
@@ -607,21 +617,28 @@ impl Dialogue {
     /// Only this dialogue's thread counts. One naming a turn this dialogue
     /// opened moves the latest totals; one naming any other turn, before this
     /// dialogue's own have reported, is the thread's history (the server's
-    /// replay on attach) and becomes the baseline. A notification whose totals
-    /// are not the schema's non-negative integers is no reading at all.
+    /// replay on attach) and becomes the baseline. A notification that names
+    /// no turn (`turnId` is required), or whose totals are not the schema's
+    /// non-negative integers, is no reading at all.
     fn absorb_codex_token_usage(&mut self, params: &Value) {
         let thread = params.get("threadId").and_then(Value::as_str);
         if thread.is_none() || thread != self.session_id.as_deref() {
             return;
         }
+        let Some(turn) = params
+            .get("turnId")
+            .and_then(Value::as_str)
+            .and_then(TurnId::new)
+        else {
+            return;
+        };
         let Some(totals) = params
             .pointer("/tokenUsage/total")
             .and_then(CodexTokenTotals::from_breakdown)
         else {
             return;
         };
-        let turn = params.get("turnId").and_then(Value::as_str);
-        if turn.is_some_and(|turn| self.own_turns.iter().any(|own| own == turn)) {
+        if self.own_turns.contains(&turn) {
             self.usage_latest = Some(totals);
         } else if self.usage_latest.is_none() {
             self.usage_baseline = Some(totals);
@@ -1316,6 +1333,15 @@ mod tests {
         let usage = d.usage().unwrap();
         assert_eq!(usage.input_tokens, None);
         assert_eq!(usage.output_tokens, Some(30));
+
+        // A notification naming no turn cannot be placed, so it is not a
+        // baseline either: this turn's later reading is still its whole usage.
+        let mut d = codex_in_turn();
+        d.on_line(
+            r#"{"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId":"th-1","tokenUsage":{"total":{"inputTokens":50,"cachedInputTokens":0,"outputTokens":5}}}}"#,
+        );
+        d.on_line(&token_usage("th-1", "tu-9", 70, 0, 9));
+        assert_eq!(d.usage().unwrap().input_tokens, Some(70));
 
         let mut d = codex_in_turn();
         d.on_line(

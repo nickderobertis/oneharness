@@ -1939,7 +1939,7 @@ fn token_usage_frame(
     last: [u64; 3],
 ) -> serde_json::Value {
     let breakdown = |[input, cached, output]: [u64; 3]| {
-        serde_json::json!({"totalTokens": input + output, "inputTokens": input,
+        serde_json::json!({"totalTokens": input.saturating_add(output), "inputTokens": input,
             "cachedInputTokens": cached, "outputTokens": output,
             "reasoningOutputTokens": 0, "cacheWriteInputTokens": 0})
     };
@@ -1948,9 +1948,14 @@ fn token_usage_frame(
             "total": breakdown(total), "last": breakdown(last), "modelContextWindow": null}}})
 }
 
-/// Add one turn's counts into a thread's cumulative total.
+/// Add one turn's counts into a thread's cumulative total, saturating rather
+/// than wrapping on counts a test scripted past `u64`.
 fn add_tokens(total: [u64; 3], turn: [u64; 3]) -> [u64; 3] {
-    [total[0] + turn[0], total[1] + turn[1], total[2] + turn[2]]
+    [
+        total[0].saturating_add(turn[0]),
+        total[1].saturating_add(turn[1]),
+        total[2].saturating_add(turn[2]),
+    ]
 }
 
 /// The `result` of a `thread/start` / `thread/resume` answer: the thread under
@@ -4765,7 +4770,37 @@ fn dial_target(path: &std::path::Path) -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{codex_feature_enabled, codex_model_catalog_arg, codex_plugins_enabled};
+    use super::{
+        add_tokens, codex_feature_enabled, codex_model_catalog_arg, codex_plugins_enabled,
+        mocked_turn_tokens, token_usage_frame,
+    };
+
+    /// The usage notification the mock app-servers send is Codex's own: its
+    /// params validate against the schema codex-cli generates for
+    /// `ThreadTokenUsageUpdatedNotification`, and its counts are the ones
+    /// MOCK_STDOUT carries.
+    #[test]
+    fn the_mocked_usage_notification_speaks_codex_s_schema() {
+        let schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../fixtures/codex-thread-token-usage.schema.json"
+        ))
+        .unwrap();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let stdout = r#"{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":4,"output_tokens":2}}"#;
+        let turn = mocked_turn_tokens(stdout).expect("the stdout carries usage");
+        assert_eq!(turn, [10, 4, 2]);
+        let total = add_tokens(turn, turn);
+        let frame = token_usage_frame("th", "tu", total, turn);
+        assert_eq!(frame["method"], "thread/tokenUsage/updated");
+        let errors: Vec<String> = validator
+            .iter_errors(&frame["params"])
+            .map(|error| error.to_string())
+            .collect();
+        assert!(errors.is_empty(), "{errors:?}: {frame}");
+        assert_eq!(frame["params"]["tokenUsage"]["total"]["inputTokens"], 20);
+        assert_eq!(add_tokens([u64::MAX, 0, 0], [1, 0, 0])[0], u64::MAX);
+        assert_eq!(mocked_turn_tokens(r#"{"result":"no usage"}"#), None);
+    }
 
     fn argv(args: &[&str]) -> Vec<String> {
         args.iter().map(|arg| (*arg).to_string()).collect()

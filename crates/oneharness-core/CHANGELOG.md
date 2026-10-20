@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.7](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.28.6...oneharness-core-v0.28.7) - 2026-10-20
+
+### Fixed
+
+- *(codex)* record token usage for controlled app-server turns ([#1509](https://github.com/nickderobertis/oneharness/pull/1509))
+
 ## [0.28.6](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.28.5...oneharness-core-v0.28.6) - 2026-10-20
 
 ### Fixed

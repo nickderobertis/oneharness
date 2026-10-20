@@ -40,7 +40,13 @@ hidden="$tmp/registry/${host_package/\//+}@$VERSION_UNDER_TEST.hidden"
 
 fail() {
   echo "check-verify-published-npm: $1" >&2
-  echo "  Next: the case's own output is above and every registry request is in \$tmp/requests; re-run with 'bash -x scripts/check-verify-published-npm.sh'." >&2
+  # The scratch directory is removed on exit, so the request log is printed
+  # here rather than pointed at.
+  if [ -s "$tmp/requests" ]; then
+    echo "  Registry requests the case made:" >&2
+    sed 's/^/    /' "$tmp/requests" >&2
+  fi
+  echo "  Next: the case's own output and its registry requests are above; re-run with 'bash -x scripts/check-verify-published-npm.sh'." >&2
   exit 1
 }
 
@@ -141,10 +147,8 @@ expect_said() {
 expect_wrapper_requests() {
   local actual
   actual="$(grep -c '^GET oneharness-cli 9' "$tmp/requests" || true)"
-  [ "$actual" -eq "$1" ] || {
-    cat "$tmp/requests" >&2
+  [ "$actual" -eq "$1" ] ||
     fail "$description: expected $1 install attempt(s) to ask for the wrapper, got $actual"
-  }
 }
 
 publish_packages works

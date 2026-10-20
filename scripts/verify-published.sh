@@ -184,18 +184,14 @@ const pinned = wrapper.optionalDependencies?.[platform];
 if (pinned !== expected) {
   fail(`oneharness-cli@${expected} pins ${platform} at ${JSON.stringify(pinned)}, not ${expected}: the published launcher cannot install this host's binary`, Number(broken));
 }
-let platformManifest;
-try {
-  platformManifest = createRequire(wrapperManifest).resolve(`${platform}/package.json`);
-} catch (error) {
-  if (error.code !== "MODULE_NOT_FOUND") throw error;
-  fail(`npm installed oneharness-cli@${expected} without its platform package ${platform}@${expected}: the registry is not serving it yet`, 1);
-}
 let installed;
 try {
-  installed = JSON.parse(readFileSync(platformManifest, "utf8"));
+  installed = JSON.parse(readFileSync(createRequire(wrapperManifest).resolve(`${platform}/package.json`), "utf8"));
 } catch (error) {
-  fail(`npm installed ${platform} with an unreadable ${platformManifest}: ${error.message}`, 1);
+  if (error.code === "MODULE_NOT_FOUND") {
+    fail(`npm installed oneharness-cli@${expected} without its platform package ${platform}@${expected}: the registry is not serving it yet`, 1);
+  }
+  fail(`npm installed ${platform}, and its package.json cannot be read the way the launcher resolves it: ${error.code ?? error.name}: ${error.message}`, 1);
 }
 if (installed?.version !== expected) fail(`npm installed ${platform} ${JSON.stringify(installed?.version)}, not ${expected}`, 1);
 process.stdout.write(platform);

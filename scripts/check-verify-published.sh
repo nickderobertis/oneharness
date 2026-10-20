@@ -71,8 +71,9 @@ case "$*" in
       "${STUB_WRAPPER_VERSION:-$installed}" "$platform" "${STUB_PLATFORM_PIN:-$installed}" >"$wrapper/package.json"
     if [ -z "${STUB_PLATFORM_WITHHELD:-}" ]; then
       mkdir -p "$wrapper/node_modules/$platform"
-      printf '{"name":"%s","version":"%s"}\n' "$platform" "${STUB_PLATFORM_VERSION:-$installed}" \
-        >"$wrapper/node_modules/$platform/package.json"
+      printf '{"name":"%s","version":"%s"%s}\n' "$platform" "${STUB_PLATFORM_VERSION:-$installed}" \
+        "${STUB_PLATFORM_EXTRA_FIELD:-}" >"$wrapper/node_modules/$platform/package.json"
+      [ -z "${STUB_PLATFORM_MALFORMED:-}" ] || echo '{"name":' >"$wrapper/node_modules/$platform/package.json"
     fi
     ;;
   *@oneharness/sdk@*)
@@ -326,6 +327,20 @@ unset STUB_PLATFORM_VERSION
 expect_status 1
 expect_said "$tmp/err" '"1.1.1", not 9.9.9'
 expect_said "$tmp/err" "npm installed @oneharness/cli-"
+expect_calls 3 "npm install -g --prefer-online oneharness-cli@$VERSION_UNDER_TEST"
+
+# A platform package npm left half-written, or one whose manifest hides itself
+# from the resolution the launcher does, is named with the cause and retried.
+STUB_PLATFORM_MALFORMED=1 run_case npm-cli "an npm install that left a malformed platform manifest"
+unset STUB_PLATFORM_MALFORMED
+expect_status 1
+expect_said "$tmp/err" "its package.json cannot be read the way the launcher resolves it: ERR_INVALID_PACKAGE_CONFIG"
+expect_calls 3 "npm install -g --prefer-online oneharness-cli@$VERSION_UNDER_TEST"
+
+STUB_PLATFORM_EXTRA_FIELD=',"exports":{}' run_case npm-cli "a platform package whose exports hide its manifest"
+unset STUB_PLATFORM_EXTRA_FIELD
+expect_status 1
+expect_said "$tmp/err" "its package.json cannot be read the way the launcher resolves it: ERR_PACKAGE_PATH_NOT_EXPORTED"
 expect_calls 3 "npm install -g --prefer-online oneharness-cli@$VERSION_UNDER_TEST"
 
 # A launcher that pins some other platform version was published that way: no

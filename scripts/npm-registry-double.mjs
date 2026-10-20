@@ -170,7 +170,10 @@ const server = createServer((request, response) => {
   try {
     serve(request, response, `http://127.0.0.1:${server.address().port}`);
   } catch (error) {
-    process.stderr.write(`npm-registry-double: ${request.method} ${request.url} failed: ${error.message}\n`);
+    process.stderr.write(
+      `npm-registry-double: ${request.method} ${request.url} failed: ${error.message}\n` +
+        "  Next: repair the control file or request-log path named above, then rerun the test\n",
+    );
     if (!response.headersSent) response.writeHead(500, { "content-type": "application/json" });
     response.end('{"error":"registry double failed; see its stderr"}');
   }

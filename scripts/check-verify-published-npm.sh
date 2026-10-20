@@ -46,7 +46,7 @@ fail() {
 
 # $1 what the stand-in binary does on --version: `works` or `broken`.
 publish_packages() {
-  local binary="$tmp/oneharness" targets target built
+  local binary="$tmp/oneharness" declared targets target built
   rm -rf "$tmp/build" "$tmp/registry"
   mkdir -p "$tmp/build" "$tmp/registry"
   if [ "$1" = works ]; then
@@ -63,10 +63,12 @@ SH
   # Every platform the launcher pins, read from the one list that states them,
   # so npm meets each optional dependency the way it does on the registry.
   # A read loop, not mapfile: macOS's system bash is 3.2.
+  declared="$(sed -n 's/^target = "\(.*\)"$/\1/p' release-platforms.toml)" ||
+    fail "could not read release-platforms.toml; restore it from git"
   targets=()
   while IFS= read -r target; do
-    targets+=("$target")
-  done < <(sed -n 's/^target = "\(.*\)"$/\1/p' release-platforms.toml)
+    [ -z "$target" ] || targets+=("$target")
+  done <<<"$declared"
   [ "${#targets[@]}" -gt 0 ] || fail "release-platforms.toml declares no target to publish; restore its [[platform]] entries (bash scripts/check-release-targets.sh names what is wrong with it)"
   for target in "${targets[@]}"; do
     case "$target" in
@@ -98,7 +100,8 @@ start_registry() {
 }
 
 stop_registry() {
-  kill "$registry_pid"
+  kill "$registry_pid" 2>/dev/null ||
+    fail "$description: the registry double had already exited before the case ended; its own error is above"
   wait "$registry_pid" 2>/dev/null || true
   registry_pid=""
 }

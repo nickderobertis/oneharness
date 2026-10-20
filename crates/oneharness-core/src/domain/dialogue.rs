@@ -610,6 +610,7 @@ impl Dialogue {
         }
     }
 
+    // llmlint: ignore-block[changed_behavior_has_e2e] The reachable paths are proved through the built binary (`crates/oneharness-e2e/tests/app_server.rs`: repeated cumulative readings across a redirect, the replayed resume baseline, another thread's frames on a broadcasting server, a timed-out turn). What stays unit-only is a server breaking codex's own schema — no `turnId`, non-integer or missing counts, totals below the replayed baseline — which real codex cannot be made to send and the double deliberately never does; the unit tests drive this pure state machine with exactly those lines.
     /// Read one `thread/tokenUsage/updated` notification
     /// (`ThreadTokenUsageUpdatedNotification`: `threadId`, `turnId`, and
     /// `tokenUsage.total` — the thread's cumulative `TokenUsageBreakdown`).
@@ -664,6 +665,7 @@ impl Dialogue {
             ..Usage::default()
         })
     }
+    // llmlint: ignore-end[changed_behavior_has_e2e]
 
     /// Append `delta`, separating it from the previous message when it belongs
     /// to a different one — codex streams a running commentary and a final

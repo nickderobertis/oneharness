@@ -45,32 +45,38 @@ while [ \$# -gt 0 ]; do
         *) shift ;;
     esac
 done
+# A staging step that fails is the fake's own fault, never a gate verdict:
+# exit 3, which no case below expects, naming what could not be written.
+staging_failed() {
+    echo "fake codex: could not stage \$1 under \$out" >&2
+    exit 3
+}
 case "$mode" in
     match)
-        mkdir -p "\$out/v2"
-        cp "$snapshot" "\$out/v2/GetAccountRateLimitsResponse.json"
-        cp "$token_snapshot" "\$out/v2/ThreadTokenUsageUpdatedNotification.json"
+        mkdir -p "\$out/v2" || staging_failed "\$out/v2"
+        cp "$snapshot" "\$out/v2/GetAccountRateLimitsResponse.json" || staging_failed GetAccountRateLimitsResponse.json
+        cp "$token_snapshot" "\$out/v2/ThreadTokenUsageUpdatedNotification.json" || staging_failed ThreadTokenUsageUpdatedNotification.json
         ;;
     drift)
-        mkdir -p "\$out/v2"
+        mkdir -p "\$out/v2" || staging_failed "\$out/v2"
         sed 's/usedPercent/pctUsed/g' "$snapshot" \\
-            >"\$out/v2/GetAccountRateLimitsResponse.json"
-        cp "$token_snapshot" "\$out/v2/ThreadTokenUsageUpdatedNotification.json"
+            >"\$out/v2/GetAccountRateLimitsResponse.json" || staging_failed GetAccountRateLimitsResponse.json
+        cp "$token_snapshot" "\$out/v2/ThreadTokenUsageUpdatedNotification.json" || staging_failed ThreadTokenUsageUpdatedNotification.json
         ;;
     token-drift)
-        mkdir -p "\$out/v2"
-        cp "$snapshot" "\$out/v2/GetAccountRateLimitsResponse.json"
+        mkdir -p "\$out/v2" || staging_failed "\$out/v2"
+        cp "$snapshot" "\$out/v2/GetAccountRateLimitsResponse.json" || staging_failed GetAccountRateLimitsResponse.json
         sed 's/outputTokens/completionTokens/g' "$token_snapshot" \\
-            >"\$out/v2/ThreadTokenUsageUpdatedNotification.json"
+            >"\$out/v2/ThreadTokenUsageUpdatedNotification.json" || staging_failed ThreadTokenUsageUpdatedNotification.json
         ;;
     token-missing)
-        mkdir -p "\$out/v2"
-        cp "$snapshot" "\$out/v2/GetAccountRateLimitsResponse.json"
+        mkdir -p "\$out/v2" || staging_failed "\$out/v2"
+        cp "$snapshot" "\$out/v2/GetAccountRateLimitsResponse.json" || staging_failed GetAccountRateLimitsResponse.json
         ;;
     missing-output)
         # Succeeds, but emits nothing where the rate-limits response used to be.
-        mkdir -p "\$out/v2"
-        echo '{}' >"\$out/v2/SomethingElse.json"
+        mkdir -p "\$out/v2" || staging_failed "\$out/v2"
+        echo '{}' >"\$out/v2/SomethingElse.json" || staging_failed SomethingElse.json
         ;;
     generator-failure)
         echo "codex: app-server: unrecognized subcommand 'generate-json-schema'" >&2

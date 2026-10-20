@@ -1983,7 +1983,10 @@ launched with only the platform's base variables (Unix: `PATH`, `HOME`, `USER`,
 `CODEX_HOME`, every `CODEX_*`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `HTTPS_PROXY`,
 `HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY` and their lower-case spellings,
 `SSL_CERT_FILE`, `SSL_CERT_DIR`) as the launching dispatch's variant environment
-resolves them, and its marker `ONEHARNESS_APP_SERVER_MARKER`.
+resolves them, and its marker `ONEHARNESS_APP_SERVER_MARKER`. A `--mock-harness`
+dispatch's server also keeps the mock marker `ONEHARNESS_INTERNAL_MOCK_HARNESS`,
+so it starts as the mock harness and never shares a pool entry with a real
+Codex server.
 
 **A dispatch's own environment reaches its own commands** through its thread:
 `thread/start` and `thread/resume` carry `config.shell_environment_policy` with

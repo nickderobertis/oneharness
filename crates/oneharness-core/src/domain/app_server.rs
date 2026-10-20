@@ -6,7 +6,8 @@
 //! A shared server's environment reaches every thread's commands, whichever
 //! dispatch they belong to, so it is launched with a scrubbed one: the
 //! platform's base variables plus [`CODEX_SERVER_ENV`] as the launching
-//! dispatch's variant environment resolves them. Everything else a dispatch
+//! dispatch's variant environment resolves them, and [`MOCK_HARNESS_VAR`] when
+//! the dispatch carries it. Everything else a dispatch
 //! carries travels per thread, in `thread/start`'s and `thread/resume`'s
 //! `config` map as `shell_environment_policy.set`, and a server variable the
 //! dispatch lacks travels as `shell_environment_policy.exclude` — so its
@@ -35,6 +36,13 @@ pub const DISPATCH_MARKER_VAR: &str = "ONEHARNESS_DISPATCH_MARKER";
 /// the native server it starts): a fresh UUID per server, recorded in the pool
 /// entry's `server.json`.
 pub const SERVER_MARKER_VAR: &str = "ONEHARNESS_APP_SERVER_MARKER";
+
+/// The variable that makes the `oneharness` binary answer as the mock harness
+/// instead of parsing a command line: `--mock-harness` swaps the binary in for
+/// a harness and sets this in each turn's environment. A shared server keeps
+/// it, so a mock server starts as the mock; and because the server environment
+/// keys the pool, a mock server and a real one never share an entry.
+pub const MOCK_HARNESS_VAR: &str = "ONEHARNESS_INTERNAL_MOCK_HARNESS";
 
 // llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] Real Codex cannot be read in the deterministic gate; the live phases scripts/e2e-control.sh runs on every live-control leg drive these requests against it — pooled-reuse sends thread/start, thread/shellCommand, thread/resume, thread/unsubscribe and thread/loaded/list and fails naming a released thread still loaded, and pooled-env and pooled-kill drive the thread lifecycle and its environment — which is this contract's drift alarm.
 /// The JSON-RPC request that releases a dispatch's thread from the server once
@@ -88,10 +96,12 @@ impl EnvPlatform {
 }
 
 /// Whether a shared server keeps `name` from its launching dispatch's
-/// environment: a base variable, or one Codex reads for itself.
+/// environment: a base variable, one Codex reads for itself, or the mock
+/// harness's marker.
 #[must_use]
 pub fn in_server_env(name: &str, platform: EnvPlatform) -> bool {
     platform.is_base(name)
+        || platform.same_name(MOCK_HARNESS_VAR, name)
         || CODEX_SERVER_ENV
             .iter()
             .any(|codex| platform.same_name(codex, name))
@@ -613,6 +623,30 @@ mod tests {
         ] {
             assert_ne!(key, other);
         }
+    }
+
+    #[test]
+    fn a_mock_harness_server_keeps_its_marker_and_keys_apart_from_a_real_one() {
+        let real = env(&[("PATH", "/bin"), ("MOCK_STDOUT", "{}")]);
+        let mut mocked = real.clone();
+        mocked.push((MOCK_HARNESS_VAR.to_string(), "1".to_string()));
+        for platform in [EnvPlatform::Unix, EnvPlatform::Windows] {
+            let kept = server_env(&mocked, platform);
+            assert!(
+                kept.iter().any(|(name, _)| name == MOCK_HARNESS_VAR),
+                "{platform:?}: {kept:?}"
+            );
+        }
+        let key = |dispatch: &[(String, String)]| {
+            pool_key(
+                "/usr/bin/oneharness",
+                "oneharness 1.0",
+                &server_env(dispatch, EnvPlatform::Unix),
+                &[],
+                false,
+            )
+        };
+        assert_ne!(key(&mocked), key(&real));
     }
 
     #[test]

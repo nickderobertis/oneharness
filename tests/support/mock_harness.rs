@@ -2900,6 +2900,9 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 /// of refusing it, as Linux's does),
 /// MOCK_CODEX_UNSUBSCRIBE_DELAY_MS, MOCK_CODEX_UNSUBSCRIBE_REFUSE (answer
 /// `thread/unsubscribe` with an error), MOCK_CODEX_ECHO_PROMPT,
+/// MOCK_STDOUT (unless MOCK_CODEX_HOLD_UNTIL holds it, the turn answers the
+/// text oneharness extracts from it as Codex's stdout — else it verbatim — and
+/// ends on its own, as the same MOCK_STDOUT answers a turn off the pool),
 /// MOCK_CODEX_OVERLOAD_ATTEMPTS with MOCK_ATTEMPT_FILE (the first N turns,
 /// counted in that file, fail as an overload),
 /// MOCK_CODEX_TOOL_EVENTS, MOCK_CODEX_MODEL, MOCK_CODEX_RUN_COMMAND (a `sh -c`
@@ -3419,16 +3422,17 @@ mod listen_server {
         }
 
         /// End the thread's turn once nothing holds it: no command running, no
-        /// approval waiting, and either MOCK_CODEX_COMPLETE_TURN or the file
-        /// MOCK_CODEX_HOLD_UNTIL names present.
+        /// approval waiting, and either MOCK_CODEX_COMPLETE_TURN, the file
+        /// MOCK_CODEX_HOLD_UNTIL names present, or MOCK_STDOUT with no
+        /// MOCK_CODEX_HOLD_UNTIL.
         fn maybe_complete(&mut self, thread_id: &str) {
             let Some(thread) = self.threads.get(thread_id) else {
                 return;
             };
+            let hold = thread.knob("MOCK_CODEX_HOLD_UNTIL");
             let released = thread.knob("MOCK_CODEX_COMPLETE_TURN").is_some()
-                || thread
-                    .knob("MOCK_CODEX_HOLD_UNTIL")
-                    .is_some_and(|path| Path::new(path).exists());
+                || hold.is_some_and(|path| Path::new(path).exists())
+                || (hold.is_none() && thread.knob("MOCK_STDOUT").is_some());
             if thread.active_turn.is_some()
                 && thread.commands_running == 0
                 && thread.approval_pending.is_none()
@@ -4371,6 +4375,12 @@ mod listen_server {
         }
         let reply_text = if knob("MOCK_CODEX_ECHO_PROMPT").is_some() {
             input.clone()
+        } else if let Some(stdout) = knob("MOCK_STDOUT") {
+            oneharness_core::domain::normalize::extract(
+                &stdout,
+                oneharness_core::domain::report::OutputFormat::Json,
+            )
+            .map_or(stdout, |extracted| extracted.text)
         } else {
             "still working".to_string()
         };

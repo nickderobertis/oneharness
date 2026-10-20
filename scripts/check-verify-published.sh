@@ -37,6 +37,10 @@ cat >"$tmp/bin/npm" <<'STUB'
 printf 'npm %s\n' "$*" >>"$CALL_LOG"
 # Where a `-g` install lands, which the CLI target reads its install back from.
 if [ "$*" = "root -g" ]; then
+  if [ -n "${STUB_NPM_ROOT_FAILS:-}" ]; then
+    echo "npm error could not determine the global prefix" >&2
+    exit 1
+  fi
   echo "$STUB_STATE/global"
   exit 0
 fi
@@ -61,12 +65,14 @@ case "$*" in
     spec="$*"
     installed="${spec##*@}"
     platform="@oneharness/cli-$(node -p 'process.platform + "-" + process.arch')"
+    [ -z "${STUB_WRAPPER_MISSING:-}" ] || exit 0
     mkdir -p "$wrapper"
     printf '{"name":"oneharness-cli","version":"%s","optionalDependencies":{"%s":"%s"}}\n' \
-      "$installed" "$platform" "${STUB_PLATFORM_PIN:-$installed}" >"$wrapper/package.json"
+      "${STUB_WRAPPER_VERSION:-$installed}" "$platform" "${STUB_PLATFORM_PIN:-$installed}" >"$wrapper/package.json"
     if [ -z "${STUB_PLATFORM_WITHHELD:-}" ]; then
       mkdir -p "$wrapper/node_modules/$platform"
-      printf '{"name":"%s","version":"%s"}\n' "$platform" "$installed" >"$wrapper/node_modules/$platform/package.json"
+      printf '{"name":"%s","version":"%s"}\n' "$platform" "${STUB_PLATFORM_VERSION:-$installed}" \
+        >"$wrapper/node_modules/$platform/package.json"
     fi
     ;;
   *@oneharness/sdk@*)
@@ -94,7 +100,6 @@ PKG
 esac
 STUB
 
-# The installed CLI.
 cat >"$tmp/bin/oneharness" <<'STUB'
 #!/usr/bin/env bash
 printf 'oneharness %s\n' "$*" >>"$CALL_LOG"
@@ -295,6 +300,33 @@ expect_said "$tmp/err" "without its platform package @oneharness/cli-"
 expect_said "$tmp/err" "was still not installable after 3 attempts"
 expect_calls 3 "npm install -g --prefer-online oneharness-cli@$VERSION_UNDER_TEST"
 expect_calls 0 "oneharness --version"
+
+# Whatever npm leaves behind is read back rather than trusted from its exit
+# status, and each way it can disagree with the release is retried and named.
+STUB_NPM_ROOT_FAILS=1 run_case npm-cli "an npm that cannot name its global root"
+unset STUB_NPM_ROOT_FAILS
+expect_status 1
+expect_said "$tmp/err" "npm error could not determine the global prefix"
+expect_calls 3 "npm root -g"
+
+STUB_WRAPPER_MISSING=1 run_case npm-cli "an npm install that left no launcher behind"
+unset STUB_WRAPPER_MISSING
+expect_status 1
+expect_said "$tmp/err" "npm reported success but installed no oneharness-cli under"
+expect_calls 3 "npm install -g --prefer-online oneharness-cli@$VERSION_UNDER_TEST"
+
+STUB_WRAPPER_VERSION=1.1.1 run_case npm-cli "an npm install that left another launcher version"
+unset STUB_WRAPPER_VERSION
+expect_status 1
+expect_said "$tmp/err" "npm installed oneharness-cli \"1.1.1\", not $VERSION_UNDER_TEST"
+expect_calls 3 "npm install -g --prefer-online oneharness-cli@$VERSION_UNDER_TEST"
+
+STUB_PLATFORM_VERSION=1.1.1 run_case npm-cli "an npm install that left another platform package version"
+unset STUB_PLATFORM_VERSION
+expect_status 1
+expect_said "$tmp/err" '"1.1.1", not 9.9.9'
+expect_said "$tmp/err" "npm installed @oneharness/cli-"
+expect_calls 3 "npm install -g --prefer-online oneharness-cli@$VERSION_UNDER_TEST"
 
 # A launcher that pins some other platform version was published that way: no
 # retry can change it, so one attempt is the verdict.

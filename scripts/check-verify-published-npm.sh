@@ -46,7 +46,7 @@ fail() {
 
 # $1 what the stand-in binary does on --version: `works` or `broken`.
 publish_packages() {
-  local binary="$tmp/oneharness" target
+  local binary="$tmp/oneharness" targets target built
   rm -rf "$tmp/build" "$tmp/registry"
   mkdir -p "$tmp/build" "$tmp/registry"
   if [ "$1" = works ]; then
@@ -60,11 +60,16 @@ SH
   fi
   chmod +x "$binary"
   cp "$binary" "$binary.exe"
-  for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu aarch64-apple-darwin; do
-    node scripts/npm-build.mjs platform --target "$target" --binary "$binary" --version "$VERSION_UNDER_TEST" --out "$tmp/build" >/dev/null
-  done
-  for target in x86_64-pc-windows-msvc aarch64-pc-windows-msvc; do
-    node scripts/npm-build.mjs platform --target "$target" --binary "$binary.exe" --version "$VERSION_UNDER_TEST" --out "$tmp/build" >/dev/null
+  # Every platform the launcher pins, read from the one list that states them,
+  # so npm meets each optional dependency the way it does on the registry.
+  targets="$(sed -n 's/^target = "\(.*\)"$/\1/p' release-platforms.toml)"
+  [ -n "$targets" ] || fail "release-platforms.toml declares no target to publish; restore its [[platform]] entries (bash scripts/check-release-targets.sh names what is wrong with it)"
+  for target in $targets; do
+    case "$target" in
+      *-windows-*) built="$binary.exe" ;;
+      *) built="$binary" ;;
+    esac
+    node scripts/npm-build.mjs platform --target "$target" --binary "$built" --version "$VERSION_UNDER_TEST" --out "$tmp/build" >/dev/null
   done
   node scripts/npm-build.mjs launcher --version "$VERSION_UNDER_TEST" --out "$tmp/build" >/dev/null
   for package in "$tmp"/build/*/; do
@@ -104,14 +109,11 @@ run_case() {
   start_registry
   : >"$tmp/npmrc-user"
   : >"$tmp/npmrc-global"
-  set +e
   npm_config_registry="http://127.0.0.1:$(cat "$tmp/port")/" npm_config_cache="$tmp/cache" \
   npm_config_prefix="$tmp/prefix" npm_config_userconfig="$tmp/npmrc-user" \
   npm_config_globalconfig="$tmp/npmrc-global" npm_config_audit=false npm_config_fund=false \
   npm_config_update_notifier=false PATH="$tmp/prefix/bin:$PATH" VERIFY_ATTEMPTS="$1" VERIFY_DELAY=0 \
-    bash scripts/verify-published.sh npm-cli "$VERSION_UNDER_TEST" >"$tmp/out" 2>"$tmp/err"
-  status=$?
-  set -e
+    bash scripts/verify-published.sh npm-cli "$VERSION_UNDER_TEST" >"$tmp/out" 2>"$tmp/err" && status=0 || status=$?
   stop_registry
 }
 

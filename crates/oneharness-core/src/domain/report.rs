@@ -621,15 +621,21 @@ impl RunResult {
     /// [sfr]: crate::domain::fallback::startup_failure_reason
     #[must_use]
     pub fn with_work_evidence(mut self) -> Self {
+        self.refresh_work_evidence();
+        self
+    }
+
+    /// [`Self::with_work_evidence`] in place, for a result whose signals
+    /// arrived after it was built (a protocol-driven turn's usage).
+    pub fn refresh_work_evidence(&mut self) {
         if self.failure_kind.is_some_and(FailureKind::is_refusal)
-            && completed_run_that_did_work(self.status, self.exit_code, RunWork::from_result(&self))
+            && completed_run_that_did_work(self.status, self.exit_code, RunWork::from_result(self))
         {
             self.failure_kind = None;
             self.failure_kind_source = None;
         }
         self.work = unclassified_failure(self.status, self.failure_kind)
-            .then(|| RunWork::from_result(&self));
-        self
+            .then(|| RunWork::from_result(self));
     }
 }
 

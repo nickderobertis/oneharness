@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Drift gate for codex's `account/rateLimits/read` contract — the payload
-# `oneharness usage` parses.
+# Drift gate for the codex app-server contracts oneharness parses: the
+# `account/rateLimits/read` payload `oneharness usage` reads, and the
+# `thread/tokenUsage/updated` notification a controlled turn's usage is read off.
 #
 # The codex app-server is marked experimental, so the wire shape can move. Unlike
 # Claude Code, codex *generates* its own schema from the installed binary, which
@@ -15,7 +16,6 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-snapshot="$root/tests/fixtures/codex-rate-limits.schema.json"
 
 if ! command -v codex >/dev/null 2>&1; then
   echo "check-codex-usage-schema: skipped (codex is not installed; the snapshot's field assertions still run in 'just test')"
@@ -36,32 +36,46 @@ if ! codex app-server generate-json-schema --out "$out" >/dev/null 2>"$out/err";
   exit 1
 fi
 
-generated="$out/v2/GetAccountRateLimitsResponse.json"
-if [[ ! -f "$generated" ]]; then
-  echo "check-codex-usage-schema: codex $(codex --version) no longer emits v2/GetAccountRateLimitsResponse.json." >&2
-  echo "  The rate-limits response moved or was renamed; find its new path under the generated schema dir," >&2
-  echo "  update this script and tests/fixtures/codex-rate-limits.schema.json, and re-check the parser in" >&2
-  echo "  crates/oneharness-core/src/domain/usage.rs (parse_codex_rate_limits)." >&2
-  exit 1
-fi
+# Hold one checked-in snapshot to the schema codex generates for it:
+#   $1 the generated file under the schema dir   $2 the snapshot (repo-relative)
+#   $3 what it is, in prose                       $4 the parser that reads it
+#   $5 what a silent drift would turn into
+check_snapshot() {
+  local name="$1" fixture="$2" what="$3" parser="$4" consequence="$5"
+  local generated="$out/$name"
+  if [[ ! -f "$generated" ]]; then
+    echo "check-codex-usage-schema: codex $(codex --version) no longer emits $name." >&2
+    echo "  The $what moved or was renamed; find its new path under the generated schema dir," >&2
+    echo "  update this script and $fixture, and re-check the parser in" >&2
+    echo "  $parser." >&2
+    exit 1
+  fi
+  # The diff goes to stderr with the rest of the failure: `just lint-workflows`
+  # suppresses stdout, and a drift report without its diff is not a report.
+  if ! diff -u "$root/$fixture" "$generated" >&2; then
+    cat >&2 <<EOF
+check-codex-usage-schema: the codex $what contract drifted (codex $(codex --version)).
 
-# The diff goes to stderr with the rest of the failure: `just lint-workflows`
-# suppresses stdout, and a drift report without its diff is not a report.
-if ! diff -u "$snapshot" "$generated" >&2; then
-  cat >&2 <<EOF
-check-codex-usage-schema: the codex rate-limits contract drifted (codex $(codex --version)).
-
-  The diff above is against tests/fixtures/codex-rate-limits.schema.json.
+  The diff above is against $fixture.
   Read it before refreshing: a removed or renamed field that
-  parse_codex_rate_limits reads (crates/oneharness-core/src/domain/usage.rs)
-  would otherwise become a silent zero in 'oneharness usage'.
+  $parser reads
+  would otherwise become $consequence.
 
   Once the parser handles the new shape, refresh the snapshot with:
     codex app-server generate-json-schema --out /tmp/codex-schema
-    cp /tmp/codex-schema/v2/GetAccountRateLimitsResponse.json \\
-       tests/fixtures/codex-rate-limits.schema.json
+    cp /tmp/codex-schema/$name \\
+       $fixture
 EOF
-  exit 1
-fi
+    exit 1
+  fi
+}
+
+check_snapshot v2/GetAccountRateLimitsResponse.json tests/fixtures/codex-rate-limits.schema.json \
+  "rate-limits" "parse_codex_rate_limits (crates/oneharness-core/src/domain/usage.rs)" \
+  "a silent zero in 'oneharness usage'"
+check_snapshot v2/ThreadTokenUsageUpdatedNotification.json tests/fixtures/codex-thread-token-usage.schema.json \
+  "thread token-usage notification" \
+  "Dialogue::absorb_codex_token_usage (crates/oneharness-core/src/domain/dialogue.rs)" \
+  "a controlled codex turn that reports no usage"
 
 echo "check-codex-usage-schema: ok"

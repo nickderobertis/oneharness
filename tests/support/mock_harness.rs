@@ -154,7 +154,9 @@
 //!                   `turn/start` with an in-progress turn (which is NOT the end
 //!                   of the turn), and end it on `turn/completed` only once a
 //!                   `turn/interrupt` naming the thread and turn arrives. Every
-//!                   received line is appended to the log.
+//!                   received line is appended to the log. When MOCK_STDOUT
+//!                   carries token usage, each turn reports it as Codex does, on
+//!                   `thread/tokenUsage/updated` (the thread's running total).
 //!   (`app-server --listen unix://PATH`)  act like the shared, multi-client
 //!                   app-server a pooled dispatch runs on, whatever else is set;
 //!                   its knobs are listed on `listen_server` below.
@@ -1660,6 +1662,12 @@ fn run_codex_app_server(log_path: &str) -> ! {
     };
 
     let mut turns_started = 0u32;
+    let turn_tokens = std::env::var("MOCK_STDOUT")
+        .ok()
+        .and_then(|stdout| mocked_turn_tokens(&stdout));
+    let mut thread_tokens = [0u64; 3];
+    // The thread the turns run on: the fresh one, or the one a resume named.
+    let mut thread = "mock-codex-thread".to_string();
     for line in std::io::BufRead::lines(std::io::stdin().lock()) {
         let Ok(line) = line else { break };
         append(&line);
@@ -1723,6 +1731,7 @@ fn run_codex_app_server(log_path: &str) -> ! {
                     "id": id,
                     "result": open_response(requested, &message),
                 }));
+                thread = requested.to_string();
             }
             Some("turn/start") => {
                 turns_started += 1;
@@ -1741,6 +1750,12 @@ fn run_codex_app_server(log_path: &str) -> ! {
                     "jsonrpc": "2.0",
                     "id": id,
                     "result": {"turn": {"id": "mock-codex-turn", "status": "inProgress"}},
+                }));
+                // Then the turn's own start, as the real server announces it.
+                send(&json!({
+                    "jsonrpc": "2.0",
+                    "method": "turn/started",
+                    "params": {"threadId": thread, "turn": {"id": "mock-codex-turn", "status": "inProgress"}},
                 }));
                 if attempt.is_some_and(|attempt| attempt <= overload_attempts) {
                     if mock_var_os("MOCK_CODEX_OVERLOAD_AFTER_TOOL").is_some() {
@@ -1808,6 +1823,15 @@ fn run_codex_app_server(log_path: &str) -> ! {
                     "method": "item/completed",
                     "params": {"item": {"type": "agentMessage", "id": "item_1", "text": reply}},
                 }));
+                if let Some(tokens) = turn_tokens {
+                    thread_tokens = add_tokens(thread_tokens, tokens);
+                    send(&token_usage_frame(
+                        &thread,
+                        "mock-codex-turn",
+                        thread_tokens,
+                        tokens,
+                    ));
+                }
                 if mock_var_os("MOCK_CODEX_TOOL_EVENTS").is_some() {
                     let started_only = mock_var_os("MOCK_CODEX_TOOL_STARTED_ONLY").is_some();
                     for (index, frame) in
@@ -1887,6 +1911,51 @@ fn run_codex_app_server(log_path: &str) -> ! {
         }
     }
     std::process::exit(0);
+}
+
+/// The token counts a mocked turn reports — `(input, cached input, output)`,
+/// read off MOCK_STDOUT exactly as oneharness reads an exec turn's usage, so the
+/// one knob scripting a turn's accounting off the app-server scripts it on one.
+/// `None` when MOCK_STDOUT carries no token counts.
+fn mocked_turn_tokens(stdout: &str) -> Option<[u64; 3]> {
+    let usage = oneharness_core::domain::signals::extract_usage(stdout)?.usage;
+    if usage.input_tokens.is_none() && usage.output_tokens.is_none() {
+        return None;
+    }
+    Some([
+        usage.input_tokens.unwrap_or(0),
+        usage.cache_read_tokens.unwrap_or(0),
+        usage.output_tokens.unwrap_or(0),
+    ])
+}
+
+/// Codex's `thread/tokenUsage/updated` notification, in its own schema's
+/// shape: `total` is the thread's cumulative `TokenUsageBreakdown`, `last` the
+/// latest model call's.
+fn token_usage_frame(
+    thread: &str,
+    turn: &str,
+    total: [u64; 3],
+    last: [u64; 3],
+) -> serde_json::Value {
+    let breakdown = |[input, cached, output]: [u64; 3]| {
+        serde_json::json!({"totalTokens": input.saturating_add(output), "inputTokens": input,
+            "cachedInputTokens": cached, "outputTokens": output,
+            "reasoningOutputTokens": 0, "cacheWriteInputTokens": 0})
+    };
+    serde_json::json!({"jsonrpc": "2.0", "method": "thread/tokenUsage/updated", "params": {
+        "threadId": thread, "turnId": turn, "tokenUsage": {
+            "total": breakdown(total), "last": breakdown(last), "modelContextWindow": null}}})
+}
+
+/// Add one turn's counts into a thread's cumulative total, saturating rather
+/// than wrapping on counts a test scripted past `u64`.
+fn add_tokens(total: [u64; 3], turn: [u64; 3]) -> [u64; 3] {
+    [
+        total[0].saturating_add(turn[0]),
+        total[1].saturating_add(turn[1]),
+        total[2].saturating_add(turn[2]),
+    ]
 }
 
 /// The `result` of a `thread/start` / `thread/resume` answer: the thread under
@@ -2902,7 +2971,9 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 /// `thread/unsubscribe` with an error), MOCK_CODEX_ECHO_PROMPT,
 /// MOCK_STDOUT (unless MOCK_CODEX_HOLD_UNTIL holds it, the turn answers the
 /// text oneharness extracts from it as Codex's stdout — else it verbatim — and
-/// ends on its own, as the same MOCK_STDOUT answers a turn off the pool),
+/// ends on its own, as the same MOCK_STDOUT answers a turn off the pool; token
+/// usage it carries is reported on `thread/tokenUsage/updated` as the thread's
+/// running total, and replayed to a connection that resumes the thread),
 /// MOCK_CODEX_OVERLOAD_ATTEMPTS with MOCK_ATTEMPT_FILE (the first N turns,
 /// counted in that file, fail as an overload),
 /// MOCK_CODEX_TOOL_EVENTS, MOCK_CODEX_MODEL, MOCK_CODEX_RUN_COMMAND (a `sh -c`
@@ -2985,6 +3056,10 @@ mod listen_server {
         next_conn: u64,
         threads: HashMap<String, Thread>,
         known: HashMap<String, Settings>,
+        /// Each thread's cumulative token totals and the turn that last moved
+        /// them — kept past an unload, as Codex's rollout keeps them, so a
+        /// resume replays them.
+        token_usage: HashMap<String, ([u64; 3], String)>,
         next_thread: u64,
         next_request: u64,
         first_opened: Option<String>,
@@ -3113,6 +3188,7 @@ mod listen_server {
             next_conn: 1,
             threads: HashMap::new(),
             known: HashMap::new(),
+            token_usage: HashMap::new(),
             next_thread: 1,
             next_request: 1 << 50,
             first_opened: None,
@@ -3989,6 +4065,11 @@ mod listen_server {
                 settings.exclude = resumed.exclude;
                 open_thread(&mut s, conn, thread, settings, true);
                 reply(&mut s, json!({"thread": {"id": thread}, "model": model}));
+                // After the answer, to the resuming connection alone, as real
+                // Codex replays a thread's restored usage on attach.
+                if let Some((total, turn)) = s.token_usage.get(thread).cloned() {
+                    s.send(conn, &super::token_usage_frame(thread, &turn, total, total));
+                }
                 s.save();
             }
             "thread/unsubscribe" => {
@@ -4389,6 +4470,22 @@ mod listen_server {
             "params": {"threadId": thread_id, "turnId": turn, "itemId": item, "delta": reply_text}}));
         s.emit(&thread_id, &json!({"jsonrpc": "2.0", "method": "item/completed",
             "params": {"threadId": thread_id, "turnId": turn, "item": {"type": "agentMessage", "id": item, "text": reply_text}}}));
+        if let Some(tokens) =
+            knob("MOCK_STDOUT").and_then(|stdout| super::mocked_turn_tokens(&stdout))
+        {
+            let total = super::add_tokens(
+                s.token_usage
+                    .get(&thread_id)
+                    .map_or([0; 3], |(total, _)| *total),
+                tokens,
+            );
+            s.token_usage
+                .insert(thread_id.clone(), (total, turn.clone()));
+            s.emit(
+                &thread_id,
+                &super::token_usage_frame(&thread_id, &turn, total, tokens),
+            );
+        }
         if knob("MOCK_CODEX_TOOL_EVENTS").is_some() {
             for line in include_str!("../fixtures/codex-app-server-command-execution.jsonl").lines()
             {
@@ -4673,7 +4770,37 @@ fn dial_target(path: &std::path::Path) -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{codex_feature_enabled, codex_model_catalog_arg, codex_plugins_enabled};
+    use super::{
+        add_tokens, codex_feature_enabled, codex_model_catalog_arg, codex_plugins_enabled,
+        mocked_turn_tokens, token_usage_frame,
+    };
+
+    /// The usage notification the mock app-servers send is Codex's own: its
+    /// params validate against the schema codex-cli generates for
+    /// `ThreadTokenUsageUpdatedNotification`, and its counts are the ones
+    /// MOCK_STDOUT carries.
+    #[test]
+    fn the_mocked_usage_notification_speaks_codex_s_schema() {
+        let schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../fixtures/codex-thread-token-usage.schema.json"
+        ))
+        .unwrap();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let stdout = r#"{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":4,"output_tokens":2}}"#;
+        let turn = mocked_turn_tokens(stdout).expect("the stdout carries usage");
+        assert_eq!(turn, [10, 4, 2]);
+        let total = add_tokens(turn, turn);
+        let frame = token_usage_frame("th", "tu", total, turn);
+        assert_eq!(frame["method"], "thread/tokenUsage/updated");
+        let errors: Vec<String> = validator
+            .iter_errors(&frame["params"])
+            .map(|error| error.to_string())
+            .collect();
+        assert!(errors.is_empty(), "{errors:?}: {frame}");
+        assert_eq!(frame["params"]["tokenUsage"]["total"]["inputTokens"], 20);
+        assert_eq!(add_tokens([u64::MAX, 0, 0], [1, 0, 0])[0], u64::MAX);
+        assert_eq!(mocked_turn_tokens(r#"{"result":"no usage"}"#), None);
+    }
 
     fn argv(args: &[&str]) -> Vec<String> {
         args.iter().map(|arg| (*arg).to_string()).collect()

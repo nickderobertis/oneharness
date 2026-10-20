@@ -61,6 +61,13 @@ const report = await new OneHarness().runMock(
 | `MOCK_CODEX_VERSION` | Answer `--version` as `codex-cli <it>` and stamp the catalog cache with it; unset, `--version` names no Codex version, so oneharness keeps no shared catalog for the mock. |
 | `MOCK_CODEX_CATALOG_LOG` | Act like Codex about its model catalog (fetch into `$CODEX_HOME/models_cache.json` unless started with `-c model_catalog_json=`) and record each `exec`/`app-server` launch, one JSON line each; `MOCK_CODEX_CATALOG_FETCH_MS` and `MOCK_CODEX_CATALOG_FAULT` (`fail`, `hang`) shape the fetch. Fields in the header of `tests/support/mock_harness.rs`. |
 
+A `--control` Codex turn under `--mock-harness codex` runs on the mock's
+app-server, which reports the token usage `MOCK_STDOUT` carries (Codex exec's
+`turn.completed` `usage`, or a top-level `usage` object) the way real Codex does,
+on `thread/tokenUsage/updated`. So the stdout that gives an exec turn a measured
+`usage` gives a controlled turn the same one, in the report and its history, and
+a budget asserted over either holds over both.
+
 The SDK helpers cover stdout, stderr, exit, and latency. Put advanced variables
 in the run options' `env` map; explicit helper script values take precedence.
 

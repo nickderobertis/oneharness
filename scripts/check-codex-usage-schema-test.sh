@@ -13,6 +13,7 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 gate="$root/scripts/check-codex-usage-schema.sh"
 snapshot="$root/tests/fixtures/codex-rate-limits.schema.json"
+token_snapshot="$root/tests/fixtures/codex-thread-token-usage.schema.json"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -44,20 +45,38 @@ while [ \$# -gt 0 ]; do
         *) shift ;;
     esac
 done
+# A staging step that fails is the fake's own fault, never a gate verdict:
+# exit 3, which no case below expects, naming what could not be written.
+staging_failed() {
+    echo "fake codex: could not stage \$1 under \$out" >&2
+    exit 3
+}
 case "$mode" in
     match)
-        mkdir -p "\$out/v2"
-        cp "$snapshot" "\$out/v2/GetAccountRateLimitsResponse.json"
+        mkdir -p "\$out/v2" || staging_failed "\$out/v2"
+        cp "$snapshot" "\$out/v2/GetAccountRateLimitsResponse.json" || staging_failed GetAccountRateLimitsResponse.json
+        cp "$token_snapshot" "\$out/v2/ThreadTokenUsageUpdatedNotification.json" || staging_failed ThreadTokenUsageUpdatedNotification.json
         ;;
     drift)
-        mkdir -p "\$out/v2"
+        mkdir -p "\$out/v2" || staging_failed "\$out/v2"
         sed 's/usedPercent/pctUsed/g' "$snapshot" \\
-            >"\$out/v2/GetAccountRateLimitsResponse.json"
+            >"\$out/v2/GetAccountRateLimitsResponse.json" || staging_failed GetAccountRateLimitsResponse.json
+        cp "$token_snapshot" "\$out/v2/ThreadTokenUsageUpdatedNotification.json" || staging_failed ThreadTokenUsageUpdatedNotification.json
+        ;;
+    token-drift)
+        mkdir -p "\$out/v2" || staging_failed "\$out/v2"
+        cp "$snapshot" "\$out/v2/GetAccountRateLimitsResponse.json" || staging_failed GetAccountRateLimitsResponse.json
+        sed 's/outputTokens/completionTokens/g' "$token_snapshot" \\
+            >"\$out/v2/ThreadTokenUsageUpdatedNotification.json" || staging_failed ThreadTokenUsageUpdatedNotification.json
+        ;;
+    token-missing)
+        mkdir -p "\$out/v2" || staging_failed "\$out/v2"
+        cp "$snapshot" "\$out/v2/GetAccountRateLimitsResponse.json" || staging_failed GetAccountRateLimitsResponse.json
         ;;
     missing-output)
         # Succeeds, but emits nothing where the rate-limits response used to be.
-        mkdir -p "\$out/v2"
-        echo '{}' >"\$out/v2/SomethingElse.json"
+        mkdir -p "\$out/v2" || staging_failed "\$out/v2"
+        echo '{}' >"\$out/v2/SomethingElse.json" || staging_failed SomethingElse.json
         ;;
     generator-failure)
         echo "codex: app-server: unrecognized subcommand 'generate-json-schema'" >&2
@@ -130,6 +149,20 @@ assert_contains "$tmp/drift.log" "the codex rate-limits contract drifted" \
   "drift must be named as drift"
 assert_contains "$tmp/drift.log" "would otherwise become a silent zero" \
   "the failure must say why the drift matters"
+
+status="$(run_gate "$(write_fake_codex token-drift)" "$tmp/token-drift.log")"
+[ "$status" = "1" ] || fail "a drifted token-usage schema must fail the gate, got exit $status"
+assert_contains "$tmp/token-drift.log" "completionTokens" \
+  "the token-usage diff must show what actually changed"
+assert_contains "$tmp/token-drift.log" "the codex thread token-usage notification contract drifted" \
+  "token-usage drift must be named as its own contract's drift"
+assert_contains "$tmp/token-drift.log" "absorb_codex_token_usage" \
+  "the failure must point at the reader that depends on the shape"
+
+status="$(run_gate "$(write_fake_codex token-missing)" "$tmp/token-missing.log")"
+[ "$status" = "1" ] || fail "a missing token-usage schema must fail the gate, got exit $status"
+assert_contains "$tmp/token-missing.log" "no longer emits v2/ThreadTokenUsageUpdatedNotification.json" \
+  "a moved notification must be reported as moved, not as a diff"
 
 # The diff must survive the way `just lint-workflows` invokes the gate — stdout
 # suppressed. A drift report whose diff went to /dev/null tells a reader the

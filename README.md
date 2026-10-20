@@ -1252,7 +1252,12 @@ invalidating earlier ones):
   object is always present so the shape is stable for cross-harness cost/latency
   tables. `usage_source` records the method: `json` for a harness that reports a
   whole-run total in one event (Claude Code), `json:summed-steps` for one that
-  reports per-step usage that oneharness sums (OpenCode). The two cache fields
+  reports per-step usage that oneharness sums (OpenCode), and
+  `jsonrpc:codex-app-server` for a Codex [`--control`](#turn-control-interrupt-a-running-turn)
+  turn, read off the app-server's own `thread/tokenUsage/updated` for that
+  turn's thread into the same fields a `codex exec` turn fills (on a resumed
+  thread, only this run's turns count: the totals the server replays on resume
+  are subtracted). The two cache fields
   surface **provider-side prompt-cache** counts — `cache_read_tokens` is prefix
   tokens served cheaply from cache, `cache_write_tokens` is tokens written to it
   (a.k.a. cache creation) — so a consumer can confirm a repeated/forked run

@@ -2026,23 +2026,23 @@ fn a_pooled_overload_retries_on_the_shared_server_and_falls_through_once_exhaust
 /// A pooled turn's frames are observed as they arrive, as a dispatch's own
 /// child's stdout is, so a tool the turn runs reads the same on a shared server
 /// as on the dispatch's own app-server child — in the report and in the
-/// history's event lines: the same tool call, with the same timing fields.
+/// history's event lines: the same tool call, timed off the provider trace the
+/// app-server stream is, and a run record whose tool time is measured.
 #[test]
 fn a_pooled_turn_s_tool_reads_as_it_does_on_the_dispatch_s_own_child() {
     let pool = Pool::new("pool-timing");
-    let timing = |event: &Value| -> Vec<Value> {
-        [
-            "name",
-            "tool_call_id",
-            "status",
-            "started_at",
-            "finished_at",
-            "duration_ms",
-            "timing_source",
-        ]
-        .iter()
-        .map(|field| event[*field].clone())
-        .collect()
+    let identity = |event: &Value| -> Vec<Value> {
+        ["name", "tool_call_id", "status"]
+            .iter()
+            .map(|field| event[*field].clone())
+            .collect()
+    };
+    // Which timing a call carries, not its instants: two runs never share those.
+    let timing = |event: &Value| -> Vec<bool> {
+        ["started_at", "finished_at", "duration_ms", "timing_source"]
+            .iter()
+            .map(|field| !event[*field].is_null())
+            .collect()
     };
     let mut seen = Vec::new();
     for per_dispatch in [false, true] {
@@ -2087,11 +2087,21 @@ fn a_pooled_turn_s_tool_reads_as_it_does_on_the_dispatch_s_own_child() {
             .find(|line| line["type"] == "event" && line["event"]["kind"] == "tool_call")
             .unwrap_or_else(|| panic!("{session}: no tool call event in {written}"));
         assert_eq!(
-            timing(&in_history["event"]),
-            timing(&call),
+            identity(&in_history["event"]),
+            identity(&call),
             "{session}: {written}"
         );
-        seen.push(timing(&call));
+        // Provider-measured, in the shape an exec turn's call has: every
+        // instant, and no stdout-observed provenance.
+        assert_eq!(
+            timing(&call),
+            [true, true, true, false],
+            "{session}: {call}"
+        );
+        let record = history_run(&report);
+        assert_eq!(record["status"], "ok", "{session}: {record}");
+        assert!(record["tool_ms"].is_number(), "{session}: {record}");
+        seen.push((identity(&call), timing(&call)));
     }
     assert_eq!(
         seen[0], seen[1],
@@ -5979,3 +5989,172 @@ fn a_mock_harness_server_never_serves_a_turn_without_the_mock() {
     assert_eq!(result(&report)["text"], "mocked answer");
 }
 // llmlint: ignore-end[e2e_not_mocked]
+
+/// A `codex exec` turn's stdout carrying its token usage, as Codex prints it.
+/// The mock reads the same counts off MOCK_STDOUT on every path: an exec turn
+/// prints them on `turn.completed`, its app-server turns report them on
+/// `thread/tokenUsage/updated`.
+const USAGE_STDOUT: &str = concat!(
+    "{\"type\":\"thread.started\",\"thread_id\":\"th-usage\"}\n",
+    "{\"type\":\"item.completed\",\"item\":{\"id\":\"msg-1\",\"type\":\"agent_message\",\"text\":\"done\"}}\n",
+    "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1000,\"cached_input_tokens\":400,\"output_tokens\":100}}\n",
+);
+
+/// The run's record in the history file its report names, as history reads it.
+fn history_run(report: &Value) -> Value {
+    let file = report["history_file"].as_str().expect("a history file");
+    let records = oneharness_core::io::history::read_session(Path::new(file)).unwrap();
+    let record = records
+        .last()
+        .unwrap_or_else(|| panic!("no run record in {file}"));
+    serde_json::to_value(record).unwrap()
+}
+
+/// The token counts a result (or history record) carries.
+fn token_counts(value: &Value) -> [Value; 3] {
+    let usage = &value["usage"];
+    [
+        usage["input_tokens"].clone(),
+        usage["cache_read_tokens"].clone(),
+        usage["output_tokens"].clone(),
+    ]
+}
+
+/// A controlled Codex turn records the token usage the app-server reported
+/// for it — in the report and its history, in the same fields an exec turn
+/// fills and priced the same way — on the shared server and on the dispatch's
+/// own child alike.
+#[test]
+fn a_controlled_codex_turn_records_the_usage_the_app_server_reported() {
+    let pool = Pool::new("pool-usage");
+    for per_dispatch in [false, true] {
+        let session = if per_dispatch { "own-child" } else { "pooled" };
+        let history = pool.file(&format!("{session}-history"));
+        let log = pool.file(&format!("{session}-app-server.log"));
+        let args = [
+            "--model",
+            "gpt-5-codex",
+            "--history",
+            "--history-dir",
+            history.as_str(),
+        ];
+        let envs = [
+            ("MOCK_STDOUT", USAGE_STDOUT),
+            // The own child acts as an app-server only with a log to keep.
+            ("MOCK_CODEX_APP_SERVER_LOG", log.as_str()),
+        ];
+        let cmd = if per_dispatch {
+            pool.command_with_config(
+                session,
+                "[harness.codex]\napp_server = \"per-dispatch\"\n",
+                &args,
+                &envs,
+            )
+        } else {
+            pool.command(session, &args, &envs)
+        };
+        let (output, report) = pool.run(cmd);
+        succeeded(&output, &report);
+        assert_eq!(
+            report["control"]["app_server"].is_null(),
+            per_dispatch,
+            "{session}: {report}"
+        );
+        let ran = result(&report);
+        assert_eq!(
+            token_counts(ran),
+            [json!(1000), json!(400), json!(100)],
+            "{session}: {ran}"
+        );
+        assert_eq!(ran["usage_source"], "jsonrpc:codex-app-server", "{session}");
+        // Priced off the counts exactly as an exec turn of gpt-5-codex is.
+        let cost = ran["usage"]["cost_usd"]
+            .as_f64()
+            .expect("a known model is priced");
+        assert!((cost - 0.00180).abs() < 1e-9, "{session}: {cost}");
+        // The app-server stream is a complete provider trace, so the run is
+        // measured — which is what lets history accept its record at all.
+        assert_eq!(
+            ran["telemetry"]["source"], "provider_measured",
+            "{session}: {ran}"
+        );
+        let record = history_run(&report);
+        assert_eq!(
+            token_counts(&record),
+            token_counts(ran),
+            "{session}: {record}"
+        );
+        assert_eq!(record["usage"]["cost_usd"], ran["usage"]["cost_usd"]);
+    }
+}
+
+/// A consumer's budget over `--mock-harness codex`: the MOCK_STDOUT that
+/// scripts an exec turn's usage scripts a controlled turn's too, so the run on
+/// the shared server measures what the uncontrolled one does — and a resumed
+/// session's turn counts only itself, not the thread's earlier turns.
+#[test]
+fn a_controlled_mock_harness_turn_reports_the_mocked_usage_per_turn() {
+    let pool = Pool::new("pool-mock-usage");
+    // A turn of its own session held live throughout, so both turns below
+    // certainly land on one server and the resume rejoins the thread there.
+    let kept = pool.file("kept");
+    let keeper = pool.spawn(mock_harness_command(
+        &pool,
+        "usage-keep",
+        true,
+        &[
+            ("MOCK_STDOUT", USAGE_STDOUT),
+            ("MOCK_CODEX_HOLD_UNTIL", &kept),
+        ],
+    ));
+    pool.await_live_turns(1);
+    let history = pool.file("history");
+    let budgeted = || {
+        let mut cmd = mock_harness_command(&pool, "budget", true, &[("MOCK_STDOUT", USAGE_STDOUT)]);
+        cmd.args(["--history", "--history-dir", &history]);
+        cmd
+    };
+    let (out, first) = pool.run(budgeted());
+    let (out_resumed, resumed) = pool.run(budgeted());
+    std::fs::write(&kept, b"").unwrap();
+    let (out_kept, kept_report) = Pool::finish_within(keeper, Duration::from_secs(30));
+    succeeded(&out_kept, &kept_report);
+    succeeded(&out, &first);
+    succeeded(&out_resumed, &resumed);
+    assert_eq!(
+        thread_of(&resumed),
+        thread_of(&first),
+        "the session was not resumed"
+    );
+    assert_eq!(reported_server(&resumed), reported_server(&first));
+
+    let expected = [json!(1000), json!(400), json!(100)];
+    for report in [&first, &resumed] {
+        assert_eq!(token_counts(result(report)), expected, "{report}");
+        assert_eq!(result(report)["usage_source"], "jsonrpc:codex-app-server");
+        assert_eq!(token_counts(&history_run(report)), expected, "{report}");
+    }
+
+    // The same mock, uncontrolled, is an exec turn: the counts agree.
+    let mut exec = Command::new(oneharness_bin());
+    exec.env("ONEHARNESS_NO_CONFIG", "1");
+    pool.base(&mut exec);
+    exec.env("MOCK_STDOUT", USAGE_STDOUT).args([
+        "run",
+        "--format",
+        "json",
+        "--harness",
+        "codex",
+        "--prompt",
+        "hi",
+        "--mock-harness",
+        "codex",
+    ]);
+    let (out, uncontrolled) = pool.run(exec);
+    succeeded(&out, &uncontrolled);
+    assert_eq!(
+        token_counts(result(&uncontrolled)),
+        expected,
+        "{uncontrolled}"
+    );
+}

@@ -1095,6 +1095,20 @@ fn observed_json_lines(observations: &[OutputObservation]) -> Vec<(Value, u128, 
 }
 
 fn observe_boundaries(value: &Value, offset: u128, utc: &str, out: &mut Vec<Boundary>) {
+    if let Some((method, item)) = app_server_item(value) {
+        if item.get("type").and_then(Value::as_str) == Some("commandExecution") {
+            if let Some(id) = item.get("id").and_then(Value::as_str) {
+                let boundary = boundary(out, id);
+                if method == "item/started" {
+                    boundary.start = Some((offset, utc.to_string()));
+                } else {
+                    boundary.finish = Some((offset, utc.to_string()));
+                    boundary.status = codex_tool_status(item);
+                }
+            }
+        }
+        return;
+    }
     if let Some(item) = value.get("item").and_then(Value::as_object) {
         if item
             .get("type")
@@ -1306,12 +1320,52 @@ fn is_model_token(value: &Value) -> bool {
                 .pointer("/item/text")
                 .and_then(Value::as_str)
                 .is_some_and(|text| !text.is_empty())
+        // The app-server streams an answer as deltas before its item completes.
+        || app_server_method(value) == Some("item/agentMessage/delta")
+            && value
+                .pointer("/params/delta")
+                .and_then(Value::as_str)
+                .is_some_and(|delta| !delta.is_empty())
+        || app_server_item(value).is_some_and(|(method, item)| {
+            method == "item/completed"
+                && item.get("type").and_then(Value::as_str) == Some("agentMessage")
+                && item
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| !text.is_empty())
+        })
+}
+
+/// The JSON-RPC method of a codex app-server notification — the stream a
+/// controlled codex turn is driven over — or `None` for any other record.
+fn app_server_method(value: &Value) -> Option<&str> {
+    value.get("method").and_then(Value::as_str)
+}
+
+/// The item a codex app-server `item/started` / `item/completed` notification
+/// carries, when `value` is one.
+fn app_server_item(value: &Value) -> Option<(&str, &serde_json::Map<String, Value>)> {
+    let method = app_server_method(value)
+        .filter(|method| matches!(*method, "item/started" | "item/completed"))?;
+    let item = value.pointer("/params/item").and_then(Value::as_object)?;
+    Some((method, item))
+}
+
+/// Whether `value` is an app-server notification about a tool the app-server
+/// event reading normalizes (`codex_app_server_item`: a `commandExecution`),
+/// at `method`'s point in its life.
+fn is_app_server_tool(value: &Value, method: &str) -> bool {
+    app_server_item(value).is_some_and(|(seen, item)| {
+        seen == method && item.get("type").and_then(Value::as_str) == Some("commandExecution")
+    })
 }
 
 fn is_provider_start(value: &Value, trace: TelemetryTrace) -> bool {
     match trace {
+        // `codex exec --json`'s turn, or the app-server's for a controlled one.
         TelemetryTrace::CodexJson => {
             value.get("type").and_then(Value::as_str) == Some("turn.started")
+                || app_server_method(value) == Some("turn/started")
         }
         TelemetryTrace::OpenCodeJson => {
             value.get("type").and_then(Value::as_str) == Some("step_start")
@@ -1324,6 +1378,7 @@ fn is_provider_finish(value: &Value, trace: TelemetryTrace) -> bool {
     match trace {
         TelemetryTrace::CodexJson => {
             value.get("type").and_then(Value::as_str) == Some("turn.completed")
+                || app_server_method(value) == Some("turn/completed")
         }
         TelemetryTrace::OpenCodeJson => {
             value.get("type").and_then(Value::as_str) == Some("step_finish")
@@ -1333,8 +1388,9 @@ fn is_provider_finish(value: &Value, trace: TelemetryTrace) -> bool {
 }
 
 fn is_tool_start(value: &Value) -> bool {
-    value.get("type").and_then(Value::as_str) == Some("tool_call")
-        && value.get("subtype").and_then(Value::as_str) == Some("started")
+    is_app_server_tool(value, "item/started")
+        || value.get("type").and_then(Value::as_str) == Some("tool_call")
+            && value.get("subtype").and_then(Value::as_str) == Some("started")
         || value.get("type").and_then(Value::as_str) == Some("item.started")
             && value
                 .pointer("/item/type")
@@ -1355,8 +1411,9 @@ fn is_tool_start(value: &Value) -> bool {
 }
 
 fn is_tool_finish(value: &Value) -> bool {
-    value.get("type").and_then(Value::as_str) == Some("tool_call")
-        && value.get("subtype").and_then(Value::as_str) == Some("completed")
+    is_app_server_tool(value, "item/completed")
+        || value.get("type").and_then(Value::as_str) == Some("tool_call")
+            && value.get("subtype").and_then(Value::as_str) == Some("completed")
         || value.get("type").and_then(Value::as_str) == Some("item.completed")
             && value
                 .pointer("/item/type")
@@ -1863,6 +1920,80 @@ mod tests {
         );
         assert_eq!(got.events[0].output.as_deref(), Some("OHCAPTURE12345"));
         assert_eq!(got.events[0].status, Some(ToolCallStatus::Completed));
+    }
+
+    /// A captured controlled turn, replayed at the instants the server stamped
+    /// on each frame (`emittedAtMs`), as the runner would have observed it.
+    fn app_server_observations(raw: &str) -> Vec<OutputObservation> {
+        let first = raw
+            .lines()
+            .find_map(|line| serde_json::from_str::<Value>(line).ok()?["emittedAtMs"].as_u64())
+            .unwrap();
+        raw.lines()
+            .map(|line| {
+                let at = serde_json::from_str::<Value>(line).unwrap()["emittedAtMs"]
+                    .as_u64()
+                    .unwrap_or(first);
+                OutputObservation {
+                    offset_ms: u128::from(at - first),
+                    observed_at: format!("2026-10-20T00:00:{:06.3}Z", (at - first) as f64 / 1000.0),
+                    bytes: format!("{line}\n").into_bytes(),
+                }
+            })
+            .collect()
+    }
+
+    /// A controlled codex turn's app-server stream is the same provider trace
+    /// an exec turn's is: `turn/started` … `turn/completed` bound it, streamed
+    /// answer text is model output, and each `commandExecution` item times its
+    /// tool call — so the run measures a complete trace.
+    #[test]
+    fn a_codex_app_server_turn_is_a_complete_provider_trace() {
+        let raw = include_str!("../../../../tests/fixtures/codex-app-server-turn.jsonl");
+        let mut events = extract_events(raw, OutputFormat::Json).unwrap().events;
+        let observations = app_server_observations(raw);
+        let duration = observations.last().unwrap().offset_ms;
+        let reading = apply_observed_timing(
+            &mut events,
+            &observations,
+            Status::Ok,
+            Some(duration),
+            TelemetryTrace::CodexJson,
+        );
+        assert!(reading.trace_complete, "{reading:?}");
+        let tools: Vec<_> = events.iter().filter(|e| e.kind == "tool_call").collect();
+        assert_eq!(tools.len(), 2);
+        for tool in &tools {
+            assert!(
+                tool.started_at.is_some() && tool.duration_ms.is_some(),
+                "{tool:?}"
+            );
+        }
+        assert_eq!(tools[1].status, Some(ToolCallStatus::Failed));
+        let tool_ms = reading.tool_ms.unwrap();
+        let model_ms = reading.model_ms.unwrap();
+        assert!(
+            model_ms > 0 && model_ms + tool_ms <= duration,
+            "{reading:?}"
+        );
+        assert!(reading.time_to_first_token_ms.unwrap() > 0);
+
+        // Without its closing `turn/completed`, a clean exit's trace is not
+        // complete — the turn's end was never observed.
+        let cut: String = raw
+            .lines()
+            .filter(|line| !line.contains(r#""method":"turn/completed""#))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        let mut events = extract_events(&cut, OutputFormat::Json).unwrap().events;
+        let reading = apply_observed_timing(
+            &mut events,
+            &app_server_observations(&cut),
+            Status::Ok,
+            Some(duration),
+            TelemetryTrace::CodexJson,
+        );
+        assert!(!reading.trace_complete, "{reading:?}");
     }
 
     #[test]

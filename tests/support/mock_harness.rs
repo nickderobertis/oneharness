@@ -1751,6 +1751,12 @@ fn run_codex_app_server(log_path: &str) -> ! {
                     "id": id,
                     "result": {"turn": {"id": "mock-codex-turn", "status": "inProgress"}},
                 }));
+                // Then the turn's own start, as the real server announces it.
+                send(&json!({
+                    "jsonrpc": "2.0",
+                    "method": "turn/started",
+                    "params": {"threadId": thread, "turn": {"id": "mock-codex-turn", "status": "inProgress"}},
+                }));
                 if attempt.is_some_and(|attempt| attempt <= overload_attempts) {
                     if mock_var_os("MOCK_CODEX_OVERLOAD_AFTER_TOOL").is_some() {
                         for frame in

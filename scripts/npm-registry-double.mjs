@@ -29,7 +29,6 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 
-// Fatal startup and listener failures name the fixture and what to do about it.
 function die(message, next, status = 1) {
   process.stderr.write(`npm-registry-double: ${message}\n  Next: ${next}\n`);
   process.exit(status);
@@ -171,7 +170,6 @@ const server = createServer((request, response) => {
   try {
     serve(request, response, `http://127.0.0.1:${server.address().port}`);
   } catch (error) {
-    // npm sees a server error and fails its install; the cause goes to stderr.
     process.stderr.write(`npm-registry-double: ${request.method} ${request.url} failed: ${error.message}\n`);
     if (!response.headersSent) response.writeHead(500, { "content-type": "application/json" });
     response.end('{"error":"registry double failed; see its stderr"}');

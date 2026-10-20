@@ -62,9 +62,13 @@ SH
   cp "$binary" "$binary.exe"
   # Every platform the launcher pins, read from the one list that states them,
   # so npm meets each optional dependency the way it does on the registry.
-  targets="$(sed -n 's/^target = "\(.*\)"$/\1/p' release-platforms.toml)"
-  [ -n "$targets" ] || fail "release-platforms.toml declares no target to publish; restore its [[platform]] entries (bash scripts/check-release-targets.sh names what is wrong with it)"
-  for target in $targets; do
+  # A read loop, not mapfile: macOS's system bash is 3.2.
+  targets=()
+  while IFS= read -r target; do
+    targets+=("$target")
+  done < <(sed -n 's/^target = "\(.*\)"$/\1/p' release-platforms.toml)
+  [ "${#targets[@]}" -gt 0 ] || fail "release-platforms.toml declares no target to publish; restore its [[platform]] entries (bash scripts/check-release-targets.sh names what is wrong with it)"
+  for target in "${targets[@]}"; do
     case "$target" in
       *-windows-*) built="$binary.exe" ;;
       *) built="$binary" ;;

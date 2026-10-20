@@ -345,6 +345,11 @@ unset ATTEMPTS_OVERRIDE STUB_PLATFORM_WITHHELD
 expect_status 1
 expect_said "$tmp/err" "was still not installable after 90 attempts"
 
+ATTEMPTS_OVERRIDE='' STUB_NPM_FAILS=999 run_case npm-sdk "the default npm SDK bound"
+unset ATTEMPTS_OVERRIDE STUB_NPM_FAILS
+expect_status 1
+expect_said "$tmp/err" "@oneharness/sdk@$VERSION_UNDER_TEST from npm was still not installable after 90 attempts"
+
 ATTEMPTS_OVERRIDE='' STUB_PIP_FAILS=99 run_case pypi-cli "the default PyPI bound"
 unset ATTEMPTS_OVERRIDE STUB_PIP_FAILS
 expect_status 1

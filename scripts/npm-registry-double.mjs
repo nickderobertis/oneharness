@@ -40,10 +40,12 @@ if (!dir) die("no <tarball-dir> given", `pass the directory \`npm pack\` wrote t
 if (!portFile) die("no <port-file> given", `pass a path to write the listening port to: ${usage}`, 2);
 if (!requestLog) die("no <request-log> given", `pass a path to append each request to: ${usage}`, 2);
 
-// Package names as npm accepts them, and versions as the verifier does; both
-// become URL and file name parts, so nothing else is served.
+// Package names as npm accepts them. A version is not re-judged here: `npm pack`
+// already refused anything that is not semver, and which versions a release may
+// carry is verify-published.sh's one grammar. Both become URL and file name
+// parts, so the version is only held to characters that cannot leave either.
 const NAME = /^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
-const VERSION = /^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?$/;
+const PATH_SAFE_VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]*$/;
 
 // The one entry a tarball's manifest lives at: `package/package.json` in the
 // ustar stream `npm pack` writes (512-byte headers, size in octal at 124).
@@ -61,7 +63,7 @@ function manifestOf(tgz) {
       if (typeof manifest?.name !== "string" || !NAME.test(manifest.name)) {
         throw new Error(`its manifest names no valid package: ${JSON.stringify(manifest?.name)}`);
       }
-      if (typeof manifest.version !== "string" || !VERSION.test(manifest.version)) {
+      if (typeof manifest.version !== "string" || !PATH_SAFE_VERSION.test(manifest.version)) {
         throw new Error(`its manifest carries no valid version: ${JSON.stringify(manifest.version)}`);
       }
       return manifest;

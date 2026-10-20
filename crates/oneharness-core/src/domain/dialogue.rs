@@ -26,6 +26,7 @@ use serde_json::{json, Value};
 
 use crate::domain::control::{AbsolutePath, ControlShape, RedirectInput};
 use crate::domain::mode::{ApprovalPosture, PermissionMode};
+use crate::domain::signals::Usage;
 
 /// What a run needs to open a turn over one of these protocols. The command
 /// layer resolves each value exactly as it would for an ordinary run.
@@ -111,6 +112,29 @@ impl DialogueResume {
     #[must_use]
     pub fn thread(&self) -> &str {
         &self.thread
+    }
+}
+
+/// One `TokenUsageBreakdown` from codex's app-server: the counts oneharness
+/// normalizes into the same [`Usage`] fields a `codex exec` turn's
+/// `turn.completed` fills (`inputTokens` includes `cachedInputTokens`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CodexTokenTotals {
+    input: u64,
+    cached_input: u64,
+    output: u64,
+}
+
+impl CodexTokenTotals {
+    /// The breakdown's three counts, each required by codex's schema; `None`
+    /// when any is missing or not a non-negative integer.
+    fn from_breakdown(breakdown: &Value) -> Option<Self> {
+        let count = |key: &str| breakdown.get(key).and_then(Value::as_u64);
+        Some(Self {
+            input: count("inputTokens")?,
+            cached_input: count("cachedInputTokens")?,
+            output: count("outputTokens")?,
+        })
     }
 }
 
@@ -205,6 +229,15 @@ pub struct Dialogue {
     refusal: Option<DialogueRefusal>,
     /// Codex's per-turn identifier, which `turn/interrupt` addresses.
     turn_id: Option<String>,
+    /// Every turn this dialogue opened, the redirected one included — the
+    /// turns whose token usage is this run's.
+    own_turns: Vec<String>,
+    /// The thread's cumulative token totals the server reported before any of
+    /// this dialogue's turns (its replay on `thread/resume`), subtracted so a
+    /// continued conversation's earlier turns are not billed to this run.
+    usage_baseline: Option<CodexTokenTotals>,
+    /// The thread's cumulative token totals as of this dialogue's latest turn.
+    usage_latest: Option<CodexTokenTotals>,
     /// Assistant text accumulated from the update stream.
     text: String,
     /// The message the accumulated text is currently coming from, so two
@@ -261,6 +294,9 @@ impl Dialogue {
             observed_model: None,
             refusal: None,
             turn_id: None,
+            own_turns: Vec::new(),
+            usage_baseline: None,
+            usage_latest: None,
             text: String::new(),
             text_item: None,
             pending_redirect: None,
@@ -529,6 +565,11 @@ impl Dialogue {
                     .and_then(|turn| turn.get("id"))
                     .and_then(Value::as_str)
                     .map(str::to_string);
+                self.own_current_turn();
+                DialogueStep::default()
+            }
+            (ControlShape::CodexAppServer, "thread/tokenUsage/updated") => {
+                self.absorb_codex_token_usage(params);
                 DialogueStep::default()
             }
             (ControlShape::CodexAppServer, "item/agentMessage/delta") => {
@@ -548,6 +589,63 @@ impl Dialogue {
             }
             _ => DialogueStep::default(),
         }
+    }
+
+    /// Record the turn the server just named as one this dialogue opened.
+    fn own_current_turn(&mut self) {
+        if let Some(turn) = &self.turn_id {
+            if !self.own_turns.contains(turn) {
+                self.own_turns.push(turn.clone());
+            }
+        }
+    }
+
+    /// Read one `thread/tokenUsage/updated` notification
+    /// (`ThreadTokenUsageUpdatedNotification`: `threadId`, `turnId`, and
+    /// `tokenUsage.total` — the thread's cumulative `TokenUsageBreakdown`).
+    ///
+    /// Only this dialogue's thread counts. One naming a turn this dialogue
+    /// opened moves the latest totals; one naming any other turn, before this
+    /// dialogue's own have reported, is the thread's history (the server's
+    /// replay on attach) and becomes the baseline. A notification whose totals
+    /// are not the schema's non-negative integers is no reading at all.
+    fn absorb_codex_token_usage(&mut self, params: &Value) {
+        let thread = params.get("threadId").and_then(Value::as_str);
+        if thread.is_none() || thread != self.session_id.as_deref() {
+            return;
+        }
+        let Some(totals) = params
+            .pointer("/tokenUsage/total")
+            .and_then(CodexTokenTotals::from_breakdown)
+        else {
+            return;
+        };
+        let turn = params.get("turnId").and_then(Value::as_str);
+        if turn.is_some_and(|turn| self.own_turns.iter().any(|own| own == turn)) {
+            self.usage_latest = Some(totals);
+        } else if self.usage_latest.is_none() {
+            self.usage_baseline = Some(totals);
+        }
+    }
+
+    /// The token usage the server reported for this dialogue's turns, or
+    /// `None` when it reported none for them. The thread's cumulative totals
+    /// less whatever it had spent before this dialogue's first turn, so a turn
+    /// on a continued conversation counts only itself; a count that would go
+    /// negative against that baseline is unknown, never clamped.
+    #[must_use]
+    pub fn usage(&self) -> Option<Usage> {
+        let latest = self.usage_latest?;
+        let since = |now: u64, before: fn(&CodexTokenTotals) -> u64| match &self.usage_baseline {
+            Some(baseline) => now.checked_sub(before(baseline)),
+            None => Some(now),
+        };
+        Some(Usage {
+            input_tokens: since(latest.input, |b| b.input),
+            output_tokens: since(latest.output, |b| b.output),
+            cache_read_tokens: since(latest.cached_input, |b| b.cached_input),
+            ..Usage::default()
+        })
     }
 
     /// Append `delta`, separating it from the previous message when it belongs
@@ -726,6 +824,7 @@ impl Dialogue {
                         .and_then(Value::as_str)
                     {
                         self.turn_id = Some(turn.to_string());
+                        self.own_current_turn();
                     }
                     DialogueStep::default()
                 }
@@ -1122,6 +1221,123 @@ mod tests {
         let step = d.on_line(r#"{"jsonrpc":"2.0","method":"turn/completed","params":{}}"#);
         assert!(step.is_terminal());
         assert!(d.interrupt(None).is_none(), "no turn left to interrupt");
+    }
+
+    /// A `thread/tokenUsage/updated` line in codex's own
+    /// `ThreadTokenUsageUpdatedNotification` shape: `total` is the thread's
+    /// cumulative breakdown, `last` the latest model call's.
+    fn token_usage(thread: &str, turn: &str, input: u64, cached: u64, output: u64) -> String {
+        json!({"jsonrpc": "2.0", "method": "thread/tokenUsage/updated", "params": {
+            "threadId": thread, "turnId": turn, "tokenUsage": {
+                "total": {"totalTokens": input + output, "inputTokens": input,
+                    "cachedInputTokens": cached, "outputTokens": output,
+                    "reasoningOutputTokens": 0},
+                "last": {"totalTokens": 1, "inputTokens": 1, "cachedInputTokens": 0,
+                    "outputTokens": 0, "reasoningOutputTokens": 0},
+                "modelContextWindow": null}}})
+        .to_string()
+    }
+
+    /// Codex's own schema for the notification, generated by
+    /// `codex app-server generate-json-schema` (codex-cli 0.159.2).
+    const TOKEN_USAGE_SCHEMA: &str =
+        include_str!("../../../../tests/fixtures/codex-thread-token-usage.schema.json");
+
+    /// The fixture above speaks codex's schema, and every count the reader
+    /// takes is one the schema requires — so a rename upstream fails here
+    /// rather than reading as a turn that reported nothing.
+    #[test]
+    fn codex_usage_reads_only_what_codex_s_schema_requires() {
+        let schema: Value = serde_json::from_str(TOKEN_USAGE_SCHEMA).unwrap();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let frame: Value = serde_json::from_str(&token_usage("th", "tu", 3, 1, 2)).unwrap();
+        assert!(validator.is_valid(&frame["params"]), "{frame}");
+        let required = |path: &str| schema.pointer(path).cloned().unwrap_or_default();
+        for key in ["threadId", "turnId", "tokenUsage"] {
+            assert!(required("/required")
+                .as_array()
+                .unwrap()
+                .contains(&json!(key)));
+        }
+        assert!(required("/definitions/ThreadTokenUsage/required")
+            .as_array()
+            .unwrap()
+            .contains(&json!("total")));
+        for key in ["inputTokens", "cachedInputTokens", "outputTokens"] {
+            assert!(required("/definitions/TokenUsageBreakdown/required")
+                .as_array()
+                .unwrap()
+                .contains(&json!(key)));
+        }
+    }
+
+    /// The turn's usage is the thread's latest cumulative total the server
+    /// reported for it — not the last model call's, and not a sum of repeats.
+    #[test]
+    fn codex_usage_is_the_turn_s_reported_total() {
+        let mut d = codex_in_turn();
+        assert_eq!(d.usage(), None, "nothing reported yet is no reading");
+        d.on_line(&token_usage("th-1", "tu-9", 900, 100, 20));
+        d.on_line(&token_usage("th-1", "tu-9", 1500, 400, 75));
+        // Another thread's accounting on a shared stream is not this turn's.
+        d.on_line(&token_usage("th-other", "tu-9", 99_999, 0, 99_999));
+        d.on_line(r#"{"jsonrpc":"2.0","method":"turn/completed","params":{}}"#);
+        let usage = d.usage().expect("the server reported usage");
+        assert_eq!(usage.input_tokens, Some(1500));
+        assert_eq!(usage.output_tokens, Some(75));
+        assert_eq!(usage.cache_read_tokens, Some(400));
+        assert_eq!(usage.cache_write_tokens, None);
+        assert_eq!(usage.cost_usd, None);
+    }
+
+    /// A continued conversation's earlier turns, replayed by the server when
+    /// the thread is attached, are the baseline: only this turn is counted.
+    #[test]
+    fn codex_usage_on_a_resumed_thread_counts_only_this_turn() {
+        let mut d = codex_in_turn();
+        d.on_line(&token_usage("th-1", "tu-earlier", 1000, 200, 50));
+        d.on_line(&token_usage("th-1", "tu-9", 1600, 500, 80));
+        let usage = d.usage().unwrap();
+        assert_eq!(usage.input_tokens, Some(600));
+        assert_eq!(usage.cache_read_tokens, Some(300));
+        assert_eq!(usage.output_tokens, Some(30));
+        // A replay arriving after the turn reported is history, not a baseline.
+        d.on_line(&token_usage("th-1", "tu-earlier", 0, 0, 0));
+        assert_eq!(d.usage().unwrap().input_tokens, Some(600));
+    }
+
+    /// A count the baseline exceeds is unknown rather than clamped to zero, and
+    /// a breakdown missing a schema-required count is no reading at all.
+    #[test]
+    fn codex_usage_never_fabricates_a_count() {
+        let mut d = codex_in_turn();
+        d.on_line(&token_usage("th-1", "tu-earlier", 1000, 0, 50));
+        d.on_line(&token_usage("th-1", "tu-9", 900, 0, 80));
+        let usage = d.usage().unwrap();
+        assert_eq!(usage.input_tokens, None);
+        assert_eq!(usage.output_tokens, Some(30));
+
+        let mut d = codex_in_turn();
+        d.on_line(
+            r#"{"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId":"th-1","turnId":"tu-9","tokenUsage":{"total":{"inputTokens":-1,"cachedInputTokens":0,"outputTokens":3}}}}"#,
+        );
+        d.on_line(
+            r#"{"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId":"th-1","turnId":"tu-9","tokenUsage":{"total":{"inputTokens":5,"outputTokens":3}}}}"#,
+        );
+        assert_eq!(d.usage(), None);
+    }
+
+    /// The turn a redirection opens is this run's too, so its usage counts.
+    #[test]
+    fn codex_usage_includes_the_redirected_turn() {
+        let mut d = codex_in_turn();
+        d.on_line(&token_usage("th-1", "tu-9", 100, 0, 10));
+        d.interrupt(Some(&redirection("do the other thing")))
+            .unwrap();
+        d.on_line(r#"{"jsonrpc":"2.0","method":"turn/completed","params":{}}"#);
+        d.on_line(r#"{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"th-1","turn":{"id":"tu-2"}}}"#);
+        d.on_line(&token_usage("th-1", "tu-2", 250, 0, 40));
+        assert_eq!(d.usage().unwrap().input_tokens, Some(250));
     }
 
     /// Drive a codex dialogue through its handshake and return the open

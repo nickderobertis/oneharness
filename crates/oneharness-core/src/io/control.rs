@@ -762,6 +762,18 @@ impl ControlHandle {
         }
     }
 
+    /// The token usage the server reported for the dialogue's turns, with how
+    /// it was obtained. `None` when it reported none — never fabricated.
+    #[must_use]
+    pub fn usage(&self) -> Option<(crate::domain::signals::Usage, &'static str)> {
+        match self.mechanism().as_ref() {
+            Some(Backend::Dialogue(dialogue)) => dialogue
+                .usage()
+                .map(|usage| (usage, dialogue.text_source())),
+            Some(Backend::Stdin | Backend::Http(..)) | None => None,
+        }
+    }
+
     /// Whether this handle drives its turn over a JSON-RPC dialogue on the
     /// child's stdin, in which case the runner tears the server down once the
     /// turn ends instead of waiting for it to exit on its own.

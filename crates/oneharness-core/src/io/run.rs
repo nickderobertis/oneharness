@@ -3576,6 +3576,15 @@ fn apply_dialogue_signals(result: &mut RunResult, handle: &crate::io::control::C
         result.text = Some(text);
         result.text_source = Some(source.to_string());
     }
+    // The server's own per-turn token accounting, priced exactly as an exec
+    // turn's is, and re-read as work evidence since the envelope's was read
+    // before the dialogue's signals arrived.
+    if let Some((mut usage, source)) = handle.usage() {
+        signals::apply_model_price(&mut usage, &result.harness_id, result.model.as_deref());
+        result.usage = usage;
+        result.usage_source = Some(source.to_string());
+        result.refresh_work_evidence();
+    }
     // A turn on the shared app-server records the server's launch — what
     // oneharness actually ran — and, when the server went away under the live
     // turn, the retryable kind that says so rather than a turn failure.

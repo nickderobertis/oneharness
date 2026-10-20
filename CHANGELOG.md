@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.25.9](https://github.com/nickderobertis/oneharness/compare/v0.25.8...v0.25.9) - 2026-10-20
+
+### Fixed
+
+- *(release)* verify an npm release once its platform package resolves ([#1512](https://github.com/nickderobertis/oneharness/pull/1512))
+
 ## [0.25.8](https://github.com/nickderobertis/oneharness/compare/v0.25.7...v0.25.8) - 2026-10-20
 
 ### Fixed

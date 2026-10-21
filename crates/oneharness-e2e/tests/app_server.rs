@@ -3230,6 +3230,24 @@ fn a_server_whose_caller_s_group_and_stamp_were_reaped_mid_turn_is_stopped_when_
     });
 }
 
+/// Reaping both the caller's group and its launcher stamp mid-turn also leaves
+/// an intact pool able to retire the dead lease and stop after its linger.
+#[test]
+fn a_server_whose_caller_s_group_and_stamp_were_reaped_mid_turn_is_stopped_after_its_linger() {
+    let linger = Duration::from_secs(3);
+    let (_pool, server, _entry, sweeper) =
+        held_dispatch_then_end_its_group("pool-group-stamp-linger", linger, true);
+    let bound = after_a_killed_caller(linger);
+    wait_for(
+        &format!("the lingering server {server} to stop"),
+        bound,
+        || !alive(server),
+    );
+    wait_for(&format!("its sweeper {sweeper} to end"), bound, || {
+        !alive(sweeper)
+    });
+}
+
 /// A caller reading a dispatch's output to its end is never held by the shared
 /// server the dispatch started. The dispatch here also holds its standard
 /// output and error at descriptors 3 and 4, not close-on-exec — as a launcher

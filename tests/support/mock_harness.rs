@@ -1652,7 +1652,9 @@ fn run_codex_app_server(log_path: &str) -> ! {
         .open(log_path)
         .expect("the mock app-server could not open its log");
     let mut append = |line: &str| {
-        let _ = writeln!(log, "{line}");
+        // The client appends its redirect trace concurrently. Include the
+        // newline in the same write so its record cannot split this one.
+        let _ = log.write_all(format!("{line}\n").as_bytes());
         let _ = log.flush();
     };
     let mut out = std::io::stdout();

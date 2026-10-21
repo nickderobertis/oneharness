@@ -71,7 +71,9 @@ fn trace_redirect_written() {
         .open(path)
     {
         use std::io::Write as _;
-        let _ = writeln!(file, "REDIRECT_WRITTEN");
+        // One append includes the newline: the harness can append its answer
+        // concurrently, so separate formatting writes can merge two records.
+        let _ = file.write_all(b"REDIRECT_WRITTEN\n");
     }
 }
 

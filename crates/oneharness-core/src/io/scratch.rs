@@ -218,6 +218,46 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_marker_write_failure_returns_the_error_and_removes_the_directory() {
+        const CHILD: &str = "OH_SCRATCH_WRITE_FAILURE_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let tag = "marker-write-failure";
+            let path = std::env::temp_dir().join(ScratchDir::name(tag));
+            let error = ScratchDir::new(tag).expect_err("the file-size limit rejects the marker");
+            assert_eq!(error.raw_os_error(), Some(27), "expected EFBIG: {error}");
+            assert!(
+                !path.exists(),
+                "failed creation left scratch behind: {path:?}"
+            );
+            return;
+        }
+
+        // A real OS write failure, confined to a subprocess so neither the run
+        // token nor the file-size limit can affect concurrently running tests.
+        // Ignoring SIGXFSZ makes write return EFBIG instead of killing the child.
+        let output = std::process::Command::new("bash")
+            .args([
+                "-c",
+                "ulimit -f 0; trap '' XFSZ; exec \"$1\" --exact io::scratch::tests::a_marker_write_failure_returns_the_error_and_removes_the_directory --nocapture",
+                "scratch-write-failure",
+            ])
+            .arg(std::env::current_exe().unwrap())
+            .env(CHILD, "1")
+            .env(RUN_ENV, "marker-write-failure-run")
+            .env("LLVM_PROFILE_FILE", "/dev/null")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "child failed: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+    }
+
     #[test]
     fn a_tag_cannot_escape_the_directory_it_names() {
         // The directory is recursively removed, so a tag that walked out of it

@@ -20065,11 +20065,18 @@ fn an_http_controlled_turn_writes_its_pointer_line() {
     let pointer_file = store.join("pointers.jsonl");
     let pointer_arg = pointer_file.display().to_string();
     let pool = store.join("pool");
-    let output = run(
-        &[
+    let prompt = "complete HTTP prompt — ".repeat(400);
+    let mut child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_HTTP_CONTROL_LOG", store.join("server.log"))
+        .env("MOCK_HTTP_CONTROL_FAULT", "slow-turn")
+        .env("XDG_STATE_HOME", &pool)
+        .args([
             "run",
             "--harness",
             "opencode",
+            "--run-mode",
+            "parallel",
             "--control",
             "--session",
             "pointed-http",
@@ -20080,7 +20087,7 @@ fn an_http_controlled_turn_writes_its_pointer_line() {
             "--mode",
             "bypass",
             "--prompt",
-            "keep working",
+            &prompt,
             "--bin",
             &bin_override("opencode"),
             "--history",
@@ -20091,17 +20098,27 @@ fn an_http_controlled_turn_writes_its_pointer_line() {
             "--timeout",
             "30",
             "--compact",
-        ],
-        &[
-            (
-                "MOCK_HTTP_CONTROL_LOG",
-                store.join("server.log").display().to_string().as_str(),
-            ),
-            // A turn the server finishes on its own, so no interrupt is needed.
-            ("MOCK_HTTP_CONTROL_FAULT", "slow-turn"),
-            ("XDG_STATE_HOME", pool.display().to_string().as_str()),
-        ],
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    wait_until("the HTTP candidate's opening pointer", || {
+        read_pointers(&pointer_file).is_ok_and(|read| !read.pointers.is_empty())
+    });
+    let pointers = read_pointers(&pointer_file).unwrap();
+    let pointer = serde_json::to_value(&pointers.pointers[0]).unwrap();
+    let file = Path::new(pointer["history_file"].as_str().unwrap());
+    let live = std::fs::read_to_string(file).unwrap();
+    let opening: Value = serde_json::from_str(live.trim()).unwrap();
+    assert_eq!(opening["type"], "run-started");
+    assert_eq!(opening["prompt"], prompt);
+    assert_eq!(opening["history_id"], pointer["history_id"]);
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "HTTP turn still running"
     );
+    let output = child.wait_with_output().unwrap();
     let report = json_stdout(&output);
     wait_for_pooled_server_to_exit(&pool);
     assert!(output.status.success(), "{output:?}");
@@ -23270,6 +23287,8 @@ fn controlled_codex_server_overloaded_recovers_under_the_parallel_opt_in() {
     let counter = temp_counter("server-overloaded-controlled-parallel");
     let store = control_store_dir("overload-retry-parallel");
     let log = store.join("app-server.log");
+    let history = hist_dir("controlled-overload-opening");
+    let prompt = "complete retry prompt — ".repeat(400);
     let project = format!(
         r#"
         harnesses = ["codex"]
@@ -23286,7 +23305,7 @@ fn controlled_codex_server_overloaded_recovers_under_the_parallel_opt_in() {
         &[
             "run",
             "--prompt",
-            "hi",
+            &prompt,
             "--cwd",
             &fx.cwd(),
             "--control",
@@ -23294,6 +23313,9 @@ fn controlled_codex_server_overloaded_recovers_under_the_parallel_opt_in() {
             "overload-recovery-parallel",
             "--session-dir",
             &store.display().to_string(),
+            "--history",
+            "--history-dir",
+            &history.display().to_string(),
             "--compact",
         ],
         &[],
@@ -23307,6 +23329,25 @@ fn controlled_codex_server_overloaded_recovers_under_the_parallel_opt_in() {
     assert!(value["results"][0]["failure_kind"].is_null());
     assert_eq!(std::fs::read_to_string(counter).unwrap(), "2");
     assert_eq!(app_server_frames(&log, "turn/start").len(), 2);
+    let lines: Vec<Value> = std::fs::read_to_string(value["history_file"].as_str().unwrap())
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let openings: Vec<_> = lines
+        .iter()
+        .filter(|line| line["type"] == "run-started")
+        .collect();
+    assert_eq!(
+        openings.len(),
+        1,
+        "overload retries retain one opening: {lines:?}"
+    );
+    assert_eq!(openings[0]["prompt"], prompt);
+    assert_eq!(lines[0], *openings[0]);
+    let runs: Vec<_> = lines.iter().filter(|line| line["type"] == "run").collect();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0]["history_id"], openings[0]["history_id"]);
 }
 
 #[cfg(unix)]

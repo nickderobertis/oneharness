@@ -133,6 +133,31 @@ pub fn server_env(
     kept
 }
 
+/// The environment a pool entry's sweeper is started with, from its starting
+/// dispatch's: the platform's base variables and `XDG_STATE_HOME`, from which
+/// it finds the pool again, and nothing else.
+///
+/// The sweeper belongs to the pool, as the server does, so it carries nothing
+/// that names the dispatch. A launcher that ends a dispatch's tree by a stamp
+/// in its environment — `onepipeline` reaps every process carrying the
+/// member's `ONEAGENTGRAPH_SCRATCH_DIR` — otherwise ends the sweeper with it
+/// and leaves the server, which never carried the stamp, with nobody to stop
+/// it.
+#[must_use]
+pub fn sweeper_env(
+    dispatch_env: &[(String, String)],
+    platform: EnvPlatform,
+) -> Vec<(String, String)> {
+    let mut kept: Vec<(String, String)> = dispatch_env
+        .iter()
+        .filter(|(name, _)| platform.is_base(name) || platform.same_name(name, "XDG_STATE_HOME"))
+        .cloned()
+        .collect();
+    kept.sort();
+    kept.dedup_by(|a, b| platform.same_name(&a.0, &b.0));
+    kept
+}
+
 /// An identity the pool persists and reads back to select processes or name
 /// a thread — a server or dispatch marker, a thread or turn id: never empty
 /// and never carrying a control character, so a record read back can only
@@ -527,6 +552,28 @@ mod tests {
                 "https_proxy"
             ]
         );
+    }
+
+    #[test]
+    fn the_sweeper_keeps_only_base_variables_and_its_state_root() {
+        let dispatch = env(&[
+            ("PATH", "/bin"),
+            ("HOME", "/h"),
+            ("XDG_STATE_HOME", "/s"),
+            ("CODEX_HOME", "/h/.codex"),
+            ("ONEAGENTGRAPH_SCRATCH_DIR", "/tmp/oneagentgraph-1"),
+            ("ONEPIPELINE_RUN_ID", "run-a"),
+            (MOCK_HARNESS_VAR, "1"),
+            (DISPATCH_MARKER_VAR, "lease-uuid"),
+        ]);
+        let names = |platform| -> Vec<String> {
+            sweeper_env(&dispatch, platform)
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect()
+        };
+        assert_eq!(names(EnvPlatform::Unix), ["HOME", "PATH", "XDG_STATE_HOME"]);
+        assert_eq!(names(EnvPlatform::Windows), ["PATH", "XDG_STATE_HOME"]);
     }
 
     #[test]

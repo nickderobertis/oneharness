@@ -118,3 +118,18 @@ fn opening_lines_round_trip_the_checked_in_wire_goldens() {
         assert_eq!(serialized, case.value, "{}", case.name);
     }
 }
+
+// Non-UTF-8 paths cannot cross the JSON boundary; exercise the public constructor
+// that validates the native store path before it becomes a RunBegun location.
+#[cfg(unix)]
+#[test]
+fn opening_location_refuses_a_non_utf8_native_root() {
+    use oneharness_core::domain::history::AbsoluteHistoryDir;
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+    use std::path::PathBuf;
+
+    assert!(AbsoluteHistoryDir::try_from(PathBuf::from("/history")).is_ok());
+    let invalid = PathBuf::from(OsString::from_vec(b"/history/\xff".to_vec()));
+    assert!(AbsoluteHistoryDir::try_from(invalid).is_err());
+}

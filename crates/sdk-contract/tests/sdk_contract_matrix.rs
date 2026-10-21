@@ -28,7 +28,10 @@ fn accepts(case: &Case) -> bool {
         "history_watch_options" => {
             serde_json::from_value::<HistoryWatchOptions>(case.value.clone()).is_ok()
         }
-        "run_stream_envelope" => serde_json::from_value::<oneharness_core::domain::report::RunStreamEnvelope>(case.value.clone()).is_ok(),
+        "run_stream_envelope" => serde_json::from_value::<
+            oneharness_core::domain::report::RunStreamEnvelope,
+        >(case.value.clone())
+        .is_ok(),
         "history_line" => serde_json::from_value::<HistoryLine>(case.value.clone()).is_ok(),
         "history_record" => serde_json::from_value::<HistoryRecord>(case.value.clone()).is_ok(),
         "history_stream_envelope" => {
@@ -93,10 +96,23 @@ fn the_multibyte_label_fixture_probes_every_length_unit() {
 
 #[test]
 fn opening_lines_round_trip_the_checked_in_wire_goldens() {
-    for case in matrix().cases.into_iter().filter(|case| case.accepted && case.value["type"] == "run-started") {
+    for case in matrix()
+        .cases
+        .into_iter()
+        .filter(|case| case.accepted && case.value["type"] == "run-started")
+    {
         let serialized = match case.root.as_str() {
-            "history_line" => serde_json::to_value(serde_json::from_value::<HistoryLine>(case.value.clone()).unwrap()).unwrap(),
-            "run_stream_envelope" => serde_json::to_value(serde_json::from_value::<oneharness_core::domain::report::RunStreamEnvelope>(case.value.clone()).unwrap()).unwrap(),
+            "history_line" => serde_json::to_value(
+                serde_json::from_value::<HistoryLine>(case.value.clone()).unwrap(),
+            )
+            .unwrap(),
+            "run_stream_envelope" => serde_json::to_value(
+                serde_json::from_value::<oneharness_core::domain::report::RunStreamEnvelope>(
+                    case.value.clone(),
+                )
+                .unwrap(),
+            )
+            .unwrap(),
             _ => panic!("opening golden has an unknown root"),
         };
         assert_eq!(serialized, case.value, "{}", case.name);

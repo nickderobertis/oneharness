@@ -919,8 +919,13 @@ fn ensure_sweeper(entry: &Path) {
         .append(true)
         .open(entry.join(SWEEPER_LOG))
         .map_or_else(|_| std::process::Stdio::null(), std::process::Stdio::from);
+    let ambient: Vec<(String, String)> = std::env::vars_os()
+        .filter_map(|(name, value)| Some((name.into_string().ok()?, value.into_string().ok()?)))
+        .collect();
     let mut command = std::process::Command::new(exe);
     command
+        .env_clear()
+        .envs(rules::sweeper_env(&ambient, EnvPlatform::current()))
         .env(SWEEPER_ENV, entry)
         .current_dir(entry)
         .stdin(std::process::Stdio::null())

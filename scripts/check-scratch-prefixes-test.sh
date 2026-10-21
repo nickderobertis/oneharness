@@ -119,4 +119,24 @@ fi
 grep -q "could not read the scratch prefix" "$work/out" || fail "the check failed but did not name the missing constant"
 restore
 
+# A helper's run-marker spelling that drifted from the one the leak gate reads is
+# red, naming the file and the spelling it must use: its marker would go unread.
+sed -i.bak 's/^export const RUN_MARKER = ".*";$/export const RUN_MARKER = ".node-run";/' "$node_prefixes"
+rm -f "$node_prefixes.bak"
+if bash "$check" >"$work/out" 2>&1; then
+  fail "a helper whose run marker the leak gate would not read should have failed the check"
+fi
+grep -q "$node_prefixes spells RUN_MARKER as '.node-run', but scripts/check-temp-leaks.sh reads '.oh-temp-leaks-run'" "$work/out" ||
+  fail "the check failed but did not name the helper's drifted run marker and the one the gate reads"
+restore
+
+# ...and so is a Rust run-token constant that moved, which the gate reads too.
+sed -i.bak 's/^const RUN_ENV: &str = ".*";$/const MOVED_ENV: \&str = "OH_TEMP_LEAKS_RUN";/' "$rust_prefix"
+rm -f "$rust_prefix.bak"
+if bash "$check" >"$work/out" 2>&1; then
+  fail "a missing Rust run-token constant should have failed the check"
+fi
+grep -q "could not read RUN_ENV" "$work/out" || fail "the check failed but did not name the missing run-token constant"
+restore
+
 echo "check-scratch-prefixes-test: the prefix drift check goes red for a prefix the leak gate cannot see"

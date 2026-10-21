@@ -15,7 +15,7 @@
 # a leak: a suite renamed inside the sweep would get another suite's fix.
 #
 # Quiet on success, one line. On failure it names each prefix and what it must
-# start with.
+# start with, and each run-marker spelling and what it must be.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -98,5 +98,36 @@ for suffix in "${pid_suffixes[@]}"; do
   fi
 done
 
+# Each helper also writes the leak gate's run token into a marker inside every
+# directory it makes, which is how the gate tells another run's scratch from this
+# run's without reading a maker's environment — something Windows does not allow.
+# The gate reads the variable's name and the marker's from the Rust module, so a
+# helper spelling either differently would write a marker the gate never reads,
+# and its live directories would be counted as every concurrent run's leak.
+helpers=(
+  "npm/oneharness-sdk/test/scratch.mjs:export const "
+  "python/oneharness-sdk/test/scratch.py:"
+  "python/oneharness-sdk/test/package_e2e.py:"
+)
+for constant in RUN_ENV RUN_MARKER; do
+  rust_value=$(sed -n 's/^const '"$constant"': &str = "\(.*\)";$/\1/p' "$scratch_source")
+  if [ -z "$rust_value" ]; then
+    echo "check-scratch-prefixes: could not read $constant from $scratch_source." >&2
+    echo "  fix: restore the 'const $constant: &str = \"...\";' declaration, or point this check at wherever it moved to." >&2
+    failed=1
+    continue
+  fi
+  for helper in "${helpers[@]}"; do
+    file=${helper%%:*}
+    assignment="${helper#*:}$constant = "
+    value=$(grep "^$assignment\"" "$file" | head -n 1 | sed 's/.*"\(.*\)".*/\1/' || true)
+    if [ "$value" != "$rust_value" ]; then
+      echo "check-scratch-prefixes: $file spells $constant as '${value:-<nothing>}', but scripts/check-temp-leaks.sh reads '$rust_value' from $scratch_source." >&2
+      echo "  fix: declare '$assignment\"$rust_value\"', so the run marker it writes is the one the leak gate reads." >&2
+      failed=1
+    fi
+  done
+done
+
 [ "$failed" -eq 0 ] || exit 1
-echo "check-scratch-prefixes: every suite's scratch prefix is inside the leak gate's sweep, and every name ends in its maker's pid"
+echo "check-scratch-prefixes: every suite's scratch prefix is inside the leak gate's sweep, every name ends in its maker's pid, and every helper marks its run as the gate reads it"

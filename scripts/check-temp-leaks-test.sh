@@ -158,7 +158,7 @@ if ! bash "$gate" bash -c "$ask_foreign" watched "$work/oneharness-foreign" >"$w
   fail "a scratch directory another live run made while this one was going must not be reported as this run's leak"
 fi
 [ -d "$work/oneharness-foreign-$foreign" ] || fail "the foreign run never made its directory"
-grep -q "left out as other checkouts' runs.*$real_work/oneharness-foreign-$foreign (pid $foreign)" "$work/out" ||
+grep -qF "$real_work/oneharness-foreign-$foreign (pid $foreign, alive without this run's OH_TEMP_LEAKS_RUN)" "$work/out" ||
   fail "the gate left out another live run's directory without saying which one or why"
 kill "$foreign"
 wait "$foreign" 2>/dev/null || true
@@ -208,9 +208,80 @@ child=$(cat "$work/child")
 kill "$child" 2>/dev/null || true
 [ "$unmarked" -eq 0 ] ||
   fail "a directory whose live maker lacks the run's marker should be left out, got exit $unmarked"
-grep -q "left out as other checkouts' runs.*$real_work/oneharness-unmarked-$child (pid $child)" "$work/out" ||
+grep -qF "$real_work/oneharness-unmarked-$child (pid $child, alive without this run's OH_TEMP_LEAKS_RUN)" "$work/out" ||
   fail "the gate left out a directory whose live maker cleared the run's marker without naming it"
 rm -rf "$work/oneharness-unmarked-$child" "$work/child"
+
+# A directory whose marker names a run is decided by the marker, never by its
+# maker's environment, which Windows cannot read: each case below stages a
+# maker whose environment says the opposite of its marker. The marker's name is
+# written out rather than read from `io::scratch::RUN_MARKER`, as the prefix is.
+marker=.oh-temp-leaks-run
+# One marked with this run's token is this run's leak, even though its live
+# maker cleared the token and so reads, by its environment, as another run's.
+bash "$gate" bash -c "env -u OH_TEMP_LEAKS_RUN sleep 60 >/dev/null 2>&1 & echo \$! > '$work/child'; d='$work/oneharness-marked-own-'\$!; mkdir -p \"\$d\"; printf %s \"\$OH_TEMP_LEAKS_RUN\" > \"\$d/$marker\"" >"$work/out" 2>&1 &&
+  marked_own=0 || marked_own=$?
+child=$(cat "$work/child")
+kill "$child" 2>/dev/null || true
+[ "$marked_own" -eq 1 ] ||
+  fail "a directory whose marker names this run should be reported as its leak, got exit $marked_own"
+grep -q "oneharness-marked-own-$child" "$work/out" ||
+  fail "the gate failed but did not name the directory marked for this run"
+! grep -q "left out" "$work/out" ||
+  fail "a directory marked for this run must not be left out on its maker's environment"
+rm -rf "$work/oneharness-marked-own-$child" "$work/child"
+
+# One marked with another run's token is that run's, while its maker is alive —
+# here a child of the watched command, whose environment carries this run's
+# token and so would make it this run's leak...
+bash "$gate" bash -c "sleep 60 >/dev/null 2>&1 & echo \$! > '$work/child'; d='$work/oneharness-marked-sibling-'\$!; mkdir -p \"\$d\"; printf %s 4242.sibling > \"\$d/$marker\"" >"$work/out" 2>&1 &&
+  marked_sibling=0 || marked_sibling=$?
+child=$(cat "$work/child")
+[ "$marked_sibling" -eq 0 ] || {
+  kill "$child" 2>/dev/null || true
+  fail "a directory whose marker names another run should be left out while its maker lives, got exit $marked_sibling"
+}
+kill "$child" 2>/dev/null || true
+grep -qF "left out as other checkouts' runs: $real_work/oneharness-marked-sibling-$child (marked for run 4242.sibling)" "$work/out" ||
+  fail "the gate left out a directory marked for another run without naming it and the run its marker names"
+rm -rf "$work/oneharness-marked-sibling-$child" "$work/child"
+# ...and after it has exited, when the name alone would make it a leak.
+sh -c 'exit 0' &
+exited=$!
+wait "$exited"
+if ! bash "$gate" bash -c "mkdir -p '$work/oneharness-marked-gone-$exited' && printf %s 4242.sibling > '$work/oneharness-marked-gone-$exited/$marker'" >"$work/out" 2>&1; then
+  fail "a directory whose marker names another run should be left out after its maker has exited"
+fi
+grep -qF "$real_work/oneharness-marked-gone-$exited (marked for run 4242.sibling)" "$work/out" ||
+  fail "the gate left out a directory marked for another run, made by an exited maker, without naming it"
+rm -rf "$work/oneharness-marked-gone-$exited"
+
+# A marker that says nothing readable names no run, so the environment decides;
+# with an exited maker it has no answer either, and the directory is a leak.
+unresolved() {
+  local what=$1 stage=$2
+  if bash "$gate" bash -c "mkdir -p '$work/oneharness-unresolved-$exited' && $stage '$work/oneharness-unresolved-$exited/$marker'" >"$work/out" 2>&1; then
+    fail "a directory with $what and an exited maker should have been reported"
+  fi
+  grep -q "oneharness-unresolved-$exited" "$work/out" ||
+    fail "the gate failed but did not name the directory with $what"
+  chmod -R u+rwx "$work/oneharness-unresolved-$exited"
+  rm -rf "$work/oneharness-unresolved-$exited"
+}
+unresolved "an empty marker" ": >"
+unresolved "a marker that is a directory" "mkdir"
+# Root reads every file and Windows ignores the mode, so there the fixture
+# cannot stand for an unreadable marker.
+mkdir -p "$work/probe-unreadable"
+printf x >"$work/probe-unreadable/marker"
+chmod 000 "$work/probe-unreadable/marker"
+if ! cat "$work/probe-unreadable/marker" >/dev/null 2>&1; then
+  unresolved "an unreadable marker" "f() { printf %s 4242.sibling > \"\$1\" && chmod 000 \"\$1\"; }; f"
+else
+  skip "an unreadable marker: this user can still read a file whose read permission is removed"
+fi
+chmod 600 "$work/probe-unreadable/marker"
+rm -rf "$work/probe-unreadable"
 
 # ...while one whose maker has exited is still a leak, pid suffix and all.
 sh -c 'exit 0' &

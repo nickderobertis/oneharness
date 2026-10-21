@@ -6,8 +6,8 @@
 // that passes, which a `finally` per call site has to earn again every time.
 
 import { randomBytes } from "node:crypto";
-import { mkdirSync, realpathSync, rmSync } from "node:fs";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
@@ -21,14 +21,36 @@ import { resolve } from "node:path";
  */
 export const PREFIX = "oneharness-sdk-";
 
+/**
+ * The variable `scripts/check-temp-leaks.sh` hands every process of its run,
+ * naming that run, and the file each scratch directory here carries it in.
+ *
+ * Spelled as `oneharness_core::io::scratch` spells them, which is where the
+ * gate reads them; `scripts/check-scratch-prefixes.sh` holds the two in step.
+ * The marker is how the gate tells another live run's scratch from this run's
+ * without reading this process's environment, which Windows does not expose.
+ */
+export const RUN_ENV = "OH_TEMP_LEAKS_RUN";
+export const RUN_MARKER = ".oh-temp-leaks-run";
+
 /** @type {string[]} */
 const held = [];
 
 /**
+ * The run token to write into a new directory's marker, if a gate is watching.
+ *
+ * @returns {string | undefined}
+ */
+function runToken() {
+	return process.env[RUN_ENV] || undefined;
+}
+
+/**
  * A fresh path for `tag`, ending in this process's id — which is how
  * `scripts/check-temp-leaks.sh` tells another checkout's live directory from
- * one this run left behind. `mkdtemp` cannot put anything after its random
- * part, so the caller makes the directory with an exclusive `mkdir` instead.
+ * one this run left behind when it has no marker to read. `mkdtemp` cannot put
+ * anything after its random part, so the caller makes the directory with an
+ * exclusive `mkdir` instead.
  *
  * @param {string} tag
  * @param {string} [root] the directory it goes under; the temp dir by default
@@ -49,6 +71,8 @@ export async function scratch(tag) {
 	const directory = scratchPath(tag);
 	await mkdir(directory, { mode: 0o700 });
 	held.push(directory);
+	const token = runToken();
+	if (token) await writeFile(resolve(directory, RUN_MARKER), token);
 	return directory;
 }
 
@@ -70,6 +94,8 @@ export async function controlScratch(tag) {
 	const directory = scratchPath(tag, root);
 	await mkdir(directory, { mode: 0o700 });
 	held.push(directory);
+	const token = runToken();
+	if (token) await writeFile(resolve(directory, RUN_MARKER), token);
 	return directory;
 }
 
@@ -83,6 +109,8 @@ export function scratchSync(tag) {
 	const directory = scratchPath(tag);
 	mkdirSync(directory, { mode: 0o700 });
 	held.push(directory);
+	const token = runToken();
+	if (token) writeFileSync(resolve(directory, RUN_MARKER), token);
 	return directory;
 }
 

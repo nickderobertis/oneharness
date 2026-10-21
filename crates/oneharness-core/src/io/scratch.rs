@@ -11,12 +11,24 @@ use std::path::{Path, PathBuf};
 /// and no caller can drift out of its reach.
 pub const PREFIX: &str = "oneharness-";
 
+/// The variable the leak gate hands every process of its run, naming that run.
+///
+/// Read, like [`PREFIX`], by `scripts/check-temp-leaks.sh` from this line, and
+/// held in step with the Node and Python helpers' spellings by
+/// `scripts/check-scratch-prefixes.sh`.
+const RUN_ENV: &str = "OH_TEMP_LEAKS_RUN";
+
+/// The file each scratch directory made under the leak gate carries, holding
+/// that run's token: how the gate tells another live run's scratch from its own
+/// without reading the maker's environment, which Windows does not expose.
+const RUN_MARKER: &str = ".oh-temp-leaks-run";
+
 /// A directory under the host temp directory, owned by the value that made it
 /// and **removed when that value is dropped** — including when the scope
 /// unwinds, so a failing or panicking test cleans up exactly like a passing one.
 ///
 /// It is also cleared on the way in, so a rerun starts from a known-empty
-/// directory.
+/// directory — known-empty but for the leak gate's run marker, when one runs.
 ///
 /// Public, and always compiled, because there is no one compilation unit that
 /// could hold it otherwise: the engine's own unit tests, the binary crate's unit
@@ -50,7 +62,13 @@ impl ScratchDir {
         let path = root.join(checked_name(tag)?);
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path)?;
-        Ok(ScratchDir { path })
+        // Held before it is marked, so a marker that cannot be written still
+        // gives the directory back.
+        let scratch = ScratchDir { path };
+        if let Some(token) = std::env::var_os(RUN_ENV).filter(|token| !token.is_empty()) {
+            std::fs::write(scratch.join(RUN_MARKER), token.as_encoded_bytes())?;
+        }
+        Ok(scratch)
     }
 
     /// The directory name `tag` resolves to: [`PREFIX`], the tag, and the
@@ -181,6 +199,23 @@ mod tests {
             .to_str()
             .unwrap()
             .starts_with(PREFIX));
+    }
+
+    #[test]
+    fn a_directory_made_under_the_leak_gate_names_its_run() {
+        // Every suite runs under `scripts/check-temp-leaks.sh`, which reads this
+        // marker to tell the run's own scratch from a sibling's; outside it there
+        // is no run to name, and nothing is written.
+        let scratch = ScratchDir::new(&tag("marker")).unwrap();
+        let marker = scratch.join(RUN_MARKER);
+        match std::env::var_os(RUN_ENV).filter(|token| !token.is_empty()) {
+            Some(token) => assert_eq!(
+                std::fs::read(&marker).unwrap(),
+                token.as_encoded_bytes(),
+                "{marker:?}"
+            ),
+            None => assert!(!marker.exists(), "{marker:?}"),
+        }
     }
 
     #[test]

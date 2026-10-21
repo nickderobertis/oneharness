@@ -167,7 +167,6 @@ test("every scratch directory made under the leak gate names its run", async () 
 });
 
 test("a scratch directory made with no gate watching carries no marker", async () => {
-	// No run to name, so nothing is written for a test to trip over.
 	await underRunToken(undefined, async () => {
 		for (const directory of [
 			await scratch("unmarked-probe"),

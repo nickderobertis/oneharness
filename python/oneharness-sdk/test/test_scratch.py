@@ -79,7 +79,6 @@ class ScratchTests(unittest.TestCase):
                 )
 
     def test_a_scratch_directory_made_with_no_gate_watching_carries_no_marker(self) -> None:
-        """No run to name, so nothing is written for a test to trip over."""
         with mock.patch.dict(os.environ), ExitStack() as stack:
             os.environ.pop(RUN_ENV, None)
             made = [

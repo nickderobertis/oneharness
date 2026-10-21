@@ -68,7 +68,6 @@ def _scratch_under(case: unittest.TestCase, tag: str, root: str | None) -> Path:
 
 
 def _mark_run(directory: Path) -> None:
-    """Write the leak gate's run token into ``directory``, if a gate is watching."""
     token = os.environ.get(RUN_ENV, "")
     if token:
         (directory / RUN_MARKER).write_text(token, encoding="utf-8")

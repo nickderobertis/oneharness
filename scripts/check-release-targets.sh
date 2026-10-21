@@ -48,10 +48,11 @@
 #
 # Quiet on success, one line. On failure it names each drift and the fix.
 set -euo pipefail
-# A membership test reads its list from a process substitution, never from a
-# pipe: `grep -q` exits at its first match, and under pipefail the writer it
-# left behind can take SIGPIPE and turn a match into a failure — which, on a
-# loaded runner, reported a declared target as undeclared.
+# Feed membership values directly with here-strings. Nested process
+# substitutions leave an inherited pipe descriptor alongside grep's stdin;
+# here-strings avoid that extra input alias and its asynchronous writer.
+# A pipeline is unsuitable too: `grep -q` exits at its first match, and under
+# pipefail its writer can take SIGPIPE and turn a match into a failure.
 
 cd "$(dirname "$0")/.."
 
@@ -475,7 +476,7 @@ done < <(printf '%s' "$declared_names" | sort | uniq -d)
 # two targets cover, is a document saying two things about one artifact.
 while read -r covered; do
   [ -n "$covered" ] || continue
-  grep -Fxq -- "$covered" < <(printf '%s' "$declared_ids") &&
+  grep -Fxq -- "$covered" <<<"$declared_ids" &&
     fail "$declarations covers '$covered', which it also declares as a target of its own; an artifact is one or the other, because a consumer waits on a target by name and never waits on something covered"
 done < <(printf '%s' "$covered_ids")
 
@@ -488,9 +489,9 @@ done < <(printf '%s' "$covered_ids" | sort | uniq -d)
 # document that also declares or covers it is two answers about one artifact.
 while read -r id; do
   [ -n "$id" ] || continue
-  grep -Fxq -- "$id" < <(printf '%s' "$declared_ids") &&
+  grep -Fxq -- "$id" <<<"$declared_ids" &&
     fail "$declarations retires '$id', which it also declares as a target; drop whichever is wrong — the [[retired]] entry if this repository still publishes it, the [[target]] if it does not"
-  grep -Fxq -- "$id" < <(printf '%s' "$covered_ids") &&
+  grep -Fxq -- "$id" <<<"$covered_ids" &&
     fail "$declarations retires '$id', which a target also covers; drop whichever is wrong — the [[retired]] entry if that target's release still ships it, the covers entry if it does not"
 done < <(printf '%s' "$retired_ids")
 
@@ -617,19 +618,19 @@ $(printf '%s' "$platform_names" | sed 's/^/npm:/')"
 
 while IFS=$'\t' read -r id manifest; do
   [ -n "$id" ] || continue
-  grep -Fxq -- "$id" < <(printf '%s\n' "$declared_ids") ||
+  grep -Fxq -- "$id" <<<"$declared_ids" ||
     fail "this repository publishes '$id' (from $manifest) and $declarations declares no target for it, so a consumer waiting on that artifact gets no hold at all; add a [[target]] with id = \"$id\" and manifest = \"$manifest\""
 done < <(printf '%s' "$published")
 
 while read -r id; do
   [ -n "$id" ] || continue
-  grep -Fxq -- "$id" < <(printf '%s\n' "$published_ids") ||
+  grep -Fxq -- "$id" <<<"$published_ids" ||
     fail "$declarations declares '$id', which this repository's release configuration does not publish; remove that [[target]], or restore whatever published it"
 done < <(printf '%s' "$declared_ids")
 
 while read -r id; do
   [ -n "$id" ] || continue
-  grep -Fxq -- "$id" < <(printf '%s\n' "$published_ids") ||
+  grep -Fxq -- "$id" <<<"$published_ids" ||
     fail "$declarations covers '$id', which this repository's release configuration does not publish; drop it from that target's covers list, or restore whatever published it"
 done < <(printf '%s' "$covered_ids")
 
@@ -672,9 +673,9 @@ while read -r manifest; do
 done < <(printf '%s\n' "$declared_manifests")
 while read -r name; do
   [ -n "$name" ] || continue
-  grep -Fxq -- "npm:$name" < <(printf '%s' "$covered_ids") ||
+  grep -Fxq -- "npm:$name" <<<"$covered_ids" ||
     fail "scripts/npm-build.mjs publishes '$name' and no declared target covers it, so a consumer reading $declarations is told nothing about it; add \"npm:$name\" to the covers list of the npm:oneharness-cli target (covered rather than declared, because nothing depends on a per-platform package by name)"
-  grep -Fq "\"$name\": \"" < <(printf '%s' "$pinned") ||
+  grep -Fq "\"$name\": \"" <<<"$pinned" ||
     fail "scripts/npm-build.mjs publishes '$name' and no declared npm target's optionalDependencies pins it, so npm can never resolve it; add it to npm/oneharness/package.json's optionalDependencies"
 done < <(printf '%s\n' "$platform_names")
 

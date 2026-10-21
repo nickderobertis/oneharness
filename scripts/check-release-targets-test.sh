@@ -120,6 +120,48 @@ if ! bash "$root/scripts/check-release-targets.sh" >"$work/out" 2>&1; then
   fail_showing "the checked-in declaration should pass the gate; reconcile release-targets.toml with what the release configuration publishes it names each drift below, before any case runs"
 fi
 
+# Model a native reader resolving a reused process-substitution descriptor to
+# the enclosing input instead of its redirected search input. The real grep
+# still decides membership; only the input handle is substituted, and only when
+# stdin also has an inherited pipe descriptor. A here-string has no such
+# descriptor to resolve. This exercises the gate through the same subprocess
+# boundary as every other case, without changing the declaration or the gate.
+root="$(stage reused-input-descriptor)"
+mkdir -p "$work/grep-shim"
+real_grep="$(command -v grep)"
+printf '%s\n' 'npm:@oneharness/cli-linux-arm64' >"$work/aliased-input"
+cat >"$work/grep-shim/grep" <<'SHIM'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ $# == 3 && $1 == -Fxq && $2 == -- && $3 == npm:@oneharness/cli-linux-arm64 ]]; then
+  for fd in {10..63}; do
+    if [[ -p /dev/fd/$fd && /dev/fd/$fd -ef /dev/stdin ]]; then
+      cat >"$RELEASE_TARGETS_CAPTURED_INPUT"
+      printf 'release-targets input fixture: reused pipe descriptor %s\n' "$fd" >&2
+      exec "$RELEASE_TARGETS_REAL_GREP" "$@" <"$RELEASE_TARGETS_ALIASED_INPUT"
+    fi
+  done
+fi
+exec "$RELEASE_TARGETS_REAL_GREP" "$@"
+SHIM
+chmod +x "$work/grep-shim/grep"
+RELEASE_TARGETS_REAL_GREP="$real_grep" \
+  RELEASE_TARGETS_ALIASED_INPUT="$work/aliased-input" \
+  RELEASE_TARGETS_CAPTURED_INPUT="$work/captured-input" \
+  PATH="$work/grep-shim:$PATH" \
+  assert_green reused-input-descriptor "a consistent declaration with a reused native input descriptor"
+
+rewrite "$root" release-targets.toml '
+  { print }
+  /^  "npm:@oneharness\/cli-win32-x64",$/ { print "  \"npm:oneharness-cli\"," }
+'
+RELEASE_TARGETS_REAL_GREP="$real_grep" \
+  RELEASE_TARGETS_ALIASED_INPUT="$work/aliased-input" \
+  RELEASE_TARGETS_CAPTURED_INPUT="$work/captured-input" \
+  PATH="$work/grep-shim:$PATH" \
+  assert_red reused-input-descriptor "an actual covered/declared overlap with a reused native input descriptor" \
+  "covers 'npm:oneharness-cli', which it also declares as a target of its own"
+
 # The cases below hold the document to the canonical schema — the shape six
 # repositories share, so that a consumer needs no knowledge of this one to read
 # it.

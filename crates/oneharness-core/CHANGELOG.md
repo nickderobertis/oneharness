@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.8](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.28.7...oneharness-core-v0.28.8) - 2026-10-21
+
+### Fixed
+
+- *(app-server)* stop a pooled server once its pool entry is gone ([#1520](https://github.com/nickderobertis/oneharness/pull/1520))
+
 ## [0.28.7](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.28.6...oneharness-core-v0.28.7) - 2026-10-20
 
 ### Fixed

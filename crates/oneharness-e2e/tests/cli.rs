@@ -22,7 +22,9 @@ use serde_json::Value;
 
 #[path = "../../../tests/profile-scratch/profile_scratch.rs"]
 mod profile_scratch;
-use profile_scratch::{profile_redirect, ProfileScratch, PROFILE_PATTERN};
+#[cfg(unix)]
+use profile_scratch::profile_redirect;
+use profile_scratch::{ProfileScratch, PROFILE_PATTERN};
 
 const ALL_IDS: &[&str] = &[
     "claude-code",

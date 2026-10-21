@@ -45,7 +45,7 @@ fn mock_bin() -> PathBuf {
 /// `--env` for the mock harness a `run` drives: sends its coverage profile into
 /// a directory the test owns, out of the target directory `just coverage`
 /// collects from — see the module itself for why.
-#[path = "common/profile_scratch.rs"]
+#[path = "profile-scratch/profile_scratch.rs"]
 mod profile_scratch;
 use profile_scratch::{profile_redirect, ProfileScratch, PROFILE_PATTERN};
 

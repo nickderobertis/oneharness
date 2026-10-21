@@ -27,7 +27,7 @@ use oneharness_core::io::server_pool::{
 };
 use serde_json::{json, Value};
 
-#[path = "../../../tests/common/profile_scratch.rs"]
+#[path = "../../../tests/profile-scratch/profile_scratch.rs"]
 mod profile_scratch;
 use profile_scratch::profile_redirect;
 

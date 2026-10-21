@@ -11,12 +11,12 @@
     "oneharness-core",
     "oneharness",
     "oneharness-mock-harness",
-    "harness-captures"
+    "harness-captures",
+    "profile-scratch"
   ],
   "namedInputs": {
     "default": [
       "{projectRoot}/**/*",
-      "{workspaceRoot}/tests/common/profile_scratch.rs",
       "rustToolchain"
     ]
   },

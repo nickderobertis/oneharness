@@ -29,7 +29,7 @@ pub fn bin_override(id: &str) -> String {
 /// coverage profile in the target directory, where `just coverage` would collect
 /// it and fail the whole merge — nor in bare system temp, where nothing removes
 /// it. Same redirect the CLI suite applies.
-#[path = "profile_scratch.rs"]
+#[path = "../profile-scratch/profile_scratch.rs"]
 mod profile_scratch;
 // Each binary uses the subset it needs, as with `dead_code` above.
 #[allow(unused_imports)]

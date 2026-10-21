@@ -20,7 +20,7 @@ use oneharness_core::io::history::{read_pointers, HistoryWriter};
 use oneharness_core::io::scratch::ScratchDir;
 use serde_json::Value;
 
-#[path = "../../../tests/common/profile_scratch.rs"]
+#[path = "../../../tests/profile-scratch/profile_scratch.rs"]
 mod profile_scratch;
 use profile_scratch::{profile_redirect, ProfileScratch, PROFILE_PATTERN};
 

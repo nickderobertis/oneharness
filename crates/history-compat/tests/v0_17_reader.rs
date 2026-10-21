@@ -44,7 +44,7 @@ fn mock_bin() -> PathBuf {
 /// test owns, out of the target directory `just coverage` collects from — the
 /// same redirect `crates/oneharness-e2e/tests/cli.rs` applies to every run it
 /// drives; the module says why.
-#[path = "../../../tests/common/profile_scratch.rs"]
+#[path = "../../../tests/profile-scratch/profile_scratch.rs"]
 mod profile_scratch;
 use profile_scratch::profile_redirect;
 

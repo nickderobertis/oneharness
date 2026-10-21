@@ -6,6 +6,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.25.10](https://github.com/nickderobertis/oneharness/compare/v0.25.9...v0.25.10) - 2026-10-21
+
+### Fixed
+
+- *(release)* avoid nested pipes in target membership checks ([#1526](https://github.com/nickderobertis/oneharness/pull/1526))
+- *(app-server)* stop a pooled server once its pool entry is gone ([#1520](https://github.com/nickderobertis/oneharness/pull/1520))
+
 ## [0.25.9](https://github.com/nickderobertis/oneharness/compare/v0.25.8...v0.25.9) - 2026-10-20
 
 ### Fixed

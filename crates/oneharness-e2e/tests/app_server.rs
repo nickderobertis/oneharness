@@ -3036,6 +3036,217 @@ fn a_sweeper_adopts_the_server_that_replaced_its_own_and_reclaims_it() {
     wait_for("the sweeper to end", bound, || !alive(sweeper));
 }
 
+/// Run one pooled dispatch whose launcher stamped its environment, then end
+/// every process carrying that stamp as a launcher's teardown does — a stop
+/// request, a short grace, then a kill (`oneagentgraph`'s scratch reaper, which
+/// `onepipeline` runs over each member it launched). The server and its sweeper
+/// belong to the pool, not to the dispatch, so neither may carry the stamp the
+/// teardown reaps by. Returns the pool, the server, its entry and its sweeper.
+fn dispatch_then_reap_its_stamp(name: &str, linger: Duration) -> (Pool, u32, PathBuf, u32) {
+    use oneharness_core::io::marked_processes::stop_marked;
+    let pool = Pool::new(name);
+    let stamp = ProcessMarker {
+        name: "ONEHARNESS_TEST_LAUNCHER_STAMP".to_string(),
+        value: pool.path("member-scratch").display().to_string(),
+    };
+    let (output, report) = pool.run(pool.command(
+        "stamped",
+        &[],
+        &[
+            (
+                "ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS",
+                &linger.as_millis().to_string(),
+            ),
+            (&stamp.name, &stamp.value),
+        ],
+    ));
+    succeeded(&output, &report);
+    let server = reported_server(&report);
+    let (entry, sweeper) = entry_and_sweeper(&pool);
+    assert!(alive(server) && alive(sweeper));
+    stop_marked(&stamp, Duration::from_millis(200)).unwrap();
+    (pool, server, entry, sweeper)
+}
+
+/// A pool entry removed after a launcher's teardown reaped everything its
+/// dispatch was stamped with still has a sweeper to stop its server.
+#[test]
+fn a_server_whose_dispatch_was_reaped_by_its_stamp_is_stopped_when_its_entry_is_removed() {
+    let (_pool, server, entry, sweeper) =
+        dispatch_then_reap_its_stamp("pool-reaped-entry", Duration::from_secs(60));
+    // llmlint: ignore[tests_mirror_real_usage] No oneharness interface removes a pool entry: the leak this guards was a test's teardown deleting its whole state directory under a live server, so the journey stages exactly that act and asserts only through the processes.
+    std::fs::remove_dir_all(&entry).unwrap();
+    use oneharness_core::io::server_pool::SERVER_STOP_DEADLINE;
+    let bound = DEAD_LEASE_SWEEP_INTERVAL * 2 + SERVER_STOP_DEADLINE + Duration::from_secs(5);
+    wait_for(
+        &format!("the orphaned server {server} to stop"),
+        bound,
+        || !alive(server),
+    );
+    wait_for(&format!("its sweeper {sweeper} to end"), bound, || {
+        !alive(sweeper)
+    });
+}
+
+/// With no caller left after a launcher's teardown, the server is still
+/// stopped once its linger passes, and its sweeper ends with it.
+#[test]
+fn a_server_whose_dispatch_was_reaped_by_its_stamp_is_stopped_after_its_linger() {
+    let linger = Duration::from_secs(3);
+    let (_pool, server, _entry, sweeper) =
+        dispatch_then_reap_its_stamp("pool-reaped-linger", linger);
+    use oneharness_core::io::server_pool::SERVER_STOP_DEADLINE;
+    let bound =
+        linger + DEAD_LEASE_SWEEP_INTERVAL * 2 + SERVER_STOP_DEADLINE + Duration::from_secs(5);
+    wait_for(
+        &format!("the lingering server {server} to stop"),
+        bound,
+        || !alive(server),
+    );
+    wait_for(&format!("its sweeper {sweeper} to end"), bound, || {
+        !alive(sweeper)
+    });
+}
+
+/// Start a pooled dispatch as the leader of its own process group, hold its
+/// turn live, then end that whole group with `SIGKILL` as a test's teardown
+/// does — the caller gets no chance to release its lease. When `stamp` is set
+/// the teardown also reaps every process carrying the dispatch's launcher stamp
+/// (stop, a short grace, kill), as `onepipeline` does with a member's
+/// `ONEAGENTGRAPH_SCRATCH_DIR`, while the turn is still live. Returns the pool,
+/// the server, its entry and its sweeper, the caller and its group gone.
+fn held_dispatch_then_end_its_group(
+    name: &str,
+    linger: Duration,
+    stamp: bool,
+) -> (Pool, u32, PathBuf, u32) {
+    use oneharness_core::io::marked_processes::stop_marked;
+    use std::os::unix::process::CommandExt;
+    let pool = Pool::new(name);
+    let never = pool.file("never-released");
+    let launcher = ProcessMarker {
+        name: "ONEHARNESS_TEST_LAUNCHER_STAMP".to_string(),
+        value: pool.path("member-scratch").display().to_string(),
+    };
+    let linger_ms = linger.as_millis().to_string();
+    let mut envs = vec![
+        (
+            "ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS",
+            linger_ms.as_str(),
+        ),
+        ("MOCK_CODEX_HOLD_UNTIL", never.as_str()),
+    ];
+    if stamp {
+        envs.push((&launcher.name, &launcher.value));
+    }
+    let mut cmd = pool.command("grouped", &[], &envs);
+    cmd.process_group(0);
+    let mut caller = pool.spawn(cmd);
+    let group = caller.id();
+    let server = pool.await_live_turns(1);
+    let (entry, sweeper) = entry_and_sweeper(&pool);
+    assert!(alive(group) && alive(server) && alive(sweeper));
+    // SAFETY: plain integers; the group is the one this journey just made.
+    assert_eq!(
+        unsafe { libc::kill(-(group as libc::pid_t), libc::SIGKILL) },
+        0,
+        "the caller's process group could not be signalled"
+    );
+    caller.wait().unwrap();
+    if stamp {
+        stop_marked(&launcher, Duration::from_millis(200)).unwrap();
+    }
+    assert!(!alive(group));
+    (pool, server, entry, sweeper)
+}
+
+/// The bound within which a server whose caller's group was killed is stopped
+/// once its entry is gone or its `linger` has passed: the dead lease found and
+/// its commands stopped, the linger, then the server's own stop.
+fn after_a_killed_caller(linger: Duration) -> Duration {
+    use oneharness_core::io::server_pool::SERVER_STOP_DEADLINE;
+    linger
+        + DEAD_LEASE_SWEEP_INTERVAL * 3
+        + DEAD_LEASE_STOP_DEADLINE
+        + SERVER_STOP_DEADLINE
+        + Duration::from_secs(5)
+}
+
+/// A pool entry removed after the caller's whole process group was killed
+/// mid-turn still has a sweeper, outside that group, to stop its server.
+#[test]
+fn a_server_whose_caller_s_group_was_killed_mid_turn_is_stopped_when_its_entry_is_removed() {
+    let (_pool, server, entry, sweeper) =
+        held_dispatch_then_end_its_group("pool-group-entry", Duration::from_secs(60), false);
+    // llmlint: ignore[tests_mirror_real_usage] No oneharness interface removes a pool entry: the leak this guards was a test's teardown deleting its whole state directory under a live server, so the journey stages exactly that act and asserts only through the processes.
+    std::fs::remove_dir_all(&entry).unwrap();
+    let bound = after_a_killed_caller(Duration::ZERO);
+    wait_for(
+        &format!("the orphaned server {server} to stop"),
+        bound,
+        || !alive(server),
+    );
+    wait_for(&format!("its sweeper {sweeper} to end"), bound, || {
+        !alive(sweeper)
+    });
+}
+
+/// With the caller's whole process group killed mid-turn and no caller left,
+/// the server is stopped once its linger passes, and its sweeper ends with it.
+#[test]
+fn a_server_whose_caller_s_group_was_killed_mid_turn_is_stopped_after_its_linger() {
+    let linger = Duration::from_secs(3);
+    let (_pool, server, _entry, sweeper) =
+        held_dispatch_then_end_its_group("pool-group-linger", linger, false);
+    let bound = after_a_killed_caller(linger);
+    wait_for(
+        &format!("the lingering server {server} to stop"),
+        bound,
+        || !alive(server),
+    );
+    wait_for(&format!("its sweeper {sweeper} to end"), bound, || {
+        !alive(sweeper)
+    });
+}
+
+/// The same teardown reaping the dispatch's launcher stamp too, while its turn
+/// is live, still leaves the server a sweeper to stop it once its entry is gone.
+#[test]
+fn a_server_whose_caller_s_group_and_stamp_were_reaped_mid_turn_is_stopped_when_its_entry_is_removed(
+) {
+    let (_pool, server, entry, sweeper) =
+        held_dispatch_then_end_its_group("pool-group-stamp", Duration::from_secs(60), true);
+    // llmlint: ignore[tests_mirror_real_usage] As above: the teardown deletes the state directory under a live server, and the journey asserts only through the processes.
+    std::fs::remove_dir_all(&entry).unwrap();
+    let bound = after_a_killed_caller(Duration::ZERO);
+    wait_for(
+        &format!("the orphaned server {server} to stop"),
+        bound,
+        || !alive(server),
+    );
+    wait_for(&format!("its sweeper {sweeper} to end"), bound, || {
+        !alive(sweeper)
+    });
+}
+
+/// Reaping both the caller's group and its launcher stamp mid-turn also leaves
+/// an intact pool able to retire the dead lease and stop after its linger.
+#[test]
+fn a_server_whose_caller_s_group_and_stamp_were_reaped_mid_turn_is_stopped_after_its_linger() {
+    let linger = Duration::from_secs(3);
+    let (_pool, server, _entry, sweeper) =
+        held_dispatch_then_end_its_group("pool-group-stamp-linger", linger, true);
+    let bound = after_a_killed_caller(linger);
+    wait_for(
+        &format!("the lingering server {server} to stop"),
+        bound,
+        || !alive(server),
+    );
+    wait_for(&format!("its sweeper {sweeper} to end"), bound, || {
+        !alive(sweeper)
+    });
+}
+
 /// A caller reading a dispatch's output to its end is never held by the shared
 /// server the dispatch started. The dispatch here also holds its standard
 /// output and error at descriptors 3 and 4, not close-on-exec — as a launcher

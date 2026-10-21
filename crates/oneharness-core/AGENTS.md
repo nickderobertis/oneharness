@@ -405,7 +405,11 @@ boundary every surface (the CLI, the SDKs, an embedder) drives.
   with `ONEHARNESS_INTERNAL_APP_SERVER_SWEEPER`, so a binary driving pooled
   dispatches calls `io::app_server::serve_sweeper_if_requested()` first in
   `main` (the CLI and the `app_server_reuse` example do); without it no
-  sweeper starts and dead leases wait for the next pool operation. The server's
+  sweeper starts and dead leases wait for the next pool operation. The sweeper,
+  like the server, is the pool's and is started with a scrubbed environment
+  (`domain::app_server::sweeper_env`): one carrying the dispatch's was reaped
+  with it by launchers that end a tree by an environment stamp (onepipeline's
+  `ONEAGENTGRAPH_SCRATCH_DIR`), leaving its server unwatched forever. The server's
   environment is scrubbed, so the mock's server-wide knobs are `CODEX_MOCK_*`
   (`MOCK_CODEX_*` knobs answer to that spelling too) and its per-thread knobs
   are the dispatch's own `MOCK_*`, read off `shell_environment_policy.set`; a

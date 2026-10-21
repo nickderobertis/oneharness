@@ -137,12 +137,12 @@ fi
 rm -rf "$work/oneharness-pre-existing"
 
 # Another checkout's run is stood in for by a process started outside the gate,
-# so it lacks the run's token: it makes `<stem>-<its pid>` only once the watched
+# carrying a sibling's token: it makes `<stem>-<its pid>` only once the watched
 # command asks, then stays alive, and the watched command waits to see it made.
 foreign_run() {
   local stem=$1
   # shellcheck disable=SC2016  # expanded by the foreign process, not here
-  bash -c 'until [ -e "$1.go" ]; do sleep 0.1; done; mkdir "$1-$$"; touch "$1.made"; exec sleep 60' \
+  OH_TEMP_LEAKS_RUN=4242.sibling bash -c 'until [ -e "$1.go" ]; do sleep 0.1; done; mkdir "$1-$$"; touch "$1.made"; exec sleep 60' \
     foreign "$work/$stem" >/dev/null 2>&1 &
   echo "$!"
 }

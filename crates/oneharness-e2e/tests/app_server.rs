@@ -27,6 +27,10 @@ use oneharness_core::io::server_pool::{
 };
 use serde_json::{json, Value};
 
+#[path = "../../../tests/common/profile_scratch.rs"]
+mod profile_scratch;
+use profile_scratch::profile_redirect;
+
 /// The shared server's linger every journey runs under (milliseconds).
 const LINGER_MS: u64 = 1000;
 
@@ -305,12 +309,7 @@ impl Pool {
             "--format",
             "json",
             "--env",
-            &format!(
-                "LLVM_PROFILE_FILE={}",
-                std::env::temp_dir()
-                    .join("oneharness-killed-mock-%p.profraw")
-                    .display()
-            ),
+            &profile_redirect(&self.dir),
         ]
         .iter()
         .map(|arg| (*arg).to_string())

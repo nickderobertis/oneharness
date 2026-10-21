@@ -42,23 +42,12 @@ fn mock_bin() -> PathBuf {
     path
 }
 
-/// `--env` for the mock harness a `run` drives: sends its coverage profile
-/// somewhere `just coverage` does not collect from.
-///
-/// A harness torn down after the TERM grace (which a loaded parallel suite
-/// reaches often enough to be a race, not a property of one test) never
-/// finishes its profile, and one truncated `.profraw` in the target directory
-/// fails the whole `llvm-profdata merge`. Same redirect `crates/oneharness-e2e/tests/cli.rs` applies
-/// to every run; the binary under test keeps its own coverage, since `--env`
-/// reaches only the harness process. Harmless when nothing is instrumented.
-fn mock_profile_redirect() -> String {
-    format!(
-        "LLVM_PROFILE_FILE={}",
-        std::env::temp_dir()
-            .join("oneharness-killed-mock-%p.profraw")
-            .display()
-    )
-}
+/// `--env` for the mock harness a `run` drives: sends its coverage profile into
+/// a directory the test owns, out of the target directory `just coverage`
+/// collects from — see the module itself for why.
+#[path = "common/profile_scratch.rs"]
+mod profile_scratch;
+use profile_scratch::{profile_redirect, ProfileScratch, PROFILE_PATTERN};
 
 const CODEX_TELEMETRY: &str = concat!(
     "{\"type\":\"turn.started\"}\n",
@@ -439,7 +428,7 @@ fn the_contract_documents_exactly_the_fields_each_entry_serializes() {
 /// reading one byte.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 struct CrowdedStore {
-    _scratch: ScratchDir,
+    scratch: ScratchDir,
     store: PathBuf,
     project: PathBuf,
     untouchable: Vec<PathBuf>,
@@ -493,7 +482,7 @@ impl CrowdedStore {
             }
         }
         CrowdedStore {
-            _scratch: scratch,
+            scratch,
             store,
             project,
             untouchable,
@@ -1063,7 +1052,7 @@ fn recording_command(recorder: Recorder, crowd: &CrowdedStore) -> Command {
                 .env("MOCK_SLEEP_MS", "400")
                 .args(["run", "--harness", "codex", "--prompt", "record me"])
                 .args(["--bin", &format!("codex={}", mock_bin().display())])
-                .args(["--env", &mock_profile_redirect()])
+                .args(["--env", &profile_redirect(&crowd.scratch)])
                 .args(["--history", "--history-dir", &store, "--cwd", &project])
                 .args(["--bypass", "--format", "json"]);
             if matches!(recorder, Recorder::CliStreaming) {
@@ -1082,7 +1071,8 @@ fn recording_command(recorder: Recorder, crowd: &CrowdedStore) -> Command {
                     "--test-threads=1",
                 ])
                 .env("HISTORY_INDEX_CHILD_STORE", &store)
-                .env("HISTORY_INDEX_CHILD_CWD", &project);
+                .env("HISTORY_INDEX_CHILD_CWD", &project)
+                .env("HISTORY_INDEX_CHILD_PROFILES", crowd.scratch.path());
             command
         }
     }
@@ -1095,13 +1085,15 @@ fn recording_command(recorder: Recorder, crowd: &CrowdedStore) -> Command {
 #[ignore = "the measured child of the recording and long-lived recording tests"]
 fn library_recording_child() {
     use oneharness_core::io::run::{run, RunControls, RunRequest};
-    let (Ok(store), Ok(cwd)) = (
+    let (Ok(store), Ok(cwd), Ok(profiles)) = (
         std::env::var("HISTORY_INDEX_CHILD_STORE"),
         std::env::var("HISTORY_INDEX_CHILD_CWD"),
+        std::env::var("HISTORY_INDEX_CHILD_PROFILES"),
     ) else {
         panic!(
             "library_recording_child is entered only by the recording tests, which set \
-             HISTORY_INDEX_CHILD_STORE and HISTORY_INDEX_CHILD_CWD; run those instead"
+             HISTORY_INDEX_CHILD_STORE, HISTORY_INDEX_CHILD_CWD and \
+             HISTORY_INDEX_CHILD_PROFILES; run those instead"
         );
     };
     // Set by the long-lived test: stream this many events over the turn's
@@ -1114,12 +1106,12 @@ fn library_recording_child() {
         Some(n) => vec![
             format!("MOCK_STDOUT={}", long_turn_stdout(n)),
             format!("MOCK_STREAM_DELAY_MS={LONG_TURN_EVENT_GAP_MS}"),
-            mock_profile_redirect(),
+            profile_redirect(Path::new(&profiles)),
         ],
         None => vec![
             format!("MOCK_STDOUT={CODEX_TELEMETRY}"),
             "MOCK_SLEEP_MS=400".to_string(),
-            mock_profile_redirect(),
+            profile_redirect(Path::new(&profiles)),
         ],
     };
     struct Counting(usize);
@@ -1461,7 +1453,7 @@ fn recording_takes_no_lock_while_another_process_holds_every_lock_file() {
             .env("MOCK_STDOUT", CODEX_TELEMETRY)
             .args(["run", "--harness", "codex", "--prompt", "unlocked"])
             .args(["--bin", &format!("codex={}", mock_bin().display())])
-            .args(["--env", &mock_profile_redirect()])
+            .args(["--env", &profile_redirect(&scratch)])
             .args(["--history", "--history-dir", &store.display().to_string()])
             .args(["--cwd", &project.display().to_string(), "--bypass"])
             .args(["--format", "json"]);
@@ -1507,7 +1499,7 @@ fn concurrent_writers_each_land_one_whole_entry_and_a_torn_tail_swallows_none() 
                 .env("MOCK_STDOUT", CODEX_TELEMETRY)
                 .args(["run", "--harness", "codex", "--prompt", "concurrent"])
                 .args(["--bin", &format!("codex={}", mock_bin().display())])
-                .args(["--env", &mock_profile_redirect()])
+                .args(["--env", &profile_redirect(&scratch)])
                 .args(["--history", "--history-dir", &store.display().to_string()])
                 .args(["--history-name", &format!("writer-{index}")])
                 .args(["--cwd", &project.display().to_string(), "--bypass"])
@@ -1582,7 +1574,7 @@ fn an_entry_is_the_same_size_for_a_one_mebibyte_prompt_or_event_as_for_a_short_o
             .args(["run", "--harness", "codex"])
             .args(["--prompt-file", &prompt_file.display().to_string()])
             .args(["--bin", &format!("codex={}", mock_bin().display())])
-            .args(["--env", &mock_profile_redirect()])
+            .args(["--env", &profile_redirect(&scratch)])
             .args(["--history", "--history-dir", &store.display().to_string()])
             .args([
                 "--history-name",
@@ -1791,18 +1783,18 @@ fn past_runs_on_two_utc_dates_stay_found_and_nothing_rewrites_the_store() {
 struct Watch {
     child: std::process::Child,
     lines: std::sync::mpsc::Receiver<Value>,
+    /// Outlives the child: [`Drop`] kills and reaps it before fields drop.
+    _profiles: ProfileScratch,
 }
 
 impl Watch {
     fn start(store: &Path, extra: &[&str]) -> Watch {
         use std::io::BufRead;
+        let profiles = ProfileScratch::new();
         let mut child = oneharness()
             // Stopped with SIGKILL when dropped, so it never writes a complete
             // coverage profile: keep the truncated one out of the collector.
-            .env(
-                "LLVM_PROFILE_FILE",
-                std::env::temp_dir().join("oneharness-killed-%p.profraw"),
-            )
+            .env("LLVM_PROFILE_FILE", profiles.dir().join(PROFILE_PATTERN))
             .args(["history", "watch", "--all-projects", "--format", "jsonl"])
             .args(["--history-dir", &store.display().to_string()])
             .args(extra)
@@ -1820,7 +1812,11 @@ impl Watch {
                 }
             }
         });
-        Watch { child, lines }
+        Watch {
+            child,
+            lines,
+            _profiles: profiles,
+        }
     }
 
     /// Every envelope until a record with each of `wanted` has arrived.

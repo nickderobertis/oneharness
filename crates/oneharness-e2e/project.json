@@ -16,6 +16,7 @@
   "namedInputs": {
     "default": [
       "{projectRoot}/**/*",
+      "{workspaceRoot}/tests/common/profile_scratch.rs",
       "rustToolchain"
     ]
   },

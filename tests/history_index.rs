@@ -2399,7 +2399,7 @@ fn legacy_store(tag: &str, padding: usize) -> LegacyStore {
         )
         .unwrap()
         .with_pointer_file(Some(pointer_file.clone()));
-        let id = writer.begin_harness_run(&"codex".parse().unwrap());
+        let id = writer.begin_harness_run(&"codex".parse().unwrap(), "test prompt");
         writer
             .append_streamed(
                 id,

@@ -187,3 +187,39 @@ core re-appends there by id.
 - `find_record_by_id`, `find_session_path`, `HistoryWatcher::open`,
   `HistoryWriter::open`, `read_pointers`, `read_session` and
   `read_session_display` keep their signatures.
+
+## Run opening and retention
+
+History schema **1.11** adds `HistoryLine::RunStarted`, serialized as
+`{"type":"run-started","schema_version":"1.11","history_id":"<UUIDv7>","harness_id":"<selector>","prompt":"<whole prompt>","started":"<RFC 3339 UTC>"}`.
+The writer appends and flushes it before spawning each candidate, including
+fallback candidates, so the complete prompt survives a run with no closing line.
+The candidate's existing event `run_id` and closing run `history_id` name that
+same UUID. Event and closing run fields remain unchanged; older readers can
+skip the new line and read the rest of the file.
+
+For streaming library callers, `EventSink::run_began(&RunBegun)` runs once per
+candidate before its first event. Its provided default returns `Continue`, so
+sinks implementing only `event` retain their behavior. The fields are:
+
+<!-- BEGIN RUN-BEGUN FIELDS -->
+| field | meaning |
+| --- | --- |
+| `harness_id` | validated harness selector |
+| `history_id` | candidate UUIDv7 |
+| `history_dir` | absolute store path |
+| `history_project` | project slug |
+| `history_session` | session file stem |
+<!-- END RUN-BEGUN FIELDS -->
+
+`RunBegun` uses validated value types with `as_str` / `as_path` and `Display`
+accessors; deserialization refuses invalid selectors and unsafe addresses.
+The file is `<history_dir>/<history_project>/<history_session>.jsonl`.
+`run --stream --format json` delivers those fields in a `type: "run-started"`
+NDJSON line before the candidate's first event. History disabled means neither
+an opening stream line nor a `run_began` callback. The default text stream
+continues to display actions.
+
+A session file is removed only by an explicit `oneharness history clear --yes`.
+Nothing else in oneharness prunes, rotates or moves the store. Consumers may
+journal these references independently of the lifetime of a worktree or run.

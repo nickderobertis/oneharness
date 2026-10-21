@@ -102,14 +102,14 @@ pub fn resolve_dir(configured: Option<&str>) -> Option<PathBuf> {
 /// It holds nothing whose size depends on the store: no parsed index and no
 /// set of indexed ids, for any part of its life.
 pub struct HistoryWriter {
-    dir: PathBuf,
+    dir: history::AbsoluteHistoryDir,
     path: PathBuf,
     relative_path: index::SessionPath,
-    session: String,
+    session: history::HistoryPathComponent,
     name: HistorySessionName,
     labels: HistoryLabels,
     project: String,
-    project_slug: String,
+    project_slug: history::HistoryPathComponent,
     /// The run's pointer file, when one was named: every harness run this
     /// writer begins appends one [`HistoryPointer`] line to it.
     pointer_file: Option<PathBuf>,
@@ -142,13 +142,23 @@ impl HistoryWriter {
         self.pointer_file.as_deref()
     }
 
-    /// Begin one harness run: mint its id as [`begin_run`](Self::begin_run) does
-    /// and, when a pointer file is named, append the run's [`HistoryPointer`]
+    /// Begin one harness run: mint its id and flush the complete prompt in an
+    /// opening history line. When a pointer file is named, append its [`HistoryPointer`]
     /// line to it — one write, before the harness is spawned. Best-effort like
     /// the store itself: a pointer file that cannot be opened or written warns
     /// on stderr once per run and the line is skipped, never the run.
-    pub fn begin_harness_run(&self, harness_id: &HarnessIdentity) -> HistoryId {
+    pub fn begin_harness_run(&self, harness_id: &HarnessIdentity, prompt: &str) -> HistoryId {
         let run_id = self.begin_run();
+        let line = HistoryLine::RunStarted(history::HistoryRunStarted {
+            schema_version: history::RunStartedSchemaVersion,
+            history_id: run_id,
+            harness_id: harness_id.clone(),
+            prompt: prompt.to_string(),
+            started: UtcInstant::from_epoch(now_epoch_secs()),
+        });
+        if let Err(error) = SessionFile::open(&self.path).and_then(|mut file| file.append(&line)) {
+            eprintln!("oneharness: warning: could not append opening history line: {error}");
+        }
         if let Some(pointer_file) = &self.pointer_file {
             let written = self.pointer_session().and_then(|session| {
                 let pointer = HistoryPointer::new(
@@ -173,6 +183,21 @@ impl HistoryWriter {
             }
         }
         run_id
+    }
+
+    /// Locate the file this writer appends for a begun candidate.
+    pub fn run_begun(
+        &self,
+        harness_id: &HarnessIdentity,
+        history_id: HistoryId,
+    ) -> history::RunBegun {
+        history::RunBegun {
+            harness_id: harness_id.clone(),
+            history_id,
+            history_dir: self.dir.clone(),
+            history_project: self.project_slug.clone(),
+            history_session: self.session.clone(),
+        }
     }
 
     /// What every pointer line of this session repeats. `dir` and `path` are
@@ -221,7 +246,7 @@ impl HistoryWriter {
             .map_or((harness, None), |(base, variant)| (base, Some(variant)));
         let line = HistoryEventLine {
             schema_version: if event.timing_source.is_some() {
-                history::SCHEMA_VERSION
+                history::EVENT_SCHEMA_VERSION
             } else {
                 history::PREVIOUS_CURRENT_SCHEMA_VERSION
             }
@@ -273,15 +298,18 @@ impl HistoryWriter {
                 format!("`{slug}/{session}` cannot name a session file in the store"),
             )
         })?;
+        let address_error = |error: history::HistoryAddressError| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, error)
+        };
         Ok(HistoryWriter {
             relative_path,
-            dir,
+            dir: dir.try_into().map_err(address_error)?,
             path,
-            session,
+            session: session.try_into().map_err(address_error)?,
             name,
             labels,
             project: project_display,
-            project_slug: slug,
+            project_slug: slug.try_into().map_err(address_error)?,
             pointer_file: None,
             pointer_warned: AtomicBool::new(false),
         })
@@ -361,7 +389,7 @@ impl HistoryWriter {
         let mut entries = Vec::with_capacity(lines.len() + 1);
         for event in lines {
             let line = HistoryEventLine {
-                schema_version: history::SCHEMA_VERSION.to_string(),
+                schema_version: history::EVENT_SCHEMA_VERSION.to_string(),
                 run_id: run.history_id,
                 harness: run.harness.clone(),
                 variant: run.variant.clone(),
@@ -376,9 +404,9 @@ impl HistoryWriter {
             schema_version: INDEX_SCHEMA_VERSION.to_string(),
             history_id: run.history_id,
             session_path: self.relative_path.clone(),
-            session: self.session.clone(),
+            session: self.session.to_string(),
             name: self.name.as_str().to_string(),
-            project_slug: self.project_slug.clone(),
+            project_slug: self.project_slug.to_string(),
             harness_id: record.harness_id.clone(),
             labels: self.labels.clone(),
             recorded_at: record.timestamp.parse().map_err(|error| {
@@ -403,7 +431,7 @@ impl HistoryWriter {
             run_id: line.run_id,
             event_index: line.event.index,
             session_path: self.relative_path.clone(),
-            project_slug: self.project_slug.clone(),
+            project_slug: self.project_slug.to_string(),
             harness_id: line
                 .harness_id
                 .clone()
@@ -768,7 +796,7 @@ fn migrate_file(dir: &Path, path: &Path) -> Result<MigrationSummary, OneharnessE
                 append_json_line(
                     &mut output,
                     &HistoryLine::Event(HistoryEventLine {
-                        schema_version: history::SCHEMA_VERSION.to_string(),
+                        schema_version: history::EVENT_SCHEMA_VERSION.to_string(),
                         run_id: record.history_id,
                         harness: record.harness.clone(),
                         variant: record.variant.clone(),
@@ -978,7 +1006,7 @@ fn find_run_line(
     )?
     .and_then(|line| match line {
         HistoryLine::Run(run) => Some(run),
-        HistoryLine::Event(_) => None,
+        HistoryLine::Event(_) | HistoryLine::RunStarted(_) => None,
     }))
 }
 
@@ -993,7 +1021,7 @@ fn find_event_line(
     })?
     .and_then(|line| match line {
         HistoryLine::Event(event) => Some(event),
-        HistoryLine::Run(_) => None,
+        HistoryLine::Run(_) | HistoryLine::RunStarted(_) => None,
     }))
 }
 
@@ -1304,6 +1332,7 @@ fn spill_session(path: &Path, slug: &str, spill: &mut Spill) -> Result<bool, Spi
                 }),
                 event_fallback,
             ),
+            Ok(HistoryLine::RunStarted(_)) => continue,
             Err(_) => {
                 unmigrated |= serde_json::from_slice::<Value>(&line)
                     .is_ok_and(|value| value.is_object() && value.get("type").is_none());
@@ -2302,6 +2331,7 @@ pub fn read_session_display(path: &Path) -> Result<Vec<HistoryShowEntry>, Onehar
     let mut values = Vec::new();
     for line in parse_lines(path, &text) {
         match line {
+            HistoryLine::RunStarted(_) => {}
             HistoryLine::Event(line) => {
                 dangling
                     .entry(line.run_id)
@@ -2600,6 +2630,7 @@ fn parse_records(path: &Path, text: &str) -> Vec<HistoryRecord> {
     let mut records = Vec::new();
     for line in parse_lines(path, text) {
         match line {
+            HistoryLine::RunStarted(_) => {}
             HistoryLine::Event(line) => events.entry(line.run_id).or_default().push(line.event),
             HistoryLine::Run(run) => {
                 let mut run_events = events.remove(&run.history_id).unwrap_or_default();
@@ -3959,8 +3990,9 @@ mod tests {
             .with_pointer_file(Some(pointer_file.clone()));
         assert_eq!(writer.pointer_file(), Some(pointer_file.as_path()));
 
-        let first = writer.begin_harness_run(&"claude-code:primary".parse().unwrap());
-        let second = writer.begin_harness_run(&"codex".parse().unwrap());
+        let first =
+            writer.begin_harness_run(&"claude-code:primary".parse().unwrap(), "test prompt");
+        let second = writer.begin_harness_run(&"codex".parse().unwrap(), "test prompt");
         writer
             .append_streamed(
                 second,
@@ -3989,7 +4021,7 @@ mod tests {
             assert_eq!(pointer.schema_version(), history::POINTER_SCHEMA_VERSION);
             assert_eq!(pointer.history_file(), writer.path().display().to_string());
             assert_eq!(pointer.history_dir(), writer.dir.display().to_string());
-            assert_eq!(pointer.history_session(), writer.session);
+            assert_eq!(pointer.history_session(), writer.session.as_str());
             assert_eq!(pointer.history_project(), writer.relative_path.parts().0);
             assert_eq!(
                 Path::new(&pointer.history_dir())
@@ -4068,14 +4100,14 @@ mod tests {
         let writer = HistoryWriter::open(&dir, &project, "torn", HistoryLabels::default())
             .unwrap()
             .with_pointer_file(Some(pointer_file.clone()));
-        let first = writer.begin_harness_run(&"codex".parse().unwrap());
+        let first = writer.begin_harness_run(&"codex".parse().unwrap(), "test prompt");
         fs::OpenOptions::new()
             .append(true)
             .open(&pointer_file)
             .unwrap()
             .write_all(b"{\"not\": \"a pointer\"}\n")
             .unwrap();
-        let second = writer.begin_harness_run(&"goose".parse().unwrap());
+        let second = writer.begin_harness_run(&"goose".parse().unwrap(), "test prompt");
         fs::OpenOptions::new()
             .append(true)
             .open(&pointer_file)
@@ -4176,8 +4208,8 @@ mod tests {
         let writer = HistoryWriter::open(&dir, &project, "blocked", HistoryLabels::default())
             .unwrap()
             .with_pointer_file(Some(pointer_file.clone()));
-        let run_id = writer.begin_harness_run(&"codex".parse().unwrap());
-        let _ = writer.begin_harness_run(&"codex".parse().unwrap());
+        let run_id = writer.begin_harness_run(&"codex".parse().unwrap(), "test prompt");
+        let _ = writer.begin_harness_run(&"codex".parse().unwrap(), "test prompt");
         assert!(writer.pointer_warned.load(Ordering::Relaxed));
         writer
             .append_streamed(

@@ -81,7 +81,10 @@ pub fn bundle() -> SdkSchemaBundle {
     SdkSchemaBundle {
         capabilities: crate::domain::capability::CAPABILITIES,
         run_report: schema_for_serialize::<RunReport>(),
-        run_stream_envelope: schema_for_serialize::<RunStreamEnvelope>(),
+        run_stream_envelope: Schema::try_from(expand_tagged_line_variants(schema_for_serialize::<
+            RunStreamEnvelope,
+        >()))
+        .expect("stream line schema remains an object"),
         run_options: schema_for!(RunOptions),
         history_lookup: schema_for!(HistoryLookup),
         history_list_options: schema_for!(HistoryListOptions),
@@ -168,9 +171,10 @@ fn history_stream_schema() -> Schema {
     Schema::try_from(value).expect("history stream schema remains an object")
 }
 
-fn history_line_schema(schema: Schema) -> Schema {
+fn expand_tagged_line_variants(schema: Schema) -> serde_json::Value {
     let mut value = serde_json::to_value(schema).expect("Schema serializes");
     let definitions = value["$defs"].clone();
+    let mut expanded_names = Vec::new();
     if let Some(variants) = value
         .get_mut("oneOf")
         .and_then(serde_json::Value::as_array_mut)
@@ -183,6 +187,7 @@ fn history_line_schema(schema: Schema) -> Schema {
                 .rsplit('/')
                 .next()
                 .expect("schema reference has a name");
+            expanded_names.push(name.to_string());
             let mut expanded = definitions[name].clone();
             let discriminator = variant["properties"].clone();
             expanded["properties"]
@@ -206,14 +211,19 @@ fn history_line_schema(schema: Schema) -> Schema {
             *variant = expanded;
         }
     }
-    value["$defs"]
-        .as_object_mut()
-        .expect("schema definitions")
-        .remove("HistoryEventLine");
-    value["$defs"]
-        .as_object_mut()
-        .expect("schema definitions")
-        .remove("HistoryRunRecord");
+    // Inlined definitions have no remaining references. Keeping them would make
+    // Zod import interfaces that TypeScript correctly omits as unreachable.
+    for name in expanded_names {
+        value["$defs"]
+            .as_object_mut()
+            .expect("schema definitions")
+            .remove(&name);
+    }
+    value
+}
+
+fn history_line_schema(schema: Schema) -> Schema {
+    let mut value = expand_tagged_line_variants(schema);
     add_history_line_conditions(&mut value);
     if let Some(variants) = value
         .get_mut("oneOf")
@@ -237,6 +247,13 @@ fn add_history_line_conditions(value: &mut serde_json::Value) {
                 object.values_mut().for_each(add_history_line_conditions);
                 return;
             };
+            if properties.contains_key("history_id") && properties.contains_key("started") {
+                object["properties"]["schema_version"] =
+                    versions_schema(&crate::domain::history::versions_from(
+                        crate::domain::history::FIRST_RUN_STARTED_SCHEMA_VERSION,
+                    ));
+                return;
+            }
             if properties.contains_key("run_id") && properties.contains_key("event") {
                 let mut current = serde_json::Value::Object(object.clone());
                 current["properties"]["schema_version"] =

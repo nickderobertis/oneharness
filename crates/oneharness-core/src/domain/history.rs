@@ -41,7 +41,12 @@ use crate::domain::usage::UtcInstant;
 /// newer reader. That is what lets an additive field ship without rewriting the
 /// shape of every record — and what makes each version constant below the exact
 /// gate for the one field it introduced.
-pub const SCHEMA_VERSION: &str = "1.10";
+pub const SCHEMA_VERSION: &str = "1.11";
+/// First history schema carrying an opening run line.
+pub const FIRST_RUN_STARTED_SCHEMA_VERSION: &str = "1.11";
+/// Opening lines advance independently: existing event lines stay readable by
+/// v1.10 readers, which skip the new opening line.
+pub const EVENT_SCHEMA_VERSION: &str = "1.10";
 /// v1.10 introduced the `app_server_lost` failure kind: the shared Codex
 /// app-server a pooled dispatch's turn ran on went away under the turn. A v1.9
 /// reader's `failure_kind` enum has no such value.
@@ -89,7 +94,7 @@ pub(crate) const FIRST_EVENT_SCHEMA_VERSION: &str = "1.0";
 /// Every event-sourced history version this build reads, oldest first. Order is
 /// the contract: a field introduced in version N is legible to N and everything
 /// after it, which is what [`version_at_least`] answers.
-pub(crate) const READABLE_SCHEMA_VERSIONS: [&str; 11] = [
+pub(crate) const READABLE_SCHEMA_VERSIONS: [&str; 12] = [
     FIRST_EVENT_SCHEMA_VERSION,
     PREVIOUS_CURRENT_SCHEMA_VERSION,
     OBSERVED_TIMING_SCHEMA_VERSION,
@@ -101,6 +106,7 @@ pub(crate) const READABLE_SCHEMA_VERSIONS: [&str; 11] = [
     FIRST_MODEL_OBSERVATION_SCHEMA_VERSION,
     FIRST_SERVER_OVERLOADED_SCHEMA_VERSION,
     FIRST_APP_SERVER_LOST_SCHEMA_VERSION,
+    FIRST_RUN_STARTED_SCHEMA_VERSION,
 ];
 
 fn version_rank(version: &str) -> Option<usize> {
@@ -152,6 +158,8 @@ pub const PRE_LIFECYCLE_RECORD_VERSIONS: [&str; 2] =
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum HistoryLine {
+    #[serde(rename = "run-started")]
+    RunStarted(HistoryRunStarted),
     Event(HistoryEventLine),
     Run(HistoryRunRecord),
 }
@@ -167,6 +175,11 @@ impl<'de> Deserialize<'de> for HistoryLine {
             .and_then(|object| object.remove("type"))
             .and_then(|value| value.as_str().map(str::to_owned));
         match line_type.as_deref() {
+            Some("run-started") => {
+                let started: HistoryRunStarted =
+                    serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+                Ok(Self::RunStarted(started))
+            }
             Some("event") => {
                 let event = serde_json::from_value::<HistoryEventLine>(value)
                     .map_err(serde::de::Error::custom)?;
@@ -192,6 +205,209 @@ impl<'de> Deserialize<'de> for HistoryLine {
             _ => Err(serde::de::Error::custom("invalid history schema v1.0 line")),
         }
     }
+}
+
+/// The complete prompt persisted before a candidate starts, including runs that
+/// never reach their closing record.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct HistoryRunStarted {
+    pub schema_version: RunStartedSchemaVersion,
+    pub history_id: HistoryId,
+    #[schemars(schema_with = "opening_harness_schema")]
+    pub harness_id: HarnessIdentity,
+    pub prompt: String,
+    pub started: UtcInstant,
+}
+
+/// The schema version of an opening line; its only constructible value is 1.11.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RunStartedSchemaVersion;
+
+/// An invalid opening schema version or history address component.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum HistoryAddressError {
+    #[error("unsupported run-started schema version")]
+    SchemaVersion,
+    #[error("history_dir must be an absolute UTF-8 store path")]
+    AbsoluteRoot,
+    #[error("history path component must be nonempty ASCII [A-Za-z0-9._-], excluding . and ..")]
+    Component,
+}
+
+impl TryFrom<String> for RunStartedSchemaVersion {
+    type Error = HistoryAddressError;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        if value == FIRST_RUN_STARTED_SCHEMA_VERSION {
+            Ok(Self)
+        } else {
+            Err(HistoryAddressError::SchemaVersion)
+        }
+    }
+}
+impl RunStartedSchemaVersion {
+    pub fn as_str(&self) -> &'static str {
+        FIRST_RUN_STARTED_SCHEMA_VERSION
+    }
+}
+impl fmt::Display for RunStartedSchemaVersion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+impl Serialize for RunStartedSchemaVersion {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+impl<'de> Deserialize<'de> for RunStartedSchemaVersion {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Self::try_from(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+impl JsonSchema for RunStartedSchemaVersion {
+    fn inline_schema() -> bool {
+        true
+    }
+    fn schema_name() -> Cow<'static, str> {
+        Cow::Borrowed("RunStartedSchemaVersion")
+    }
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        schemars::json_schema!({"type": "string", "const": FIRST_RUN_STARTED_SCHEMA_VERSION})
+    }
+}
+
+/// One safe project directory name or session file stem.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String")]
+pub struct HistoryPathComponent(String);
+
+impl TryFrom<String> for HistoryPathComponent {
+    type Error = HistoryAddressError;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        if !value.is_empty()
+            && !matches!(value.as_str(), "." | "..")
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        {
+            Ok(Self(value))
+        } else {
+            Err(HistoryAddressError::Component)
+        }
+    }
+}
+impl HistoryPathComponent {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+impl fmt::Display for HistoryPathComponent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+impl AsRef<Path> for HistoryPathComponent {
+    fn as_ref(&self) -> &Path {
+        Path::new(self.as_str())
+    }
+}
+impl std::ops::Deref for HistoryPathComponent {
+    type Target = str;
+    fn deref(&self) -> &str {
+        self.as_str()
+    }
+}
+impl JsonSchema for HistoryPathComponent {
+    fn inline_schema() -> bool {
+        true
+    }
+    fn schema_name() -> Cow<'static, str> {
+        Cow::Borrowed("HistoryPathComponent")
+    }
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        schemars::json_schema!({"type": "string", "minLength": 1,
+            "not": {"pattern": r"(^\.\.?$|[^A-Za-z0-9._-])"}})
+    }
+}
+
+/// An absolute history store path, readable across Unix and Windows producers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "std::path::PathBuf")]
+pub struct AbsoluteHistoryDir(std::path::PathBuf);
+
+impl TryFrom<std::path::PathBuf> for AbsoluteHistoryDir {
+    type Error = HistoryAddressError;
+    fn try_from(value: std::path::PathBuf) -> Result<Self, Self::Error> {
+        let text = value.to_str().ok_or(HistoryAddressError::AbsoluteRoot)?;
+        let bytes = text.as_bytes();
+        let drive = bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && matches!(bytes[2], b'/' | b'\\');
+        let unc = text.strip_prefix(r"\\").is_some_and(|rest| {
+            let mut parts = rest.split(['/', '\\']);
+            parts.next().is_some_and(|part| !part.is_empty())
+                && parts.next().is_some_and(|part| !part.is_empty())
+        });
+        if (text.starts_with('/') || drive || unc) && !text.chars().any(char::is_control) {
+            Ok(Self(value))
+        } else {
+            Err(HistoryAddressError::AbsoluteRoot)
+        }
+    }
+}
+impl AbsoluteHistoryDir {
+    pub fn as_path(&self) -> &Path {
+        &self.0
+    }
+}
+impl std::ops::Deref for AbsoluteHistoryDir {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        self.as_path()
+    }
+}
+impl fmt::Display for AbsoluteHistoryDir {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.display().fmt(f)
+    }
+}
+impl JsonSchema for AbsoluteHistoryDir {
+    fn inline_schema() -> bool {
+        true
+    }
+    fn schema_name() -> Cow<'static, str> {
+        Cow::Borrowed("AbsoluteHistoryDir")
+    }
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        schemars::json_schema!({"type": "string", "pattern": r"^(/|[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+)",
+            "not": {"pattern": r"[\u0000-\u001F\u007F-\u009F]"}})
+    }
+}
+
+fn opening_harness_schema(_: &mut SchemaGenerator) -> Schema {
+    let ids = crate::domain::harness::all()
+        .iter()
+        .map(|spec| spec.id)
+        .collect::<Vec<_>>()
+        .join("|");
+    let pattern = format!(
+        "^({ids})(:{})?$",
+        crate::domain::config::VARIANT_NAME_PATTERN
+    );
+    schemars::json_schema!({"type": "string", "pattern": pattern,
+        "not": {"pattern": "[^A-Za-z0-9:_-]"}})
+}
+
+/// A candidate's address in the history store, delivered before its events.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct RunBegun {
+    #[schemars(schema_with = "opening_harness_schema")]
+    pub harness_id: HarnessIdentity,
+    pub history_id: HistoryId,
+    pub history_dir: AbsoluteHistoryDir,
+    pub history_project: HistoryPathComponent,
+    pub history_session: HistoryPathComponent,
 }
 
 /// One normalized action observed during a run.
@@ -3869,5 +4085,67 @@ mod tests {
             .collect();
         assert_eq!(order, [(0, "reasoning"), (1, "message")]);
         assert!(IncompleteHistoryRun::new(run_id, "codex".to_string(), Vec::new()).is_none());
+    }
+    #[test]
+    fn opening_documentation_tracks_the_wire_fields_version_and_file_layout() {
+        let matrix: Value = serde_json::from_str(include_str!(
+            "../../../../tests/fixtures/sdk-contract-matrix.json"
+        ))
+        .unwrap();
+        let cases = matrix["cases"].as_array().unwrap();
+        let opening = &cases
+            .iter()
+            .find(|case| case["name"] == "history opening line v1.11")
+            .unwrap()["value"];
+        let stream = &cases
+            .iter()
+            .find(|case| case["name"] == "stream opening location")
+            .unwrap()["value"];
+        let opening: HistoryLine = serde_json::from_value(opening.clone()).unwrap();
+        let opening = serde_json::to_value(opening).unwrap();
+        let begun: RunBegun = serde_json::from_value(stream.clone()).unwrap();
+        let begun = serde_json::to_value(begun).unwrap();
+        let docs = include_str!("../../../../docs/history-index.md");
+        let example = docs
+            .split("`{\"type\":\"run-started\"")
+            .nth(1)
+            .unwrap()
+            .split('`')
+            .next()
+            .unwrap();
+        let example: Value =
+            serde_json::from_str(&format!("{{\"type\":\"run-started\"{example}")).unwrap();
+        assert_eq!(
+            example.as_object().unwrap().keys().collect::<Vec<_>>(),
+            opening.as_object().unwrap().keys().collect::<Vec<_>>()
+        );
+        assert_eq!(example["schema_version"], opening["schema_version"]);
+        let fields = docs
+            .split("<!-- BEGIN RUN-BEGUN FIELDS -->")
+            .nth(1)
+            .unwrap()
+            .split("<!-- END RUN-BEGUN FIELDS -->")
+            .next()
+            .unwrap();
+        let mut names: Vec<_> = fields
+            .lines()
+            .filter_map(|line| {
+                line.strip_prefix("| `")
+                    .and_then(|rest| rest.split('`').next())
+            })
+            .collect();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            begun
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+        );
+        let layout =
+            format!("<history_dir>/<history_project>/<history_session>.{SESSION_FILE_EXT}");
+        assert!(docs.contains(&format!("The file is `{layout}`.")));
     }
 }

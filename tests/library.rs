@@ -1455,3 +1455,165 @@ fn a_stopped_job_lets_its_exiting_child_finish_before_returning() {
         capture.duration_ms
     );
 }
+
+#[test]
+fn run_began_locates_each_candidate_before_events_and_history_off_preserves_events() {
+    use oneharness_core::io::run::RunBegun;
+    use oneharness_core::io::scratch::ScratchDir;
+    #[derive(Default)]
+    struct LocatedSink {
+        begun: Vec<RunBegun>,
+        events: Vec<ActionEvent>,
+        history: bool,
+    }
+    impl EventSink for LocatedSink {
+        fn run_began(&mut self, begun: &RunBegun) -> SinkStep {
+            let file = begun
+                .history_dir
+                .join(&begun.history_project)
+                .join(format!("{}.jsonl", begun.history_session));
+            assert!(file.is_absolute());
+            let live = std::fs::read_to_string(file).unwrap();
+            let lines: Vec<Value> = live
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            assert!(lines.iter().any(|line| line["type"] == "run-started"
+                && line["history_id"] == begun.history_id.to_string()
+                && line["harness_id"] == begun.harness_id.as_str()));
+            assert!(
+                self.events.is_empty(),
+                "both candidates open before the successful one's event"
+            );
+            self.begun.push(begun.clone());
+            SinkStep::Continue
+        }
+        fn event(&mut self, _id: &str, event: &ActionEvent) -> SinkStep {
+            assert_eq!(self.begun.len(), if self.history { 2 } else { 0 });
+            self.events.push(event.clone());
+            SinkStep::Continue
+        }
+    }
+    for history in [true, false] {
+        let store = ScratchDir::new(if history {
+            "library-begun-on"
+        } else {
+            "library-begun-off"
+        })
+        .unwrap();
+        let lines = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"pwd"}}]}}"#;
+        let req = RunRequest {
+            history: Some(history),
+            history_dir: Some(store.to_path_buf()),
+            stream: Some(true),
+            model: vec!["bad-model".into(), "good-model".into()],
+            ..request(
+                "claude-code",
+                &[("MOCK_FAIL_IF_MODEL", "bad-model"), ("MOCK_STDOUT", lines)],
+            )
+        };
+        let mut sink = LocatedSink {
+            history,
+            ..LocatedSink::default()
+        };
+        let outcome = run(
+            &req,
+            RunControls {
+                events: Some(&mut sink),
+                ..RunControls::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(outcome.report.results.len(), 2);
+        assert_eq!(sink.events.len(), 1);
+        if history {
+            assert_ne!(sink.begun[0].history_id, sink.begun[1].history_id);
+            let located = sink.begun[0]
+                .history_dir
+                .join(&sink.begun[0].history_project)
+                .join(format!("{}.jsonl", sink.begun[0].history_session));
+            assert_eq!(
+                located.display().to_string(),
+                outcome.report.history_file.unwrap()
+            );
+        }
+        let (sender, receiver) = mpsc::channel();
+        let mut legacy = ChannelSink(sender);
+        run(
+            &req,
+            RunControls {
+                events: Some(&mut legacy),
+                ..RunControls::default()
+            },
+        )
+        .unwrap();
+        let events: Vec<_> = receiver.try_iter().collect();
+        assert_eq!(events.len(), sink.events.len());
+        assert_eq!(events[0].kind, sink.events[0].kind);
+        assert_eq!(events[0].input, sink.events[0].input);
+    }
+}
+
+#[test]
+fn stopping_at_run_began_prevents_harness_execution() {
+    use oneharness_core::io::run::RunBegun;
+    use oneharness_core::io::scratch::ScratchDir;
+    struct StopAtOpening {
+        begun: usize,
+    }
+    impl EventSink for StopAtOpening {
+        fn run_began(&mut self, _: &RunBegun) -> SinkStep {
+            self.begun += 1;
+            SinkStep::Stop
+        }
+        fn event(&mut self, _: &str, _: &ActionEvent) -> SinkStep {
+            panic!("stopping at opening must prevent events");
+        }
+    }
+    for missing in [false, true] {
+        let store = ScratchDir::new(if missing {
+            "stop-at-missing-opening"
+        } else {
+            "stop-at-opening"
+        })
+        .unwrap();
+        let log = store.join("mock.log");
+        let mut req = RunRequest {
+            history: Some(true),
+            history_dir: Some(store.join("history")),
+            stream: Some(true),
+            ..request(
+                "claude-code",
+                &[("MOCK_LOG_FILE", &log.display().to_string())],
+            )
+        };
+        if missing {
+            req.bin = vec![format!("claude-code={}", store.join("missing").display())];
+        }
+        req.harness.push("codex".to_string());
+        req.bin.push(bin_override("codex"));
+        let mut sink = StopAtOpening { begun: 0 };
+        let outcome = run(
+            &req,
+            RunControls {
+                events: Some(&mut sink),
+                ..RunControls::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            sink.begun, 1,
+            "Stop must not notify another fallback candidate"
+        );
+        assert_eq!(outcome.report.results.len(), 1);
+        assert_eq!(
+            outcome.report.results[0].status,
+            if missing {
+                Status::Skipped
+            } else {
+                Status::Cancelled
+            }
+        );
+        assert!(!log.exists(), "the harness must never start");
+    }
+}

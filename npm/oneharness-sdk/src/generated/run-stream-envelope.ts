@@ -11,6 +11,15 @@
  */
 export type RunStreamEnvelope =
   | {
+      harness_id: string;
+      history_dir: string;
+      history_id: string;
+      history_project: string;
+      history_session: string;
+      type: "run-started";
+      [k: string]: unknown;
+    }
+  | {
       event: ActionEvent;
       type: "event";
       [k: string]: unknown;

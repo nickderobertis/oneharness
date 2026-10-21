@@ -1411,11 +1411,62 @@
           "cost_usd"
         ],
         "type": "object"
+      },
+      "UtcInstant": {
+        "description": "An RFC 3339 timestamp in UTC (`Z`), in oneharness's canonical spelling.",
+        "type": "string"
       }
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "description": "One event-sourced history JSONL line.",
     "oneOf": [
+      {
+        "allOf": [
+          {
+            "description": "The complete prompt persisted before a candidate starts, including runs that\nnever reach their closing record.",
+            "properties": {
+              "harness_id": {
+                "not": {
+                  "pattern": "[^A-Za-z0-9:_-]"
+                },
+                "pattern": "^(claude-code|codex|opencode|goose|qwen|crush|copilot|cursor)(:[A-Za-z0-9][A-Za-z0-9_-]{0,63})?$",
+                "type": "string"
+              },
+              "history_id": {
+                "maxLength": 36,
+                "minLength": 36,
+                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+                "type": "string"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "schema_version": {
+                "enum": [
+                  "1.11"
+                ],
+                "type": "string"
+              },
+              "started": {
+                "$ref": "#/$defs/UtcInstant"
+              },
+              "type": {
+                "const": "run-started",
+                "type": "string"
+              }
+            },
+            "required": [
+              "schema_version",
+              "history_id",
+              "harness_id",
+              "prompt",
+              "started",
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       {
         "allOf": [
           {
@@ -1453,7 +1504,8 @@
                           "1.7",
                           "1.8",
                           "1.9",
-                          "1.10"
+                          "1.10",
+                          "1.11"
                         ],
                         "type": "string"
                       },
@@ -1597,7 +1649,8 @@
                               "1.7",
                               "1.8",
                               "1.9",
-                              "1.10"
+                              "1.10",
+                              "1.11"
                             ],
                             "type": "string"
                           }
@@ -1660,7 +1713,8 @@
                               "1.7",
                               "1.8",
                               "1.9",
-                              "1.10"
+                              "1.10",
+                              "1.11"
                             ],
                             "type": "string"
                           },
@@ -1708,7 +1762,8 @@
                         "enum": [
                           "1.8",
                           "1.9",
-                          "1.10"
+                          "1.10",
+                          "1.11"
                         ],
                         "type": "string"
                       }
@@ -1748,7 +1803,8 @@
                           "1.7",
                           "1.8",
                           "1.9",
-                          "1.10"
+                          "1.10",
+                          "1.11"
                         ],
                         "type": "string"
                       }
@@ -1790,7 +1846,8 @@
                               "1.7",
                               "1.8",
                               "1.9",
-                              "1.10"
+                              "1.10",
+                              "1.11"
                             ],
                             "type": "string"
                           }
@@ -1828,7 +1885,8 @@
                               "1.7",
                               "1.8",
                               "1.9",
-                              "1.10"
+                              "1.10",
+                              "1.11"
                             ],
                             "type": "string"
                           }
@@ -1865,7 +1923,8 @@
                             "enum": [
                               "1.8",
                               "1.9",
-                              "1.10"
+                              "1.10",
+                              "1.11"
                             ],
                             "type": "string"
                           }
@@ -1901,7 +1960,8 @@
                           "schema_version": {
                             "enum": [
                               "1.9",
-                              "1.10"
+                              "1.10",
+                              "1.11"
                             ],
                             "type": "string"
                           }
@@ -1936,7 +1996,8 @@
                         "properties": {
                           "schema_version": {
                             "enum": [
-                              "1.10"
+                              "1.10",
+                              "1.11"
                             ],
                             "type": "string"
                           }
@@ -2047,7 +2108,8 @@
                           "1.7",
                           "1.8",
                           "1.9",
-                          "1.10"
+                          "1.10",
+                          "1.11"
                         ],
                         "type": "string"
                       },
@@ -2253,7 +2315,8 @@
                           "1.7",
                           "1.8",
                           "1.9",
-                          "1.10"
+                          "1.10",
+                          "1.11"
                         ],
                         "type": "string"
                       },
@@ -2457,7 +2520,8 @@
                           "1.7",
                           "1.8",
                           "1.9",
-                          "1.10"
+                          "1.10",
+                          "1.11"
                         ],
                         "type": "string"
                       },
@@ -2642,7 +2706,8 @@
                           "1.7",
                           "1.8",
                           "1.9",
-                          "1.10"
+                          "1.10",
+                          "1.11"
                         ],
                         "type": "string"
                       },
@@ -2826,7 +2891,8 @@
                           "1.7",
                           "1.8",
                           "1.9",
-                          "1.10"
+                          "1.10",
+                          "1.11"
                         ],
                         "type": "string"
                       },
@@ -3027,7 +3093,8 @@
                           "1.7",
                           "1.8",
                           "1.9",
-                          "1.10"
+                          "1.10",
+                          "1.11"
                         ],
                         "type": "string"
                       },
@@ -4082,7 +4149,8 @@
                       "1.7",
                       "1.8",
                       "1.9",
-                      "1.10"
+                      "1.10",
+                      "1.11"
                     ],
                     "type": "string"
                   }
@@ -4145,7 +4213,8 @@
                       "1.7",
                       "1.8",
                       "1.9",
-                      "1.10"
+                      "1.10",
+                      "1.11"
                     ],
                     "type": "string"
                   },
@@ -4193,7 +4262,8 @@
                 "enum": [
                   "1.8",
                   "1.9",
-                  "1.10"
+                  "1.10",
+                  "1.11"
                 ],
                 "type": "string"
               }
@@ -4233,7 +4303,8 @@
                   "1.7",
                   "1.8",
                   "1.9",
-                  "1.10"
+                  "1.10",
+                  "1.11"
                 ],
                 "type": "string"
               }
@@ -4275,7 +4346,8 @@
                       "1.7",
                       "1.8",
                       "1.9",
-                      "1.10"
+                      "1.10",
+                      "1.11"
                     ],
                     "type": "string"
                   }
@@ -4313,7 +4385,8 @@
                       "1.7",
                       "1.8",
                       "1.9",
-                      "1.10"
+                      "1.10",
+                      "1.11"
                     ],
                     "type": "string"
                   }
@@ -4350,7 +4423,8 @@
                     "enum": [
                       "1.8",
                       "1.9",
-                      "1.10"
+                      "1.10",
+                      "1.11"
                     ],
                     "type": "string"
                   }
@@ -4386,7 +4460,8 @@
                   "schema_version": {
                     "enum": [
                       "1.9",
-                      "1.10"
+                      "1.10",
+                      "1.11"
                     ],
                     "type": "string"
                   }
@@ -4421,7 +4496,8 @@
                 "properties": {
                   "schema_version": {
                     "enum": [
-                      "1.10"
+                      "1.10",
+                      "1.11"
                     ],
                     "type": "string"
                   }
@@ -4733,7 +4809,8 @@
               "1.7",
               "1.8",
               "1.9",
-              "1.10"
+              "1.10",
+              "1.11"
             ],
             "type": "string"
           },
@@ -5394,7 +5471,8 @@
               "1.7",
               "1.8",
               "1.9",
-              "1.10"
+              "1.10",
+              "1.11"
             ],
             "type": "string"
           },
@@ -5593,7 +5671,8 @@
               "1.7",
               "1.8",
               "1.9",
-              "1.10"
+              "1.10",
+              "1.11"
             ],
             "type": "string"
           },
@@ -5790,7 +5869,8 @@
               "1.7",
               "1.8",
               "1.9",
-              "1.10"
+              "1.10",
+              "1.11"
             ],
             "type": "string"
           },
@@ -5988,7 +6068,8 @@
               "1.7",
               "1.8",
               "1.9",
-              "1.10"
+              "1.10",
+              "1.11"
             ],
             "type": "string"
           },
@@ -7114,7 +7195,8 @@
                           "1.7",
                           "1.8",
                           "1.9",
-                          "1.10"
+                          "1.10",
+                          "1.11"
                         ],
                         "type": "string"
                       }
@@ -7177,7 +7259,8 @@
                           "1.7",
                           "1.8",
                           "1.9",
-                          "1.10"
+                          "1.10",
+                          "1.11"
                         ],
                         "type": "string"
                       },
@@ -7225,7 +7308,8 @@
                     "enum": [
                       "1.8",
                       "1.9",
-                      "1.10"
+                      "1.10",
+                      "1.11"
                     ],
                     "type": "string"
                   }
@@ -7265,7 +7349,8 @@
                       "1.7",
                       "1.8",
                       "1.9",
-                      "1.10"
+                      "1.10",
+                      "1.11"
                     ],
                     "type": "string"
                   }
@@ -7307,7 +7392,8 @@
                           "1.7",
                           "1.8",
                           "1.9",
-                          "1.10"
+                          "1.10",
+                          "1.11"
                         ],
                         "type": "string"
                       }
@@ -7345,7 +7431,8 @@
                           "1.7",
                           "1.8",
                           "1.9",
-                          "1.10"
+                          "1.10",
+                          "1.11"
                         ],
                         "type": "string"
                       }
@@ -7382,7 +7469,8 @@
                         "enum": [
                           "1.8",
                           "1.9",
-                          "1.10"
+                          "1.10",
+                          "1.11"
                         ],
                         "type": "string"
                       }
@@ -7418,7 +7506,8 @@
                       "schema_version": {
                         "enum": [
                           "1.9",
-                          "1.10"
+                          "1.10",
+                          "1.11"
                         ],
                         "type": "string"
                       }
@@ -7453,7 +7542,8 @@
                     "properties": {
                       "schema_version": {
                         "enum": [
-                          "1.10"
+                          "1.10",
+                          "1.11"
                         ],
                         "type": "string"
                       }
@@ -7765,7 +7855,8 @@
                   "1.7",
                   "1.8",
                   "1.9",
-                  "1.10"
+                  "1.10",
+                  "1.11"
                 ],
                 "type": "string"
               },
@@ -8426,7 +8517,8 @@
                   "1.7",
                   "1.8",
                   "1.9",
-                  "1.10"
+                  "1.10",
+                  "1.11"
                 ],
                 "type": "string"
               },
@@ -8625,7 +8717,8 @@
                   "1.7",
                   "1.8",
                   "1.9",
-                  "1.10"
+                  "1.10",
+                  "1.11"
                 ],
                 "type": "string"
               },
@@ -8822,7 +8915,8 @@
                   "1.7",
                   "1.8",
                   "1.9",
-                  "1.10"
+                  "1.10",
+                  "1.11"
                 ],
                 "type": "string"
               },
@@ -9020,7 +9114,8 @@
                   "1.7",
                   "1.8",
                   "1.9",
-                  "1.10"
+                  "1.10",
+                  "1.11"
                 ],
                 "type": "string"
               },
@@ -10260,7 +10355,8 @@
                       "1.7",
                       "1.8",
                       "1.9",
-                      "1.10"
+                      "1.10",
+                      "1.11"
                     ],
                     "type": "string"
                   },
@@ -10409,7 +10505,8 @@
                           "1.7",
                           "1.8",
                           "1.9",
-                          "1.10"
+                          "1.10",
+                          "1.11"
                         ],
                         "type": "string"
                       }
@@ -10472,7 +10569,8 @@
                           "1.7",
                           "1.8",
                           "1.9",
-                          "1.10"
+                          "1.10",
+                          "1.11"
                         ],
                         "type": "string"
                       },
@@ -10520,7 +10618,8 @@
                     "enum": [
                       "1.8",
                       "1.9",
-                      "1.10"
+                      "1.10",
+                      "1.11"
                     ],
                     "type": "string"
                   }
@@ -10560,7 +10659,8 @@
                       "1.7",
                       "1.8",
                       "1.9",
-                      "1.10"
+                      "1.10",
+                      "1.11"
                     ],
                     "type": "string"
                   }
@@ -10602,7 +10702,8 @@
                           "1.7",
                           "1.8",
                           "1.9",
-                          "1.10"
+                          "1.10",
+                          "1.11"
                         ],
                         "type": "string"
                       }
@@ -10640,7 +10741,8 @@
                           "1.7",
                           "1.8",
                           "1.9",
-                          "1.10"
+                          "1.10",
+                          "1.11"
                         ],
                         "type": "string"
                       }
@@ -10677,7 +10779,8 @@
                         "enum": [
                           "1.8",
                           "1.9",
-                          "1.10"
+                          "1.10",
+                          "1.11"
                         ],
                         "type": "string"
                       }
@@ -10713,7 +10816,8 @@
                       "schema_version": {
                         "enum": [
                           "1.9",
-                          "1.10"
+                          "1.10",
+                          "1.11"
                         ],
                         "type": "string"
                       }
@@ -10748,7 +10852,8 @@
                     "properties": {
                       "schema_version": {
                         "enum": [
-                          "1.10"
+                          "1.10",
+                          "1.11"
                         ],
                         "type": "string"
                       }
@@ -11060,7 +11165,8 @@
                   "1.7",
                   "1.8",
                   "1.9",
-                  "1.10"
+                  "1.10",
+                  "1.11"
                 ],
                 "type": "string"
               },
@@ -11721,7 +11827,8 @@
                   "1.7",
                   "1.8",
                   "1.9",
-                  "1.10"
+                  "1.10",
+                  "1.11"
                 ],
                 "type": "string"
               },
@@ -11920,7 +12027,8 @@
                   "1.7",
                   "1.8",
                   "1.9",
-                  "1.10"
+                  "1.10",
+                  "1.11"
                 ],
                 "type": "string"
               },
@@ -12117,7 +12225,8 @@
                   "1.7",
                   "1.8",
                   "1.9",
-                  "1.10"
+                  "1.10",
+                  "1.11"
                 ],
                 "type": "string"
               },
@@ -12315,7 +12424,8 @@
                   "1.7",
                   "1.8",
                   "1.9",
-                  "1.10"
+                  "1.10",
+                  "1.11"
                 ],
                 "type": "string"
               },
@@ -16822,6 +16932,58 @@
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "description": "One line of `oneharness run --stream --format json` output (a bare `--stream`\nprints the readable text view instead).\n\nEvent lines carry normalized actions as they arrive. Exactly one terminal\nresult line carries the complete report unless the consumer closes the\nstream early. This is an output contract, so deserialization deliberately\ntolerates additive fields from newer producers.",
     "oneOf": [
+      {
+        "description": "A candidate's address in the history store, delivered before its events.",
+        "properties": {
+          "harness_id": {
+            "not": {
+              "pattern": "[^A-Za-z0-9:_-]"
+            },
+            "pattern": "^(claude-code|codex|opencode|goose|qwen|crush|copilot|cursor)(:[A-Za-z0-9][A-Za-z0-9_-]{0,63})?$",
+            "type": "string"
+          },
+          "history_dir": {
+            "not": {
+              "pattern": "[\\u0000-\\u001F\\u007F-\\u009F]"
+            },
+            "pattern": "^(/|[A-Za-z]:[\\\\/]|\\\\\\\\[^\\\\/]+[\\\\/][^\\\\/]+)",
+            "type": "string"
+          },
+          "history_id": {
+            "maxLength": 36,
+            "minLength": 36,
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+            "type": "string"
+          },
+          "history_project": {
+            "minLength": 1,
+            "not": {
+              "pattern": "(^\\.\\.?$|[^A-Za-z0-9._-])"
+            },
+            "type": "string"
+          },
+          "history_session": {
+            "minLength": 1,
+            "not": {
+              "pattern": "(^\\.\\.?$|[^A-Za-z0-9._-])"
+            },
+            "type": "string"
+          },
+          "type": {
+            "const": "run-started",
+            "type": "string"
+          }
+        },
+        "required": [
+          "harness_id",
+          "history_id",
+          "history_dir",
+          "history_project",
+          "history_session",
+          "type"
+        ],
+        "type": "object"
+      },
       {
         "description": "A normalized action observed while the harness is still running.",
         "properties": {

@@ -883,6 +883,9 @@ pub struct BatchReport {
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RunStreamEnvelope {
+    /// The history address of a candidate before its events.
+    #[serde(rename = "run-started")]
+    RunStarted(crate::domain::history::RunBegun),
     /// A normalized action observed while the harness is still running.
     Event { event: ActionEvent },
     /// The complete report that terminates a normally consumed stream.
@@ -903,6 +906,9 @@ impl<'de> Deserialize<'de> for RunStreamEnvelope {
             serde::de::Error::custom("run stream envelope is missing string field `type`")
         })?;
         match kind {
+            "run-started" => serde_json::from_value(value)
+                .map(Self::RunStarted)
+                .map_err(serde::de::Error::custom),
             "event" => serde_json::from_value(
                 value
                     .get("event")

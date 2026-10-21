@@ -124,6 +124,22 @@ impl StdoutEvents {
 }
 
 impl EventSink for StdoutEvents {
+    fn run_began(&mut self, begun: &oneharness_core::io::run::RunBegun) -> SinkStep {
+        use std::io::Write;
+        if matches!(self.view, StreamView::Text) {
+            return SinkStep::Continue;
+        }
+        let Ok(line) = serde_json::to_string(&RunStreamEnvelope::RunStarted(begun.clone())) else {
+            return SinkStep::Stop;
+        };
+        let mut out = std::io::stdout().lock();
+        if writeln!(out, "{line}").and_then(|()| out.flush()).is_err() {
+            SinkStep::Stop
+        } else {
+            SinkStep::Continue
+        }
+    }
+
     fn event(&mut self, _harness_id: &str, event: &ActionEvent) -> SinkStep {
         use std::io::Write;
         let line = match self.view {

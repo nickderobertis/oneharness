@@ -56,6 +56,16 @@ DOUBLE
 chmod +x "$tmp/bin/qwen" || fail "could not make the qwen double executable"
 
 record="$tmp/record"
+# How many times the double launched for the last probe: none when it never
+# wrote its record, and a failure when the record is there but unreadable.
+count_launches() {
+  launches=0
+  [ -e "$record" ] || return 0
+  [ -r "$record" ] || fail "could not read the double's record $record; check that $tmp is readable"
+  launches="$(grep -cx launch "$record")" || [ "$launches" = 0 ] ||
+    fail "could not count the launches in the double's record $record; check that it is readable"
+}
+
 # One probe as a live suite runs it: a fresh marker, oh_run with oh_prompt's
 # request, then oh_assert_echoed. Captures output in $out, the exit code in $rc.
 probe() {
@@ -64,13 +74,13 @@ probe() {
   # shellcheck disable=SC2016 # expanded by the driven shell, which has the helpers
   out="$(
     env PATH="$tmp/bin:$PATH" ONEHARNESS_BIN="$oh" ECHO_DOUBLE_RECORD="$record" "$@" \
-      bash -c "set -euo pipefail; source '$root/scripts/e2e-lib.sh'
-        m=\"\$(oh_marker)\"; echo \"marker=\$m\"; echo \"prompt=\$(oh_prompt \"\$m\")\"
-        oh_run qwen \"\$(oh_prompt \"\$m\")\"; oh_assert_echoed qwen \"\$m\"" 2>&1
+      bash -c 'set -euo pipefail; source "$1/scripts/e2e-lib.sh"
+        m="$(oh_marker)"; echo "marker=$m"; echo "prompt=$(oh_prompt "$m")"
+        oh_run qwen "$(oh_prompt "$m")"; oh_assert_echoed qwen "$m"' _ "$root" 2>&1
   )"
   rc=$?
   set -e
-  launches="$(grep -cx launch "$record" 2>/dev/null || true)"
+  count_launches
 }
 
 # 1. A reply carrying the marker passes, after exactly one launch that was
@@ -81,9 +91,10 @@ case "$out" in
   *"PASS: qwen live e2e"*) ;;
   *) fail "a reply carrying the marker did not reach the probe's verdict: $out" ;;
 esac
-[ "$launches" = 1 ] || fail "a passing probe launched the harness ${launches:-0} times, not once: $out"
-marker="$(sed -n 's/^marker=//p' <<<"$out")"
-prompt="$(sed -n 's/^prompt=//p' <<<"$out")"
+[ "$launches" = 1 ] || fail "a passing probe launched the harness $launches times, not once: $out"
+marker="$(sed -n 's/^marker=//p' <<<"$out")" || fail "could not read the probe's marker from its output: $out"
+prompt="$(sed -n 's/^prompt=//p' <<<"$out")" || fail "could not read the probe's request from its output: $out"
+[ -n "$marker" ] || fail "the probe printed no marker: $out"
 [ "$prompt" = "oneharness end-to-end test. Reply with exactly this string and nothing else: $marker" ] ||
   fail "oh_prompt no longer asks plainly for the marker alone: $prompt"
 grep -qxF "arg=$prompt" "$record" ||
@@ -96,6 +107,6 @@ case "$out" in
   *"FAIL: qwen ran but the unique marker never surfaced"*) ;;
   *) fail "a reply without the marker failed for another reason: $out" ;;
 esac
-[ "$launches" = 1 ] || fail "a failing probe launched the harness ${launches:-0} times, not once: $out"
+[ "$launches" = 1 ] || fail "a failing probe launched the harness $launches times, not once: $out"
 
 echo "check-echo-probe: ok"

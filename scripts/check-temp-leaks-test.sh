@@ -453,8 +453,9 @@ vanished="$work/oneharness-vanished-$exited"
 stayed="$work/oneharness-stayed-$exited"
 rm -f "$work/armed" || fixture_failed "clear the shim's arming file"
 set +e
+# shellcheck disable=SC2016 # expanded by the driven shell, from the paths passed after it
 PATH="$work/fakebin:$PATH" REAL_FIND="$real_find" FAKE_FIND_ARMED="$work/armed" FAKE_FIND_VANISH="$vanished" \
-  bash "$gate" bash -c "mkdir '$vanished' '$stayed' && $arm" >"$work/out" 2>&1
+  bash "$gate" bash -c 'mkdir "$1" "$2" && touch "$3"' _ "$vanished" "$stayed" "$work/armed" >"$work/out" 2>&1
 status=$?
 set -e
 [ ! -e "$vanished" ] || fail "the shim never removed the directory the sweep listed"
@@ -464,8 +465,9 @@ grep -qF "$(basename "$stayed")" "$work/out" ||
 ! grep -qF "$(basename "$vanished")" "$work/out" ||
   fail "a directory retired after the sweep listed it was reported as this run's leak"
 rm -rf "$stayed" "$work/armed" || fixture_failed "remove the first vanishing case's fixtures"
+# shellcheck disable=SC2016 # expanded by the driven shell, from the paths passed after it
 if ! PATH="$work/fakebin:$PATH" REAL_FIND="$real_find" FAKE_FIND_ARMED="$work/armed" FAKE_FIND_VANISH="$vanished" \
-  bash "$gate" bash -c "mkdir '$vanished' && $arm" >"$work/out" 2>&1; then
+  bash "$gate" bash -c 'mkdir "$1" && touch "$2"' _ "$vanished" "$work/armed" >"$work/out" 2>&1; then
   fail "a directory another run retired after the sweep listed it must not fail the gate"
 fi
 rm -rf "$work/fakebin" "$work/ran" "$work/armed"

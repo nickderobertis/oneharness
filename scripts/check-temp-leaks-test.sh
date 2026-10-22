@@ -430,7 +430,12 @@ fi
 # the gate read its marker, was not left behind; one still there unmarked, with
 # no live maker, is still this run's leak. The shim lists for real and only then
 # removes the first, so the gate meets exactly that order.
-cat >"$work/fakebin/find" <<'FIND'
+fixture_failed() {
+  echo "check-temp-leaks-test: could not $1 under $work." >&2
+  echo "  fix: free space or restore write access under ${TMPDIR:-/tmp}, then rerun 'bash scripts/check-temp-leaks-test.sh'." >&2
+  exit 1
+}
+cat >"$work/fakebin/find" <<'FIND' || fixture_failed "write the vanishing find shim"
 #!/usr/bin/env bash
 set -euo pipefail
 status=0
@@ -446,7 +451,7 @@ exited=$!
 wait "$exited"
 vanished="$work/oneharness-vanished-$exited"
 stayed="$work/oneharness-stayed-$exited"
-rm -f "$work/armed"
+rm -f "$work/armed" || fixture_failed "clear the shim's arming file"
 set +e
 PATH="$work/fakebin:$PATH" REAL_FIND="$real_find" FAKE_FIND_ARMED="$work/armed" FAKE_FIND_VANISH="$vanished" \
   bash "$gate" bash -c "mkdir '$vanished' '$stayed' && $arm" >"$work/out" 2>&1
@@ -458,7 +463,7 @@ grep -qF "$(basename "$stayed")" "$work/out" ||
   fail "the gate failed but did not name the unmarked directory still there"
 ! grep -qF "$(basename "$vanished")" "$work/out" ||
   fail "a directory retired after the sweep listed it was reported as this run's leak"
-rm -rf "$stayed" "$work/armed"
+rm -rf "$stayed" "$work/armed" || fixture_failed "remove the first vanishing case's fixtures"
 if ! PATH="$work/fakebin:$PATH" REAL_FIND="$real_find" FAKE_FIND_ARMED="$work/armed" FAKE_FIND_VANISH="$vanished" \
   bash "$gate" bash -c "mkdir '$vanished' && $arm" >"$work/out" 2>&1; then
   fail "a directory another run retired after the sweep listed it must not fail the gate"

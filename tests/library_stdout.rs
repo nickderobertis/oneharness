@@ -16,10 +16,11 @@ use oneharness_core::io::run::{run, RunControls};
 
 #[path = "common/library_fixture.rs"]
 mod fixture;
-use fixture::request;
+use fixture::{request, ProfileScratch};
 
 #[test]
 fn a_library_caller_gets_the_report_back_without_the_engine_printing_it() {
+    let profiles = ProfileScratch::new();
     // The whole point of the library entry point: the report is a *value*, and
     // getting it costs the caller nothing on its own stdout — which a consumer
     // like onejudge cannot lend out, because its stdout is its own contract.
@@ -31,7 +32,7 @@ fn a_library_caller_gets_the_report_back_without_the_engine_printing_it() {
         r#"{"type":"tool_use","part":{"type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"echo hi"},"output":"hi"}}}"#,
         "\n",
     );
-    let request = request("opencode", &[("MOCK_STDOUT", stdout)]);
+    let request = request(&profiles, "opencode", &[("MOCK_STDOUT", stdout)]);
 
     let captured = std::env::temp_dir().join(format!("oh-lib-stdout-{}.txt", std::process::id()));
     let _ = std::fs::remove_file(&captured);

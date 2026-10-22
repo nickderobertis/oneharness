@@ -64,7 +64,7 @@ follow-ups (see "After the main task").
   versions; the full sweep sits at release-prep (*Releasing*).
 - **Projects in the graph:** `oneharness-core`, `oneharness`,
   `oneharness-integration`, `oneharness-mock-harness`, `oneharness-e2e`,
-  `history-compat`, `mock-responder`, `harness-captures`, `sdk-contract`,
+  `history-compat`, `mock-responder`, `profile-scratch`, `harness-captures`, `sdk-contract`,
   `sdk-conformance`, `node-sdk`, `python-sdk`, `npm-launcher`,
   `install-surface`, `release-tooling`, `ci-contracts`, `github-workflows`,
   `github-workflows-integration`, `github-workflows-setup`,

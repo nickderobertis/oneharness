@@ -1,0 +1,39 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "profile-scratch",
+  "projectType": "library",
+  "tags": [
+    "type:fixture",
+    "lang:rust"
+  ],
+  "//": "Shared test-only profile ownership helper, compiled and tested through its three consumer suites.",
+  "implicitDependencies": [
+    "oneharness-core"
+  ],
+  "namedInputs": {
+    "default": [
+      "{projectRoot}/**/*",
+      "rustToolchain"
+    ]
+  },
+  "targets": {
+    "format": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "rustfmt --edition 2021 --check tests/profile-scratch/profile_scratch.rs"
+        ],
+        "parallel": false
+      }
+    },
+    "format-write": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "rustfmt --edition 2021 tests/profile-scratch/profile_scratch.rs"
+        ],
+        "parallel": false
+      }
+    }
+  }
+}

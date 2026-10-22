@@ -55,9 +55,9 @@ n="$(grep -cx launch "$SESSION_DOUBLE_RECORD")" || {
 }
 read -r -a plan <<<"$SESSION_DOUBLE_PLAN"
 step="${plan[$((n > ${#plan[@]} ? ${#plan[@]} - 1 : n - 1))]}"
-target="$(printf '%s\n' "$@" | grep -o 'touch [^ ]*\.txt' | head -n 1 | cut -c7-)"
+target="$(printf '%s\n' "$@" | grep -o 'touch [^ ]*\.txt' | head -n 1 | cut -c7-)" || target=""
 [ -n "$target" ] || {
-  echo "opencode double: no touch target in its arguments: $*" >&2
+  echo "opencode double: no 'touch <path>.txt' in its arguments ($*); the phase's prompt must name the file it asks for, so check _oh_oc_gate_run in scripts/e2e-opencode.sh" >&2
   exit 1
 }
 tool() {

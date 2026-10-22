@@ -88,17 +88,18 @@ oh_mock_enforce opencode
 # never occurs (file PRESENT); the only difference between the two phases is the
 # deny needle, which isolates the session_id field as the cause of the block.
 oh_opencode_session_id_forwarded() {
-  local bin sandbox out status denyfile allowfile
+  local bin sandbox status denyfile allowfile report attempt
   bin="$(oh_bin)"
   [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
   local rules='Rules: you MUST actually invoke your shell tool with that exact command — never decide on your own that it is not permitted; attempt it. Use only the shell tool, and do NOT create the file by any other means.'
 
-  # Sync a single-hook gate (deny needle $2) into a fresh sandbox and drive the
-  # real OpenCode through one `touch $1`, under bypass so the gate is the sole
-  # decider. Echoes the sandbox path; the caller checks for the file.
-  _oh_oc_gate_run() {
-    local file="$1" needle="$2" sb cfg
+  # Sync a single-hook gate (deny needle $1) into a fresh sandbox. Echoes the
+  # sandbox path. It runs no turn: `oh_run` must run in this shell, not the
+  # caller's `$(...)`, or `oh_field`/`oh_dump` read the previous phase's report
+  # (a failed control once dumped the mock-stub turn before it).
+  _oh_oc_gate_sandbox() {
+    local needle="$1" sb cfg
     sb="$(mktemp -d)"
     sb="$(oh_native_path "$sb")"
     git init -q "$sb" 2>/dev/null || true
@@ -114,29 +115,49 @@ TOML
       rm -rf "$sb"
       fail "opencode: oneharness sync failed to install the session_id gate"
     fi
-    oh_run opencode "You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command, then stop: touch $sb/$file. $rules" --cwd "$sb"
     printf '%s' "$sb"
+  }
+
+  # Drive the real OpenCode through one `touch $2` in sandbox $1, under bypass
+  # so the gate is the sole decider; the caller checks for the file.
+  _oh_oc_gate_run() {
+    oh_run opencode "You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command, then stop: touch $1/$2. $rules" --cwd "$1"
   }
 
   note "  session-id[control]: a needle absent from the payload must let the touch run"
   allowfile="ohsess-allow-${RANDOM}${RANDOM}.txt"
-  sandbox="$(_oh_oc_gate_run "$allowfile" "OHSESSNEVER${RANDOM}${RANDOM}")"
-  status="$(oh_field '.results[0].status')"
-  if [ "$status" = "skipped" ]; then
-    rm -rf "$sandbox"
-    skip "opencode is not installed (oneharness reported status=skipped); nothing to verify"
-  fi
+  sandbox="$(_oh_oc_gate_sandbox "OHSESSNEVER${RANDOM}${RANDOM}")"
+  report="$sandbox/.oh-report.json"
+  # Up to two turns, as `oh_mock_enforce` allows: a model occasionally answers
+  # without invoking its shell tool at all (no `touch` tool call in its events),
+  # which is agent flakiness, not a verdict. Only that case is retried; a touch
+  # the agent attempted that still left no file fails hard.
+  for attempt in 1 2; do
+    _oh_oc_gate_run "$sandbox" "$allowfile"
+    status="$(oh_field '.results[0].status')"
+    if [ "$status" = "skipped" ]; then
+      rm -rf "$sandbox"
+      skip "opencode is not installed (oneharness reported status=skipped); nothing to verify"
+    fi
+    [ ! -e "$sandbox/$allowfile" ] || break
+    printf '%s' "$OH_REPORT" >"$report"
+    if _oh_touch_attempted "$report" "$allowfile"; then
+      break
+    fi
+    note "  note: attempt $attempt never invoked the shell tool on the touch (a refusal, not a gate verdict)"
+  done
   if [ ! -e "$sandbox/$allowfile" ]; then
     oh_dump
     rm -rf "$sandbox"
-    fail "opencode: the positive control never ran ($allowfile absent) — cannot trust the session_id deny as a real block (does OpenCode run shell headlessly here?)"
+    fail "opencode: the positive control never ran ($allowfile absent after $attempt attempt(s)) — cannot trust the session_id deny as a real block (does OpenCode run shell headlessly here?)"
   fi
-  note "  ok[control]: the unmatched command ran"
+  note "  ok[control]: the unmatched command ran (attempt $attempt)"
   rm -rf "$sandbox"
 
   note "  session-id[proof]: denying on the session_id key must block the touch"
   denyfile="ohsess-deny-${RANDOM}${RANDOM}.txt"
-  sandbox="$(_oh_oc_gate_run "$denyfile" "session_id")"
+  sandbox="$(_oh_oc_gate_sandbox "session_id")"
+  _oh_oc_gate_run "$sandbox" "$denyfile"
   if [ -e "$sandbox/$denyfile" ]; then
     oh_dump
     rm -rf "$sandbox"

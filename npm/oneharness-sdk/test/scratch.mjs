@@ -53,7 +53,11 @@ function runToken() {
 	return process.env[RUN_ENV] || undefined;
 }
 
-/** The pause between rename attempts, in milliseconds. */
+/**
+ * The pause between rename attempts, in milliseconds: a sibling's marker read
+ * ends within a few, and the synchronous retry blocks this thread for each
+ * one, so it stays short enough to cost nothing on a rename that recovers.
+ */
 const RENAME_PAUSE_MS = 5;
 
 /**

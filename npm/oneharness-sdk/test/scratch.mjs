@@ -291,6 +291,20 @@ function leftInPlace(directory, error) {
 }
 
 /**
+ * Give back whatever a failed removal left at `gone`: marked for its run again
+ * while still hidden, then under its swept name `directory`.
+ *
+ * @param {string} gone
+ * @param {string} directory
+ * @param {string | undefined} marker
+ */
+function returnToSweep(gone, directory, marker) {
+	if (!existsSync(gone)) return;
+	if (marker !== undefined) writeFileSync(resolve(gone, RUN_MARKER), marker);
+	renameSyncPatiently(gone, directory);
+}
+
+/**
  * Remove `directory` without ever leaving it visible to the leak gate
  * unmarked: a sibling run's gate counts an unmarked directory as its own leak
  * on Windows, where it cannot read this process's environment. Prefer
@@ -325,12 +339,7 @@ export async function retireScratch(directory) {
 		await rm(resolve(gone, RUN_MARKER), { force: true });
 		await rm(gone, { recursive: true, force: true });
 	} finally {
-		if (existsSync(gone)) {
-			if (marker !== undefined) {
-				writeFileSync(resolve(gone, RUN_MARKER), marker);
-			}
-			renameSyncPatiently(gone, directory);
-		}
+		returnToSweep(gone, directory, marker);
 	}
 }
 
@@ -356,12 +365,7 @@ export function retireScratchSync(directory) {
 		rmSync(resolve(gone, RUN_MARKER), { force: true });
 		rmSync(gone, { recursive: true, force: true });
 	} finally {
-		if (existsSync(gone)) {
-			if (marker !== undefined) {
-				writeFileSync(resolve(gone, RUN_MARKER), marker);
-			}
-			renameSyncPatiently(gone, directory);
-		}
+		returnToSweep(gone, directory, marker);
 	}
 }
 

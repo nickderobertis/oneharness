@@ -359,39 +359,40 @@ test.skipIf(!permissionsBind())(
 	},
 );
 
-test.skipIf(!permissionsBind())(
-	"a marked scratch directory that cannot be renamed is left whole",
-	async () => {
-		// Removing it in place would take its marker first and leave it visible
-		// unmarked, the race the staging names exist to close. So it stays as
-		// it was: under its swept name, owned by its run.
-		const root = await scratch("unrenamable");
-		for (const [mode, retire] of retirements) {
-			const token = `4242.node-unrenamable-${mode}`;
-			const directory = resolve(root, `${PREFIX}stuck-${mode}`);
-			await underRunToken(token, async () => {
-				placeScratchSync(directory);
-			});
-			writeFileSync(resolve(directory, "inside.txt"), "content");
-			chmodSync(root, 0o500);
-			const said: unknown[][] = [];
-			const report = console.error;
-			console.error = (...line: unknown[]) => said.push(line);
-			try {
-				await retire(directory);
-			} finally {
-				console.error = report;
-				chmodSync(root, 0o700);
-			}
-			expect(readFileSync(resolve(directory, RUN_MARKER), "utf8")).toBe(token);
-			expect(existsSync(resolve(directory, "inside.txt"))).toBe(true);
-			// Giving up is said, beside the leak its run's gate will report.
-			expect(String(said[0]?.[0])).toContain(
-				`scratch: left ${directory} in place`,
-			);
+test("a marked scratch directory that cannot be renamed is left whole", async () => {
+	// Removing it in place would take its marker first and leave it visible
+	// unmarked, the race the staging names exist to close. So it stays as it
+	// was: under its swept name, owned by its run. A non-empty directory
+	// standing where it would be renamed off the sweep refuses that rename on
+	// every platform.
+	const root = await scratch("unrenamable");
+	for (const [mode, retire] of retirements) {
+		const token = `4242.node-unrenamable-${mode}`;
+		const name = `${PREFIX}stuck-${mode}`;
+		const directory = resolve(root, name);
+		await underRunToken(token, async () => {
+			placeScratchSync(directory);
+		});
+		writeFileSync(resolve(directory, "inside.txt"), "content");
+		const gone = resolve(root, `.${name}.gone`);
+		mkdirSync(gone);
+		writeFileSync(resolve(gone, "blocker"), "");
+		const said: unknown[][] = [];
+		const report = console.error;
+		console.error = (...line: unknown[]) => said.push(line);
+		try {
+			await retire(directory);
+		} finally {
+			console.error = report;
 		}
-	},
-);
+		expect(readFileSync(resolve(directory, RUN_MARKER), "utf8")).toBe(token);
+		expect(existsSync(resolve(directory, "inside.txt"))).toBe(true);
+		// Giving up is said, beside the leak its run's gate will report.
+		expect(String(said[0]?.[0])).toContain(
+			`scratch: left ${directory} in place`,
+		);
+	}
+}, 15_000); // Windows retries the refused rename for two seconds per retirement.
 
 test("an unmarked scratch directory that cannot be renamed is removed in place", async () => {
 	// With no marker there is no ownership to lose, so removal goes on. A

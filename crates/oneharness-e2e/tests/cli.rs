@@ -42167,3 +42167,70 @@ fn buffered_openings_keep_each_batch_prompt_and_skip_unvisited_fallback_candidat
     assert_eq!(starts.len(), 1);
     assert_eq!(starts[0]["harness_id"], "claude-code");
 }
+
+#[test]
+fn buffered_history_stdout_keeps_its_bytes_and_explicit_stream_overrides_config() {
+    let bin = mock_bin().display().to_string().replace('\\', "\\\\"); // llmlint: ignore[e2e_not_mocked] This journey drives the real CLI and its config/output boundary; only the paid harness subprocess is replaced at the existing binary seam.
+    for configured in [false, true] {
+        let fx = ConfigFixture::new(
+            "buffered-history-stdout",
+            &format!("harnesses = [\"claude-code\"]\nstream = {configured}\n[harness.claude-code]\nbin = \"{bin}\"\n"),
+            "",
+        );
+        let store = ScratchDir::new("buffered-history-stdout").unwrap();
+        for choice in [None, Some(false), Some(true)] {
+            for compact in [false, true] {
+                let cwd = fx.cwd();
+                let dir = store.display().to_string();
+                let mut args = vec![
+                    "run",
+                    "--prompt",
+                    "hello",
+                    "--cwd",
+                    &cwd,
+                    "--history",
+                    "--history-dir",
+                    &dir,
+                ];
+                match choice {
+                    Some(true) => args.push("--stream"),
+                    Some(false) => args.push("--no-stream"),
+                    None => {}
+                }
+                if compact {
+                    args.push("--compact");
+                } else {
+                    args.extend(["--format", "json"]);
+                }
+                let output = run_with_config_as_typed(
+                    &args,
+                    &[("MOCK_STDOUT", r#"{"result":"finished"}"#)],
+                    &fx.user_config(),
+                );
+                assert!(output.status.success(), "{output:?}");
+                if choice.unwrap_or(configured) {
+                    let lines: Vec<Value> = String::from_utf8_lossy(&output.stdout)
+                        .lines()
+                        .map(|line| serde_json::from_str(line).unwrap())
+                        .collect();
+                    assert_eq!(lines[0]["type"], "run-started");
+                    assert_eq!(lines.last().unwrap()["type"], "result");
+                } else {
+                    let report: oneharness_core::domain::report::RunReport =
+                        serde_json::from_slice(&output.stdout)
+                            .expect("one buffered report document");
+                    assert_eq!(report.results[0].text.as_deref(), Some("finished"));
+                    // Pin the existing buffered byte protocol: the serialized
+                    // report and exactly one newline, without stream envelopes.
+                    let mut expected = if compact {
+                        serde_json::to_vec(&report).unwrap()
+                    } else {
+                        serde_json::to_vec_pretty(&report).unwrap()
+                    };
+                    expected.push(b'\n');
+                    assert_eq!(output.stdout, expected);
+                }
+            }
+        }
+    }
+}

@@ -1546,7 +1546,7 @@ fn run_began_locates_each_candidate_before_events_and_history_off_preserves_even
         }
     }
     let profiles = ProfileScratch::new();
-    for history in [true, false] {
+    for (history, stream) in [(true, true), (false, true), (true, false), (false, false)] {
         let store = ScratchDir::new(if history {
             "library-begun-on"
         } else {
@@ -1557,7 +1557,7 @@ fn run_began_locates_each_candidate_before_events_and_history_off_preserves_even
         let req = RunRequest {
             history: Some(history),
             history_dir: Some(store.to_path_buf()),
-            stream: Some(true),
+            stream: Some(stream),
             model: vec!["bad-model".into(), "good-model".into()],
             ..request(
                 &profiles,
@@ -1578,7 +1578,8 @@ fn run_began_locates_each_candidate_before_events_and_history_off_preserves_even
         )
         .unwrap();
         assert_eq!(outcome.report.results.len(), 2);
-        assert_eq!(sink.events.len(), 1);
+        assert_eq!(sink.events.len(), usize::from(stream));
+        assert_eq!(sink.begun.len(), if history { 2 } else { 0 });
         if history {
             assert_ne!(sink.begun[0].history_id, sink.begun[1].history_id);
             let located = sink.begun[0]
@@ -1602,8 +1603,10 @@ fn run_began_locates_each_candidate_before_events_and_history_off_preserves_even
         .unwrap();
         let events: Vec<_> = receiver.try_iter().collect();
         assert_eq!(events.len(), sink.events.len());
-        assert_eq!(events[0].kind, sink.events[0].kind);
-        assert_eq!(events[0].input, sink.events[0].input);
+        if stream {
+            assert_eq!(events[0].kind, sink.events[0].kind);
+            assert_eq!(events[0].input, sink.events[0].input);
+        }
     }
 }
 
@@ -1624,7 +1627,14 @@ fn stopping_at_run_began_prevents_harness_execution() {
         }
     }
     let profiles = ProfileScratch::new();
-    for missing in [false, true] {
+    for (missing, stream, run_mode, batch) in [
+        (false, true, None, false),
+        (true, true, None, false),
+        (false, false, None, false),
+        (true, false, None, false),
+        (false, false, Some(RunMode::Parallel), false),
+        (false, false, Some(RunMode::Parallel), true),
+    ] {
         let store = ScratchDir::new(if missing {
             "stop-at-missing-opening"
         } else {
@@ -1633,9 +1643,10 @@ fn stopping_at_run_began_prevents_harness_execution() {
         .unwrap();
         let log = store.join("mock.log");
         let mut req = RunRequest {
+            run_mode,
             history: Some(true),
             history_dir: Some(store.join("history")),
-            stream: Some(true),
+            stream: Some(stream),
             ..request(
                 &profiles,
                 "claude-code",
@@ -1645,8 +1656,12 @@ fn stopping_at_run_began_prevents_harness_execution() {
         if missing {
             req.bin = vec![format!("claude-code={}", store.join("missing").display())];
         }
-        req.harness.push("codex".to_string());
-        req.bin.push(bin_override("codex"));
+        if batch {
+            req.prompt.push("second prompt".into());
+        } else if run_mode != Some(RunMode::Parallel) {
+            req.harness.push("codex".to_string());
+            req.bin.push(bin_override("codex"));
+        }
         let mut sink = StopAtOpening { begun: 0 };
         let outcome = run(
             &req,
@@ -1657,18 +1672,21 @@ fn stopping_at_run_began_prevents_harness_execution() {
         )
         .unwrap();
         assert_eq!(
-            sink.begun, 1,
-            "Stop must not notify another fallback candidate"
+            sink.begun,
+            if batch { 2 } else { 1 },
+            "only begun plan entries are announced"
         );
-        assert_eq!(outcome.report.results.len(), 1);
-        assert_eq!(
-            outcome.report.results[0].status,
-            if missing {
-                Status::Skipped
-            } else {
-                Status::Cancelled
-            }
-        );
+        assert_eq!(outcome.report.results.len(), if batch { 2 } else { 1 });
+        for result in &outcome.report.results {
+            assert_eq!(
+                result.status,
+                if missing {
+                    Status::Skipped
+                } else {
+                    Status::Cancelled
+                }
+            );
+        }
         assert!(!log.exists(), "the harness must never start");
     }
 }
@@ -1777,4 +1795,141 @@ fn a_killed_mocks_coverage_profile_lives_and_dies_with_its_fixture() {
         "an unwinding test left its profiles behind: {}",
         dir.display()
     );
+}
+
+#[test]
+fn buffered_candidates_announce_live_history_before_the_held_harness_finishes() {
+    use oneharness_core::io::run::RunBegun;
+    use oneharness_core::io::scratch::ScratchDir;
+    struct Sink(mpsc::Sender<RunBegun>);
+    impl EventSink for Sink {
+        fn run_began(&mut self, begun: &RunBegun) -> SinkStep {
+            self.0.send(begun.clone()).unwrap();
+            SinkStep::Continue
+        }
+        fn event(&mut self, _: &str, _: &ActionEvent) -> SinkStep {
+            panic!("a buffered sink must receive no action events");
+        }
+    }
+    struct Held {
+        openings: Mutex<mpsc::Receiver<RunBegun>>,
+        seen: Mutex<Vec<(RunBegun, Vec<Value>)>>,
+        release: PathBuf,
+    }
+    impl ProcessSupervisor for Held {
+        fn spawned(&self, child: &Child) {
+            // The mock cannot exit until this hook releases its exact PID.
+            let begun = self
+                .openings
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5))
+                .ok();
+            if let Some(begun) = begun {
+                let file = begun
+                    .history_dir
+                    .join(&begun.history_project)
+                    .join(format!("{}.jsonl", begun.history_session));
+                let lines: Vec<Value> = std::fs::read_to_string(file)
+                    .unwrap()
+                    .lines()
+                    .map(|line| serde_json::from_str(line).unwrap())
+                    .collect();
+                self.seen.lock().unwrap().push((begun, lines));
+            }
+            use std::io::Write;
+            writeln!(
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&self.release)
+                    .unwrap(),
+                "{}",
+                child.id()
+            )
+            .unwrap();
+        }
+    }
+    let profiles = ProfileScratch::new();
+    for (fallback, run_mode) in [
+        (false, None),
+        (false, Some(RunMode::Parallel)),
+        (true, None),
+    ] {
+        let store = ScratchDir::new("buffered-live-begun").unwrap();
+        let release = store.join("release");
+        let req = RunRequest {
+            run_mode,
+            stream: Some(false),
+            history: Some(true),
+            history_dir: Some(store.join("history")),
+            model: if fallback {
+                vec!["bad-model".into(), "good-model".into()]
+            } else {
+                vec![]
+            },
+            ..request(
+                &profiles,
+                "claude-code",
+                &[
+                    ("MOCK_HOLD_FILE", &release.display().to_string()),
+                    ("MOCK_FAIL_IF_MODEL", "bad-model"),
+                    ("MOCK_STDOUT", r#"{"result":"finished"}"#),
+                ],
+            )
+        };
+        let (sender, receiver) = mpsc::channel();
+        let mut sink = Sink(sender);
+        let held = Held {
+            openings: Mutex::new(receiver),
+            seen: Mutex::new(Vec::new()),
+            release,
+        };
+        let outcome = run_supervised(
+            &req,
+            RunControls {
+                events: Some(&mut sink),
+                ..RunControls::default()
+            },
+            Some(&held),
+        )
+        .unwrap();
+        assert!(!outcome.streamed);
+        assert_eq!(outcome.exit_code, 0);
+        assert_eq!(
+            outcome.report.results.last().unwrap().text.as_deref(),
+            Some("finished")
+        );
+        let seen = held.seen.lock().unwrap();
+        assert_eq!(seen.len(), if fallback { 2 } else { 1 });
+        for (begun, lines) in seen.iter() {
+            let opening = lines
+                .iter()
+                .find(|line| {
+                    line["type"] == "run-started"
+                        && line["history_id"] == begun.history_id.to_string()
+                })
+                .unwrap();
+            assert_eq!(opening["harness_id"], begun.harness_id.as_str());
+            assert!(!lines
+                .iter()
+                .any(|line| line["type"] == "run"
+                    && line["history_id"] == begun.history_id.to_string()));
+        }
+        if fallback {
+            assert_ne!(seen[0].0.history_id, seen[1].0.history_id);
+        }
+        assert_eq!(
+            outcome.report.history_file.as_deref(),
+            Some(
+                seen[0]
+                    .0
+                    .history_dir
+                    .join(&seen[0].0.history_project)
+                    .join(format!("{}.jsonl", seen[0].0.history_session))
+                    .to_str()
+                    .unwrap()
+            )
+        );
+    }
 }

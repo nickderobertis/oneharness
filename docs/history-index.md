@@ -198,8 +198,9 @@ The candidate's existing event `run_id` and closing run `history_id` name that
 same UUID. Event and closing run fields remain unchanged; older readers can
 skip the new line and read the rest of the file.
 
-For streaming library callers, `EventSink::run_began(&RunBegun)` runs once per
-candidate before its first event. Its provided default returns `Continue`, so
+For library callers, `EventSink::run_began(&RunBegun)` runs once per
+candidate as it begins, whether or not the run streams. Buffered runs deliver
+no action events to the sink. Its provided default returns `Continue`, so
 sinks implementing only `event` retain their behavior. The fields are:
 
 <!-- BEGIN RUN-BEGUN FIELDS -->

@@ -91,14 +91,14 @@ pub enum SinkStep {
 
 pub use crate::domain::history::RunBegun;
 
-/// Where a streaming run publishes each normalized event **as it occurs**.
+/// Where a run announces its history location and publishes streamed events.
 ///
 /// The primitive one layer down ([`crate::io::runner::run_job_streaming`]) has
 /// always taken a per-line callback; this is what carries it out to a caller.
 /// The `oneharness` binary's sink writes the NDJSON stream protocol to its own
 /// stdout, which is why nothing in this module does.
 pub trait EventSink {
-    /// Locate a history-enabled candidate before its first event.
+    /// Locate a history-enabled candidate as it begins, whether or not the run streams.
     fn run_began(&mut self, _begun: &RunBegun) -> SinkStep {
         SinkStep::Continue
     }
@@ -108,6 +108,25 @@ pub trait EventSink {
     /// repeated harness is still attributable). Returning [`SinkStep::Stop`]
     /// ends the run.
     fn event(&mut self, harness_id: &str, event: &ActionEvent) -> SinkStep;
+}
+
+struct StreamFilteredSink<'a> {
+    sink: &'a mut dyn EventSink,
+    stream: bool,
+}
+
+impl EventSink for StreamFilteredSink<'_> {
+    fn run_began(&mut self, begun: &RunBegun) -> SinkStep {
+        self.sink.run_began(begun)
+    }
+
+    fn event(&mut self, harness_id: &str, event: &ActionEvent) -> SinkStep {
+        if self.stream {
+            self.sink.event(harness_id, event)
+        } else {
+            SinkStep::Continue
+        }
+    }
 }
 
 /// The caller-owned side channels of a run: where events go, how it is
@@ -1241,14 +1260,15 @@ pub fn run_supervised(
     // Schedule and run the jobs. `--print-command` never executes, so it always
     // takes the last branch, which emits the planned rows.
     let stream_run = stream && !args.print_command;
-    // Events are published only to a consumer that asked for the stream protocol.
-    // A controlled fallback chain takes the same sequential driver *without*
-    // `--stream` (control needs it), and there the caller is reading one buffered
-    // report — an event line on that stdout belongs to no protocol it agreed to,
-    // and `RunOutcome::streamed` would not even close it with a terminal envelope.
-    if !stream_run {
-        event_sink = None;
-    }
+    // Keep candidate announcements in buffered mode, but publish action events
+    // only when the caller requested streaming.
+    let mut filtered_sink = event_sink.take().map(|sink| StreamFilteredSink {
+        sink,
+        stream: stream_run,
+    });
+    let mut event_sink = filtered_sink
+        .as_mut()
+        .map(|sink| sink as &mut dyn EventSink);
     let mut forked = false;
     // Open the control socket before anything spawns, so a supervisor that races
     // the dispatch finds an address rather than a gap. The ADDRESS is all that is
@@ -1356,20 +1376,51 @@ pub fn run_supervised(
             &plan,
             &unit_identities,
             &prompts[0],
+            &mut event_sink,
+            &cancel,
         );
-        let results = run_http_controlled(
-            shape,
-            listener.handle_ref(),
-            plan,
-            &control_prompts
-                .first()
-                .cloned()
-                .flatten()
-                .unwrap_or_default(),
-            &control_cwd(args)?,
-            mode,
-            effective_timeout(requested_timeout, timeout_policy(specs[0], mode))?,
-        );
+        let results = if cancel.is_cancelled() {
+            plan.into_iter()
+                .map(|entry| match entry {
+                    Plan::Ready(result) => *result,
+                    Plan::Pending {
+                        spec,
+                        bin,
+                        output_format,
+                        job_index,
+                        prompt,
+                        model,
+                    } => {
+                        let job = &jobs[job_index];
+                        executed_result(
+                            spec,
+                            bin,
+                            job.argv.clone(),
+                            output_format,
+                            &runner::unstarted_capture(job),
+                            schema.as_ref(),
+                            0,
+                            prompt,
+                            model,
+                        )
+                    }
+                })
+                .collect()
+        } else {
+            run_http_controlled(
+                shape,
+                listener.handle_ref(),
+                plan,
+                &control_prompts
+                    .first()
+                    .cloned()
+                    .flatten()
+                    .unwrap_or_default(),
+                &control_cwd(args)?,
+                mode,
+                effective_timeout(requested_timeout, timeout_policy(specs[0], mode))?,
+            )
+        };
         (results, None, begun)
     } else if let Some(chain) = controlled.as_ref().filter(|_| !jobs.is_empty()) {
         // `--schema` is refused alongside `--control` up front. Parallel
@@ -1390,6 +1441,8 @@ pub fn run_supervised(
             &plan,
             &unit_identities,
             &prompts[0],
+            &mut event_sink,
+            &cancel,
         );
         let mut attempts = 0;
         let results = loop {
@@ -1472,6 +1525,7 @@ pub fn run_supervised(
             history_writer.as_ref(),
             &unit_identities,
             &prompts[0],
+            &mut event_sink,
             spawn,
         );
         (results, Some(fb), begun)
@@ -1521,6 +1575,8 @@ pub fn run_supervised(
             &plan,
             &unit_identities,
             &prompts[0],
+            &mut event_sink,
+            &cancel,
         );
         let outcomes = if fork_batch {
             let o = run_fork_batch(
@@ -2574,6 +2630,23 @@ struct BegunHistory {
     persisted_event_indexes: BTreeSet<usize>,
 }
 
+fn begin_candidate(
+    writer: &HistoryWriter,
+    identity: &HarnessIdentity,
+    prompt: &str,
+    sink: &mut Option<&mut dyn EventSink>,
+    cancel: &CancelToken,
+) -> crate::domain::history::HistoryId {
+    let run_id = writer.begin_harness_run(identity, prompt);
+    if sink
+        .as_mut()
+        .is_some_and(|sink| sink.run_began(&writer.run_begun(identity, run_id)) == SinkStep::Stop)
+    {
+        cancel.cancel();
+    }
+    run_id
+}
+
 /// Begin every entry of a plan a buffered branch runs in full: one id per plan
 /// entry, minted now — and its pointer line written now — before any of them
 /// spawns. Every entry, not only the pending ones: a row the plan already
@@ -2586,11 +2659,19 @@ fn begin_each_plan_entry(
     plan: &[Plan],
     unit_ids: &[HarnessIdentity],
     default_prompt: &str,
+    sink: &mut Option<&mut dyn EventSink>,
+    cancel: &CancelToken,
 ) -> Vec<BegunHistory> {
     (0..plan.len())
         .map(|index| BegunHistory {
             run_id: writer.map(|writer| {
-                writer.begin_harness_run(&unit_ids[index], plan[index].prompt(default_prompt))
+                begin_candidate(
+                    writer,
+                    &unit_ids[index],
+                    plan[index].prompt(default_prompt),
+                    sink,
+                    cancel,
+                )
             }),
             persisted_event_indexes: BTreeSet::new(),
         })
@@ -4084,6 +4165,7 @@ fn run_fallback(
     history_writer: Option<&HistoryWriter>,
     unit_ids: &[HarnessIdentity],
     default_prompt: &str,
+    sink: &mut Option<&mut dyn EventSink>,
     spawn: SpawnControls<'_>,
 ) -> (Vec<RunResult>, FallbackReport, Vec<BegunHistory>) {
     let mut results: Vec<RunResult> = Vec::new();
@@ -4096,8 +4178,15 @@ fn run_fallback(
     for (index, entry) in plan.into_iter().enumerate() {
         // Begun as the chain reaches it — a candidate after the one that ran is
         // never begun, so it gets no id and no pointer line.
-        let run_id = history_writer
-            .map(|writer| writer.begin_harness_run(&unit_ids[index], entry.prompt(default_prompt)));
+        let run_id = history_writer.map(|writer| {
+            begin_candidate(
+                writer,
+                &unit_ids[index],
+                entry.prompt(default_prompt),
+                sink,
+                spawn.cancel,
+            )
+        });
         let result = match entry {
             Plan::Ready(result) => *result,
             Plan::Pending {
@@ -4135,7 +4224,7 @@ fn run_fallback(
             run_id,
             persisted_event_indexes: BTreeSet::new(),
         });
-        if !keep_going {
+        if spawn.cancel.is_cancelled() || !keep_going {
             break;
         }
     }

@@ -32,3 +32,8 @@ Subtree rules for the repository's tooling scripts.
   model's reply. Start it through `oh_echo_without_context` (`e2e-lib.sh`),
   which launches from an empty sandbox outside any checkout with every context
   home pointed into it; `check-qwen-context-free.sh` holds it to that.
+- **An echo probe asks for the marker alone and runs once.** `oh_prompt` names
+  the test suite and requests exactly the marker, with no reassurance about
+  trust or secrets (models read that as injection); `oh_assert_echoed` checks
+  the marker with no retry. `check-echo-probe.sh` holds the request, the single
+  launch, and both verdicts.

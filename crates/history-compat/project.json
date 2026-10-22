@@ -10,7 +10,8 @@
     "oneharness-core",
     "oneharness",
     "oneharness-mock-harness",
-    "harness-captures"
+    "harness-captures",
+    "profile-scratch"
   ],
   "namedInputs": {
     "default": [

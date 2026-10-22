@@ -31,7 +31,7 @@ use serde_json::Value;
 
 #[path = "common/library_fixture.rs"]
 mod fixture;
-use fixture::{bin_override, request, tool_part_lines};
+use fixture::{bin_override, request, tool_part_lines, ProfileScratch};
 
 /// Collects each event the run publishes, forwarding it to the test thread the
 /// moment it arrives.
@@ -50,12 +50,14 @@ impl EventSink for ChannelSink {
 
 #[test]
 fn an_omitted_library_timeout_outlives_the_former_120_second_default() {
+    let profiles = ProfileScratch::new();
     // This is intentionally wall-clock evidence at the public library boundary:
     // resolving `None` is not enough to prove a hidden runner default cannot
     // still kill the child. The mock crosses the old deadline, then exits cleanly.
     let request = RunRequest {
         timeout: None,
         ..request(
+            &profiles,
             "claude-code",
             &[
                 ("MOCK_SLEEP_MS", "121000"),
@@ -79,13 +81,18 @@ fn an_omitted_library_timeout_outlives_the_former_120_second_default() {
 // capability: run
 #[test]
 fn an_unset_run_mode_is_a_fallback_chain_at_the_library_boundary() {
+    let profiles = ProfileScratch::new();
     // The default is decided at ONE site, in the engine, so it is proven where
     // a library caller meets it: a request that names two harnesses and no
     // mode, over a fixture that sets none (`no_config` keeps every file and
     // `ONEHARNESS_RUN_MODE` out), runs them as a chain — the first alone when
     // it can run, the second when the first cannot — and `parallel` is the
     // opt-in that runs both.
-    let mut chain = request("claude-code", &[("MOCK_STDOUT", r#"{"result":"first"}"#)]);
+    let mut chain = request(
+        &profiles,
+        "claude-code",
+        &[("MOCK_STDOUT", r#"{"result":"first"}"#)],
+    );
     chain.harness.push("opencode".to_string());
     chain.bin.push(bin_override("opencode"));
     assert_eq!(chain.run_mode, None, "the request leaves the mode unset");
@@ -153,6 +160,7 @@ fn an_in_process_run_points_at_its_history_session_before_the_harness_spawns() {
     // Owned scratch: given back whether the journey passes or panics.
     let store = ScratchDir::new("library-pointer-store").expect("a scratch store");
     let cwd = ScratchDir::new("library-pointer-cwd").expect("a scratch cwd");
+    let profiles = ProfileScratch::new();
     let pointer_file = store.join("run").join("pointers.jsonl");
     let history_dir = store.join("history");
     let pointed = |env: &[(&str, &str)]| RunRequest {
@@ -161,7 +169,7 @@ fn an_in_process_run_points_at_its_history_session_before_the_harness_spawns() {
         history_pointer_file: Some(pointer_file.clone()),
         history_name: Some("library pointer".to_string()),
         cwd: Some(cwd.to_path_buf()),
-        ..request("codex", env)
+        ..request(&profiles, "codex", env)
     };
 
     // Buffered path: the mock's stdout is what the pointer file held when the
@@ -252,6 +260,7 @@ fn an_in_process_run_points_at_its_history_session_before_the_harness_spawns() {
 // capability: runStream
 #[test]
 fn a_streaming_caller_sees_an_event_before_the_run_finishes() {
+    let profiles = ProfileScratch::new();
     // "As they occur" is the property, so the test has to observe an event while
     // the run is demonstrably still in flight — not merely receive five of them
     // by the end, which a buffered implementation would also satisfy. The mock
@@ -260,6 +269,7 @@ fn a_streaming_caller_sees_an_event_before_the_run_finishes() {
     let request = RunRequest {
         stream: Some(true),
         ..request(
+            &profiles,
             "opencode",
             &[
                 ("MOCK_STDOUT", &tool_part_lines(5)),
@@ -319,6 +329,7 @@ fn a_streaming_caller_sees_an_event_before_the_run_finishes() {
 
 #[test]
 fn a_sink_that_stops_tears_the_harness_down_mid_turn() {
+    let profiles = ProfileScratch::new();
     // The short-circuit the sink exists for: a consumer that has seen enough
     // says so, and the turn is cut off rather than paid for in full. The CLI
     // reaches this through a broken stdout pipe; a library caller reaches it by
@@ -333,6 +344,7 @@ fn a_sink_that_stops_tears_the_harness_down_mid_turn() {
     let request = RunRequest {
         stream: Some(true),
         ..request(
+            &profiles,
             "opencode",
             &[
                 ("MOCK_STDOUT", &tool_part_lines(5)),
@@ -382,6 +394,7 @@ impl EventSink for StopAfterFirst {
 #[cfg(any(unix, windows))]
 #[test]
 fn cancelling_a_run_terminates_the_harness_the_run_spawned() {
+    let profiles = ProfileScratch::new();
     // The supervision a subprocess hop used to provide. The harness leads its own
     // process group (Unix) / job object (Windows), so nothing the caller signals
     // its own group reaches it — the token is the only handle that does. The
@@ -397,6 +410,7 @@ fn cancelling_a_run_terminates_the_harness_the_run_spawned() {
     ));
     let _ = std::fs::remove_file(&ticks);
     let request = request(
+        &profiles,
         "claude-code",
         &[
             ("MOCK_NATIVE_GRANDCHILD_MS", "20000"),
@@ -649,6 +663,7 @@ fn scratch(tag: &str) -> PathBuf {
 
 #[test]
 fn the_pre_spawn_hook_holds_the_command_the_run_actually_spawns() {
+    let profiles = ProfileScratch::new();
     // The promise is that the `Command` handed to `spawning` is the one spawned,
     // not a copy taken before the run finished assembling it — otherwise a
     // `pre_exec`/`creation_flags` a caller registers for grouping never reaches
@@ -664,6 +679,7 @@ fn the_pre_spawn_hook_holds_the_command_the_run_actually_spawns() {
         ..Recorder::default()
     };
     let request = request(
+        &profiles,
         "claude-code",
         &[("MOCK_STDOUT", r#"{"result":"the request's command ran"}"#)],
     );
@@ -693,6 +709,7 @@ fn the_pre_spawn_hook_holds_the_command_the_run_actually_spawns() {
 
 #[test]
 fn the_post_spawn_hook_reaches_the_child_before_its_exit_is_observable() {
+    let profiles = ProfileScratch::new();
     // Handing the child over only once the run had observed it exit would give a
     // caller a pid it cannot adopt — and one the OS may already have reused. The
     // fixture writes `S` when it starts and `E` when it ends, two seconds apart,
@@ -705,6 +722,7 @@ fn the_post_spawn_hook_reaches_the_child_before_its_exit_is_observable() {
         ..Recorder::default()
     };
     let request = request(
+        &profiles,
         "claude-code",
         &[
             ("MOCK_SLEEP_MS", "2000"),
@@ -740,6 +758,7 @@ fn the_post_spawn_hook_reaches_the_child_before_its_exit_is_observable() {
 
 #[test]
 fn a_held_child_has_not_run_at_all_while_its_hand_over_asks_about_it() {
+    let profiles = ProfileScratch::new();
     // The proof that [`HoldPen`] is in force, which every hand-over that asks
     // the OS about a child's process group rests on. The fixture's first act
     // after its release is the `S` marker, so this hand-over stays inside the
@@ -755,6 +774,7 @@ fn a_held_child_has_not_run_at_all_while_its_hand_over_asks_about_it() {
         ..Recorder::default()
     };
     let request = request(
+        &profiles,
         "claude-code",
         &[
             ("MOCK_LOG_FILE", &log.display().to_string()),
@@ -787,6 +807,7 @@ fn a_held_child_has_not_run_at_all_while_its_hand_over_asks_about_it() {
 #[cfg(any(unix, windows))]
 #[test]
 fn an_observing_supervisor_leaves_the_descendant_teardown_to_oneharness() {
+    let profiles = ProfileScratch::new();
     // Setting a hook must not quietly move teardown to the caller. A supervisor
     // that only observes re-parents nothing, so the harness still leads the tree
     // oneharness created and a cancellation still ends the whole of it — the
@@ -795,6 +816,7 @@ fn an_observing_supervisor_leaves_the_descendant_teardown_to_oneharness() {
     let ticks = scratch("observed-cancel.ticks");
     let recorder = Recorder::default();
     let request = request(
+        &profiles,
         "claude-code",
         &[
             ("MOCK_NATIVE_GRANDCHILD_MS", "20000"),
@@ -907,6 +929,7 @@ impl ProcessSupervisor for AdoptIntoCallerGroup {
 #[cfg(unix)]
 #[test]
 fn a_caller_can_take_the_harness_child_into_its_own_process_group() {
+    let profiles = ProfileScratch::new();
     // The acceptance criterion, from the caller's side: with only the public
     // API, the harness child lands in the process group this test process is in
     // — which is what makes the subtree one unit to a watchdog and one target to
@@ -918,7 +941,11 @@ fn a_caller_can_take_the_harness_child_into_its_own_process_group() {
         hold: HoldPen::new("adopt-group-hold"),
         seen: Mutex::new(Vec::new()),
     };
-    let request = request("claude-code", &[("MOCK_STDOUT", r#"{"result":"adopted"}"#)]);
+    let request = request(
+        &profiles,
+        "claude-code",
+        &[("MOCK_STDOUT", r#"{"result":"adopted"}"#)],
+    );
 
     let outcome = run_supervised(&request, RunControls::default(), Some(&supervisor))
         .expect("the mock run is valid");
@@ -983,6 +1010,7 @@ fn assert_descendant_ticking(path: &std::path::Path, why: &str) {
 #[cfg(unix)]
 #[test]
 fn an_adopted_tree_is_the_callers_to_reap_and_oneharness_leaves_it_alone() {
+    let profiles = ProfileScratch::new();
     // The other side of the bargain, and the reason teardown asks the OS which
     // group the child is really in. Once a `spawning` hook has moved the harness
     // into a group of the caller's, that group is the caller's to signal —
@@ -999,6 +1027,7 @@ fn an_adopted_tree_is_the_callers_to_reap_and_oneharness_leaves_it_alone() {
         seen: Mutex::new(Vec::new()),
     };
     let request = request(
+        &profiles,
         "claude-code",
         &[
             ("MOCK_NATIVE_GRANDCHILD_MS", "20000"),
@@ -1152,6 +1181,7 @@ impl ProcessSupervisor for AdoptIntoCallerJob {
 #[cfg(windows)]
 #[test]
 fn a_caller_can_take_the_harness_child_into_its_own_job_object() {
+    let profiles = ProfileScratch::new();
     // The acceptance criterion on Windows, asked of the OS from the caller's
     // side: `IsProcessInJob` says the harness child is in the job this test
     // created, so terminating that job reaps the subtree. Job objects nest, so
@@ -1161,7 +1191,11 @@ fn a_caller_can_take_the_harness_child_into_its_own_job_object() {
         job: CallerJob::create(),
         seen: Mutex::new(Vec::new()),
     };
-    let request = request("claude-code", &[("MOCK_STDOUT", r#"{"result":"adopted"}"#)]);
+    let request = request(
+        &profiles,
+        "claude-code",
+        &[("MOCK_STDOUT", r#"{"result":"adopted"}"#)],
+    );
 
     let outcome = run_supervised(&request, RunControls::default(), Some(&supervisor))
         .expect("the mock run is valid");
@@ -1221,6 +1255,7 @@ fn assert_distinct_live_children(seen: &[SeenChild], what: &str) {
 
 #[test]
 fn every_execution_model_hands_its_harness_children_to_the_supervisor() {
+    let profiles = ProfileScratch::new();
     // A run reaches the runner through several entry points — buffered waves,
     // the streaming driver, a fork batch's warm-up and fan-out — and each is a
     // separate place the supervisor has to be carried to. A hook dropped at one
@@ -1228,7 +1263,11 @@ fn every_execution_model_hands_its_harness_children_to_the_supervisor() {
     // needed it, and nothing else in the report would say so.
     let (outcome, seen) = supervised_spawns(&RunRequest {
         stream: Some(true),
-        ..request("opencode", &[("MOCK_STDOUT", &tool_part_lines(2))])
+        ..request(
+            &profiles,
+            "opencode",
+            &[("MOCK_STDOUT", &tool_part_lines(2))],
+        )
     });
     assert!(outcome.streamed);
     assert_eq!(seen.len(), 1, "a streaming run spawns one harness");
@@ -1237,7 +1276,11 @@ fn every_execution_model_hands_its_harness_children_to_the_supervisor() {
     // A parallel wave spawns from several worker threads at once — the reason
     // the supervisor is shared as `&dyn ProcessSupervisor + Sync`. Named,
     // because an unset mode is a chain.
-    let mut parallel = request("claude-code", &[("MOCK_STDOUT", r#"{"result":"ok"}"#)]);
+    let mut parallel = request(
+        &profiles,
+        "claude-code",
+        &[("MOCK_STDOUT", r#"{"result":"ok"}"#)],
+    );
     parallel.harness.push("opencode".to_string());
     parallel.bin.push(bin_override("opencode"));
     parallel.run_mode = Some(RunMode::Parallel);
@@ -1252,6 +1295,7 @@ fn every_execution_model_hands_its_harness_children_to_the_supervisor() {
         prompt: vec!["warm".to_string(), "q1".to_string(), "q2".to_string()],
         batch_strategy: Some(BatchStrategy::MinTokens),
         ..request(
+            &profiles,
             "claude-code",
             &[(
                 "MOCK_STDOUT",
@@ -1268,7 +1312,11 @@ fn every_execution_model_hands_its_harness_children_to_the_supervisor() {
 
     // A fallback chain spawns candidate by candidate through its own driver;
     // the first here cannot run at all, so the one that does is the second.
-    let mut fallback = request("claude-code", &[("MOCK_STDOUT", r#"{"result":"ok"}"#)]);
+    let mut fallback = request(
+        &profiles,
+        "claude-code",
+        &[("MOCK_STDOUT", r#"{"result":"ok"}"#)],
+    );
     fallback.harness.insert(0, "codex".to_string());
     fallback
         .bin
@@ -1293,6 +1341,7 @@ fn every_execution_model_hands_its_harness_children_to_the_supervisor() {
         schema: Some(schema.clone()),
         schema_max_retries: Some(3),
         ..request(
+            &profiles,
             "crush",
             &[
                 ("MOCK_ATTEMPT_FILE", &counter.display().to_string()),
@@ -1322,6 +1371,7 @@ fn control_store(tag: &str) -> PathBuf {
 #[cfg(unix)]
 #[test]
 fn a_controlled_turn_hands_its_harness_child_to_the_supervisor() {
+    let profiles = ProfileScratch::new();
     // The execution model where the grouping matters most: a controlled run is
     // one live, billing turn a supervisor exists to be able to reap. It spawns
     // through its own entry point, so it needs its own proof.
@@ -1334,6 +1384,7 @@ fn a_controlled_turn_hands_its_harness_child_to_the_supervisor() {
         session_dir: Some(store.clone()),
         cwd: Some(cwd.clone()),
         ..request(
+            &profiles,
             "claude-code",
             &[("MOCK_TURN_LOG", &turn_log.display().to_string())],
         )
@@ -1494,6 +1545,7 @@ fn run_began_locates_each_candidate_before_events_and_history_off_preserves_even
             SinkStep::Continue
         }
     }
+    let profiles = ProfileScratch::new();
     for history in [true, false] {
         let store = ScratchDir::new(if history {
             "library-begun-on"
@@ -1508,6 +1560,7 @@ fn run_began_locates_each_candidate_before_events_and_history_off_preserves_even
             stream: Some(true),
             model: vec!["bad-model".into(), "good-model".into()],
             ..request(
+                &profiles,
                 "claude-code",
                 &[("MOCK_FAIL_IF_MODEL", "bad-model"), ("MOCK_STDOUT", lines)],
             )
@@ -1570,6 +1623,7 @@ fn stopping_at_run_began_prevents_harness_execution() {
             panic!("stopping at opening must prevent events");
         }
     }
+    let profiles = ProfileScratch::new();
     for missing in [false, true] {
         let store = ScratchDir::new(if missing {
             "stop-at-missing-opening"
@@ -1583,6 +1637,7 @@ fn stopping_at_run_began_prevents_harness_execution() {
             history_dir: Some(store.join("history")),
             stream: Some(true),
             ..request(
+                &profiles,
                 "claude-code",
                 &[("MOCK_LOG_FILE", &log.display().to_string())],
             )
@@ -1616,4 +1671,110 @@ fn stopping_at_run_began_prevents_harness_execution() {
         );
         assert!(!log.exists(), "the harness must never start");
     }
+}
+
+/// Records the `LLVM_PROFILE_FILE` each spawned harness `Command` carries — the
+/// value the child receives, read off the command the run really spawns.
+#[derive(Default)]
+struct ProfileFileSeen(Mutex<Vec<Option<PathBuf>>>);
+
+impl ProcessSupervisor for ProfileFileSeen {
+    fn spawning(&self, command: &mut Command) {
+        let seen = command
+            .get_envs()
+            .find(|(key, _)| *key == "LLVM_PROFILE_FILE")
+            .and_then(|(_, value)| value.map(PathBuf::from));
+        self.0.lock().expect("recorder mutex poisoned").push(seen);
+    }
+}
+
+/// One mock killed on its deadline and one run to completion, both through
+/// `profiles`; returns the profile path each child was handed. Under coverage
+/// the completed child writes its profile into `profiles` on exit.
+fn killed_and_completed_runs(profiles: &ProfileScratch) -> Vec<Option<PathBuf>> {
+    let seen = ProfileFileSeen::default();
+    let killed = RunRequest {
+        timeout: Some(1),
+        ..request(profiles, "claude-code", &[("MOCK_SLEEP_MS", "30000")])
+    };
+    let outcome = run_supervised(&killed, RunControls::default(), Some(&seen))
+        .expect("the mock run is valid");
+    assert_eq!(outcome.report.results[0].status, Status::Timeout);
+    let completed = request(
+        profiles,
+        "claude-code",
+        &[("MOCK_STDOUT", r#"{"result":"exited"}"#)],
+    );
+    let outcome = run_supervised(&completed, RunControls::default(), Some(&seen))
+        .expect("the mock run is valid");
+    assert_eq!(outcome.report.results[0].status, Status::Ok);
+    seen.0.into_inner().expect("recorder mutex poisoned")
+}
+
+#[test]
+fn a_killed_mocks_coverage_profile_lives_and_dies_with_its_fixture() {
+    // #1431: the redirect that keeps a killed child's truncated profile out of
+    // the coverage merge used to point at bare system temp, where nothing ever
+    // removed it. Each child must be handed a path inside the fixture's own
+    // scratch, and that scratch — profiles included — must be gone once the
+    // fixture drops, whether the test passed or panicked.
+    // `cargo llvm-cov` sets this for the test process; the mock is instrumented
+    // the same way then, so the completed child really writes a profile.
+    let instrumented = std::env::var_os("LLVM_PROFILE_FILE").is_some();
+    let assert_owned = |profiles: &ProfileScratch, seen: &[Option<PathBuf>]| {
+        assert_eq!(seen.len(), 2, "two runs, two spawns: {seen:?}");
+        for path in seen {
+            let path = path
+                .as_deref()
+                .expect("every child is handed a profile path");
+            assert_eq!(
+                path,
+                profiles.dir().join(fixture::PROFILE_PATTERN),
+                "a child's profile was sent outside its fixture's scratch"
+            );
+        }
+        if instrumented {
+            let written: Vec<_> = std::fs::read_dir(profiles.dir())
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "profraw"))
+                .collect();
+            assert!(
+                !written.is_empty(),
+                "an instrumented mock wrote no profile into {}",
+                profiles.dir().display()
+            );
+        }
+    };
+
+    let dir = {
+        let profiles = ProfileScratch::new();
+        let seen = killed_and_completed_runs(&profiles);
+        assert_owned(&profiles, &seen);
+        profiles.dir().to_path_buf()
+    };
+    assert!(
+        !dir.exists(),
+        "the fixture dropped but its profiles outlived it: {}",
+        dir.display()
+    );
+
+    let panicked_in = Mutex::new(None);
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let profiles = ProfileScratch::new();
+        *panicked_in.lock().unwrap() = Some(profiles.dir().to_path_buf());
+        let seen = killed_and_completed_runs(&profiles);
+        assert_owned(&profiles, &seen);
+        panic!("the test this stands in for failed");
+    }));
+    assert!(unwound.is_err(), "the scope must have unwound");
+    let dir = panicked_in
+        .into_inner()
+        .unwrap()
+        .expect("the panicking scope made its fixture");
+    assert!(
+        !dir.exists(),
+        "an unwinding test left its profiles behind: {}",
+        dir.display()
+    );
 }

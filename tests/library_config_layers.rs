@@ -71,7 +71,7 @@ fn layered_run(dir: &Path, config: Vec<PathBuf>, argv_file: &Path) -> RunRequest
         env: vec![
             r#"MOCK_STDOUT={"result":"layered"}"#.to_string(),
             format!("MOCK_ARGV_FILE={}", argv_file.display()),
-            fixture::profile_redirect(),
+            fixture::profile_redirect(dir),
         ],
         timeout: Some(60),
         ..RunRequest::default()

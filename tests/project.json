@@ -10,7 +10,8 @@
   "implicitDependencies": [
     "oneharness-core",
     "oneharness",
-    "oneharness-mock-harness"
+    "oneharness-mock-harness",
+    "profile-scratch"
   ],
   "namedInputs": {
     "default": [

@@ -20,6 +20,12 @@ use oneharness_core::io::history::{read_pointers, HistoryWriter};
 use oneharness_core::io::scratch::ScratchDir;
 use serde_json::Value;
 
+#[path = "../../../tests/profile-scratch/profile_scratch.rs"]
+mod profile_scratch;
+#[cfg(unix)]
+use profile_scratch::profile_redirect;
+use profile_scratch::{ProfileScratch, PROFILE_PATTERN};
+
 const ALL_IDS: &[&str] = &[
     "claude-code",
     "codex",
@@ -209,25 +215,22 @@ fn with_format_json<'a>(args: &[&'a str]) -> Vec<&'a str> {
     out
 }
 
-/// `--env` for a mock-harness child this test is going to have killed.
+/// `--env` for a mock-harness child this test is going to have killed, held
+/// until that child has ended.
 ///
 /// A cancelled or timed-out run tears its harness process down with `SIGKILL`
 /// after the TERM grace, so that process never flushes its coverage profile and
 /// leaves a truncated `.profraw`. `just coverage` collects every such file from
 /// the target directory, and one bad header fails the whole `llvm-profdata
 /// merge` — taking the gate down over a *fixture* whose coverage nobody wanted.
+/// The profile goes into a scratch directory the returned guard removes.
 ///
 /// This targets the harness child only (`--env` sets the environment of each
 /// harness process, not of oneharness), so the binary under test keeps
 /// contributing its own coverage exactly as before. Harmless when the fixture is
 /// not instrumented, which ignores the variable.
-fn mock_profile_redirect() -> String {
-    format!(
-        "LLVM_PROFILE_FILE={}",
-        std::env::temp_dir()
-            .join("oneharness-killed-mock-%p.profraw")
-            .display()
-    )
+fn mock_profile_redirect() -> ProfileScratch {
+    ProfileScratch::new()
 }
 
 /// `args` with that `--env` added, for any `run` invocation.
@@ -18075,7 +18078,7 @@ fn interrupted_stream_preserves_events_without_a_closing_run() {
         // when the binary is not instrumented, which ignores the variable.
         .env(
             "LLVM_PROFILE_FILE",
-            std::env::temp_dir().join("oneharness-killed-%p.profraw"),
+            mock_profile.dir().join(PROFILE_PATTERN),
         )
         .env("MOCK_STDOUT", lines.join("\n"))
         .env("MOCK_STREAM_DELAY_MS", "300")
@@ -28567,6 +28570,7 @@ fn a_controlled_turn_with_an_omitted_timeout_outlives_the_former_default() {
     let turn_log_arg = turn_log.display().to_string();
     let started = std::time::Instant::now();
 
+    let mock_profile = mock_profile_redirect();
     let output = run(
         &[
             "run",
@@ -28585,7 +28589,7 @@ fn a_controlled_turn_with_an_omitted_timeout_outlives_the_former_default() {
             &bin_override("claude-code"),
             "--compact",
             "--env",
-            &mock_profile_redirect(),
+            &mock_profile,
         ],
         &[
             ("MOCK_TURN_LOG", &turn_log_arg),
@@ -28610,6 +28614,7 @@ fn the_control_mock_refuses_an_invalid_result_delay() {
     let cwd = control_store_dir("invalid-result-delay-cwd");
     let cwd_arg = cwd.display().to_string();
     let turn_log = store.join("turn.log").display().to_string();
+    let mock_profile = mock_profile_redirect();
     let output = run(
         &[
             "run",
@@ -28628,7 +28633,7 @@ fn the_control_mock_refuses_an_invalid_result_delay() {
             &bin_override("claude-code"),
             "--compact",
             "--env",
-            &mock_profile_redirect(),
+            &mock_profile,
         ],
         &[
             ("MOCK_TURN_LOG", &turn_log),
@@ -32267,6 +32272,8 @@ impl RedirectJourney {
         for (key, value) in envs {
             command.env(key, value);
         }
+        // Into the journey's own store, which outlives the child it returns with.
+        let mock_profile = profile_redirect(&store);
         args.extend(
             [
                 "--harness",
@@ -32288,7 +32295,7 @@ impl RedirectJourney {
                 timeout,
                 "--compact",
                 "--env",
-                &mock_profile_redirect(),
+                &mock_profile,
             ]
             .map(str::to_string),
         );
@@ -34341,6 +34348,7 @@ fn control_accepts_a_five_identity_fallback_chain() {
     }
     let fx = ConfigFixture::new("control-five-fallback", &project, "");
     let store = control_store_dir("five");
+    let mock_profile = mock_profile_redirect();
     let output = run_with_config(
         &[
             "run",
@@ -34355,7 +34363,7 @@ fn control_accepts_a_five_identity_fallback_chain() {
             &fx.cwd(),
             "--compact",
             "--env",
-            &mock_profile_redirect(),
+            &mock_profile,
         ],
         &[(
             "MOCK_STDOUT",
@@ -34532,6 +34540,7 @@ fn controlled_fallback_carries_control_to_the_candidate_that_served() {
     "#
     );
     let fx = ConfigFixture::new("control-fallback-drop", &project, "");
+    let mock_profile = mock_profile_redirect();
     let output = run_with_config(
         &[
             "run",
@@ -34546,7 +34555,7 @@ fn controlled_fallback_carries_control_to_the_candidate_that_served() {
             &fx.cwd(),
             "--compact",
             "--env",
-            &mock_profile_redirect(),
+            &mock_profile,
         ],
         &[],
         &fx.user_config(),
@@ -34634,6 +34643,7 @@ fn a_redirection_its_candidate_never_delivered_is_said_and_dropped_at_the_fall_t
     let fx = ConfigFixture::new("control-redirect-fallthrough", &project, "");
     let cwd_arg = fx.cwd();
 
+    let mock_profile = mock_profile_redirect();
     let child = oneharness_without_env_overrides()
         .env("ONEHARNESS_CONFIG", fx.user_config())
         .args([
@@ -34651,7 +34661,7 @@ fn a_redirection_its_candidate_never_delivered_is_said_and_dropped_at_the_fall_t
             "60",
             "--compact",
             "--env",
-            &mock_profile_redirect(),
+            &mock_profile,
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -35299,6 +35309,7 @@ fn a_controlled_fallback_chain_of_one_still_submits_its_turn_to_a_pooled_server(
     let log = store.join("server.log");
     let pool = store.join("pool");
 
+    let mock_profile = mock_profile_redirect();
     let child = oneharness_without_env_overrides()
         .env("ONEHARNESS_CONFIG", fx.user_config())
         .env("MOCK_HTTP_CONTROL_LOG", log.display().to_string())
@@ -35322,7 +35333,7 @@ fn a_controlled_fallback_chain_of_one_still_submits_its_turn_to_a_pooled_server(
             "anthropic/claude-haiku-4-5",
             "--compact",
             "--env",
-            &mock_profile_redirect(),
+            &mock_profile,
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -35419,6 +35430,7 @@ fn a_chain_that_falls_through_to_a_pooled_server_candidate_runs_it_on_its_own_mo
     let fx = ConfigFixture::new("control-http-fallthrough", &project, "");
     let cwd_arg = fx.cwd();
 
+    let mock_profile = mock_profile_redirect();
     let child = oneharness_without_env_overrides()
         .env("ONEHARNESS_CONFIG", fx.user_config())
         .env("MOCK_HTTP_CONTROL_LOG", log.display().to_string())
@@ -35440,7 +35452,7 @@ fn a_chain_that_falls_through_to_a_pooled_server_candidate_runs_it_on_its_own_mo
             "anthropic/claude-haiku-4-5",
             "--compact",
             "--env",
-            &mock_profile_redirect(),
+            &mock_profile,
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -35662,6 +35674,7 @@ fn each_candidate_in_a_chain_opens_its_turn_with_its_own_assembled_prompt() {
     );
     let fx = ConfigFixture::per_dispatch("control-per-candidate-prompt", &project, "");
     let cwd_arg = fx.cwd();
+    let mock_profile = mock_profile_redirect();
     let child = oneharness_without_env_overrides()
         .env("ONEHARNESS_CONFIG", fx.user_config())
         .args([
@@ -35681,7 +35694,7 @@ fn each_candidate_in_a_chain_opens_its_turn_with_its_own_assembled_prompt() {
             "60",
             "--compact",
             "--env",
-            &mock_profile_redirect(),
+            &mock_profile,
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -35773,6 +35786,7 @@ fn a_redirection_a_dead_conversation_still_held_is_reported_rather_than_lost() {
     let fx = ConfigFixture::per_dispatch("control-dialogue-drop", &project, "");
     let cwd_arg = fx.cwd();
 
+    let mock_profile = mock_profile_redirect();
     let child = oneharness_without_env_overrides()
         .env("ONEHARNESS_CONFIG", fx.user_config())
         .args([
@@ -35792,7 +35806,7 @@ fn a_redirection_a_dead_conversation_still_held_is_reported_rather_than_lost() {
             "60",
             "--compact",
             "--env",
-            &mock_profile_redirect(),
+            &mock_profile,
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -35887,6 +35901,7 @@ fn a_chain_of_two_pooled_server_candidates_leases_them_one_at_a_time() {
     let fx = ConfigFixture::new("control-pooled-chain", &project, "");
     let cwd_arg = fx.cwd();
 
+    let mock_profile = mock_profile_redirect();
     let child = oneharness_without_env_overrides()
         .env("ONEHARNESS_CONFIG", fx.user_config())
         .env("MOCK_HTTP_CONTROL_LOG", log.display().to_string())
@@ -35911,7 +35926,7 @@ fn a_chain_of_two_pooled_server_candidates_leases_them_one_at_a_time() {
             "20",
             "--compact",
             "--env",
-            &mock_profile_redirect(),
+            &mock_profile,
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -36124,6 +36139,7 @@ fn an_interrupt_after_a_fall_through_reaches_the_mechanism_that_served() {
     let fx = ConfigFixture::per_dispatch("control-mixed-chain", &project, "");
     let cwd_arg = fx.cwd();
 
+    let mock_profile = mock_profile_redirect();
     let child = oneharness_without_env_overrides()
         .env("ONEHARNESS_CONFIG", fx.user_config())
         .args([
@@ -36141,7 +36157,7 @@ fn an_interrupt_after_a_fall_through_reaches_the_mechanism_that_served() {
             "keep working",
             "--compact",
             "--env",
-            &mock_profile_redirect(),
+            &mock_profile,
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

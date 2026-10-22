@@ -476,6 +476,22 @@ test("a rename refused past its patience fails and moves nothing", async () => {
 	}
 });
 
+test("a rename of a missing source fails at once whatever its patience", async () => {
+	// Retiring a directory a test already removed would otherwise hold its
+	// cleanup for the whole patience on Windows.
+	const root = await scratch("rename-missing");
+	const [from, to] = [resolve(root, "missing"), resolve(root, "to")];
+	const attempts = [
+		["async", () => renamePatiently(from, to, 10_000)],
+		["sync", async () => renameSyncPatiently(from, to, 10_000)],
+	] as const;
+	for (const [mode, attempt] of attempts) {
+		const started = Date.now();
+		await expect(attempt()).rejects.toThrow("ENOENT");
+		expect(Date.now() - started, mode).toBeLessThan(1000);
+	}
+});
+
 test("a scratch directory made with no gate watching carries no marker", async () => {
 	await underRunToken(undefined, async () => {
 		for (const directory of [

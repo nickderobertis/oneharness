@@ -142,15 +142,16 @@ def rename(source: Path, target: Path, patience: float = RENAME_PATIENCE) -> Non
     it. That refusal lasts only as long as the read. Given up on at once, it left
     a directory under its swept name that this run's own gate then reported as a
     leak, so a sibling's sweep alone could fail this run. A unix rename is not
-    refused by an open handle, so a failure there is final at once. Once
-    ``patience`` has passed, the last attempt's error is raised.
+    refused by an open handle, so a failure there is final at once, and so is a
+    missing ``source`` anywhere, since no sibling's read can end and make it
+    appear. Once ``patience`` has passed, the last attempt's error is raised.
     """
     deadline = time.monotonic() + patience
     while True:
         try:
             source.rename(target)
             return
-        except OSError:
-            if time.monotonic() >= deadline:
+        except OSError as error:
+            if isinstance(error, FileNotFoundError) or time.monotonic() >= deadline:
                 raise
             time.sleep(0.005)

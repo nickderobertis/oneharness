@@ -70,8 +70,25 @@ const RENAME_PAUSE_MS = 5;
 const RENAME_PATIENCE_MS = process.platform === "win32" ? 2000 : 0;
 
 /**
+ * Whether a refused rename is worth trying again before `deadline`: a source
+ * that is not there is the answer at once, since no sibling's read can end and
+ * make it appear.
+ *
+ * @param {unknown} error
+ * @param {number} deadline
+ * @returns {boolean}
+ */
+function worthRetrying(error, deadline) {
+	return (
+		/** @type {{ code?: unknown }} */ (error)?.code !== "ENOENT" &&
+		Date.now() < deadline
+	);
+}
+
+/**
  * `rename`, tried again every few milliseconds until it succeeds or
  * `patience` milliseconds have passed, when the last attempt's error is thrown.
+ * A missing source throws at once.
  * Exported so a test can drive a refusal that clears, and one that does not.
  *
  * @param {string} from
@@ -89,7 +106,7 @@ export async function renamePatiently(
 		try {
 			return await rename(from, to);
 		} catch (error) {
-			if (Date.now() >= deadline) throw error;
+			if (!worthRetrying(error, deadline)) throw error;
 			await new Promise((wake) => setTimeout(wake, RENAME_PAUSE_MS));
 		}
 	}
@@ -108,7 +125,7 @@ export function renameSyncPatiently(from, to, patience = RENAME_PATIENCE_MS) {
 		try {
 			return renameSync(from, to);
 		} catch (error) {
-			if (Date.now() >= deadline) throw error;
+			if (!worthRetrying(error, deadline)) throw error;
 			Atomics.wait(
 				new Int32Array(new SharedArrayBuffer(4)),
 				0,

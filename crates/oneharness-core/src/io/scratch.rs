@@ -217,11 +217,18 @@ fn rename(from: &Path, to: &Path) -> io::Result<()> {
 
 /// [`std::fs::rename`], tried again every few milliseconds until it succeeds
 /// or `patience` has passed, when the last attempt's error is returned.
+///
+/// A source that is not there is the answer at once: no sibling's read can
+/// end and make it appear. Waiting it out cost every scratch directory made on
+/// Windows its full patience, because each one first retires a path that does
+/// not exist yet.
 fn rename_within(from: &Path, to: &Path, patience: Duration) -> io::Result<()> {
     let deadline = Instant::now() + patience;
     loop {
         match std::fs::rename(from, to) {
-            Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(5)),
+            Err(error) if error.kind() != io::ErrorKind::NotFound && Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(5));
+            }
             done => return done,
         }
     }
@@ -325,6 +332,10 @@ mod tests {
         // every swept name it sees must hold this run's marker while it exists.
         use std::sync::atomic::{AtomicBool, Ordering};
         const CYCLES: usize = 2000;
+        // Churn stops here even short of `CYCLES`, so a platform where each
+        // cycle waits out a refused rename still ends well inside the test
+        // runner's deadline and gives its scratch back.
+        const BUDGET: Duration = Duration::from_secs(30);
         let root = ScratchDir::new(&tag("observed")).unwrap();
         let token = std::ffi::OsStr::new("4242.rust-probe");
         let done = AtomicBool::new(false);
@@ -349,7 +360,11 @@ mod tests {
                 }
                 (seen, unmarked)
             });
+            let started = Instant::now();
             for cycle in 0..CYCLES {
+                if started.elapsed() >= BUDGET {
+                    break;
+                }
                 drop(
                     ScratchDir::make(root.path(), &format!("churn-{cycle}"), Some(token)).unwrap(),
                 );
@@ -592,6 +607,27 @@ mod tests {
         let started = Instant::now();
         assert!(rename_within(&from, &to, Duration::ZERO).is_err());
         assert!(started.elapsed() < Duration::from_millis(200));
+    }
+
+    #[test]
+    fn a_rename_of_a_missing_source_fails_at_once_whatever_its_patience() {
+        // Every scratch directory first retires its own path, which is usually
+        // not there yet. Retrying that held each one for the whole patience on
+        // Windows, which slowed every process making scratch past its callers'
+        // deadlines.
+        let root = ScratchDir::new(&tag("rename-missing")).unwrap();
+        let started = Instant::now();
+        let refused = rename_within(
+            &root.join("missing"),
+            &root.join("to"),
+            Duration::from_secs(10),
+        );
+        assert_eq!(refused.unwrap_err().kind(), io::ErrorKind::NotFound);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "waited {:?} on a source that was never there",
+            started.elapsed()
+        );
     }
 
     #[test]

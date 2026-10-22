@@ -97,8 +97,8 @@ def rename(
         try:
             source.rename(target)
             return
-        except OSError:
-            if time.monotonic() >= deadline:
+        except OSError as error:
+            if isinstance(error, FileNotFoundError) or time.monotonic() >= deadline:
                 raise
             time.sleep(0.005)
 

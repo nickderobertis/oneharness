@@ -305,6 +305,16 @@ class ScratchTests(unittest.TestCase):
                 rename(source, target, 0.0)
             self.assertLess(time.monotonic() - started, 0.2)
 
+    def test_a_rename_of_a_missing_source_fails_at_once_whatever_its_patience(self) -> None:
+        """Retiring a directory a test already removed would otherwise hold its
+        cleanup for the whole patience on Windows."""
+        root = scratch(self, "rename-missing")
+        for rename in (scratch_module.rename, package_e2e.rename):
+            started = time.monotonic()
+            with self.assertRaises(FileNotFoundError):
+                rename(root / "missing", root / "to", 10.0)
+            self.assertLess(time.monotonic() - started, 1.0)
+
     def test_a_control_store_is_rooted_at_tmp_rather_than_the_temp_dir(self) -> None:
         """Its path becomes a socket address, and macOS's per-user temp dir alone
         spends about half of `sun_path` — the interrupt test's refusal there. The

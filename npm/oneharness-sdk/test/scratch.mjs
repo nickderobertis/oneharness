@@ -9,6 +9,7 @@ import { randomBytes } from "node:crypto";
 import {
 	existsSync,
 	mkdirSync,
+	readFileSync,
 	realpathSync,
 	renameSync,
 	rmSync,
@@ -179,47 +180,87 @@ export function scratchSync(tag) {
 }
 
 /**
- * Remove `directory`, first renaming it off the sweep. A directory
- * half-removed under its own name has lost its marker but is still visible to
- * a sibling run's gate. If the rename fails (Windows refuses it while a handle
- * is open inside), the directory is removed in place. One that cannot be
- * removed goes back to its swept name, so the gate still reports it.
+ * The run `directory`'s marker names, if it has one.
  *
  * @param {string} directory
- * @returns {Promise<void>}
+ * @returns {string | undefined}
  */
-async function retire(directory) {
-	const gone = offSweep(directory, "gone");
+function markerOf(directory) {
 	try {
-		await rename(directory, gone);
+		return readFileSync(resolve(directory, RUN_MARKER), "utf8");
 	} catch {
-		await rm(directory, { recursive: true, force: true });
-		return;
-	}
-	try {
-		await rm(gone, { recursive: true, force: true });
-	} finally {
-		if (existsSync(gone)) renameSync(gone, directory);
+		return undefined;
 	}
 }
 
 /**
- * The same as `retire`, for a caller with no `await` to spend.
+ * Remove `directory` without ever leaving it visible to the leak gate
+ * unmarked: a sibling run's gate counts an unmarked directory as its own leak
+ * on Windows, where it cannot read this process's environment. Prefer
+ * `removeScratch` or `removeScratchAsync`; this is exported so a test can
+ * retire one directory where removal is made to fail.
+ *
+ * It is renamed off the sweep first, and only then emptied. A marked directory
+ * that cannot be renamed (Windows refuses while a handle is open inside) is
+ * left whole and marked, a leak its own run's gate still reports. An unmarked
+ * one has no ownership to lose and is removed in place. Its marker is removed
+ * first, so whatever a failed removal leaves is the same in every order the
+ * filesystem lists entries. That remainder gets its original marker back while
+ * still hidden, then returns to the swept name.
+ *
+ * @param {string} directory
+ * @returns {Promise<void>}
+ */
+export async function retireScratch(directory) {
+	const marker = markerOf(directory);
+	const gone = offSweep(directory, "gone");
+	try {
+		await rename(directory, gone);
+	} catch {
+		if (marker === undefined) {
+			await rm(directory, { recursive: true, force: true });
+		}
+		return;
+	}
+	try {
+		await rm(resolve(gone, RUN_MARKER), { force: true });
+		await rm(gone, { recursive: true, force: true });
+	} finally {
+		if (existsSync(gone)) {
+			if (marker !== undefined) {
+				writeFileSync(resolve(gone, RUN_MARKER), marker);
+			}
+			renameSync(gone, directory);
+		}
+	}
+}
+
+/**
+ * The same as `retireScratch`, for a caller with no `await` to spend.
  *
  * @param {string} directory
  */
-function retireSync(directory) {
+export function retireScratchSync(directory) {
+	const marker = markerOf(directory);
 	const gone = offSweep(directory, "gone");
 	try {
 		renameSync(directory, gone);
 	} catch {
-		rmSync(directory, { recursive: true, force: true });
+		if (marker === undefined) {
+			rmSync(directory, { recursive: true, force: true });
+		}
 		return;
 	}
 	try {
+		rmSync(resolve(gone, RUN_MARKER), { force: true });
 		rmSync(gone, { recursive: true, force: true });
 	} finally {
-		if (existsSync(gone)) renameSync(gone, directory);
+		if (existsSync(gone)) {
+			if (marker !== undefined) {
+				writeFileSync(resolve(gone, RUN_MARKER), marker);
+			}
+			renameSync(gone, directory);
+		}
 	}
 }
 
@@ -231,7 +272,7 @@ function retireSync(directory) {
  * `removeScratchAsync` instead, so a slow disk blocks nothing.
  */
 export function removeScratch() {
-	for (const directory of held.splice(0)) retireSync(directory);
+	for (const directory of held.splice(0)) retireScratchSync(directory);
 }
 
 /**
@@ -244,5 +285,5 @@ export function removeScratch() {
  * @returns {Promise<void>}
  */
 export async function removeScratchAsync() {
-	await Promise.all(held.splice(0).map(retire));
+	await Promise.all(held.splice(0).map(retireScratch));
 }

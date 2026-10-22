@@ -22,6 +22,8 @@ import {
 	RUN_MARKER,
 	removeScratch,
 	removeScratchAsync,
+	retireScratch,
+	retireScratchSync,
 	scratch,
 	scratchSync,
 } from "./scratch.mjs";
@@ -302,25 +304,80 @@ test("a scratch directory already gone is given back without complaint", async (
 	}
 });
 
-test.skipIf(process.platform === "win32")(
-	"a scratch directory that cannot be removed stays where the gate sees it",
+/**
+ * Whether this user can be refused a write by a directory's permissions:
+ * Windows ignores the mode bits, and a privileged user writes through them.
+ */
+function permissionsBind(): boolean {
+	return process.platform !== "win32" && process.getuid?.() !== 0;
+}
+
+/** What `root` holds besides the gate's marker for this run, if any. */
+function entries(root: string): string[] {
+	return readdirSync(root)
+		.filter((name) => name !== RUN_MARKER)
+		.sort();
+}
+
+const retirements = [
+	["sync", retireScratchSync],
+	["async", retireScratch],
+] as const;
+
+test.skipIf(!permissionsBind())(
+	"a partly removed scratch directory returns to the sweep with its marker",
 	async () => {
-		// Removal renames a directory off the sweep first. One whose removal
-		// then fails must not stay hidden there, where no gate would report it.
-		for (const remove of [removeScratch, removeScratchAsync]) {
-			const directory = scratchSync("stuck");
+		// Removal renames a directory off the sweep and removes its marker before
+		// anything else. If the rest cannot be removed, the remainder must not
+		// stay hidden, nor come back unmarked: it returns still owned by its
+		// run, which is what makes it that run's leak in the gate.
+		const root = await scratch("unremovable");
+		for (const [mode, retire] of retirements) {
+			const token = `4242.node-unremovable-${mode}`;
+			const directory = resolve(root, `${PREFIX}stuck-${mode}`);
+			await underRunToken(token, async () => {
+				placeScratchSync(directory);
+			});
 			const locked = resolve(directory, "locked");
 			mkdirSync(locked);
 			writeFileSync(resolve(locked, "file"), "held");
 			chmodSync(locked, 0o500);
 			try {
-				await remove();
+				await retire(directory);
 			} catch {
-				// The removal says why it failed; where the directory is is the test.
+				// The removal says why it failed; what it left is the test.
+			} finally {
+				chmodSync(locked, 0o700);
 			}
-			expect(existsSync(directory)).toBe(true);
-			chmodSync(locked, 0o700);
-			rmSync(directory, { recursive: true });
+			expect(entries(root)).toContain(`${PREFIX}stuck-${mode}`);
+			expect(readFileSync(resolve(directory, RUN_MARKER), "utf8")).toBe(token);
+		}
+		expect(entries(root).filter((name) => name.startsWith("."))).toEqual([]);
+	},
+);
+
+test.skipIf(!permissionsBind())(
+	"a marked scratch directory that cannot be renamed is left whole",
+	async () => {
+		// Removing it in place would take its marker first and leave it visible
+		// unmarked, the race the staging names exist to close. So it stays as
+		// it was: under its swept name, owned by its run.
+		const root = await scratch("unrenamable");
+		for (const [mode, retire] of retirements) {
+			const token = `4242.node-unrenamable-${mode}`;
+			const directory = resolve(root, `${PREFIX}stuck-${mode}`);
+			await underRunToken(token, async () => {
+				placeScratchSync(directory);
+			});
+			writeFileSync(resolve(directory, "inside.txt"), "content");
+			chmodSync(root, 0o500);
+			try {
+				await retire(directory);
+			} finally {
+				chmodSync(root, 0o700);
+			}
+			expect(readFileSync(resolve(directory, RUN_MARKER), "utf8")).toBe(token);
+			expect(existsSync(resolve(directory, "inside.txt"))).toBe(true);
 		}
 	},
 );

@@ -90,20 +90,32 @@ def make_marked(prefix: str, root: str | None) -> Path:
 
 
 def retire(directory: Path) -> None:
-    """Remove ``directory``, first renaming it off the leak gate's sweep.
+    """Remove ``directory`` without ever leaving it visible to the gate unmarked.
 
-    A directory half-removed under its own name has lost its marker but is
-    still visible to a sibling run's gate. If the rename fails (Windows refuses
-    it while a handle is open inside), the directory is removed in place. One
-    that cannot be removed goes back to its swept name, so the gate still
-    reports it.
+    A sibling run's leak gate counts an unmarked directory as its own leak on
+    Windows, where it cannot read this process's environment. So it is renamed
+    off the sweep first, and only then emptied. A marked directory that cannot
+    be renamed (Windows refuses while a handle is open inside) is left whole and
+    marked, a leak its own run's gate still reports; an unmarked one has no
+    ownership to lose and is removed in place. Its marker is removed first, so
+    whatever a failed removal leaves is the same in every order the filesystem
+    lists entries. That remainder gets its original marker back while still
+    hidden, then returns to the swept name.
     """
     gone = directory.with_name(f".{directory.name}.gone")
     try:
+        marker: bytes | None = (directory / RUN_MARKER).read_bytes()
+    except OSError:
+        marker = None
+    try:
         directory.rename(gone)
     except OSError:
-        shutil.rmtree(directory, ignore_errors=True)
+        if marker is None:
+            shutil.rmtree(directory, ignore_errors=True)
         return
+    (gone / RUN_MARKER).unlink(missing_ok=True)
     shutil.rmtree(gone, ignore_errors=True)
     if gone.exists():
+        if marker is not None:
+            (gone / RUN_MARKER).write_bytes(marker)
         gone.rename(directory)

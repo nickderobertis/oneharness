@@ -151,28 +151,42 @@ impl Drop for ScratchDir {
     }
 }
 
-/// Remove a scratch directory, first renaming it out of the name the leak gate
-/// sweeps for. A directory half-removed under its own name has lost its marker
-/// but is still visible to a sibling run's gate, which would count it as that
-/// run's leak. If the rename fails (Windows refuses it while a handle is open
-/// inside), the directory is removed in place, as before. A directory that
-/// cannot be removed goes back to its swept name, so the gate still reports it.
+/// Remove a scratch directory without ever leaving it visible to the leak gate
+/// unmarked: a sibling run's gate counts an unmarked directory as its own leak
+/// on Windows, where it cannot read the maker's environment.
+///
+/// The directory is first renamed off the swept name, and only then emptied.
+/// A marked directory that cannot be renamed (Windows refuses while a handle is
+/// open inside) is left whole and marked, a leak its own run's gate still
+/// reports. An unmarked one has no ownership to lose and is removed in place.
+/// Its marker is removed first, so whatever a failed removal leaves is the same
+/// in every order the filesystem lists entries. That remainder gets its
+/// original marker back while still hidden, then returns to the swept name,
+/// where its run's gate reports it.
 fn retire(path: &Path) {
     let Some(name) = path.file_name() else {
         return;
     };
+    let marker = std::fs::read(path.join(RUN_MARKER)).ok();
     let mut gone_name = std::ffi::OsString::from(".");
     gone_name.push(name);
     gone_name.push(".gone");
     let gone = path.with_file_name(gone_name);
     let _ = std::fs::remove_dir_all(&gone);
-    if std::fs::rename(path, &gone).is_ok() {
-        if std::fs::remove_dir_all(&gone).is_err() {
-            let _ = std::fs::rename(&gone, path);
+    if std::fs::rename(path, &gone).is_err() {
+        if marker.is_none() {
+            let _ = std::fs::remove_dir_all(path);
         }
-    } else {
-        let _ = std::fs::remove_dir_all(path);
+        return;
     }
+    let _ = std::fs::remove_file(gone.join(RUN_MARKER));
+    if std::fs::remove_dir_all(&gone).is_ok() {
+        return;
+    }
+    if let Some(marker) = marker {
+        let _ = std::fs::write(gone.join(RUN_MARKER), marker);
+    }
+    let _ = std::fs::rename(&gone, path);
 }
 
 #[cfg(test)]
@@ -327,43 +341,111 @@ mod tests {
             std::fs::read(leaked.join(RUN_MARKER)).unwrap(),
             token.as_encoded_bytes()
         );
-        let left: Vec<_> = std::fs::read_dir(root.path())
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .filter(|name| name != RUN_MARKER)
-            .collect();
         assert_eq!(
-            left,
+            entries(root.path()),
             [leaked.file_name().unwrap()],
             "staged or retired names were left behind"
         );
     }
 
+    /// Whether this user can be refused a write by a directory's permissions;
+    /// a privileged one cannot, and then there is no failure to drive.
+    #[cfg(unix)]
+    fn permissions_bind(probe: &Path) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir(probe).unwrap();
+        std::fs::set_permissions(probe, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let bound = std::fs::write(probe.join("probe"), "").is_err();
+        std::fs::set_permissions(probe, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::remove_dir_all(probe).unwrap();
+        bound
+    }
+
+    /// What `root` holds besides the gate's marker for this run, if any.
+    fn entries(root: &Path) -> Vec<std::ffi::OsString> {
+        let mut names: Vec<_> = std::fs::read_dir(root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .filter(|name| name != RUN_MARKER)
+            .collect();
+        names.sort();
+        names
+    }
+
     #[cfg(unix)]
     #[test]
-    fn a_scratch_directory_that_cannot_be_removed_stays_where_the_gate_sees_it() {
-        // Removal renames a directory off the sweep first. One whose removal then
-        // fails must not stay hidden there, where no gate would report it.
+    fn a_partly_removed_scratch_directory_returns_to_the_sweep_with_its_marker() {
+        // Removal renames a directory off the sweep and removes its marker
+        // before anything else. If the rest cannot be removed, the remainder must
+        // not stay hidden, nor come back unmarked. It must return still owned by
+        // its run, which is what makes it that run's leak in the gate.
         use std::os::unix::fs::PermissionsExt;
         let root = ScratchDir::new(&tag("unremovable")).unwrap();
-        let stuck = ScratchDir::make(root.path(), "stuck", None).unwrap();
+        if !permissions_bind(&root.join("probe")) {
+            return;
+        }
+        let token = std::ffi::OsStr::new("4242.rust-unremovable");
+        let stuck = ScratchDir::make(root.path(), "stuck", Some(token)).unwrap();
         let path = stuck.path().to_path_buf();
         let locked = path.join("locked");
         std::fs::create_dir(&locked).unwrap();
         std::fs::write(locked.join("file"), "held").unwrap();
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500)).unwrap();
-        if std::fs::remove_file(locked.join("file")).is_ok() {
-            // Privileged users can delete through the lock, so nothing to prove.
-            return;
-        }
         drop(stuck);
-        let left: Vec<_> = std::fs::read_dir(root.path())
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .filter(|name| name != RUN_MARKER)
-            .collect();
+        let left = entries(root.path());
+        let marker = std::fs::read(path.join(RUN_MARKER));
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
         assert_eq!(left, [path.file_name().unwrap()]);
+        assert_eq!(marker.unwrap(), token.as_encoded_bytes());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_marked_scratch_directory_that_cannot_be_renamed_is_left_whole() {
+        // Removing it in place would take its marker first and leave it visible
+        // unmarked, the race this module exists to close. So it stays exactly as
+        // it was: under its swept name, owned by its run.
+        use std::os::unix::fs::PermissionsExt;
+        let outer = ScratchDir::new(&tag("unrenamable")).unwrap();
+        if !permissions_bind(&outer.join("probe")) {
+            return;
+        }
+        let root = outer.join("root");
+        std::fs::create_dir(&root).unwrap();
+        let token = std::ffi::OsStr::new("4242.rust-unrenamable");
+        let stuck = ScratchDir::make(&root, "stuck", Some(token)).unwrap();
+        let path = stuck.path().to_path_buf();
+        std::fs::write(path.join("inside.txt"), "content").unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o500)).unwrap();
+        drop(stuck);
+        let left = entries(&root);
+        let marker = std::fs::read(path.join(RUN_MARKER));
+        let inside = path.join("inside.txt").exists();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(left, [path.file_name().unwrap()]);
+        assert_eq!(marker.unwrap(), token.as_encoded_bytes());
+        assert!(inside, "the directory was emptied in place");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unmarked_scratch_directory_that_cannot_be_renamed_is_removed_in_place() {
+        // With no marker there is no ownership to lose, so removal goes on.
+        use std::os::unix::fs::PermissionsExt;
+        let outer = ScratchDir::new(&tag("unmarked-unrenamable")).unwrap();
+        if !permissions_bind(&outer.join("probe")) {
+            return;
+        }
+        let root = outer.join("root");
+        std::fs::create_dir(&root).unwrap();
+        let stuck = ScratchDir::make(&root, "stuck", None).unwrap();
+        let path = stuck.path().to_path_buf();
+        std::fs::write(path.join("inside.txt"), "content").unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o500)).unwrap();
+        drop(stuck);
+        let inside = path.join("inside.txt").exists();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(!inside, "an unmarked directory was not emptied");
     }
 
     #[cfg(unix)]

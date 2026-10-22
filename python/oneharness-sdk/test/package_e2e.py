@@ -64,12 +64,20 @@ def retire(directory: Path) -> None:
     """Remove a scratch directory off the sweep, as `test.scratch.retire` does."""
     gone = directory.with_name(f".{directory.name}.gone")
     try:
+        marker: bytes | None = (directory / RUN_MARKER).read_bytes()
+    except OSError:
+        marker = None
+    try:
         directory.rename(gone)
     except OSError:
-        shutil.rmtree(directory, ignore_errors=True)
+        if marker is None:
+            shutil.rmtree(directory, ignore_errors=True)
         return
+    (gone / RUN_MARKER).unlink(missing_ok=True)
     shutil.rmtree(gone, ignore_errors=True)
     if gone.exists():
+        if marker is not None:
+            (gone / RUN_MARKER).write_bytes(marker)
         gone.rename(directory)
 
 

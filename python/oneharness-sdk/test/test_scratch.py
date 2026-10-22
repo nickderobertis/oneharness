@@ -36,6 +36,10 @@ CHURN = textwrap.dedent(
     """
 )
 
+#: Whether this user can be refused a write by a directory's permissions:
+#: Windows ignores the mode bits, and a privileged user writes through them.
+PERMISSIONS_BIND = sys.platform != "win32" and os.geteuid() != 0
+
 
 def entries(root: Path) -> list[str]:
     """What ``root`` holds besides the leak gate's marker for this run, if any."""
@@ -187,21 +191,67 @@ class ScratchTests(unittest.TestCase):
             retire(directory)
             self.assertFalse(directory.exists())
 
-    @unittest.skipIf(sys.platform == "win32" or os.geteuid() == 0, "needs POSIX permissions")
-    def test_a_scratch_directory_that_cannot_be_removed_stays_where_the_gate_sees_it(
+    @unittest.skipUnless(PERMISSIONS_BIND, "needs POSIX permissions an unprivileged user obeys")
+    def test_a_partly_removed_scratch_directory_returns_to_the_sweep_with_its_marker(
         self,
     ) -> None:
-        """A removal that fails must not hide the directory under a name the gate
-        never sweeps: it goes back to its own name, so the gate reports it."""
-        for retire in (scratch_module.retire, package_e2e.retire):
-            root = scratch(self, "unremovable")
-            directory = root / f"{PREFIX}stuck"
-            (directory / "locked").mkdir(parents=True)
-            (directory / "locked" / "file").write_text("held", encoding="utf-8")
-            (directory / "locked").chmod(0o500)
-            self.addCleanup((directory / "locked").chmod, 0o700)
-            retire(directory)
-            self.assertEqual(entries(root), [directory.name])
+        """Removal renames a directory off the sweep and removes its marker
+        before anything else. If the rest cannot be removed, the remainder must
+        not stay hidden, nor come back unmarked: it returns still owned by its
+        run, which is what makes it that run's leak in the gate."""
+        root = scratch(self, "unremovable")
+        for index, retire in enumerate((scratch_module.retire, package_e2e.retire)):
+            run = f"4242.python-unremovable-{index}"
+            with mock.patch.dict(os.environ, {RUN_ENV: run}):
+                directory = scratch_module.make_marked(f"{PREFIX}stuck-{index}-", str(root))
+            locked = directory / "locked"
+            locked.mkdir()
+            (locked / "file").write_text("held", encoding="utf-8")
+            locked.chmod(0o500)
+            try:
+                retire(directory)
+            finally:
+                locked.chmod(0o700)
+            self.assertIn(directory.name, entries(root))
+            self.assertEqual((directory / RUN_MARKER).read_text(encoding="utf-8"), run)
+        self.assertEqual([name for name in entries(root) if name.startswith(".")], [])
+
+    @unittest.skipUnless(PERMISSIONS_BIND, "needs POSIX permissions an unprivileged user obeys")
+    def test_a_marked_scratch_directory_that_cannot_be_renamed_is_left_whole(self) -> None:
+        """Removing it in place would take its marker first and leave it visible
+        unmarked, the race the staging names exist to close. So it stays as it
+        was: under its swept name, owned by its run."""
+        root = scratch(self, "unrenamable")
+        for index, retire in enumerate((scratch_module.retire, package_e2e.retire)):
+            run = f"4242.python-unrenamable-{index}"
+            with mock.patch.dict(os.environ, {RUN_ENV: run}):
+                directory = scratch_module.make_marked(f"{PREFIX}stuck-{index}-", str(root))
+            (directory / "inside.txt").write_text("content", encoding="utf-8")
+            root.chmod(0o500)
+            try:
+                retire(directory)
+            finally:
+                root.chmod(0o700)
+            self.assertEqual((directory / RUN_MARKER).read_text(encoding="utf-8"), run)
+            self.assertTrue((directory / "inside.txt").exists(), "emptied in place")
+
+    @unittest.skipUnless(PERMISSIONS_BIND, "needs POSIX permissions an unprivileged user obeys")
+    def test_an_unmarked_scratch_directory_that_cannot_be_renamed_is_removed_in_place(
+        self,
+    ) -> None:
+        """With no marker there is no ownership to lose, so removal goes on."""
+        root = scratch(self, "unmarked-unrenamable")
+        for index, retire in enumerate((scratch_module.retire, package_e2e.retire)):
+            with mock.patch.dict(os.environ):
+                os.environ.pop(RUN_ENV, None)
+                directory = scratch_module.make_marked(f"{PREFIX}stuck-{index}-", str(root))
+            (directory / "inside.txt").write_text("content", encoding="utf-8")
+            root.chmod(0o500)
+            try:
+                retire(directory)
+            finally:
+                root.chmod(0o700)
+            self.assertFalse((directory / "inside.txt").exists(), "not emptied")
 
     def test_a_control_store_is_rooted_at_tmp_rather_than_the_temp_dir(self) -> None:
         """Its path becomes a socket address, and macOS's per-user temp dir alone

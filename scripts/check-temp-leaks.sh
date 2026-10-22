@@ -235,6 +235,13 @@ named_for_a_live_process_lacking_the_run_token() {
 if [ -n "$leaked" ]; then
   kept="" left_out=""
   while IFS= read -r dir; do
+    # One gone since the sweep listed it was not left behind: another run on
+    # this shared temp dir retired it, as one gone mid-sweep is excused above.
+    # Counted, it had no marker left to read and, on Windows, no maker the pid
+    # fallback could read, so a sibling's cleanup failed this run.
+    if [ ! -e "$dir" ] && [ ! -L "$dir" ]; then
+      continue
+    fi
     if token=$(marked_run "$dir"); then
       if [ "$token" = "$run_token" ]; then
         kept+="$dir"$'\n'

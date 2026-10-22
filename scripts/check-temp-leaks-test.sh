@@ -426,6 +426,39 @@ if ! PATH="$work/fakebin:$PATH" REAL_FIND="$real_find" FAKE_FIND_ARMED="$work/ar
   bash "$gate" bash -c "$arm" >"$work/out" 2>&1; then
   fail "an entry that vanished during the sweep after the command must not fail the gate"
 fi
+# One the sweep after the command listed, and another run then retired before
+# the gate read its marker, was not left behind; one still there unmarked, with
+# no live maker, is still this run's leak. The shim lists for real and only then
+# removes the first, so the gate meets exactly that order.
+cat >"$work/fakebin/find" <<'FIND'
+#!/usr/bin/env bash
+status=0
+"$REAL_FIND" "$@" || status=$?
+[ ! -e "$FAKE_FIND_ARMED" ] || rm -rf "$FAKE_FIND_VANISH"
+exit "$status"
+FIND
+sh -c 'exit 0' &
+exited=$!
+wait "$exited"
+vanished="$work/oneharness-vanished-$exited"
+stayed="$work/oneharness-stayed-$exited"
+rm -f "$work/armed"
+set +e
+PATH="$work/fakebin:$PATH" REAL_FIND="$real_find" FAKE_FIND_ARMED="$work/armed" FAKE_FIND_VANISH="$vanished" \
+  bash "$gate" bash -c "mkdir '$vanished' '$stayed' && $arm" >"$work/out" 2>&1
+status=$?
+set -e
+[ ! -e "$vanished" ] || fail "the shim never removed the directory the sweep listed"
+[ "$status" -eq 1 ] || fail "a directory still there unmarked beside one retired after the sweep should fail the gate (exit 1), got $status"
+grep -qF "$(basename "$stayed")" "$work/out" ||
+  fail "the gate failed but did not name the unmarked directory still there"
+! grep -qF "$(basename "$vanished")" "$work/out" ||
+  fail "a directory retired after the sweep listed it was reported as this run's leak"
+rm -rf "$stayed" "$work/armed"
+if ! PATH="$work/fakebin:$PATH" REAL_FIND="$real_find" FAKE_FIND_ARMED="$work/armed" FAKE_FIND_VANISH="$vanished" \
+  bash "$gate" bash -c "mkdir '$vanished' && $arm" >"$work/out" 2>&1; then
+  fail "a directory another run retired after the sweep listed it must not fail the gate"
+fi
 rm -rf "$work/fakebin" "$work/ran" "$work/armed"
 
 # A temp dir the gate cannot write its own files into is refused, and said. Both

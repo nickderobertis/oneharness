@@ -80,8 +80,7 @@ def retire(directory: Path) -> None:
                 file=sys.stderr,
             )
         return
-    (gone / RUN_MARKER).unlink(missing_ok=True)
-    shutil.rmtree(gone, ignore_errors=True)
+    remove(gone)
     if gone.exists():
         if marker is not None:
             (gone / RUN_MARKER).write_bytes(marker)
@@ -101,6 +100,21 @@ def rename(
             if isinstance(error, FileNotFoundError) or time.monotonic() >= deadline:
                 raise
             time.sleep(0.005)
+
+
+def remove(directory: Path, patience: float = 2.0 if sys.platform == "win32" else 0.0) -> None:
+    """Remove a retired directory, as `test.scratch.remove` does, which says why."""
+    deadline = time.monotonic() + patience
+    while True:
+        try:
+            (directory / RUN_MARKER).unlink(missing_ok=True)
+        except OSError:
+            pass
+        else:
+            shutil.rmtree(directory, ignore_errors=True)
+        if not directory.exists() or time.monotonic() >= deadline:
+            return
+        time.sleep(0.005)
 
 
 def cargo_version() -> str:

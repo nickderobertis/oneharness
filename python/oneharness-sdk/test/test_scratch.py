@@ -11,9 +11,10 @@ import textwrap
 import threading
 import time
 import unittest
-from contextlib import ExitStack, redirect_stderr
+from contextlib import ExitStack, redirect_stderr, suppress
 from io import StringIO
 from pathlib import Path
+from typing import Callable
 from unittest import mock
 
 from . import package_e2e
@@ -43,6 +44,10 @@ CHURN = textwrap.dedent(
 #: Whether this user can be refused a write by a directory's permissions:
 #: Windows ignores the mode bits, and a privileged user writes through them.
 PERMISSIONS_BIND = sys.platform != "win32" and os.geteuid() != 0
+
+#: Whether a removal can be held off here: on Windows by an open handle, and
+#: elsewhere by permissions this user obeys.
+REMOVAL_BLOCKS = PERMISSIONS_BIND or sys.platform == "win32"
 
 
 def entries(root: Path) -> list[str]:
@@ -163,7 +168,9 @@ class ScratchTests(unittest.TestCase):
         # A directory that really is left behind is still the churner's leak: it
         # stands under the swept name, marked for its run, with nothing staged or
         # retired beside it.
-        [leaked] = entries(root)
+        left = entries(root)
+        self.assertEqual(len(left), 1, left)
+        [leaked] = left
         self.assertTrue(leaked.startswith(f"{PREFIX}leaked-"), leaked)
         self.assertEqual((root / leaked / RUN_MARKER).read_text(encoding="utf-8"), churn_run)
 
@@ -314,6 +321,56 @@ class ScratchTests(unittest.TestCase):
             with self.assertRaises(FileNotFoundError):
                 rename(root / "missing", root / "to", 10.0)
             self.assertLess(time.monotonic() - started, 1.0)
+
+    def blocked_removal(self, tag: str) -> tuple[Path, Callable[[], None]]:
+        """A marked directory whose content cannot be removed until the returned
+        release runs: on Windows a handle held open inside, as a scanner's read
+        holds one, and elsewhere a subdirectory refusing writes."""
+        directory = scratch(self, tag) / "held"
+        inner = directory / "inner"
+        inner.mkdir(parents=True)
+        (directory / RUN_MARKER).write_text("4242.python-held", encoding="utf-8")
+        (inner / "file").write_text("held", encoding="utf-8")
+        if sys.platform == "win32":
+            release = (inner / "file").open(encoding="utf-8").close
+        else:
+            inner.chmod(0o500)
+
+            def release() -> None:
+                # A removal that went through has taken it with it.
+                with suppress(FileNotFoundError):
+                    inner.chmod(0o700)
+
+        self.addCleanup(release)
+        return directory, release
+
+    @unittest.skipUnless(REMOVAL_BLOCKS, "needs a removal this user can be refused")
+    def test_a_removal_refused_for_a_moment_succeeds_within_its_patience(self) -> None:
+        """Windows defers a delete while another process holds the file, and
+        only until it closes it; a blocker released while the removal is
+        retrying stands in for that."""
+        for index, remove in enumerate((scratch_module.remove, package_e2e.remove)):
+            directory, release = self.blocked_removal(f"remove-recovers-{index}")
+            releaser = threading.Timer(0.1, release)
+            releaser.start()
+            try:
+                remove(directory, 10.0)
+            finally:
+                releaser.join()
+            self.assertFalse(directory.exists())
+
+    @unittest.skipUnless(REMOVAL_BLOCKS, "needs a removal this user can be refused")
+    def test_a_removal_refused_past_its_patience_leaves_the_rest_unmarked(self) -> None:
+        """What is left is the caller's to find, and its marker has gone first,
+        so retirement puts that marker back before it returns the remainder."""
+        for index, remove in enumerate((scratch_module.remove, package_e2e.remove)):
+            directory, release = self.blocked_removal(f"remove-exhausted-{index}")
+            started = time.monotonic()
+            remove(directory, 0.2)
+            self.assertGreaterEqual(time.monotonic() - started, 0.2)
+            self.assertTrue((directory / "inner").is_dir())
+            self.assertFalse((directory / RUN_MARKER).exists())
+            release()
 
     def test_a_control_store_is_rooted_at_tmp_rather_than_the_temp_dir(self) -> None:
         """Its path becomes a socket address, and macOS's per-user temp dir alone

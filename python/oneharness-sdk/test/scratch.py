@@ -121,8 +121,7 @@ def retire(directory: Path) -> None:
                 file=sys.stderr,
             )
         return
-    (gone / RUN_MARKER).unlink(missing_ok=True)
-    shutil.rmtree(gone, ignore_errors=True)
+    remove(gone)
     if gone.exists():
         if marker is not None:
             (gone / RUN_MARKER).write_bytes(marker)
@@ -155,3 +154,26 @@ def rename(source: Path, target: Path, patience: float = RENAME_PATIENCE) -> Non
             if isinstance(error, FileNotFoundError) or time.monotonic() >= deadline:
                 raise
             time.sleep(0.005)
+
+
+def remove(directory: Path, patience: float = RENAME_PATIENCE) -> None:
+    """Remove ``directory``, its marker first, retried for up to ``patience`` seconds.
+
+    Windows defers deleting a file another process holds open, such as a virus
+    scanner reading a marker just written, so the directory around it cannot be
+    removed until that handle closes. Given up on at once, a retired directory
+    that only needed that moment came back under its swept name, a leak in this
+    run's own gate. Whatever is left once ``patience`` has passed stays for the
+    caller to find.
+    """
+    deadline = time.monotonic() + patience
+    while True:
+        try:
+            (directory / RUN_MARKER).unlink(missing_ok=True)
+        except OSError:
+            pass
+        else:
+            shutil.rmtree(directory, ignore_errors=True)
+        if not directory.exists() or time.monotonic() >= deadline:
+            return
+        time.sleep(0.005)

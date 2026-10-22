@@ -432,9 +432,13 @@ fi
 # removes the first, so the gate meets exactly that order.
 cat >"$work/fakebin/find" <<'FIND'
 #!/usr/bin/env bash
+set -euo pipefail
 status=0
 "$REAL_FIND" "$@" || status=$?
-[ ! -e "$FAKE_FIND_ARMED" ] || rm -rf "$FAKE_FIND_VANISH"
+if [ -e "$FAKE_FIND_ARMED" ] && ! rm -rf -- "$FAKE_FIND_VANISH"; then
+  echo "find shim: could not remove $FAKE_FIND_VANISH after listing" >&2
+  exit 97
+fi
 exit "$status"
 FIND
 sh -c 'exit 0' &

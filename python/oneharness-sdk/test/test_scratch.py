@@ -159,20 +159,20 @@ class ScratchTests(unittest.TestCase):
         self.assertTrue(leaked.startswith(f"{PREFIX}leaked-"), leaked)
         self.assertEqual((root / leaked / RUN_MARKER).read_text(encoding="utf-8"), churn_run)
 
-    def test_a_scratch_directory_that_cannot_be_placed_leaves_nothing_behind(self) -> None:
+    def test_a_scratch_directory_that_cannot_be_marked_leaves_nothing_behind(self) -> None:
         """The marker is written under a name the gate does not sweep, so a
-        failure there would leave a directory no gate could ever report."""
-        root = scratch(self, "unplaceable")
-        refused = OSError("the rename this stands in for failed")
+        failure once that staging exists would leave a directory no gate could
+        ever report. A run token holding a lone surrogate cannot be written as
+        UTF-8, so the marker write really fails after staging exists."""
+        root = scratch(self, "unmarkable")
         for make in (
-            lambda: scratch_module.make_marked(f"{PREFIX}unplaced-", str(root)),
-            lambda: package_e2e.make_marked(f"{PREFIX}unplaced-"),
+            lambda: scratch_module.make_marked(f"{PREFIX}unmarked-", str(root)),
+            lambda: package_e2e.make_marked(f"{PREFIX}unmarked-"),
         ):
             with (
-                mock.patch.dict(os.environ, {RUN_ENV: "4242.python-unplaced"}),
+                mock.patch.dict(os.environ, {RUN_ENV: "4242.\udcff"}),
                 mock.patch.object(tempfile, "tempdir", str(root)),
-                mock.patch.object(Path, "rename", side_effect=refused),
-                self.assertRaises(OSError),
+                self.assertRaises(UnicodeEncodeError),
             ):
                 make()
             self.assertEqual(entries(root), [])

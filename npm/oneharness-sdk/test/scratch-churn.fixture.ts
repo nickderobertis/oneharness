@@ -11,6 +11,11 @@ import {
 } from "./scratch.mjs";
 
 const cycles = Number(process.argv[2]);
+if (!Number.isSafeInteger(cycles) || cycles < 0) {
+	throw new Error(
+		`scratch-churn: expected a whole number of cycles, got ${JSON.stringify(process.argv[2])}`,
+	);
+}
 for (let cycle = 0; cycle < cycles; cycle++) {
 	scratchSync(`churn-sync-${cycle}`);
 	removeScratch();

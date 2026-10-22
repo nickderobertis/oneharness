@@ -379,6 +379,13 @@ mod tests {
                 !path.exists(),
                 "failed creation left scratch behind: {path:?}"
             );
+            // The marker is written while the directory is staged off the sweep,
+            // where a leftover would be invisible to the gate.
+            let staged = std::env::temp_dir().join(format!(".{}.new", ScratchDir::name(tag)));
+            assert!(
+                !staged.exists(),
+                "failed creation left staging behind: {staged:?}"
+            );
             return;
         }
 

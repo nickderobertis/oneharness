@@ -16,6 +16,8 @@ import { fileURLToPath } from "node:url";
 import {
 	controlScratch,
 	PREFIX,
+	placeScratch,
+	placeScratchSync,
 	RUN_ENV,
 	RUN_MARKER,
 	removeScratch,
@@ -249,7 +251,11 @@ test("a scratch directory that cannot be made leaves nothing behind", async () =
 	// refuses loudly and gives that staging space back.
 	const root = await scratch("unusable-root");
 	const missing = resolve(root, "missing");
-	const inherited = { TMPDIR: process.env.TMPDIR, TEMP: process.env.TEMP, TMP: process.env.TMP };
+	const inherited = {
+		TMPDIR: process.env.TMPDIR,
+		TEMP: process.env.TEMP,
+		TMP: process.env.TMP,
+	};
 	Object.assign(process.env, { TMPDIR: missing, TEMP: missing, TMP: missing });
 	try {
 		await underRunToken("4242.node-unusable", async () => {
@@ -263,6 +269,25 @@ test("a scratch directory that cannot be made leaves nothing behind", async () =
 		}
 	}
 	expect(readdirSync(root).filter((name) => name !== RUN_MARKER)).toEqual([]);
+});
+
+test("a scratch directory that cannot be placed leaves nothing behind", async () => {
+	// The marker is written under a name the gate does not sweep, so a failure
+	// once that staging exists would leave a directory no gate could ever
+	// report. A real directory already standing where the scratch would go
+	// makes the rename into place fail, on every platform.
+	const root = await scratch("collision");
+	const taken = resolve(root, `${PREFIX}taken`);
+	mkdirSync(taken);
+	writeFileSync(resolve(taken, "held"), "someone else's");
+	await underRunToken("4242.node-collision", async () => {
+		expect(() => placeScratchSync(taken)).toThrow();
+		await expect(placeScratch(taken)).rejects.toThrow();
+	});
+	expect(readdirSync(root).filter((name) => name !== RUN_MARKER)).toEqual([
+		`${PREFIX}taken`,
+	]);
+	expect(readFileSync(resolve(taken, "held"), "utf8")).toBe("someone else's");
 });
 
 test("a scratch directory already gone is given back without complaint", async () => {

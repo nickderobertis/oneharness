@@ -75,7 +75,7 @@ function scratchPath(tag, root = tmpdir()) {
  * @returns {Promise<string>}
  */
 export async function scratch(tag) {
-	return make(scratchPath(tag));
+	return placeScratch(scratchPath(tag));
 }
 
 /**
@@ -91,7 +91,9 @@ function offSweep(directory, stage) {
 }
 
 /**
- * Make `directory`, marked for the run a gate is watching, if any.
+ * Make `directory`, marked for the run a gate is watching, if any, and hold it
+ * for removal. Prefer `scratch`, `scratchSync` or `controlScratch`, which name
+ * it; this is exported so a test can place one where something already is.
  *
  * A marked directory is made and marked under a name off the sweep, then
  * renamed into place. A sibling run's gate sweeping the same temp dir
@@ -102,7 +104,7 @@ function offSweep(directory, stage) {
  * @param {string} directory
  * @returns {Promise<string>}
  */
-async function make(directory) {
+export async function placeScratch(directory) {
 	const token = runToken();
 	if (!token) {
 		await mkdir(directory, { mode: 0o700 });
@@ -123,12 +125,12 @@ async function make(directory) {
 }
 
 /**
- * The same as `make`, for a caller with no `await` to spend.
+ * The same as `placeScratch`, for a caller with no `await` to spend.
  *
  * @param {string} directory
  * @returns {string}
  */
-function makeSync(directory) {
+export function placeScratchSync(directory) {
 	const token = runToken();
 	if (!token) {
 		mkdirSync(directory, { mode: 0o700 });
@@ -163,7 +165,7 @@ function makeSync(directory) {
  */
 export async function controlScratch(tag) {
 	const root = process.platform === "win32" ? tmpdir() : realpathSync("/tmp");
-	return make(scratchPath(tag, root));
+	return placeScratch(scratchPath(tag, root));
 }
 
 /**
@@ -173,7 +175,7 @@ export async function controlScratch(tag) {
  * @returns {string}
  */
 export function scratchSync(tag) {
-	return makeSync(scratchPath(tag));
+	return placeScratchSync(scratchPath(tag));
 }
 
 /**

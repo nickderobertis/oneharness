@@ -325,7 +325,7 @@ function entries(root: string): string[] {
 const retirements = [
 	["sync", retireScratchSync],
 	["async", retireScratch],
-] as const;
+] as const; // a tuple per entry, so the loop destructures each mode beside its own function rather than a union of both
 
 test.skipIf(!permissionsBind())(
 	"a partly removed scratch directory returns to the sweep with its marker",
@@ -463,7 +463,7 @@ test("a rename refused past its patience fails and moves nothing", async () => {
 			"sync",
 			async (patience: number) => renameSyncPatiently(from, to, patience),
 		],
-	] as const;
+	] as const; // a tuple per entry, so the loop destructures each mode beside its own function rather than a union of both
 	for (const [mode, attempt] of attempts) {
 		let started = Date.now();
 		await expect(attempt(200)).rejects.toThrow();
@@ -485,7 +485,7 @@ test("a rename of a missing source fails at once whatever its patience", async (
 	const attempts = [
 		["async", () => renamePatiently(from, to, 10_000)],
 		["sync", async () => renameSyncPatiently(from, to, 10_000)],
-	] as const;
+	] as const; // a tuple per entry, so the loop destructures each mode beside its own function rather than a union of both
 	for (const [mode, attempt] of attempts) {
 		const started = Date.now();
 		await expect(attempt()).rejects.toThrow("ENOENT");

@@ -112,7 +112,7 @@ TOML
     if ! cfg="$(ONEHARNESS_NO_CONFIG='' "$bin" sync --harness opencode \
       --cwd "$sb" --config "$sb/oneharness.toml" --compact 2>&1)"; then
       printf '%s\n' "$cfg" >&2
-      rm -rf "$sb"
+      rm -rf "$sb" || note "  could not remove the scratch directory $sb — delete it by hand"
       fail "opencode: oneharness sync failed to install the session_id gate"
     fi
     printf '%s' "$sb"
@@ -137,12 +137,12 @@ TOML
     _oh_oc_gate_run "$sandbox" "$allowfile"
     status="$(oh_field '.results[0].status')"
     if [ "$status" = "skipped" ]; then
-      rm -rf "$sandbox"
+      rm -rf "$sandbox" || note "  could not remove the scratch directory $sandbox — delete it by hand"
       skip "opencode is not installed (oneharness reported status=skipped); nothing to verify"
     fi
     [ ! -e "$sandbox/$allowfile" ] || break
     if ! printf '%s' "$OH_REPORT" >"$report"; then
-      rm -rf "$sandbox"
+      rm -rf "$sandbox" || note "  could not remove the scratch directory $sandbox — delete it by hand"
       fail "opencode: could not write the control turn's report to $report — check that the host temp dir is writable and has space"
     fi
     if _oh_touch_attempted "$report" "$allowfile"; then
@@ -151,12 +151,12 @@ TOML
   done
   if [ ! -e "$sandbox/$allowfile" ]; then
     oh_dump
-    rm -rf "$sandbox"
+    rm -rf "$sandbox" || note "  could not remove the scratch directory $sandbox — delete it by hand"
     fail "opencode: the positive control never ran ($allowfile absent after $attempt attempt(s)), so the session_id deny cannot be trusted as a real block. Next: read the events dumped above — a bash tool call that errored means the gate blocked a needle the payload never carries (pipe that payload to \`oneharness gate opencode --deny-if-contains <needle>\` by hand); no bash tool call on either attempt means the model declined the turn, so tighten the prompt"
   fi
   note "  ok[control]: the unmatched command ran (attempt $attempt of 2)"
   # llmlint: ignore-end[tool_output_is_signal]
-  rm -rf "$sandbox"
+  rm -rf "$sandbox" || note "  could not remove the scratch directory $sandbox — delete it by hand"
 
   note "  session-id[proof]: denying on the session_id key must block the touch"
   denyfile="ohsess-deny-${RANDOM}${RANDOM}.txt"
@@ -164,11 +164,11 @@ TOML
   _oh_oc_gate_run "$sandbox" "$denyfile"
   if [ -e "$sandbox/$denyfile" ]; then
     oh_dump
-    rm -rf "$sandbox"
+    rm -rf "$sandbox" || note "  could not remove the scratch directory $sandbox — delete it by hand"
     fail "opencode: the gate did NOT fire on the session_id key — the shim's payload is missing session_id, so input.sessionID is not being forwarded (session_id regression)"
   fi
   note "  ok[proof]: the payload carried session_id, so the gate fired"
-  rm -rf "$sandbox"
+  rm -rf "$sandbox" || note "  could not remove the scratch directory $sandbox — delete it by hand"
   note "PASS: opencode session_id forwarding"
 }
 

@@ -49,7 +49,10 @@ echo launch >>"$SESSION_DOUBLE_RECORD" || {
   echo "opencode double: could not append to its record $SESSION_DOUBLE_RECORD; check that its directory is writable" >&2
   exit 1
 }
-n="$(grep -cx launch "$SESSION_DOUBLE_RECORD")"
+n="$(grep -cx launch "$SESSION_DOUBLE_RECORD")" || {
+  echo "opencode double: could not count the launches in its record $SESSION_DOUBLE_RECORD; check that it is readable" >&2
+  exit 1
+}
 read -r -a plan <<<"$SESSION_DOUBLE_PLAN"
 step="${plan[$((n > ${#plan[@]} ? ${#plan[@]} - 1 : n - 1))]}"
 target="$(printf '%s\n' "$@" | grep -o 'touch [^ ]*\.txt' | head -n 1 | cut -c7-)"

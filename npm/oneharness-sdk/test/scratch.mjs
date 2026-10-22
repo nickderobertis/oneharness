@@ -53,6 +53,69 @@ function runToken() {
 	return process.env[RUN_ENV] || undefined;
 }
 
+/** How long a rename keeps trying on Windows, in milliseconds. */
+const RENAME_PATIENCE_MS = 2000;
+
+/** The pause between tries, in milliseconds. */
+const RENAME_PAUSE_MS = 5;
+
+/**
+ * Whether a failed rename may yet succeed: on Windows, until
+ * `RENAME_PATIENCE_MS` has passed since `started`.
+ *
+ * Windows refuses to rename a directory while any handle is open inside it,
+ * and a sibling run's leak gate opens each swept directory's marker to read
+ * it. That refusal lasts only as long as the read. Given up on at once, it left
+ * a directory under its swept name that this run's own gate then reported as a
+ * leak, so a sibling's sweep alone could fail this run. A unix rename is not
+ * refused by an open handle, so a failure there is final at once.
+ *
+ * @param {number} started
+ * @returns {boolean}
+ */
+function renameMayRecover(started) {
+	return (
+		process.platform === "win32" && Date.now() - started < RENAME_PATIENCE_MS
+	);
+}
+
+/**
+ * `rename`, retried while `renameMayRecover` says so.
+ *
+ * @param {string} from
+ * @param {string} to
+ * @returns {Promise<void>}
+ */
+async function renamePatiently(from, to) {
+	const started = Date.now();
+	for (;;) {
+		try {
+			return await rename(from, to);
+		} catch (error) {
+			if (!renameMayRecover(started)) throw error;
+			await new Promise((wake) => setTimeout(wake, RENAME_PAUSE_MS));
+		}
+	}
+}
+
+/**
+ * `renameSync`, retried while `renameMayRecover` says so.
+ *
+ * @param {string} from
+ * @param {string} to
+ */
+function renameSyncPatiently(from, to) {
+	const started = Date.now();
+	for (;;) {
+		try {
+			return renameSync(from, to);
+		} catch (error) {
+			if (!renameMayRecover(started)) throw error;
+			Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, RENAME_PAUSE_MS);
+		}
+	}
+}
+
 /**
  * A fresh path for `tag`, ending in this process's id — which is how
  * `scripts/check-temp-leaks.sh` tells another checkout's live directory from
@@ -116,7 +179,7 @@ export async function placeScratch(directory) {
 	try {
 		await mkdir(staged, { mode: 0o700 });
 		await writeFile(resolve(staged, RUN_MARKER), token);
-		await rename(staged, directory);
+		await renamePatiently(staged, directory);
 	} catch (error) {
 		await rm(staged, { recursive: true, force: true });
 		throw error;
@@ -142,7 +205,7 @@ export function placeScratchSync(directory) {
 	try {
 		mkdirSync(staged, { mode: 0o700 });
 		writeFileSync(resolve(staged, RUN_MARKER), token);
-		renameSync(staged, directory);
+		renameSyncPatiently(staged, directory);
 	} catch (error) {
 		rmSync(staged, { recursive: true, force: true });
 		throw error;
@@ -194,6 +257,20 @@ function markerOf(directory) {
 }
 
 /**
+ * Say that `directory` stays under its swept name, marked for its run, because
+ * renaming it off the sweep failed with `error`: its run's gate reports it as a
+ * leak, and this is the reason beside it.
+ *
+ * @param {string} directory
+ * @param {unknown} error
+ */
+function leftInPlace(directory, error) {
+	console.error(
+		`scratch: left ${directory} in place, still marked for its run, because it could not be renamed off the leak gate's sweep: ${error}`,
+	);
+}
+
+/**
  * Remove `directory` without ever leaving it visible to the leak gate
  * unmarked: a sibling run's gate counts an unmarked directory as its own leak
  * on Windows, where it cannot read this process's environment. Prefer
@@ -201,10 +278,10 @@ function markerOf(directory) {
  * retire one directory where removal is made to fail.
  *
  * It is renamed off the sweep first, and only then emptied. A marked directory
- * that cannot be renamed (Windows refuses while a handle is open inside) is
- * left whole and marked, a leak its own run's gate still reports. An unmarked
- * one has no ownership to lose and is removed in place. Its marker is removed
- * first, so whatever a failed removal leaves is the same in every order the
+ * that cannot be renamed (Windows refuses while a handle stays open inside
+ * past `renamePatiently`'s retries) is left whole and marked, a leak its own
+ * run's gate still reports. An unmarked one has no ownership to lose and is
+ * removed in place. Its marker is removed first, so whatever a failed removal leaves is the same in every order the
  * filesystem lists entries. That remainder gets its original marker back while
  * still hidden, then returns to the swept name.
  *
@@ -215,9 +292,11 @@ export async function retireScratch(directory) {
 	const marker = markerOf(directory);
 	const gone = offSweep(directory, "gone");
 	try {
-		await rename(directory, gone);
-	} catch {
-		if (marker === undefined) {
+		await renamePatiently(directory, gone);
+	} catch (error) {
+		if (marker !== undefined) {
+			leftInPlace(directory, error);
+		} else {
 			await rm(directory, { recursive: true, force: true });
 		}
 		return;
@@ -230,7 +309,7 @@ export async function retireScratch(directory) {
 			if (marker !== undefined) {
 				writeFileSync(resolve(gone, RUN_MARKER), marker);
 			}
-			renameSync(gone, directory);
+			renameSyncPatiently(gone, directory);
 		}
 	}
 }
@@ -244,9 +323,11 @@ export function retireScratchSync(directory) {
 	const marker = markerOf(directory);
 	const gone = offSweep(directory, "gone");
 	try {
-		renameSync(directory, gone);
-	} catch {
-		if (marker === undefined) {
+		renameSyncPatiently(directory, gone);
+	} catch (error) {
+		if (marker !== undefined) {
+			leftInPlace(directory, error);
+		} else {
 			rmSync(directory, { recursive: true, force: true });
 		}
 		return;
@@ -259,7 +340,7 @@ export function retireScratchSync(directory) {
 			if (marker !== undefined) {
 				writeFileSync(resolve(gone, RUN_MARKER), marker);
 			}
-			renameSync(gone, directory);
+			renameSyncPatiently(gone, directory);
 		}
 	}
 }

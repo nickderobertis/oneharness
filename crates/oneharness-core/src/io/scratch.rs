@@ -84,7 +84,7 @@ impl ScratchDir {
         let _ = std::fs::remove_dir_all(&staged);
         std::fs::create_dir_all(&staged)?;
         let placed = std::fs::write(staged.join(RUN_MARKER), token.as_encoded_bytes())
-            .and_then(|()| std::fs::rename(&staged, &path));
+            .and_then(|()| rename(&staged, &path));
         if let Err(error) = placed {
             let _ = std::fs::remove_dir_all(&staged);
             return Err(error);
@@ -156,9 +156,9 @@ impl Drop for ScratchDir {
 /// on Windows, where it cannot read the maker's environment.
 ///
 /// The directory is first renamed off the swept name, and only then emptied.
-/// A marked directory that cannot be renamed (Windows refuses while a handle is
-/// open inside) is left whole and marked, a leak its own run's gate still
-/// reports. An unmarked one has no ownership to lose and is removed in place.
+/// A marked directory that cannot be renamed (Windows refuses while a handle
+/// stays open inside past [`rename`]'s retries) is left whole and marked, a
+/// leak its own run's gate still reports. An unmarked one has no ownership to lose and is removed in place.
 /// Its marker is removed first, so whatever a failed removal leaves is the same
 /// in every order the filesystem lists entries. That remainder gets its
 /// original marker back while still hidden, then returns to the swept name,
@@ -173,9 +173,14 @@ fn retire(path: &Path) {
     gone_name.push(".gone");
     let gone = path.with_file_name(gone_name);
     let _ = std::fs::remove_dir_all(&gone);
-    if std::fs::rename(path, &gone).is_err() {
+    if let Err(error) = rename(path, &gone) {
         if marker.is_none() {
             let _ = std::fs::remove_dir_all(path);
+        } else {
+            eprintln!(
+                "scratch: left {} in place, still marked for its run, because it could not be renamed off the leak gate's sweep: {error}",
+                path.display()
+            );
         }
         return;
     }
@@ -186,7 +191,36 @@ fn retire(path: &Path) {
     if let Some(marker) = marker {
         let _ = std::fs::write(gone.join(RUN_MARKER), marker);
     }
-    let _ = std::fs::rename(&gone, path);
+    let _ = rename(&gone, path);
+}
+
+/// How long [`rename`] keeps trying on Windows.
+#[cfg(windows)]
+const RENAME_PATIENCE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// [`std::fs::rename`], retried on Windows for up to [`RENAME_PATIENCE`].
+///
+/// Windows refuses to rename a directory while any handle is open inside it,
+/// and a sibling run's leak gate opens each swept directory's marker to read
+/// it. That refusal lasts only as long as the read. Given up on at once, it left
+/// a directory under its swept name that this run's own gate then reported as a
+/// leak, so a sibling's sweep alone could fail this run. A unix rename is not
+/// refused by an open handle, so a failure there is final at once.
+fn rename(from: &Path, to: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        let deadline = std::time::Instant::now() + RENAME_PATIENCE;
+        loop {
+            match std::fs::rename(from, to) {
+                Err(_) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                done => return done,
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    std::fs::rename(from, to)
 }
 
 #[cfg(test)]

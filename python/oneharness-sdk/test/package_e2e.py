@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 from contextlib import ExitStack
 from pathlib import Path
@@ -53,7 +54,7 @@ def make_marked(prefix: str) -> Path:
     directory = staged.with_name(staged.name[1 : -len(".new")])
     try:
         (staged / RUN_MARKER).write_text(token, encoding="utf-8")
-        staged.rename(directory)
+        rename(staged, directory)
     except BaseException:
         shutil.rmtree(staged, ignore_errors=True)
         raise
@@ -68,17 +69,36 @@ def retire(directory: Path) -> None:
     except OSError:
         marker = None
     try:
-        directory.rename(gone)
-    except OSError:
+        rename(directory, gone)
+    except OSError as error:
         if marker is None:
             shutil.rmtree(directory, ignore_errors=True)
+        else:
+            print(
+                f"scratch: left {directory} in place, still marked for its run, because it"
+                f" could not be renamed off the leak gate's sweep: {error}",
+                file=sys.stderr,
+            )
         return
     (gone / RUN_MARKER).unlink(missing_ok=True)
     shutil.rmtree(gone, ignore_errors=True)
     if gone.exists():
         if marker is not None:
             (gone / RUN_MARKER).write_bytes(marker)
-        gone.rename(directory)
+        rename(gone, directory)
+
+
+def rename(source: Path, target: Path) -> None:
+    """Rename a scratch directory, as `test.scratch.rename` does, which says why."""
+    deadline = time.monotonic() + 2.0
+    while True:
+        try:
+            source.rename(target)
+            return
+        except OSError:
+            if sys.platform != "win32" or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.005)
 
 
 def cargo_version() -> str:

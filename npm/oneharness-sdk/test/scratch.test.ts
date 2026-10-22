@@ -371,13 +371,21 @@ test.skipIf(!permissionsBind())(
 			});
 			writeFileSync(resolve(directory, "inside.txt"), "content");
 			chmodSync(root, 0o500);
+			const said: unknown[][] = [];
+			const report = console.error;
+			console.error = (...line: unknown[]) => said.push(line);
 			try {
 				await retire(directory);
 			} finally {
+				console.error = report;
 				chmodSync(root, 0o700);
 			}
 			expect(readFileSync(resolve(directory, RUN_MARKER), "utf8")).toBe(token);
 			expect(existsSync(resolve(directory, "inside.txt"))).toBe(true);
+			// Giving up is said, beside the leak its run's gate will report.
+			expect(String(said[0]?.[0])).toContain(
+				`scratch: left ${directory} in place`,
+			);
 		}
 	},
 );

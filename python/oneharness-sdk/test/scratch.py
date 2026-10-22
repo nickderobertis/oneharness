@@ -11,6 +11,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -82,7 +83,7 @@ def make_marked(prefix: str, root: str | None) -> Path:
     directory = staged.with_name(staged.name[1 : -len(".new")])
     try:
         (staged / RUN_MARKER).write_text(token, encoding="utf-8")
-        staged.rename(directory)
+        rename(staged, directory)
     except BaseException:
         shutil.rmtree(staged, ignore_errors=True)
         raise
@@ -95,12 +96,13 @@ def retire(directory: Path) -> None:
     A sibling run's leak gate counts an unmarked directory as its own leak on
     Windows, where it cannot read this process's environment. So it is renamed
     off the sweep first, and only then emptied. A marked directory that cannot
-    be renamed (Windows refuses while a handle is open inside) is left whole and
-    marked, a leak its own run's gate still reports; an unmarked one has no
-    ownership to lose and is removed in place. Its marker is removed first, so
-    whatever a failed removal leaves is the same in every order the filesystem
-    lists entries. That remainder gets its original marker back while still
-    hidden, then returns to the swept name.
+    be renamed (Windows refuses while a handle stays open inside past
+    :func:`rename`'s retries) is left whole and marked, a leak its own run's
+    gate still reports; an unmarked one has no ownership to lose and is
+    removed in place. Its marker is removed first, so whatever a failed
+    removal leaves is the same in every order the filesystem lists entries.
+    That remainder gets its original marker back while still hidden, then
+    returns to the swept name.
     """
     gone = directory.with_name(f".{directory.name}.gone")
     try:
@@ -108,14 +110,45 @@ def retire(directory: Path) -> None:
     except OSError:
         marker = None
     try:
-        directory.rename(gone)
-    except OSError:
+        rename(directory, gone)
+    except OSError as error:
         if marker is None:
             shutil.rmtree(directory, ignore_errors=True)
+        else:
+            print(
+                f"scratch: left {directory} in place, still marked for its run, because it"
+                f" could not be renamed off the leak gate's sweep: {error}",
+                file=sys.stderr,
+            )
         return
     (gone / RUN_MARKER).unlink(missing_ok=True)
     shutil.rmtree(gone, ignore_errors=True)
     if gone.exists():
         if marker is not None:
             (gone / RUN_MARKER).write_bytes(marker)
-        gone.rename(directory)
+        rename(gone, directory)
+
+
+#: How long :func:`rename` keeps trying on Windows, in seconds.
+RENAME_PATIENCE = 2.0
+
+
+def rename(source: Path, target: Path) -> None:
+    """Rename ``source`` to ``target``, retried on Windows for ``RENAME_PATIENCE``.
+
+    Windows refuses to rename a directory while any handle is open inside it,
+    and a sibling run's leak gate opens each swept directory's marker to read
+    it. That refusal lasts only as long as the read. Given up on at once, it left
+    a directory under its swept name that this run's own gate then reported as a
+    leak, so a sibling's sweep alone could fail this run. A unix rename is not
+    refused by an open handle, so a failure there is final at once.
+    """
+    deadline = time.monotonic() + RENAME_PATIENCE
+    while True:
+        try:
+            source.rename(target)
+            return
+        except OSError:
+            if sys.platform != "win32" or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.005)

@@ -8,7 +8,8 @@ import sys
 import tempfile
 import textwrap
 import unittest
-from contextlib import ExitStack
+from contextlib import ExitStack, redirect_stderr
+from io import StringIO
 from pathlib import Path
 from unittest import mock
 
@@ -228,12 +229,16 @@ class ScratchTests(unittest.TestCase):
                 directory = scratch_module.make_marked(f"{PREFIX}stuck-{index}-", str(root))
             (directory / "inside.txt").write_text("content", encoding="utf-8")
             root.chmod(0o500)
+            said = StringIO()
             try:
-                retire(directory)
+                with redirect_stderr(said):
+                    retire(directory)
             finally:
                 root.chmod(0o700)
             self.assertEqual((directory / RUN_MARKER).read_text(encoding="utf-8"), run)
             self.assertTrue((directory / "inside.txt").exists(), "emptied in place")
+            # Giving up is said, beside the leak its run's gate will report.
+            self.assertIn(f"scratch: left {directory} in place", said.getvalue())
 
     @unittest.skipUnless(PERMISSIONS_BIND, "needs POSIX permissions an unprivileged user obeys")
     def test_an_unmarked_scratch_directory_that_cannot_be_renamed_is_removed_in_place(

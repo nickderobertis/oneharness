@@ -12,7 +12,7 @@ export type HistoryShowEntry =
         }
       | ({
           error: string;
-          schema_version?: "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | "1.10" | undefined;
+          schema_version?: "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | "1.10" | "1.11" | undefined;
           [k: string]: unknown;
         } & (
           | {
@@ -31,7 +31,7 @@ export type HistoryShowEntry =
             [k: string]: unknown;
           }
         | {
-            schema_version?: "1.7" | "1.8" | "1.9" | "1.10" | undefined;
+            schema_version?: "1.7" | "1.8" | "1.9" | "1.10" | "1.11" | undefined;
             status?: "nonzero" | "timeout" | "cancelled" | undefined;
             work: "done" | "none";
             [k: string]: unknown;
@@ -44,7 +44,7 @@ export type HistoryShowEntry =
           }
         | {
             observed_model: string;
-            schema_version?: "1.8" | "1.9" | "1.10" | undefined;
+            schema_version?: "1.8" | "1.9" | "1.10" | "1.11" | undefined;
             [k: string]: unknown;
           }
       ) &
@@ -54,7 +54,7 @@ export type HistoryShowEntry =
             [k: string]: unknown;
           }
         | {
-            schema_version?: "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | "1.10" | undefined;
+            schema_version?: "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | "1.10" | "1.11" | undefined;
             [k: string]: unknown;
           }
       ) &
@@ -75,7 +75,7 @@ export type HistoryShowEntry =
             [k: string]: unknown;
           }
         | {
-            schema_version?: "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | "1.10" | undefined;
+            schema_version?: "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | "1.10" | "1.11" | undefined;
             [k: string]: unknown;
           }
       ) &
@@ -95,7 +95,7 @@ export type HistoryShowEntry =
               [k: string]: unknown;
             }
           | {
-              schema_version?: "1.6" | "1.7" | "1.8" | "1.9" | "1.10" | undefined;
+              schema_version?: "1.6" | "1.7" | "1.8" | "1.9" | "1.10" | "1.11" | undefined;
               [k: string]: unknown;
             }
         ) &
@@ -116,7 +116,7 @@ export type HistoryShowEntry =
               [k: string]: unknown;
             }
           | {
-              schema_version?: "1.8" | "1.9" | "1.10" | undefined;
+              schema_version?: "1.8" | "1.9" | "1.10" | "1.11" | undefined;
               [k: string]: unknown;
             }
         ) &
@@ -137,7 +137,7 @@ export type HistoryShowEntry =
               [k: string]: unknown;
             }
           | {
-              schema_version?: "1.9" | "1.10" | undefined;
+              schema_version?: "1.9" | "1.10" | "1.11" | undefined;
               [k: string]: unknown;
             }
         ) &
@@ -158,7 +158,7 @@ export type HistoryShowEntry =
               [k: string]: unknown;
             }
           | {
-              schema_version?: "1.10" | undefined;
+              schema_version?: "1.10" | "1.11" | undefined;
               [k: string]: unknown;
             }
         )) &
@@ -289,7 +289,7 @@ export type HistoryShowEntry =
              * run's single prompt).
              */
             prompt: string;
-            schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | "1.10";
+            schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | "1.10" | "1.11";
             /**
              * The oneharness session id this run belongs to (the history file's stem).
              */
@@ -605,7 +605,7 @@ export type HistoryShowEntry =
              * run's single prompt).
              */
             prompt: string;
-            schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | "1.10";
+            schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | "1.10" | "1.11";
             /**
              * The oneharness session id this run belongs to (the history file's stem).
              */
@@ -733,7 +733,7 @@ export type HistoryShowEntry =
              * run's single prompt).
              */
             prompt: string;
-            schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | "1.10";
+            schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | "1.10" | "1.11";
             /**
              * The oneharness session id this run belongs to (the history file's stem).
              */
@@ -861,7 +861,7 @@ export type HistoryShowEntry =
              * run's single prompt).
              */
             prompt: string;
-            schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | "1.10";
+            schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | "1.10" | "1.11";
             /**
              * The oneharness session id this run belongs to (the history file's stem).
              */
@@ -989,7 +989,7 @@ export type HistoryShowEntry =
              * run's single prompt).
              */
             prompt: string;
-            schema_version: "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | "1.10";
+            schema_version: "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | "1.10" | "1.11";
             /**
              * The oneharness session id this run belongs to (the history file's stem).
              */

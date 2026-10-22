@@ -206,7 +206,7 @@ pub fn run_jobs(jobs: &[Job], max_parallel: usize) -> Vec<Capture> {
 /// A run cancelled before it ever spawned: the wave was torn down while this job
 /// was still queued. Reported rather than dropped, so a caller's results stay
 /// one-per-job and a cancelled batch is legible entry by entry.
-fn unstarted_capture(job: &Job) -> Capture {
+pub(crate) fn unstarted_capture(job: &Job) -> Capture {
     Capture {
         status: Status::Cancelled,
         exit_code: None,

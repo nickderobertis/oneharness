@@ -16,6 +16,7 @@
 //!                   TERM arrives, then write `exited` to this path and exit,
 //!                   so a test sees a TERM land mid-exit and that exit still
 //!                   run to its end (Unix; elsewhere it is written at once)
+//!   MOCK_OUTPUT_GATE path that must exist before output (bounded to 30s)
 //!   MOCK_SLEEP_MS   milliseconds to sleep before exiting (to force a timeout)
 //!   MOCK_ARGV_FILE  if set, the received argv (one per line) is written here
 //!   MOCK_ECHO_PWD   if set, write `PWD=<the inherited $PWD>` to stdout and exit
@@ -2594,6 +2595,16 @@ pub fn run() -> ! {
     }
 
     log_line("S\n");
+    if let Some(gate) = std::env::var_os("MOCK_OUTPUT_GATE") {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !std::path::Path::new(&gate).exists() {
+            if std::time::Instant::now() >= deadline {
+                eprintln!("mock harness: MOCK_OUTPUT_GATE never opened");
+                std::process::exit(2);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
     if let Ok(ms) = std::env::var("MOCK_SLEEP_MS") {
         if let Ok(ms) = ms.parse::<u64>() {
             std::thread::sleep(std::time::Duration::from_millis(ms));

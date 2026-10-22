@@ -88,7 +88,8 @@ const contractMatrix = JSON.parse(
 			| "history_watch_options"
 			| "history_line"
 			| "history_record"
-			| "history_stream_envelope";
+			| "history_stream_envelope"
+			| "run_stream_envelope";
 		accepted: boolean;
 		value: unknown;
 	}>;
@@ -173,6 +174,8 @@ const bundle = JSON.parse(
 // control character, and uses no character a label key forbids, so it passes
 // every `not`-shaped rule at once.
 const PATTERNED: Array<[RegExp, string]> = [
+	[/claude-code\|codex/u, "codex"],
+	[/\^\(\/\|/u, "/history"],
 	[/T\(\[01\]/u, "2026-08-11T00:00:00.000Z"],
 	[/\{8\}-/u, "0198f0d0-7b31-7000-8000-000000000001"],
 	[/-02-29/u, "2026-09-29"],
@@ -322,6 +325,7 @@ describe("OneHarness", () => {
 			history_line: HistoryLineSchema,
 			history_record: HistoryRecordSchema,
 			history_stream_envelope: HistoryStreamEnvelopeSchema,
+			run_stream_envelope: RunStreamEnvelopeSchema,
 		};
 		expect(contractMatrix.cases.length).toBeGreaterThan(0);
 		for (const fixture of contractMatrix.cases) {

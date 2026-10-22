@@ -6019,6 +6019,52 @@ fn normalizes_tool_events_from_cursor_stream_json_content_blocks() {
 }
 
 #[test]
+fn cursor_turn_that_speaks_before_its_tool_call_reports_cursor_tool_calls() {
+    // The live cursor-agent shape the macOS e2e met on 2026-10-22: an assistant
+    // text record (content-block shape) precedes Cursor's own `tool_call` pair.
+    // The transcript is still Cursor's, so `events_source` names its recognizer.
+    let stdout = concat!(
+        r#"{"type":"system","subtype":"init","session_id":"11111111-2222-3333-4444-555555555555"}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"I'll print that exact text to stdout now."}]}}"#,
+        "\n",
+        r#"{"type":"tool_call","subtype":"started","call_id":"c1","tool_call":{"shellToolCall":{"args":{"command":"echo MARK"}}}}"#,
+        "\n",
+        r#"{"type":"tool_call","subtype":"completed","call_id":"c1","tool_call":{"shellToolCall":{"args":{"command":"echo MARK"},"result":{"success":{"command":"echo MARK","exitCode":0,"stdout":"MARK\n","stderr":""}}}}}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"I did it."}]}}"#,
+        "\n",
+        r#"{"type":"result","subtype":"success","result":"I did it.","session_id":"11111111-2222-3333-4444-555555555555"}"#,
+        "\n",
+    );
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "cursor",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("cursor"),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", stdout)],
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let value = json_stdout(&output);
+    let result = &value["results"][0];
+    assert_eq!(result["events_source"], "stream-json:cursor-tool-calls");
+    let kinds: Vec<&str> = result["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["message", "tool_call", "message"]);
+    assert_eq!(result["events"][1]["input"]["command"], "echo MARK");
+}
+
+#[test]
 fn claude_stream_json_surfaces_content_block_events() {
     // The flagship path: Claude Code's default `json` result has no transcript,
     // but under `--output-format stream-json` it emits the Anthropic content-block

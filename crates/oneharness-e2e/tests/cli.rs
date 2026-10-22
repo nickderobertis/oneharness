@@ -21931,6 +21931,59 @@ fn fallback_falls_through_an_auth_failure_to_a_working_harness() {
     assert_eq!(results[1]["status"], "ok");
 }
 
+/// The live `same-harness auth fallback` probe, replayed: Claude Code's real
+/// invalid-key answer states `"api_error_status":401`, but its random UUIDs and
+/// timings sometimes contain `429`, which the generic vocabulary read as a rate
+/// limit and so stopped the chain at the invalid key. The record below is the
+/// real capture with its `duration_ms` landing on those digits; the provider's
+/// status must still decide, and the chain must reach the working variant.
+#[test]
+fn fallback_falls_through_an_invalid_key_whose_record_carries_429_digits() {
+    let mock = mock_bin().display().to_string();
+    let capture = include_str!("../../../tests/fixtures/claude-invalid-api-key.json");
+    let unlucky = capture
+        .trim_end()
+        .replace(r#""duration_ms":272"#, r#""duration_ms":429"#);
+    assert_ne!(
+        unlucky,
+        capture.trim_end(),
+        "the duration must be rewritten"
+    );
+    let project = format!(
+        r#"
+        harnesses = ["claude-code:invalid", "claude-code:working"]
+        run_mode = "fallback"
+
+        [harness.claude-code.variant.invalid]
+        bin = '{mock}'
+        env = {{ MOCK_EXIT = "1", MOCK_STDOUT = '{unlucky}' }}
+
+        [harness.claude-code.variant.working]
+        bin = '{mock}'
+        "#
+    );
+    let fx = ConfigFixture::new("fallback-invalid-key-429-digits", &project, "");
+    let output = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let v = json_stdout(&output);
+    let results = v["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2, "{v}");
+    assert_eq!(results[0]["harness_id"], "claude-code:invalid");
+    assert_eq!(results[0]["status"], "nonzero");
+    assert_eq!(results[0]["failure_kind"], "auth");
+    assert_eq!(v["fallback"]["fell_through"][0]["reason"], "auth");
+    assert_eq!(v["fallback"]["ran"], "claude-code:working");
+    assert_eq!(results[1]["status"], "ok");
+}
+
 #[test]
 fn fallback_falls_through_a_clean_exit_provider_auth_error() {
     let mock = mock_bin().display().to_string();

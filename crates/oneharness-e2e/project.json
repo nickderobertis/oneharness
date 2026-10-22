@@ -67,6 +67,7 @@
         "{workspaceRoot}/AGENTS.md",
         "{workspaceRoot}/CHANGELOG.md",
         "{workspaceRoot}/docs/harness-usage.md",
+        "{workspaceRoot}/tests/fixtures/claude-invalid-api-key.json",
         "{workspaceRoot}/justfile",
         "{workspaceRoot}/scripts/smoke.sh",
         "{workspaceRoot}/scripts/check-smoke-env.sh",

@@ -3,12 +3,17 @@
 //! its pool and mock settings must not affect another in-process library run.
 #![cfg(unix)]
 
+use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use oneharness_core::domain::fallback::RunMode;
 use oneharness_core::domain::mode::PermissionMode;
 use oneharness_core::domain::report::Status;
-use oneharness_core::io::run::{run, EventSink, RunBegun, RunControls, RunRequest, SinkStep};
+use oneharness_core::io::run::{
+    run, run_supervised, EventSink, RunBegun, RunControls, RunRequest, SinkStep,
+};
+use oneharness_core::io::runner::ProcessSupervisor;
 use oneharness_core::io::scratch::ScratchDir;
 use oneharness_core::io::server_pool;
 use serde_json::Value;
@@ -53,6 +58,15 @@ impl EventSink for Locations {
     }
     fn event(&mut self, _: &str, _: &oneharness_core::domain::events::ActionEvent) -> SinkStep {
         panic!("buffered controlled runs publish no action events");
+    }
+}
+
+/// Counts every process the run spawns, at the moment it would start.
+#[derive(Default)]
+struct Spawns(AtomicUsize);
+impl ProcessSupervisor for Spawns {
+    fn spawning(&self, _: &mut Command) {
+        self.0.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -116,12 +130,14 @@ fn buffered_controlled_candidates_announce_once_including_a_retried_turn() {
             stop,
             ..Locations::default()
         };
-        let outcome = run(
+        let spawns = Spawns::default();
+        let outcome = run_supervised(
             &req,
             RunControls {
                 events: Some(&mut sink),
                 ..RunControls::default()
             },
+            Some(&spawns),
         )
         .unwrap();
         assert!(!outcome.streamed);
@@ -130,9 +146,18 @@ fn buffered_controlled_candidates_announce_once_including_a_retried_turn() {
             if stop { Status::Cancelled } else { Status::Ok }
         );
         if stop {
+            assert_eq!(
+                spawns.0.load(Ordering::SeqCst),
+                0,
+                "Stop prevents the controlled harness from being spawned"
+            );
             assert!(!counter.exists(), "Stop prevents any controlled attempt");
             assert!(!log.exists(), "Stop prevents the app-server launch");
         } else {
+            assert!(
+                spawns.0.load(Ordering::SeqCst) > 0,
+                "the counter sees spawns"
+            );
             assert_eq!(std::fs::read_to_string(counter).unwrap(), "2");
         }
         assert_eq!(

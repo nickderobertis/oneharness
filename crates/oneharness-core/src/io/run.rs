@@ -1380,32 +1380,7 @@ pub fn run_supervised(
             &cancel,
         );
         let results = if cancel.is_cancelled() {
-            plan.into_iter()
-                .map(|entry| match entry {
-                    Plan::Ready(result) => *result,
-                    Plan::Pending {
-                        spec,
-                        bin,
-                        output_format,
-                        job_index,
-                        prompt,
-                        model,
-                    } => {
-                        let job = &jobs[job_index];
-                        executed_result(
-                            spec,
-                            bin,
-                            job.argv.clone(),
-                            output_format,
-                            &runner::unstarted_capture(job),
-                            schema.as_ref(),
-                            0,
-                            prompt,
-                            model,
-                        )
-                    }
-                })
-                .collect()
+            unstarted_results(plan, &jobs, schema.as_ref())
         } else {
             run_http_controlled(
                 shape,
@@ -1445,67 +1420,72 @@ pub fn run_supervised(
             &cancel,
         );
         let mut attempts = 0;
-        let results = loop {
-            attempts += 1;
-            let pooled = chain.bind(
-                shape,
-                specs[0],
-                &selected_ids[0],
-                candidate_model.as_deref(),
-                &prompt,
-                0,
-                &jobs[0],
-            );
-            let input = runner::ControlledInput {
-                handle: chain.handle,
-                prompt: prompt.clone(),
-                app_server: pooled.as_ref(),
-            };
-            let capture =
-                runner::run_job_streaming_supervised(&jobs[0], Some(&input), spawn, |_| {
-                    runner::StreamStep::Continue
-                });
-            let results: Vec<_> = plan
-                .iter()
-                .map(|entry| match entry {
-                    Plan::Ready(result) => (**result).clone(),
-                    Plan::Pending {
-                        spec,
-                        bin,
-                        output_format,
-                        job_index,
-                        prompt,
-                        model,
-                    } => {
-                        let mut result = executed_result(
+        // A sink that stopped at the announcement leaves nothing to bind or spawn.
+        let results = if cancel.is_cancelled() {
+            unstarted_results(plan, &jobs, schema.as_ref())
+        } else {
+            loop {
+                attempts += 1;
+                let pooled = chain.bind(
+                    shape,
+                    specs[0],
+                    &selected_ids[0],
+                    candidate_model.as_deref(),
+                    &prompt,
+                    0,
+                    &jobs[0],
+                );
+                let input = runner::ControlledInput {
+                    handle: chain.handle,
+                    prompt: prompt.clone(),
+                    app_server: pooled.as_ref(),
+                };
+                let capture =
+                    runner::run_job_streaming_supervised(&jobs[0], Some(&input), spawn, |_| {
+                        runner::StreamStep::Continue
+                    });
+                let results: Vec<_> = plan
+                    .iter()
+                    .map(|entry| match entry {
+                        Plan::Ready(result) => (**result).clone(),
+                        Plan::Pending {
                             spec,
-                            bin.clone(),
-                            jobs[*job_index].argv.clone(),
-                            *output_format,
-                            &capture,
-                            schema.as_ref(),
-                            attempts,
-                            prompt.clone(),
-                            model.clone(),
-                        );
-                        // Read off the conversation before the mechanism is
-                        // released: a driven turn's session id and answer are
-                        // knowable only from its protocol frames.
-                        apply_dialogue_signals(&mut result, chain.handle);
-                        result
-                    }
-                })
-                .collect();
-            chain.handle.release();
-            let retry = attempts <= server_overloaded_max_retries
-                && results.iter().any(|result| {
-                    result.failure_kind == Some(signals::FailureKind::ServerOverloaded)
-                        && fallback::RunWork::from_result(result) == fallback::RunWork::None
-                });
-            if !retry {
-                break results;
+                            bin,
+                            output_format,
+                            job_index,
+                            prompt,
+                            model,
+                        } => {
+                            let mut result = executed_result(
+                                spec,
+                                bin.clone(),
+                                jobs[*job_index].argv.clone(),
+                                *output_format,
+                                &capture,
+                                schema.as_ref(),
+                                attempts,
+                                prompt.clone(),
+                                model.clone(),
+                            );
+                            // Read off the conversation before the mechanism is
+                            // released: a driven turn's session id and answer are
+                            // knowable only from its protocol frames.
+                            apply_dialogue_signals(&mut result, chain.handle);
+                            result
+                        }
+                    })
+                    .collect();
+                chain.handle.release();
+                let retry = attempts <= server_overloaded_max_retries
+                    && results.iter().any(|result| {
+                        result.failure_kind == Some(signals::FailureKind::ServerOverloaded)
+                            && fallback::RunWork::from_result(result) == fallback::RunWork::None
+                    });
+                if !retry {
+                    break results;
+                }
+                server_overloaded_backoff(attempts);
             }
-            server_overloaded_backoff(attempts);
         };
         (results, None, begun)
     } else if drive_fallback_chain && !args.print_command {
@@ -2628,6 +2608,37 @@ fn open_history_writer(
 struct BegunHistory {
     run_id: Option<crate::domain::history::HistoryId>,
     persisted_event_indexes: BTreeSet<usize>,
+}
+
+/// The rows of a plan whose candidates were announced but never started,
+/// because the caller's sink stopped the run at its announcement.
+fn unstarted_results(plan: Vec<Plan>, jobs: &[Job], schema: Option<&Schema>) -> Vec<RunResult> {
+    plan.into_iter()
+        .map(|entry| match entry {
+            Plan::Ready(result) => *result,
+            Plan::Pending {
+                spec,
+                bin,
+                output_format,
+                job_index,
+                prompt,
+                model,
+            } => {
+                let job = &jobs[job_index];
+                executed_result(
+                    spec,
+                    bin,
+                    job.argv.clone(),
+                    output_format,
+                    &runner::unstarted_capture(job),
+                    schema,
+                    0,
+                    prompt,
+                    model,
+                )
+            }
+        })
+        .collect()
 }
 
 fn begin_candidate(

@@ -91,10 +91,17 @@ jq -cn '{type: "text", sessionID: "ses_double", part: {type: "text", text: "done
 DOUBLE
 chmod +x "$tmp/bin/opencode" || fail "could not make the opencode double executable"
 
+# The phase under test, read out of e2e-opencode.sh (whose top level drives
+# every phase) once, and refused unless the whole definition came out.
+phase_src="$tmp/session-phase.sh"
+sed -n '/^oh_opencode_session_id_forwarded() {/,/^}/p' "$root/scripts/e2e-opencode.sh" >"$phase_src" ||
+  fail "could not read oh_opencode_session_id_forwarded out of $root/scripts/e2e-opencode.sh; check that it is readable"
+[ "$(tail -n 1 "$phase_src")" = "}" ] ||
+  fail "scripts/e2e-opencode.sh no longer defines oh_opencode_session_id_forwarded() at the start of a line, closed by a lone '}'; update this check's extraction"
+
 record="$tmp/record"
-# One phase as live-opencode runs it: the function definition read out of
-# e2e-opencode.sh (whose top level drives every phase), over e2e-lib.sh's
-# helpers. Captures output in $out, the exit code in $rc, launches in $launches.
+# One phase as live-opencode runs it: the extracted definition over
+# e2e-lib.sh's helpers. Captures output in $out, the exit code in $rc, launches in $launches.
 phase() {
   rm -f "$record" || fail "could not clear the previous phase's record $record; check that $tmp is writable"
   set +e
@@ -103,9 +110,9 @@ phase() {
     env PATH="$tmp/bin:$PATH" TMPDIR="$tmp/sandboxes" ONEHARNESS_BIN="$oh" \
       SESSION_DOUBLE_RECORD="$record" SESSION_DOUBLE_PLAN="$1" \
       bash -c 'set -euo pipefail; source "$1/scripts/e2e-lib.sh"
-        eval "$(sed -n "/^oh_opencode_session_id_forwarded() {/,/^}/p" "$1/scripts/e2e-opencode.sh")"
+        source "$2"
         OH_REPORT="{\"results\":[{\"stdout\":\"EARLIER-PHASE-REPORT\"}]}"
-        oh_opencode_session_id_forwarded' _ "$root" 2>&1
+        oh_opencode_session_id_forwarded' _ "$root" "$phase_src" 2>&1
   )"
   rc=$?
   set -e

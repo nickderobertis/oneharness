@@ -42315,7 +42315,7 @@ fn buffered_and_streamed_runs_deliver_the_whole_prompt_and_system_to_the_harness
     );
     assert!(sync.status.success(), "{sync:?}");
     assert!(fx.dir.join(".qwen").join("settings.json").is_file());
-    let qwen_bin = bin_override("qwen");
+    let qwen_bin = bin_override("qwen"); // llmlint: ignore[e2e_not_mocked] As for claude-code above: the real CLI runs, and only the paid qwen subprocess is replaced at the binary seam, to record what it was handed.
     let prompt = "Reply with exactly this token and nothing else: OH-MARK-2";
     for stream in ["--no-stream", "--stream"] {
         let args = [

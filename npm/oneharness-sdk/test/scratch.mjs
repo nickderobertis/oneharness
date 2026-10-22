@@ -83,6 +83,9 @@ const RENAME_PATIENCE_MS = process.platform === "win32" ? 2000 : 0;
  * @returns {boolean}
  */
 function worthRetrying(error, deadline) {
+	// A rejected fs call carries its errno name in `code`. The cast only names
+	// that field: `?.` reads `undefined` from anything else that was thrown,
+	// which retries like any other refusal, as a narrowing branch would.
 	return (
 		/** @type {{ code?: unknown }} */ (error)?.code !== "ENOENT" &&
 		Date.now() < deadline

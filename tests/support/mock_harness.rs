@@ -2382,8 +2382,16 @@ pub fn run() -> ! {
     }
 
     if let Ok(path) = std::env::var("MOCK_INPUT_FILE") {
+        // A recording that dropped or mangled stdin would pass for a delivery
+        // that never happened, so an unreadable or non-UTF-8 stdin fails loudly.
         let mut stdin = String::new();
-        let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut stdin);
+        if let Err(err) = std::io::Read::read_to_string(&mut std::io::stdin(), &mut stdin) {
+            let _ = writeln!(
+                std::io::stderr(),
+                "mock harness: MOCK_INPUT_FILE could not read stdin: {err}"
+            );
+            std::process::exit(2);
+        }
         let input = serde_json::json!({ "argv": argv, "stdin": stdin });
         let _ = std::fs::write(path, input.to_string());
     }

@@ -563,7 +563,7 @@ mod tests {
     #[test]
     fn a_rename_refused_for_a_moment_succeeds_within_its_patience() {
         // Windows refuses a rename while a sibling's gate holds a handle inside,
-        // and only for as long as it holds it. A blocker removed while the
+        // and only for as long as it holds it. A blocker moved aside while the
         // rename is retrying stands in for that read ending.
         let root = ScratchDir::new(&tag("rename-recovers")).unwrap();
         let (from, to) = blocked_rename(root.path(), "moved");
@@ -571,10 +571,22 @@ mod tests {
             std::fs::rename(&from, &to).is_err(),
             "the blocker must refuse"
         );
+        let aside = root.join("aside");
         let renamed = std::thread::scope(|scope| {
             scope.spawn(|| {
                 std::thread::sleep(Duration::from_millis(100));
-                std::fs::remove_dir_all(&to).unwrap();
+                // The retrying rename's own attempts open `to`, so Windows can
+                // refuse this move for a moment too (`Access is denied`). A
+                // rename moves the whole blocker or nothing, so retrying it can
+                // never take the content that lands at `to` once it is free.
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while let Err(error) = std::fs::rename(&to, &aside) {
+                    assert!(
+                        Instant::now() < deadline,
+                        "the blocker could not be moved aside: {error}"
+                    );
+                    std::thread::sleep(Duration::from_millis(1));
+                }
             });
             rename_within(&from, &to, Duration::from_secs(10))
         });
@@ -584,6 +596,7 @@ mod tests {
             std::fs::read_to_string(to.join("content")).unwrap(),
             "moved"
         );
+        assert!(aside.join("blocker").is_file(), "only the blocker moved");
     }
 
     #[test]

@@ -89,6 +89,8 @@ pub enum SinkStep {
     Stop,
 }
 
+pub use crate::domain::history::RunBegun;
+
 /// Where a streaming run publishes each normalized event **as it occurs**.
 ///
 /// The primitive one layer down ([`crate::io::runner::run_job_streaming`]) has
@@ -96,6 +98,11 @@ pub enum SinkStep {
 /// The `oneharness` binary's sink writes the NDJSON stream protocol to its own
 /// stdout, which is why nothing in this module does.
 pub trait EventSink {
+    /// Locate a history-enabled candidate before its first event.
+    fn run_began(&mut self, _begun: &RunBegun) -> SinkStep {
+        SinkStep::Continue
+    }
+
     /// Deliver one event, attributed to the plan entry that produced it
     /// (`harness_id` is the variant-qualified selector, so a model fan-out's
     /// repeated harness is still attributable). Returning [`SinkStep::Stop`]
@@ -1315,6 +1322,7 @@ pub fn run_supervised(
             multi_model,
             history_writer.as_ref(),
             &unit_identities,
+            &prompts[0],
             controlled.as_ref(),
             &mut event_sink,
             spawn,
@@ -1343,7 +1351,12 @@ pub fn run_supervised(
         // whose binary is missing never reaches the branch that assembles one,
         // and its plan holds a `skipped` row already. Falling through publishes
         // that row — an absent CLI is data in the report, never a panic.
-        let begun = begin_each_plan_entry(history_writer.as_ref(), plan.len(), &unit_identities);
+        let begun = begin_each_plan_entry(
+            history_writer.as_ref(),
+            &plan,
+            &unit_identities,
+            &prompts[0],
+        );
         let results = run_http_controlled(
             shape,
             listener.handle_ref(),
@@ -1372,7 +1385,12 @@ pub fn run_supervised(
             Plan::Pending { model, .. } => model.clone(),
             Plan::Ready(_) => None,
         };
-        let begun = begin_each_plan_entry(history_writer.as_ref(), plan.len(), &unit_identities);
+        let begun = begin_each_plan_entry(
+            history_writer.as_ref(),
+            &plan,
+            &unit_identities,
+            &prompts[0],
+        );
         let mut attempts = 0;
         let results = loop {
             attempts += 1;
@@ -1453,6 +1471,7 @@ pub fn run_supervised(
             multi_model,
             history_writer.as_ref(),
             &unit_identities,
+            &prompts[0],
             spawn,
         );
         (results, Some(fb), begun)
@@ -1497,7 +1516,12 @@ pub fn run_supervised(
         // Nothing falls through on this branch, so every plan entry is begun
         // now, before the first wave spawns. Under `--print-command` the
         // writer is `None`, so nothing is minted.
-        let begun = begin_each_plan_entry(history_writer.as_ref(), plan.len(), &unit_identities);
+        let begun = begin_each_plan_entry(
+            history_writer.as_ref(),
+            &plan,
+            &unit_identities,
+            &prompts[0],
+        );
         let outcomes = if fork_batch {
             let o = run_fork_batch(
                 &mut jobs,
@@ -2559,12 +2583,15 @@ struct BegunHistory {
 /// the plan, so entry `i`'s identity is `unit_ids[i]`.
 fn begin_each_plan_entry(
     writer: Option<&HistoryWriter>,
-    plan_len: usize,
+    plan: &[Plan],
     unit_ids: &[HarnessIdentity],
+    default_prompt: &str,
 ) -> Vec<BegunHistory> {
-    (0..plan_len)
+    (0..plan.len())
         .map(|index| BegunHistory {
-            run_id: writer.map(|writer| writer.begin_harness_run(&unit_ids[index])),
+            run_id: writer.map(|writer| {
+                writer.begin_harness_run(&unit_ids[index], plan[index].prompt(default_prompt))
+            }),
             persisted_event_indexes: BTreeSet::new(),
         })
         .collect()
@@ -2775,6 +2802,7 @@ fn drive_plan_sequentially(
     multi_model: bool,
     history_writer: Option<&HistoryWriter>,
     unit_ids: &[HarnessIdentity],
+    default_prompt: &str,
     controlled: Option<&ControlledRun<'_>>,
     sink: &mut Option<&mut dyn EventSink>,
     spawn: SpawnControls<'_>,
@@ -2790,7 +2818,17 @@ fn drive_plan_sequentially(
     for (index, entry) in plan.into_iter().enumerate() {
         // Begun as the chain reaches it — an already-resolved row too, since
         // it closes as its own record (see `begin_each_plan_entry`).
-        let run_id = history_writer.map(|writer| writer.begin_harness_run(&unit_ids[index]));
+        let run_id = history_writer
+            .map(|writer| writer.begin_harness_run(&unit_ids[index], entry.prompt(default_prompt)));
+        let mut stop_at_opening = false;
+        if let Some((writer, run_id)) = history_writer.zip(run_id) {
+            if sink.as_mut().is_some_and(|sink| {
+                sink.run_began(&writer.run_begun(&unit_ids[index], run_id)) == SinkStep::Stop
+            }) {
+                stop_at_opening = true;
+                spawn.cancel.cancel();
+            }
+        }
         let streamed = match entry {
             Plan::Ready(result) => StreamedHarness {
                 result: *result,
@@ -2813,26 +2851,31 @@ fn drive_plan_sequentially(
                     model,
                     harness_id: unit_ids[index].as_str(),
                 };
-                let mut run_candidate = || match controlled {
-                    // Every candidate, not just one chosen up front: the channel
-                    // binds to whichever is serving and releases when its turn
-                    // ends, so a chain that falls through carries control with
-                    // it instead of leaving the rest of the run unaddressable.
-                    Some(chain) => drive_controlled_candidate(
-                        unit.clone(),
-                        chain,
-                        index,
-                        history_writer.zip(run_id),
-                        sink,
-                        spawn,
-                    ),
-                    None => stream_one_harness(
-                        unit.clone(),
-                        history_writer.zip(run_id),
-                        None,
-                        sink,
-                        spawn,
-                    ),
+                let mut run_candidate = || {
+                    if crate::io::cancel::cancellation_requested(spawn.cancel) {
+                        return cancelled_streamed_harness(unit.clone());
+                    }
+                    match controlled {
+                        // Every candidate, not just one chosen up front: the channel
+                        // binds to whichever is serving and releases when its turn
+                        // ends, so a chain that falls through carries control with
+                        // it instead of leaving the rest of the run unaddressable.
+                        Some(chain) => drive_controlled_candidate(
+                            unit.clone(),
+                            chain,
+                            index,
+                            history_writer.zip(run_id),
+                            sink,
+                            spawn,
+                        ),
+                        None => stream_one_harness(
+                            unit.clone(),
+                            history_writer.zip(run_id),
+                            None,
+                            sink,
+                            spawn,
+                        ),
+                    }
                 };
                 let mut streamed = run_candidate();
                 for retry in 0..server_overloaded_max_retries {
@@ -2858,7 +2901,7 @@ fn drive_plan_sequentially(
             run_id,
             persisted_event_indexes,
         });
-        if !fallback_mode || !keep_going {
+        if stop_at_opening || !fallback_mode || !keep_going {
             break;
         }
     }
@@ -2965,6 +3008,24 @@ struct StreamedUnit<'a> {
     /// The variant-qualified selector this entry was planned from — the axis a
     /// streamed event is attributed to, since a model fan-out repeats a harness.
     harness_id: &'a str,
+}
+
+fn cancelled_streamed_harness(unit: StreamedUnit<'_>) -> StreamedHarness {
+    let capture = runner::unstarted_capture(unit.job);
+    StreamedHarness {
+        result: executed_result(
+            unit.spec,
+            unit.bin.to_string(),
+            unit.job.argv.clone(),
+            unit.output_format,
+            &capture,
+            None,
+            0,
+            unit.prompt,
+            unit.model,
+        ),
+        persisted_event_indexes: BTreeSet::new(),
+    }
 }
 
 /// Run one harness with streaming: feed each stdout line through the event
@@ -4022,6 +4083,7 @@ fn run_fallback(
     multi_model: bool,
     history_writer: Option<&HistoryWriter>,
     unit_ids: &[HarnessIdentity],
+    default_prompt: &str,
     spawn: SpawnControls<'_>,
 ) -> (Vec<RunResult>, FallbackReport, Vec<BegunHistory>) {
     let mut results: Vec<RunResult> = Vec::new();
@@ -4034,7 +4096,8 @@ fn run_fallback(
     for (index, entry) in plan.into_iter().enumerate() {
         // Begun as the chain reaches it — a candidate after the one that ran is
         // never begun, so it gets no id and no pointer line.
-        let run_id = history_writer.map(|writer| writer.begin_harness_run(&unit_ids[index]));
+        let run_id = history_writer
+            .map(|writer| writer.begin_harness_run(&unit_ids[index], entry.prompt(default_prompt)));
         let result = match entry {
             Plan::Ready(result) => *result,
             Plan::Pending {
@@ -4173,6 +4236,15 @@ enum Plan {
         /// harness used its own default.
         model: Option<String>,
     },
+}
+
+impl Plan {
+    fn prompt<'a>(&'a self, default: &'a str) -> &'a str {
+        match self {
+            Self::Ready(result) => result.prompt.as_deref().unwrap_or(default),
+            Self::Pending { prompt, .. } => prompt.as_deref().unwrap_or(default),
+        }
+    }
 }
 
 fn planned_result(

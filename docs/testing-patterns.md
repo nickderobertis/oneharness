@@ -41,6 +41,7 @@ const report = await new OneHarness().runMock(
 | `MOCK_STDOUT` | Exact stdout bytes; defaults to `{"result":"mock ok"}`. |
 | `MOCK_STDERR` | Exact stderr bytes. |
 | `MOCK_EXIT` | Exit code; defaults to `0`. |
+| `MOCK_OUTPUT_GATE` | Wait before output until this path exists, failing after 30 seconds. |
 | `MOCK_SLEEP_MS` | Delay before output/exit, in milliseconds. |
 | `MOCK_ARGV_FILE` | Write argv, one argument per line, to this path. |
 | `MOCK_ECHO_PWD` | Emit `PWD=<inherited PWD>` and exit. |

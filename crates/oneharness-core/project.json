@@ -6,7 +6,7 @@
     "type:lib",
     "lang:rust"
   ],
-  "//": "The engine. Its unit tests also pin the README, two docs, two live scripts and the CLI's clap source, so those are inputs of its `test` \u2014 which is why a change to any of them reaches the whole graph.",
+  "//": "The engine. Its unit tests also pin the README, three docs, two live scripts and the CLI's clap source, so those are inputs of its `test` \u2014 which is why a change to any of them reaches the whole graph.",
   "implicitDependencies": [
     "harness-captures"
   ],
@@ -73,6 +73,7 @@
         "^default",
         "rustTestRunner",
         "{workspaceRoot}/README.md",
+        "{workspaceRoot}/docs/history-index.md",
         "{workspaceRoot}/docs/harness-usage.md",
         "{workspaceRoot}/docs/sdk-parity.md",
         "{workspaceRoot}/scripts/e2e-codex.sh",

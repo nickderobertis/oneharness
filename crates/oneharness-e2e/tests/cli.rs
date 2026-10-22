@@ -5955,13 +5955,14 @@ fn codex_collaboration_and_web_search_events_flow_through_stream_and_history() {
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).unwrap())
         .collect::<Vec<_>>();
-    assert_eq!(raw_lines.len(), 4);
-    for (index, line) in raw_lines.iter().take(3).enumerate() {
+    assert_eq!(raw_lines.len(), 5);
+    assert_eq!(raw_lines[0]["type"], "run-started");
+    for (index, line) in raw_lines.iter().skip(1).take(3).enumerate() {
         assert_eq!(line["type"], "event");
         assert_eq!(line["event"]["index"], index);
     }
-    assert_eq!(raw_lines[3]["type"], "run");
-    assert!(raw_lines[3].get("events").is_none());
+    assert_eq!(raw_lines[4]["type"], "run");
+    assert!(raw_lines[4].get("events").is_none());
     let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
     assert_eq!(record["events"][0]["name"], "spawn_agent");
     assert_eq!(record["events"][1]["name"], "web_search");
@@ -6253,21 +6254,21 @@ fn stream_buffers_partial_provider_records_until_newline() {
             assert_eq!(event.name.as_deref(), Some("bash"));
             assert_eq!(event.input.as_ref().unwrap()["command"], "pwd");
         }
-        RunStreamEnvelope::Result { .. } => panic!("partial JSON emitted a result early"),
+        _ => panic!("partial JSON emitted an unexpected envelope early"),
     }
     match &envelopes[1] {
         RunStreamEnvelope::Event { event } => {
             assert_eq!(event.kind, "message");
             assert_eq!(event.output.as_deref(), Some("done"));
         }
-        RunStreamEnvelope::Result { .. } => panic!("partial JSON emitted a result early"),
+        _ => panic!("partial JSON emitted an unexpected envelope early"),
     }
     match &envelopes[2] {
         RunStreamEnvelope::Result { report } => {
             assert_eq!(report.results[0].text.as_deref(), Some("done"));
             assert_eq!(report.results[0].events.as_ref().unwrap().len(), 2);
         }
-        RunStreamEnvelope::Event { .. } => panic!("missing terminal report"),
+        _ => panic!("missing terminal report"),
     }
 }
 
@@ -6314,17 +6315,17 @@ bin = "{bin}"
     assert_eq!(envelopes.len(), 3, "lines: {text}");
     match &envelopes[0] {
         RunStreamEnvelope::Event { event } => assert_eq!(event.name.as_deref(), Some("bash")),
-        RunStreamEnvelope::Result { .. } => panic!("config `stream` did not publish events"),
+        _ => panic!("config `stream` did not publish events"),
     }
     match &envelopes[1] {
         RunStreamEnvelope::Event { event } => assert_eq!(event.kind, "message"),
-        RunStreamEnvelope::Result { .. } => panic!("config `stream` did not publish events"),
+        _ => panic!("config `stream` did not publish events"),
     }
     match &envelopes[2] {
         RunStreamEnvelope::Result { report } => {
             assert_eq!(report.results[0].text.as_deref(), Some("done"));
         }
-        RunStreamEnvelope::Event { .. } => panic!("missing terminal report"),
+        _ => panic!("missing terminal report"),
     }
 
     // The explicit flag wins over the config value.
@@ -8341,7 +8342,7 @@ fn a_host_signal_cancels_a_streaming_run_and_still_terminates_the_stream() {
         RunStreamEnvelope::Result { report } => {
             assert_eq!(report.results[0].status, Status::Cancelled);
         }
-        RunStreamEnvelope::Event { .. } => panic!("the stream never reached its terminal result"),
+        _ => panic!("the stream never reached its terminal result"),
     }
 
     assert_native_descendant_stopped(&ticks);
@@ -9567,7 +9568,7 @@ CLAUDE_CONFIG_DIR = "OH_TEST_EMPTY_HOME"
             assert_eq!(report.results[0].status, Status::Skipped);
             assert_eq!(report.results[0].failure_kind, Some(FailureKind::Auth));
         }
-        RunStreamEnvelope::Event { .. } => panic!("missing terminal report"),
+        _ => panic!("missing terminal report"),
     }
 
     // Outside a chain there is nothing to fall through to, so the run fails —
@@ -15687,9 +15688,14 @@ fn history_rejects_unrecognized_or_incomplete_traces_without_fabricating_v03() {
         assert!(output.status.success(), "{name}");
         let report = json_stdout(&output);
         let path = Path::new(report["history_file"].as_str().unwrap());
+        let text = std::fs::read_to_string(path).unwrap();
+        let lines: Vec<HistoryLine> = text
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
         assert!(
-            !path.exists(),
-            "{name} must not write an invalid or fabricated v1.0 run"
+            matches!(lines.as_slice(), [HistoryLine::RunStarted(_)]),
+            "{name} preserves the prompt without fabricating a closing run"
         );
         assert!(
             String::from_utf8_lossy(&output.stderr).contains("lacks complete v1.0 telemetry"),
@@ -15903,8 +15909,13 @@ fn incomplete_history_telemetry_warns_but_preserves_a_successful_run() {
     // The harness's successful result is returned intact.
     assert_eq!(report["results"][0]["status"], "ok");
     assert_eq!(report["results"][0]["text"], "the answer is 42");
-    // No partial/corrupt history record was written.
-    assert!(!Path::new(report["history_file"].as_str().unwrap()).exists());
+    // The prompt survives even though incomplete telemetry forbids a closing record.
+    let persisted = std::fs::read_to_string(report["history_file"].as_str().unwrap()).unwrap();
+    let lines: Vec<HistoryLine> = persisted
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert!(matches!(lines.as_slice(), [HistoryLine::RunStarted(_)]));
 }
 
 /// A run that fails before the provider produces an answer has no measured
@@ -16860,7 +16871,9 @@ fn history_validates_codex_terminal_tool_states_without_guessing() {
         );
         assert!(output.status.success(), "{tag}");
         let report = json_stdout(&output);
-        assert!(!Path::new(report["history_file"].as_str().unwrap()).exists(), "{tag}");
+        let persisted = std::fs::read_to_string(report["history_file"].as_str().unwrap()).unwrap();
+        let lines: Vec<HistoryLine> = persisted.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+        assert!(matches!(lines.as_slice(), [HistoryLine::RunStarted(_)]), "{tag}");
         assert!(
             String::from_utf8_lossy(&output.stderr).contains("lacks complete v1.0 telemetry"),
             "{tag}: {}",
@@ -17683,8 +17696,9 @@ fn history_cli_reads_v1_0_records_without_variant_identity_fields() {
             )
         })
         .lines()
-        .map(|line| {
-            let mut value: Value = serde_json::from_str(line).unwrap();
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .filter(|value| value["type"] != "run-started")
+        .map(|mut value| {
             value["schema_version"] = Value::String("1.0".to_string());
             value.as_object_mut().unwrap().remove("variant");
             value.as_object_mut().unwrap().remove("harness_id");
@@ -18027,9 +18041,10 @@ fn streamed_history_falls_back_to_events_only_extractable_at_completion() {
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
-    assert_eq!(lines.len(), 2);
-    assert!(matches!(lines[0], HistoryLine::Event(_)));
-    assert!(matches!(lines[1], HistoryLine::Run(_)));
+    assert_eq!(lines.len(), 3);
+    assert!(matches!(lines[0], HistoryLine::RunStarted(_)));
+    assert!(matches!(lines[1], HistoryLine::Event(_)));
+    assert!(matches!(lines[2], HistoryLine::Run(_)));
     let record = first_history_run(Path::new(history_file));
     assert_eq!(record["events"][0]["name"], "Bash");
     let _ = std::fs::remove_dir_all(&dir);
@@ -18089,7 +18104,14 @@ fn interrupted_stream_preserves_events_without_a_closing_run() {
         .spawn()
         .expect("spawn streaming history run");
     let mut first = String::new();
-    BufReader::new(child.stdout.take().unwrap())
+    let mut reader = BufReader::new(child.stdout.take().unwrap());
+    reader.read_line(&mut first).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&first).unwrap()["type"],
+        "run-started"
+    );
+    first.clear();
+    reader
         .read_line(&mut first)
         .expect("read first streamed event");
     assert_eq!(
@@ -18118,8 +18140,10 @@ fn interrupted_stream_preserves_events_without_a_closing_run() {
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     assert!(!persisted.is_empty());
+    assert!(matches!(persisted[0], HistoryLine::RunStarted(_)));
     assert!(persisted
         .iter()
+        .skip(1)
         .all(|line| matches!(line, HistoryLine::Event(_))));
 
     let shown = run(
@@ -18141,7 +18165,7 @@ fn interrupted_stream_preserves_events_without_a_closing_run() {
     assert_eq!(displayed[0]["harness"], "codex");
     assert_eq!(
         displayed[0]["events"].as_array().unwrap().len(),
-        persisted.len()
+        persisted.len() - 1
     );
 }
 
@@ -18429,9 +18453,8 @@ fn history_watch_streams_stdout_observed_event_at_the_current_version() {
     reader.read_line(&mut line).unwrap();
     let envelope: Value = serde_json::from_str(&line).unwrap();
     assert_eq!(envelope["type"], "event");
-    // Event lines are written by the current writer and read live, so they
-    // always declare the current version (unlike a run record, whose version is
-    // the oldest reader that can understand the fields it carries).
+    // Opening lines advance to 1.11 without changing existing event lines:
+    // a 1.10 reader can still read everything except the new opening line.
     assert_eq!(envelope["line"]["schema_version"], "1.10");
     assert_eq!(
         envelope["line"]["event"]["timing_source"],
@@ -20045,11 +20068,18 @@ fn an_http_controlled_turn_writes_its_pointer_line() {
     let pointer_file = store.join("pointers.jsonl");
     let pointer_arg = pointer_file.display().to_string();
     let pool = store.join("pool");
-    let output = run(
-        &[
+    let prompt = "complete HTTP prompt — ".repeat(400);
+    let mut child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_HTTP_CONTROL_LOG", store.join("server.log"))
+        .env("MOCK_HTTP_CONTROL_FAULT", "slow-turn")
+        .env("XDG_STATE_HOME", &pool)
+        .args([
             "run",
             "--harness",
             "opencode",
+            "--run-mode",
+            "parallel",
             "--control",
             "--session",
             "pointed-http",
@@ -20060,7 +20090,7 @@ fn an_http_controlled_turn_writes_its_pointer_line() {
             "--mode",
             "bypass",
             "--prompt",
-            "keep working",
+            &prompt,
             "--bin",
             &bin_override("opencode"),
             "--history",
@@ -20071,17 +20101,27 @@ fn an_http_controlled_turn_writes_its_pointer_line() {
             "--timeout",
             "30",
             "--compact",
-        ],
-        &[
-            (
-                "MOCK_HTTP_CONTROL_LOG",
-                store.join("server.log").display().to_string().as_str(),
-            ),
-            // A turn the server finishes on its own, so no interrupt is needed.
-            ("MOCK_HTTP_CONTROL_FAULT", "slow-turn"),
-            ("XDG_STATE_HOME", pool.display().to_string().as_str()),
-        ],
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    wait_until("the HTTP candidate's opening pointer", || {
+        read_pointers(&pointer_file).is_ok_and(|read| !read.pointers.is_empty())
+    });
+    let pointers = read_pointers(&pointer_file).unwrap();
+    let pointer = serde_json::to_value(&pointers.pointers[0]).unwrap();
+    let file = Path::new(pointer["history_file"].as_str().unwrap());
+    let live = std::fs::read_to_string(file).unwrap();
+    let opening: Value = serde_json::from_str(live.trim()).unwrap();
+    assert_eq!(opening["type"], "run-started");
+    assert_eq!(opening["prompt"], prompt);
+    assert_eq!(opening["history_id"], pointer["history_id"]);
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "HTTP turn still running"
     );
+    let output = child.wait_with_output().unwrap();
     let report = json_stdout(&output);
     wait_for_pooled_server_to_exit(&pool);
     assert!(output.status.success(), "{output:?}");
@@ -23250,6 +23290,8 @@ fn controlled_codex_server_overloaded_recovers_under_the_parallel_opt_in() {
     let counter = temp_counter("server-overloaded-controlled-parallel");
     let store = control_store_dir("overload-retry-parallel");
     let log = store.join("app-server.log");
+    let history = hist_dir("controlled-overload-opening");
+    let prompt = "complete retry prompt — ".repeat(400);
     let project = format!(
         r#"
         harnesses = ["codex"]
@@ -23266,7 +23308,7 @@ fn controlled_codex_server_overloaded_recovers_under_the_parallel_opt_in() {
         &[
             "run",
             "--prompt",
-            "hi",
+            &prompt,
             "--cwd",
             &fx.cwd(),
             "--control",
@@ -23274,6 +23316,9 @@ fn controlled_codex_server_overloaded_recovers_under_the_parallel_opt_in() {
             "overload-recovery-parallel",
             "--session-dir",
             &store.display().to_string(),
+            "--history",
+            "--history-dir",
+            &history.display().to_string(),
             "--compact",
         ],
         &[],
@@ -23287,6 +23332,25 @@ fn controlled_codex_server_overloaded_recovers_under_the_parallel_opt_in() {
     assert!(value["results"][0]["failure_kind"].is_null());
     assert_eq!(std::fs::read_to_string(counter).unwrap(), "2");
     assert_eq!(app_server_frames(&log, "turn/start").len(), 2);
+    let lines: Vec<Value> = std::fs::read_to_string(value["history_file"].as_str().unwrap())
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let openings: Vec<_> = lines
+        .iter()
+        .filter(|line| line["type"] == "run-started")
+        .collect();
+    assert_eq!(
+        openings.len(),
+        1,
+        "overload retries retain one opening: {lines:?}"
+    );
+    assert_eq!(openings[0]["prompt"], prompt);
+    assert_eq!(lines[0], *openings[0]);
+    let runs: Vec<_> = lines.iter().filter(|line| line["type"] == "run").collect();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0]["history_id"], openings[0]["history_id"]);
 }
 
 #[cfg(unix)]
@@ -24026,8 +24090,10 @@ fn stream_under_fallback_publishes_only_the_candidate_that_runs() {
         String::from_utf8_lossy(&output.stderr)
     );
     let envelopes = stream_envelopes(&output);
-    // Two event lines (both the winner's) and the terminal report — the
-    // fell-through candidate contributed no line a consumer could act on.
+    assert_eq!(envelopes[0]["type"], "run-started");
+    assert_eq!(envelopes[1]["type"], "run-started");
+    let envelopes = &envelopes[2..];
+    // After both openings, only the winner contributes events.
     assert_eq!(envelopes.len(), 3, "{envelopes:#?}");
     assert_eq!(envelopes[0]["type"], "event");
     assert_eq!(envelopes[0]["event"]["kind"], "tool_call");
@@ -24064,7 +24130,7 @@ fn stream_under_fallback_publishes_only_the_candidate_that_runs() {
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
-    let runs: Vec<&Value> = lines.iter().filter(|l| l["type"] != "event").collect();
+    let runs: Vec<&Value> = lines.iter().filter(|l| l["type"] == "run").collect();
     assert_eq!(runs.len(), 2, "both attempts recorded: {lines:#?}");
     let events: Vec<&Value> = lines.iter().filter(|l| l["type"] == "event").collect();
     assert_eq!(events.len(), 2);
@@ -24120,6 +24186,9 @@ fn stream_under_fallback_publishes_only_the_model_that_runs() {
         String::from_utf8_lossy(&output.stderr)
     );
     let envelopes = stream_envelopes(&output);
+    assert_eq!(envelopes[0]["type"], "run-started");
+    assert_eq!(envelopes[1]["type"], "run-started");
+    let envelopes = &envelopes[2..];
     // Two event lines (both `sonnet`'s) and the terminal report.
     assert_eq!(envelopes.len(), 3, "{envelopes:#?}");
     assert_eq!(envelopes[0]["type"], "event");
@@ -24153,7 +24222,7 @@ fn stream_under_fallback_publishes_only_the_model_that_runs() {
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
-    let runs: Vec<&Value> = lines.iter().filter(|l| l["type"] != "event").collect();
+    let runs: Vec<&Value> = lines.iter().filter(|l| l["type"] == "run").collect();
     assert_eq!(runs.len(), 2, "both models recorded: {lines:#?}");
     let events: Vec<&Value> = lines.iter().filter(|l| l["type"] == "event").collect();
     assert_eq!(events.len(), 2);
@@ -37411,6 +37480,7 @@ fn every_route_to_a_stream_prints_by_format_alone() {
                     // The closing report carries per-run clock readings, so it
                     // is compared by the events it reports, not byte for byte.
                     match envelope {
+                        RunStreamEnvelope::RunStarted(_) => panic!("history is off"),
                         RunStreamEnvelope::Event { event } => {
                             serde_json::json!({"type": "event", "event": event})
                         }
@@ -37536,7 +37606,7 @@ fn a_streamed_turn_publishes_each_call_once_and_one_event_per_finished_item() {
             .into_iter()
             .map(|envelope| match envelope {
                 RunStreamEnvelope::Event { event } => event,
-                RunStreamEnvelope::Result { .. } => unreachable!(),
+                _ => unreachable!(),
             })
             .collect();
         let kinds: Vec<&str> = streamed.iter().map(|event| event.kind.as_str()).collect();
@@ -38006,8 +38076,8 @@ fn history_clear_and_migrate_text_views_say_what_was_or_would_be_done() {
     assert_eq!(
         text,
         format!(
-            // Two current lines: the run's `message` event, then its run line.
-            "migrated 1 session file\n  {migrated}: 0 records migrated, 2 already current, 0 skipped\n"
+            // Opening, message event, then closing run line.
+            "migrated 1 session file\n  {migrated}: 0 records migrated, 3 already current, 0 skipped\n"
         )
     );
 
@@ -41822,3 +41892,272 @@ fn a_version_probe_that_fails_leaves_the_launch_without_a_shared_catalog() {
     assert_eq!(launch["fetch"], "ok", "Codex's own fetch: {launch}");
 }
 // llmlint: ignore-end[e2e_not_mocked]
+
+#[test]
+fn run_started_history_is_flushed_while_a_silent_harness_is_held() {
+    let store = ScratchDir::new("run-started-live").unwrap();
+    let pointer = store.join("pointers.jsonl");
+    let log = store.join("mock.log");
+    let gate = store.join("release");
+    let prompt = "complete prompt — ".repeat(600);
+    let mut child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("ONEHARNESS_BIN_CLAUDE_CODE", mock_bin()) // llmlint: ignore[e2e_not_mocked] The task explicitly requires the real oneharness CLI with the paid harness doubled at its existing binary seam; the layer under test is history and streaming, and a paid model cannot deterministically hold or fail a candidate.
+        .env("MOCK_LOG_FILE", &log)
+        .env("MOCK_OUTPUT_GATE", &gate)
+        .env("MOCK_STDOUT", r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"pwd"}}]}}"#)
+        .args(["run", "--harness", "claude-code", "--prompt", &prompt,
+            "--events", "--history", "--history-dir", &store.join("history").display().to_string(),
+            "--history-pointer-file", &pointer.display().to_string(), "--format", "json", "--timeout", "10"])
+        .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !std::fs::read_to_string(&log).is_ok_and(|text| text.contains("S\n")) {
+        assert!(std::time::Instant::now() < deadline, "mock never began");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let pointers = read_pointers(&pointer).unwrap();
+    let pointed = serde_json::to_value(&pointers.pointers[0]).unwrap();
+    let path = Path::new(pointed["history_file"].as_str().unwrap());
+    let live = std::fs::read_to_string(path).unwrap();
+    let opening: Value =
+        serde_json::from_str(live.trim()).expect("only the opening line exists before output");
+    assert_eq!(opening["type"], "run-started");
+    assert_eq!(opening["schema_version"], "1.11");
+    assert_eq!(opening["prompt"], prompt);
+    assert_eq!(opening["history_id"], pointed["history_id"]);
+    assert!(child.try_wait().unwrap().is_none(), "harness still held");
+    std::fs::write(&gate, "release").unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let lines: Vec<Value> = std::fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert!(lines
+        .iter()
+        .any(|line| line["type"] == "event" && line["run_id"] == opening["history_id"]));
+    assert!(lines
+        .iter()
+        .any(|line| line["type"] == "run" && line["history_id"] == opening["history_id"]));
+}
+
+#[test]
+fn run_started_stream_addresses_each_fallback_candidate_and_is_absent_without_history() {
+    for history in [true, false] {
+        let store = ScratchDir::new(if history {
+            "run-started-chain-on"
+        } else {
+            "run-started-chain-off"
+        })
+        .unwrap();
+        let mut args = vec![
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "whole prompt",
+            "--stream",
+            "--model",
+            "bad-model",
+            "--model",
+            "good-model",
+        ];
+        let dir = store.display().to_string();
+        if history {
+            args.extend(["--history", "--history-dir", &dir]);
+        }
+        let output = run(
+            &args,
+            &[
+                (
+                    "ONEHARNESS_BIN_CLAUDE_CODE",
+                    &mock_bin().display().to_string(), // llmlint: ignore[e2e_not_mocked] The task explicitly requires the real oneharness CLI with the paid harness doubled at its existing binary seam; the layer under test is history and streaming, and a paid model cannot deterministically hold or fail a candidate.
+                ),
+                ("MOCK_FAIL_IF_MODEL", "bad-model"),
+                (
+                    "MOCK_STDOUT",
+                    r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"pwd"}}]}}"#,
+                ),
+            ],
+        );
+        assert!(output.status.success(), "{output:?}");
+        let lines: Vec<Value> = String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .map(|line| {
+                let _: RunStreamEnvelope = serde_json::from_str(line).unwrap();
+                serde_json::from_str(line).unwrap()
+            })
+            .collect();
+        let starts: Vec<_> = lines
+            .iter()
+            .filter(|line| line["type"] == "run-started")
+            .collect();
+        assert_eq!(starts.len(), if history { 2 } else { 0 });
+        assert_eq!(
+            lines.iter().filter(|line| line["type"] == "event").count(),
+            1
+        );
+        if history {
+            assert_ne!(starts[0]["history_id"], starts[1]["history_id"]);
+            assert_eq!(lines[0]["type"], "run-started");
+            assert_eq!(lines[1]["type"], "run-started");
+            assert_eq!(lines[2]["type"], "event");
+            let report = &lines.last().unwrap()["report"];
+            let file = Path::new(report["history_file"].as_str().unwrap());
+            let persisted: Vec<Value> = std::fs::read_to_string(file)
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            let begun: Vec<_> = persisted
+                .iter()
+                .filter(|line| line["type"] == "run-started")
+                .collect();
+            assert_eq!(begun.len(), 2);
+            for (notification, opening) in starts.iter().zip(begun) {
+                assert_eq!(notification["history_id"], opening["history_id"]);
+                assert_eq!(notification["harness_id"], opening["harness_id"]);
+                assert_eq!(opening["prompt"], "whole prompt");
+                let located = Path::new(notification["history_dir"].as_str().unwrap())
+                    .join(notification["history_project"].as_str().unwrap())
+                    .join(format!(
+                        "{}.jsonl",
+                        notification["history_session"].as_str().unwrap()
+                    ));
+                assert_eq!(located, file);
+                assert!(located.is_absolute());
+                assert!(persisted.iter().any(
+                    |line| line["type"] == "run" && line["history_id"] == opening["history_id"]
+                ));
+            }
+        }
+    }
+}
+
+#[test]
+fn opening_write_failure_warns_and_keeps_the_cli_run_and_notifications() {
+    let store = ScratchDir::new("opening-write-failure").unwrap();
+    let gate = store.join("release");
+    let attempts = store.join("attempts");
+    let mut child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("ONEHARNESS_BIN_CLAUDE_CODE", mock_bin()) // llmlint: ignore[e2e_not_mocked] The task explicitly requires the real oneharness CLI with the paid harness doubled at its existing binary seam; the layer under test is history and streaming, and a paid model cannot deterministically hold or fail a candidate.
+        .env("MOCK_OUTPUT_GATE", &gate)
+        .env("MOCK_ATTEMPT_FILE", &attempts)
+        .env("MOCK_EXIT_1", "1")
+        .env("MOCK_STDERR", "error: exceeded quota")
+        .env("MOCK_STDOUT_1", "")
+        .env("MOCK_STDOUT_2", r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"pwd"}}]}}"#)
+        .args(["run", "--harness", "claude-code", "--prompt", "keep running", "--model", "first", "--model", "second", "--stream", "--history", "--history-dir", &store.join("history").display().to_string(), "--format", "json", "--timeout", "10"])
+        .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut reader = std::io::BufReader::new(child.stdout.take().unwrap());
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    let first: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(first["type"], "run-started");
+    let path = Path::new(first["history_dir"].as_str().unwrap())
+        .join(first["history_project"].as_str().unwrap())
+        .join(format!(
+            "{}.jsonl",
+            first["history_session"].as_str().unwrap()
+        ));
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    std::fs::write(gate, "release").unwrap();
+    let rest: Vec<Value> = reader
+        .lines()
+        .map(|line| serde_json::from_str(&line.unwrap()).unwrap())
+        .collect();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("could not append opening history line")
+    );
+    assert_eq!(
+        rest.iter()
+            .filter(|line| line["type"] == "run-started")
+            .count(),
+        1
+    );
+    assert!(rest.iter().any(|line| line["type"] == "event"));
+    assert_eq!(rest.last().unwrap()["report"]["results"][1]["status"], "ok");
+}
+
+#[test]
+fn buffered_openings_keep_each_batch_prompt_and_skip_unvisited_fallback_candidates() {
+    let store = ScratchDir::new("opening-buffered-prompts").unwrap();
+    let first = "first prompt ".repeat(400);
+    let second = "second prompt ".repeat(400);
+    let bin = bin_override("claude-code"); // llmlint: ignore[e2e_not_mocked] The task explicitly requires the real oneharness CLI with the paid harness doubled at its existing binary seam; the layer under test is history and streaming, and a paid model cannot deterministically hold or fail a candidate.
+    let dir = store.display().to_string();
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--run-mode",
+            "parallel",
+            "--prompt",
+            &first,
+            "--prompt",
+            &second,
+            "--bin",
+            &bin,
+            "--history",
+            "--history-dir",
+            &dir,
+        ],
+        &[],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let report = json_stdout(&output);
+    let lines: Vec<Value> = std::fs::read_to_string(report["history_file"].as_str().unwrap())
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let starts: Vec<_> = lines
+        .iter()
+        .filter(|line| line["type"] == "run-started")
+        .collect();
+    assert_eq!(starts.len(), 2);
+    assert_eq!(starts[0]["prompt"], first);
+    assert_eq!(starts[1]["prompt"], second);
+    for start in starts {
+        assert!(lines.iter().any(|line| line["type"] == "run"
+            && line["history_id"] == start["history_id"]
+            && line["prompt"] == start["prompt"]));
+    }
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--harness",
+            "codex",
+            "--prompt",
+            "first wins",
+            "--bin",
+            &bin,
+            "--bin",
+            &bin_override("codex"), // llmlint: ignore[e2e_not_mocked] The task explicitly requires the real oneharness CLI with the paid harness doubled at its existing binary seam; the layer under test is history and streaming, and a paid model cannot deterministically hold or fail a candidate.
+            "--history",
+            "--history-dir",
+            &dir,
+        ],
+        &[],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let report = json_stdout(&output);
+    assert_eq!(report["results"].as_array().unwrap().len(), 1);
+    let starts: Vec<Value> = std::fs::read_to_string(report["history_file"].as_str().unwrap())
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .filter(|line| line["type"] == "run-started")
+        .collect();
+    assert_eq!(starts.len(), 1);
+    assert_eq!(starts[0]["harness_id"], "claude-code");
+}

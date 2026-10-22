@@ -59,16 +59,37 @@ impl ScratchDir {
     ///
     /// As [`ScratchDir::new`].
     pub fn under(root: &Path, tag: &str) -> io::Result<ScratchDir> {
-        let path = root.join(checked_name(tag)?);
-        let _ = std::fs::remove_dir_all(&path);
-        std::fs::create_dir_all(&path)?;
-        // Held before it is marked, so a marker that cannot be written still
-        // gives the directory back.
-        let scratch = ScratchDir { path };
-        if let Some(token) = std::env::var_os(RUN_ENV).filter(|token| !token.is_empty()) {
-            std::fs::write(scratch.join(RUN_MARKER), token.as_encoded_bytes())?;
+        let token = std::env::var_os(RUN_ENV).filter(|token| !token.is_empty());
+        ScratchDir::make(root, tag, token.as_deref())
+    }
+
+    /// [`ScratchDir::under`], with the leak gate's run token passed rather than
+    /// read, so a test can name a run without setting the process environment
+    /// every other test reads.
+    ///
+    /// A marked directory is made under a name the gate does not sweep, marked
+    /// there, and renamed into place. A sibling run's gate sweeping the same temp
+    /// dir therefore never sees it unmarked. An unmarked directory would fall
+    /// back to its maker's environment, which Windows cannot read, so the gate
+    /// would count it as that run's own leak.
+    fn make(root: &Path, tag: &str, token: Option<&std::ffi::OsStr>) -> io::Result<ScratchDir> {
+        let name = checked_name(tag)?;
+        let path = root.join(&name);
+        retire(&path);
+        let Some(token) = token else {
+            std::fs::create_dir_all(&path)?;
+            return Ok(ScratchDir { path });
+        };
+        let staged = root.join(format!(".{name}.new"));
+        let _ = std::fs::remove_dir_all(&staged);
+        std::fs::create_dir_all(&staged)?;
+        let placed = std::fs::write(staged.join(RUN_MARKER), token.as_encoded_bytes())
+            .and_then(|()| std::fs::rename(&staged, &path));
+        if let Err(error) = placed {
+            let _ = std::fs::remove_dir_all(&staged);
+            return Err(error);
         }
-        Ok(scratch)
+        Ok(ScratchDir { path })
     }
 
     /// The directory name `tag` resolves to: [`PREFIX`], the tag, and the
@@ -126,7 +147,31 @@ impl Drop for ScratchDir {
     /// still holding a handle inside it would otherwise turn cleanup into a
     /// flake.
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
+        retire(&self.path);
+    }
+}
+
+/// Remove a scratch directory, first renaming it out of the name the leak gate
+/// sweeps for. A directory half-removed under its own name has lost its marker
+/// but is still visible to a sibling run's gate, which would count it as that
+/// run's leak. If the rename fails (Windows refuses it while a handle is open
+/// inside), the directory is removed in place, as before. A directory that
+/// cannot be removed goes back to its swept name, so the gate still reports it.
+fn retire(path: &Path) {
+    let Some(name) = path.file_name() else {
+        return;
+    };
+    let mut gone_name = std::ffi::OsString::from(".");
+    gone_name.push(name);
+    gone_name.push(".gone");
+    let gone = path.with_file_name(gone_name);
+    let _ = std::fs::remove_dir_all(&gone);
+    if std::fs::rename(path, &gone).is_ok() {
+        if std::fs::remove_dir_all(&gone).is_err() {
+            let _ = std::fs::rename(&gone, path);
+        }
+    } else {
+        let _ = std::fs::remove_dir_all(path);
     }
 }
 
@@ -216,6 +261,109 @@ mod tests {
             ),
             None => assert!(!marker.exists(), "{marker:?}"),
         }
+    }
+
+    #[test]
+    fn a_sibling_gate_never_sees_a_scratch_directory_without_its_marker() {
+        // The gate on a sibling project sweeps the same temp dir while this run
+        // makes and removes its scratch. On Windows it cannot read this
+        // process's environment, so any swept directory it finds unmarked counts
+        // as its own leak. That failed node-sdk:e2e on node-sdk:test's
+        // directories. So a separate observer lists the root throughout, and
+        // every swept name it sees must hold this run's marker while it exists.
+        use std::sync::atomic::{AtomicBool, Ordering};
+        const CYCLES: usize = 2000;
+        let root = ScratchDir::new(&tag("observed")).unwrap();
+        let token = std::ffi::OsStr::new("4242.rust-probe");
+        let done = AtomicBool::new(false);
+        let (seen, unmarked) = std::thread::scope(|scope| {
+            let observer = scope.spawn(|| {
+                let (mut seen, mut unmarked) = (0usize, Vec::new());
+                while !done.load(Ordering::Acquire) {
+                    for entry in std::fs::read_dir(root.path()).unwrap().flatten() {
+                        if !entry.file_name().to_string_lossy().starts_with(PREFIX) {
+                            continue;
+                        }
+                        seen += 1;
+                        let marker = std::fs::read(entry.path().join(RUN_MARKER));
+                        // Each cycle's name is its own, so a directory still
+                        // there after a failed read is the one that was read.
+                        if marker.as_deref().ok() != Some(token.as_encoded_bytes())
+                            && entry.path().exists()
+                        {
+                            unmarked.push(entry.path());
+                        }
+                    }
+                }
+                (seen, unmarked)
+            });
+            for cycle in 0..CYCLES {
+                drop(
+                    ScratchDir::make(root.path(), &format!("churn-{cycle}"), Some(token)).unwrap(),
+                );
+            }
+            done.store(true, Ordering::Release);
+            observer.join().unwrap()
+        });
+        assert!(
+            seen > 0,
+            "the observer never overlapped a scratch directory"
+        );
+        assert!(
+            unmarked.is_empty(),
+            "{} of {seen} sightings were unmarked, as {:?}",
+            unmarked.len(),
+            unmarked.first()
+        );
+        // A directory that really is left behind is still this run's leak: it
+        // stands under the swept name, marked for this run.
+        let leaked = ScratchDir::make(root.path(), "leaked", Some(token)).unwrap();
+        assert!(leaked
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with(PREFIX));
+        assert_eq!(
+            std::fs::read(leaked.join(RUN_MARKER)).unwrap(),
+            token.as_encoded_bytes()
+        );
+        let left: Vec<_> = std::fs::read_dir(root.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .filter(|name| name != RUN_MARKER)
+            .collect();
+        assert_eq!(
+            left,
+            [leaked.file_name().unwrap()],
+            "staged or retired names were left behind"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_scratch_directory_that_cannot_be_removed_stays_where_the_gate_sees_it() {
+        // Removal renames a directory off the sweep first. One whose removal then
+        // fails must not stay hidden there, where no gate would report it.
+        use std::os::unix::fs::PermissionsExt;
+        let root = ScratchDir::new(&tag("unremovable")).unwrap();
+        let stuck = ScratchDir::make(root.path(), "stuck", None).unwrap();
+        let path = stuck.path().to_path_buf();
+        let locked = path.join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        std::fs::write(locked.join("file"), "held").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500)).unwrap();
+        if std::fs::remove_file(locked.join("file")).is_ok() {
+            // Privileged users can delete through the lock, so nothing to prove.
+            return;
+        }
+        drop(stuck);
+        let left: Vec<_> = std::fs::read_dir(root.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .filter(|name| name != RUN_MARKER)
+            .collect();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(left, [path.file_name().unwrap()]);
     }
 
     #[cfg(unix)]

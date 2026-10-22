@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import email
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -34,15 +35,42 @@ def scratch_dir(stack: ExitStack, tag: str) -> Path:
     how `scripts/check-temp-leaks.sh` tells another run's live directory from
     one this run left behind without a marker.
     """
-    directory = Path(
-        stack.enter_context(
-            tempfile.TemporaryDirectory(prefix=f"{PREFIX}{tag}-", suffix=f"-{os.getpid()}")
-        )
-    )
-    token = os.environ.get(RUN_ENV, "")
-    if token:
-        (directory / RUN_MARKER).write_text(token, encoding="utf-8")
+    directory = make_marked(f"{PREFIX}{tag}-")
+    stack.callback(retire, directory)
     return directory
+
+
+def make_marked(prefix: str) -> Path:
+    """Make a scratch directory, marked before it can be seen under its name.
+
+    The same as `test.scratch.make_marked`, which says why; spelled again here
+    for the reason `PREFIX` is.
+    """
+    token = os.environ.get(RUN_ENV, "")
+    if not token:
+        return Path(tempfile.mkdtemp(prefix=prefix, suffix=f"-{os.getpid()}"))
+    staged = Path(tempfile.mkdtemp(prefix=f".{prefix}", suffix=f"-{os.getpid()}.new"))
+    directory = staged.with_name(staged.name[1 : -len(".new")])
+    try:
+        (staged / RUN_MARKER).write_text(token, encoding="utf-8")
+        staged.rename(directory)
+    except BaseException:
+        shutil.rmtree(staged, ignore_errors=True)
+        raise
+    return directory
+
+
+def retire(directory: Path) -> None:
+    """Remove a scratch directory off the sweep, as `test.scratch.retire` does."""
+    gone = directory.with_name(f".{directory.name}.gone")
+    try:
+        directory.rename(gone)
+    except OSError:
+        shutil.rmtree(directory, ignore_errors=True)
+        return
+    shutil.rmtree(gone, ignore_errors=True)
+    if gone.exists():
+        gone.rename(directory)
 
 
 def cargo_version() -> str:

@@ -1,6 +1,15 @@
 import { expect, test } from "bun:test";
-import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +19,7 @@ import {
 	RUN_ENV,
 	RUN_MARKER,
 	removeScratch,
+	removeScratchAsync,
 	scratch,
 	scratchSync,
 } from "./scratch.mjs";
@@ -165,6 +175,130 @@ test("every scratch directory made under the leak gate names its run", async () 
 		}
 	});
 });
+
+test(
+	"a sibling gate never sees a scratch directory without its marker",
+	async () => {
+		// The gate on node-sdk:e2e sweeps the same temp dir while node-sdk:test
+		// makes and removes its scratch. On Windows it cannot read that
+		// process's environment, so any swept directory it found unmarked counted
+		// as its own leak. So another process churns here while this one lists
+		// the root throughout, and every swept name must hold the churner's
+		// marker while it exists.
+		const root = await scratch("observed");
+		const token = "4242.node-churn";
+		const churner = spawn(
+			process.execPath,
+			[resolve(here, "scratch-churn.fixture.ts"), "500"],
+			{
+				env: {
+					...process.env,
+					TMPDIR: root,
+					TEMP: root,
+					TMP: root,
+					[RUN_ENV]: token,
+				},
+				stdio: ["ignore", "ignore", "inherit"],
+			},
+		);
+		const exited = new Promise<number | null>((done) =>
+			churner.on("exit", done),
+		);
+		let running = true;
+		void exited.then(() => {
+			running = false;
+		});
+		let seen = 0;
+		const unmarked: string[] = [];
+		while (running) {
+			for (const name of readdirSync(root)) {
+				if (!name.startsWith(PREFIX)) continue;
+				seen++;
+				const directory = resolve(root, name);
+				let marker: string | undefined;
+				try {
+					marker = readFileSync(resolve(directory, RUN_MARKER), "utf8");
+				} catch {}
+				// Each cycle's name is its own, so a directory still there after a
+				// failed read is the one that was read.
+				if (marker !== token && existsSync(directory)) unmarked.push(name);
+			}
+			await new Promise((next) => setImmediate(next));
+		}
+		expect(await exited).toBe(0);
+		expect(seen).toBeGreaterThan(0);
+		expect(unmarked).toEqual([]);
+		// A directory that really is left behind is still the churner's leak: it
+		// stands under the swept name, marked for its run, and nothing staged or
+		// retired is left beside it.
+		const [leaked, ...beside] = readdirSync(root).filter(
+			(name) => name !== RUN_MARKER,
+		);
+		expect(beside).toEqual([]);
+		expect(leaked).toStartWith(`${PREFIX}leaked-`);
+		expect(readFileSync(resolve(root, `${leaked}`, RUN_MARKER), "utf8")).toBe(
+			token,
+		);
+	},
+	SLOW_FIXTURE_CASE_TIMEOUT_MS,
+);
+
+test("a scratch directory that cannot be made leaves nothing behind", async () => {
+	// The marker is written under a name the gate does not sweep, so a failure
+	// there would leave a directory no gate could ever report. Each maker
+	// refuses loudly and gives that staging space back.
+	const root = await scratch("unusable-root");
+	const missing = resolve(root, "missing");
+	const inherited = { TMPDIR: process.env.TMPDIR, TEMP: process.env.TEMP, TMP: process.env.TMP };
+	Object.assign(process.env, { TMPDIR: missing, TEMP: missing, TMP: missing });
+	try {
+		await underRunToken("4242.node-unusable", async () => {
+			expect(() => scratchSync("unusable-sync")).toThrow();
+			await expect(scratch("unusable-async")).rejects.toThrow();
+		});
+	} finally {
+		for (const [name, value] of Object.entries(inherited)) {
+			if (value === undefined) delete process.env[name];
+			else process.env[name] = value;
+		}
+	}
+	expect(readdirSync(root).filter((name) => name !== RUN_MARKER)).toEqual([]);
+});
+
+test("a scratch directory already gone is given back without complaint", async () => {
+	// Removal renames a directory off the sweep first, and falls back to
+	// removing it in place when that rename fails, as it does on Windows
+	// while a handle is open inside, or here, where nothing is left.
+	for (const remove of [removeScratch, removeScratchAsync]) {
+		const directory = scratchSync("already-gone");
+		rmSync(directory, { recursive: true });
+		await remove();
+		expect(existsSync(directory)).toBe(false);
+	}
+});
+
+test.skipIf(process.platform === "win32")(
+	"a scratch directory that cannot be removed stays where the gate sees it",
+	async () => {
+		// Removal renames a directory off the sweep first. One whose removal
+		// then fails must not stay hidden there, where no gate would report it.
+		for (const remove of [removeScratch, removeScratchAsync]) {
+			const directory = scratchSync("stuck");
+			const locked = resolve(directory, "locked");
+			mkdirSync(locked);
+			writeFileSync(resolve(locked, "file"), "held");
+			chmodSync(locked, 0o500);
+			try {
+				await remove();
+			} catch {
+				// The removal says why it failed; where the directory is is the test.
+			}
+			expect(existsSync(directory)).toBe(true);
+			chmodSync(locked, 0o700);
+			rmSync(directory, { recursive: true });
+		}
+	},
+);
 
 test("a scratch directory made with no gate watching carries no marker", async () => {
 	await underRunToken(undefined, async () => {

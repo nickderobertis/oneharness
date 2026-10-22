@@ -61,13 +61,49 @@ def control_scratch(case: unittest.TestCase, tag: str) -> Path:
 
 
 def _scratch_under(case: unittest.TestCase, tag: str, root: str | None) -> Path:
-    directory = Path(tempfile.mkdtemp(prefix=f"{PREFIX}{tag}-", suffix=f"-{os.getpid()}", dir=root))
-    case.addCleanup(shutil.rmtree, directory, ignore_errors=True)
-    _mark_run(directory)
+    directory = make_marked(f"{PREFIX}{tag}-", root)
+    case.addCleanup(retire, directory)
     return directory
 
 
-def _mark_run(directory: Path) -> None:
+def make_marked(prefix: str, root: str | None) -> Path:
+    """Make a directory named ``prefix``, a random part and this process's id.
+
+    Under the leak gate it is made and marked under a name the gate does not
+    sweep, then renamed into place. A sibling run's gate sweeping the same temp
+    dir therefore never sees it unmarked. An unmarked directory would fall back
+    to this process's environment, which Windows cannot read, so the gate
+    would count it as that run's own leak.
+    """
     token = os.environ.get(RUN_ENV, "")
-    if token:
-        (directory / RUN_MARKER).write_text(token, encoding="utf-8")
+    if not token:
+        return Path(tempfile.mkdtemp(prefix=prefix, suffix=f"-{os.getpid()}", dir=root))
+    staged = Path(tempfile.mkdtemp(prefix=f".{prefix}", suffix=f"-{os.getpid()}.new", dir=root))
+    directory = staged.with_name(staged.name[1 : -len(".new")])
+    try:
+        (staged / RUN_MARKER).write_text(token, encoding="utf-8")
+        staged.rename(directory)
+    except BaseException:
+        shutil.rmtree(staged, ignore_errors=True)
+        raise
+    return directory
+
+
+def retire(directory: Path) -> None:
+    """Remove ``directory``, first renaming it off the leak gate's sweep.
+
+    A directory half-removed under its own name has lost its marker but is
+    still visible to a sibling run's gate. If the rename fails (Windows refuses
+    it while a handle is open inside), the directory is removed in place. One
+    that cannot be removed goes back to its swept name, so the gate still
+    reports it.
+    """
+    gone = directory.with_name(f".{directory.name}.gone")
+    try:
+        directory.rename(gone)
+    except OSError:
+        shutil.rmtree(directory, ignore_errors=True)
+        return
+    shutil.rmtree(gone, ignore_errors=True)
+    if gone.exists():
+        gone.rename(directory)

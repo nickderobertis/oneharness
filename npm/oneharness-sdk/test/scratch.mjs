@@ -6,10 +6,17 @@
 // that passes, which a `finally` per call site has to earn again every time.
 
 import { randomBytes } from "node:crypto";
-import { mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import {
+	existsSync,
+	mkdirSync,
+	realpathSync,
+	renameSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
+import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 
 /**
  * The prefix every scratch directory here carries.
@@ -68,11 +75,76 @@ function scratchPath(tag, root = tmpdir()) {
  * @returns {Promise<string>}
  */
 export async function scratch(tag) {
-	const directory = scratchPath(tag);
-	await mkdir(directory, { mode: 0o700 });
-	held.push(directory);
+	return make(scratchPath(tag));
+}
+
+/**
+ * The name `directory` is made or removed under, out of the leak gate's sweep:
+ * a leading dot means it no longer starts with `PREFIX`.
+ *
+ * @param {string} directory
+ * @param {"new" | "gone"} stage
+ * @returns {string}
+ */
+function offSweep(directory, stage) {
+	return resolve(dirname(directory), `.${basename(directory)}.${stage}`);
+}
+
+/**
+ * Make `directory`, marked for the run a gate is watching, if any.
+ *
+ * A marked directory is made and marked under a name off the sweep, then
+ * renamed into place. A sibling run's gate sweeping the same temp dir
+ * therefore never sees it unmarked. An unmarked directory would fall back to
+ * this process's environment, which Windows cannot read, so the gate would
+ * count it as that run's own leak.
+ *
+ * @param {string} directory
+ * @returns {Promise<string>}
+ */
+async function make(directory) {
 	const token = runToken();
-	if (token) await writeFile(resolve(directory, RUN_MARKER), token);
+	if (!token) {
+		await mkdir(directory, { mode: 0o700 });
+		held.push(directory);
+		return directory;
+	}
+	const staged = offSweep(directory, "new");
+	try {
+		await mkdir(staged, { mode: 0o700 });
+		await writeFile(resolve(staged, RUN_MARKER), token);
+		await rename(staged, directory);
+	} catch (error) {
+		await rm(staged, { recursive: true, force: true });
+		throw error;
+	}
+	held.push(directory);
+	return directory;
+}
+
+/**
+ * The same as `make`, for a caller with no `await` to spend.
+ *
+ * @param {string} directory
+ * @returns {string}
+ */
+function makeSync(directory) {
+	const token = runToken();
+	if (!token) {
+		mkdirSync(directory, { mode: 0o700 });
+		held.push(directory);
+		return directory;
+	}
+	const staged = offSweep(directory, "new");
+	try {
+		mkdirSync(staged, { mode: 0o700 });
+		writeFileSync(resolve(staged, RUN_MARKER), token);
+		renameSync(staged, directory);
+	} catch (error) {
+		rmSync(staged, { recursive: true, force: true });
+		throw error;
+	}
+	held.push(directory);
 	return directory;
 }
 
@@ -91,12 +163,7 @@ export async function scratch(tag) {
  */
 export async function controlScratch(tag) {
 	const root = process.platform === "win32" ? tmpdir() : realpathSync("/tmp");
-	const directory = scratchPath(tag, root);
-	await mkdir(directory, { mode: 0o700 });
-	held.push(directory);
-	const token = runToken();
-	if (token) await writeFile(resolve(directory, RUN_MARKER), token);
-	return directory;
+	return make(scratchPath(tag, root));
 }
 
 /**
@@ -106,12 +173,52 @@ export async function controlScratch(tag) {
  * @returns {string}
  */
 export function scratchSync(tag) {
-	const directory = scratchPath(tag);
-	mkdirSync(directory, { mode: 0o700 });
-	held.push(directory);
-	const token = runToken();
-	if (token) writeFileSync(resolve(directory, RUN_MARKER), token);
-	return directory;
+	return makeSync(scratchPath(tag));
+}
+
+/**
+ * Remove `directory`, first renaming it off the sweep. A directory
+ * half-removed under its own name has lost its marker but is still visible to
+ * a sibling run's gate. If the rename fails (Windows refuses it while a handle
+ * is open inside), the directory is removed in place. One that cannot be
+ * removed goes back to its swept name, so the gate still reports it.
+ *
+ * @param {string} directory
+ * @returns {Promise<void>}
+ */
+async function retire(directory) {
+	const gone = offSweep(directory, "gone");
+	try {
+		await rename(directory, gone);
+	} catch {
+		await rm(directory, { recursive: true, force: true });
+		return;
+	}
+	try {
+		await rm(gone, { recursive: true, force: true });
+	} finally {
+		if (existsSync(gone)) renameSync(gone, directory);
+	}
+}
+
+/**
+ * The same as `retire`, for a caller with no `await` to spend.
+ *
+ * @param {string} directory
+ */
+function retireSync(directory) {
+	const gone = offSweep(directory, "gone");
+	try {
+		renameSync(directory, gone);
+	} catch {
+		rmSync(directory, { recursive: true, force: true });
+		return;
+	}
+	try {
+		rmSync(gone, { recursive: true, force: true });
+	} finally {
+		if (existsSync(gone)) renameSync(gone, directory);
+	}
 }
 
 /**
@@ -122,9 +229,7 @@ export function scratchSync(tag) {
  * `removeScratchAsync` instead, so a slow disk blocks nothing.
  */
 export function removeScratch() {
-	for (const directory of held.splice(0)) {
-		rmSync(directory, { recursive: true, force: true });
-	}
+	for (const directory of held.splice(0)) retireSync(directory);
 }
 
 /**
@@ -137,9 +242,5 @@ export function removeScratch() {
  * @returns {Promise<void>}
  */
 export async function removeScratchAsync() {
-	await Promise.all(
-		held
-			.splice(0)
-			.map((directory) => rm(directory, { recursive: true, force: true })),
-	);
+	await Promise.all(held.splice(0).map(retire));
 }

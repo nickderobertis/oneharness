@@ -3,15 +3,43 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from contextlib import ExitStack
 from pathlib import Path
 from unittest import mock
 
 from . import package_e2e
+from . import scratch as scratch_module
 from .scratch import PREFIX, RUN_ENV, RUN_MARKER, control_scratch, scratch
+
+# Makes and removes scratch directories through both makers in a loop, then
+# leaves one behind as a real leak would, for the observer below to watch from
+# another process the way a sibling run's leak gate does.
+CHURN = textwrap.dedent(
+    """
+    import sys, unittest
+    from contextlib import ExitStack
+    from test import package_e2e
+    from test.scratch import scratch
+
+    case = unittest.TestCase()
+    for cycle in range(int(sys.argv[1])):
+        scratch(case, f"churn-{cycle}")
+        case.doCleanups()
+        with ExitStack() as stack:
+            package_e2e.scratch_dir(stack, f"churn-e2e-{cycle}")
+    scratch(unittest.TestCase(), "leaked")
+    """
+)
+
+
+def entries(root: Path) -> list[str]:
+    """What ``root`` holds besides the leak gate's marker for this run, if any."""
+    return sorted(name for name in os.listdir(root) if name != RUN_MARKER)
 
 
 class ScratchTests(unittest.TestCase):
@@ -88,6 +116,92 @@ class ScratchTests(unittest.TestCase):
             ]
             for directory in made:
                 self.assertFalse((directory / RUN_MARKER).exists(), directory)
+
+    def test_a_sibling_gate_never_sees_a_scratch_directory_without_its_marker(self) -> None:
+        """The gate on one project sweeps the same temp dir while a sibling
+        makes and removes its scratch. On Windows it cannot read that process's
+        environment, so any swept directory it found unmarked counted as its own
+        leak. So another process churns here while this one lists the root
+        throughout, and every swept name must hold the churner's marker while it
+        exists."""
+        root = scratch(self, "observed")
+        churn_run = "4242.python-churn"
+        environment = {**os.environ, "TMPDIR": str(root), "TEMP": str(root), "TMP": str(root)}
+        environment[RUN_ENV] = churn_run
+        churner = subprocess.Popen(
+            [sys.executable, "-c", CHURN, "300"],
+            cwd=Path(__file__).resolve().parents[1],
+            env=environment,
+        )
+        seen = 0
+        unmarked: list[str] = []
+        while churner.poll() is None:
+            for name in os.listdir(root):
+                if not name.startswith(PREFIX):
+                    continue
+                seen += 1
+                directory = root / name
+                try:
+                    marker = (directory / RUN_MARKER).read_text(encoding="utf-8")
+                except OSError:
+                    marker = None
+                # Each cycle's name is its own, so a directory still there after a
+                # failed read is the one that was read.
+                if marker != churn_run and directory.exists():
+                    unmarked.append(name)
+        self.assertEqual(churner.returncode, 0)
+        self.assertGreater(seen, 0, "the observer never overlapped a scratch directory")
+        self.assertEqual(unmarked, [])
+        # A directory that really is left behind is still the churner's leak: it
+        # stands under the swept name, marked for its run, with nothing staged or
+        # retired beside it.
+        [leaked] = entries(root)
+        self.assertTrue(leaked.startswith(f"{PREFIX}leaked-"), leaked)
+        self.assertEqual((root / leaked / RUN_MARKER).read_text(encoding="utf-8"), churn_run)
+
+    def test_a_scratch_directory_that_cannot_be_placed_leaves_nothing_behind(self) -> None:
+        """The marker is written under a name the gate does not sweep, so a
+        failure there would leave a directory no gate could ever report."""
+        root = scratch(self, "unplaceable")
+        refused = OSError("the rename this stands in for failed")
+        for make in (
+            lambda: scratch_module.make_marked(f"{PREFIX}unplaced-", str(root)),
+            lambda: package_e2e.make_marked(f"{PREFIX}unplaced-"),
+        ):
+            with (
+                mock.patch.dict(os.environ, {RUN_ENV: "4242.python-unplaced"}),
+                mock.patch.object(tempfile, "tempdir", str(root)),
+                mock.patch.object(Path, "rename", side_effect=refused),
+                self.assertRaises(OSError),
+            ):
+                make()
+            self.assertEqual(entries(root), [])
+
+    def test_a_scratch_directory_already_gone_is_given_back_without_complaint(self) -> None:
+        """Removal renames a directory off the sweep first, and falls back to
+        removing it in place when that rename fails, as it does on Windows while
+        a handle is open inside, or here, where nothing is left."""
+        for retire in (scratch_module.retire, package_e2e.retire):
+            directory = Path(tempfile.mkdtemp(prefix=f"{PREFIX}already-gone-"))
+            directory.rmdir()
+            retire(directory)
+            self.assertFalse(directory.exists())
+
+    @unittest.skipIf(sys.platform == "win32" or os.geteuid() == 0, "needs POSIX permissions")
+    def test_a_scratch_directory_that_cannot_be_removed_stays_where_the_gate_sees_it(
+        self,
+    ) -> None:
+        """A removal that fails must not hide the directory under a name the gate
+        never sweeps: it goes back to its own name, so the gate reports it."""
+        for retire in (scratch_module.retire, package_e2e.retire):
+            root = scratch(self, "unremovable")
+            directory = root / f"{PREFIX}stuck"
+            (directory / "locked").mkdir(parents=True)
+            (directory / "locked" / "file").write_text("held", encoding="utf-8")
+            (directory / "locked").chmod(0o500)
+            self.addCleanup((directory / "locked").chmod, 0o700)
+            retire(directory)
+            self.assertEqual(entries(root), [directory.name])
 
     def test_a_control_store_is_rooted_at_tmp_rather_than_the_temp_dir(self) -> None:
         """Its path becomes a socket address, and macOS's per-user temp dir alone

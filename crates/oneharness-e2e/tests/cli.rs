@@ -42234,3 +42234,122 @@ fn buffered_history_stdout_keeps_its_bytes_and_explicit_stream_overrides_config(
         }
     }
 }
+
+/// What the mock harness recorded under `MOCK_INPUT_FILE`: its argv and stdin.
+fn recorded_input(path: &Path) -> (Vec<String>, String) {
+    let input: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let argv = input["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|arg| arg.as_str().unwrap().to_string())
+        .collect();
+    (argv, input["stdin"].as_str().unwrap().to_string())
+}
+
+#[test]
+fn buffered_and_streamed_runs_deliver_the_whole_prompt_and_system_to_the_harness() {
+    // The live probes this pins: claude-code answering a multi-line `--system`,
+    // and qwen run in a `--cwd` where `oneharness sync` wrote its settings. Each
+    // input must reach the harness whole, as one argv element or as all of stdin.
+    let claude_bin = bin_override("claude-code"); // llmlint: ignore[e2e_not_mocked] This journey drives the real CLI; only the paid harness subprocess is replaced at the existing binary seam, which is what records the input it was handed.
+    let record = ScratchDir::new("delivered-input").unwrap();
+    let input_file = record.join("input.json");
+    let input_arg = input_file.display().to_string();
+    let delivered = |argv: &[String], stdin: &str, text: &str| {
+        argv.iter().any(|arg| arg == text) || stdin == text
+    };
+
+    let prompt = "Follow your system instructions.";
+    let system = "You are a connectivity-check fixture.\nFollow the next instruction exactly.\nReply with this single token verbatim and nothing else: OH-MARK-1";
+    for stream in ["--no-stream", "--stream"] {
+        let _ = std::fs::remove_file(&input_file);
+        let output = run(
+            &[
+                "run",
+                "--harness",
+                "claude-code",
+                "--prompt",
+                prompt,
+                "--system",
+                system,
+                "--bin",
+                &claude_bin,
+                stream,
+                "--compact",
+            ],
+            &[("MOCK_INPUT_FILE", &input_arg)],
+        );
+        assert!(output.status.success(), "{stream}: {output:?}");
+        let (argv, stdin) = recorded_input(&input_file);
+        assert!(
+            delivered(&argv, &stdin, prompt),
+            "{stream}: prompt not whole in {argv:?} / {stdin:?}"
+        );
+        assert!(
+            delivered(&argv, &stdin, system),
+            "{stream}: system not whole in {argv:?} / {stdin:?}"
+        );
+    }
+
+    let fx = ConfigFixture::new(
+        "delivered-input-synced",
+        "[harness.qwen]\nallowed_tools = [\"run_shell_command(ls)\"]\ndenied_tools = [\"run_shell_command(rm)\"]\n",
+        "",
+    );
+    let cwd = fx.cwd();
+    let project_config = fx.dir.join("oneharness.toml").display().to_string();
+    let sync = run_with_config(
+        &[
+            "sync",
+            "--harness",
+            "qwen",
+            "--cwd",
+            &cwd,
+            "--config",
+            &project_config,
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(sync.status.success(), "{sync:?}");
+    assert!(fx.dir.join(".qwen").join("settings.json").is_file());
+    let qwen_bin = bin_override("qwen");
+    let prompt = "Reply with exactly this token and nothing else: OH-MARK-2";
+    for stream in ["--no-stream", "--stream"] {
+        let args = [
+            "run",
+            "--harness",
+            "qwen",
+            "--prompt",
+            prompt,
+            "--cwd",
+            &cwd,
+            "--bin",
+            &qwen_bin,
+            "--mode",
+            "bypass",
+            stream,
+            "--compact",
+        ];
+        let envs = [("MOCK_INPUT_FILE", input_arg.as_str())];
+        // Hermetic, as the live probe runs it, then with the project config
+        // that sync read discovered from `--cwd`.
+        for configured in [false, true] {
+            let label = if configured { "configured" } else { "hermetic" };
+            let _ = std::fs::remove_file(&input_file);
+            let output = if configured {
+                run_with_config(&args, &envs, &fx.user_config())
+            } else {
+                run(&args, &envs)
+            };
+            assert!(output.status.success(), "{label} {stream}: {output:?}");
+            let (argv, stdin) = recorded_input(&input_file);
+            assert!(
+                delivered(&argv, &stdin, prompt),
+                "{label} {stream}: prompt not whole in {argv:?} / {stdin:?}"
+            );
+        }
+    }
+}

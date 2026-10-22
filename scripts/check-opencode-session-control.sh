@@ -65,12 +65,22 @@ case "$step" in
   refuse) ;;
   attempt) tool completed ;;
   touch)
-    if grep -rqF -- '"--deny-if-contains","session_id"' .opencode/plugin 2>/dev/null; then
-      tool error
-    else
-      touch "$target"
-      tool completed
-    fi
+    gate=0
+    grep -rqF -- '"--deny-if-contains","session_id"' .opencode/plugin || gate=$?
+    case "$gate" in
+      0) tool error ;;
+      1)
+        touch "$target" || {
+          echo "opencode double: could not create $target; check that its sandbox is writable" >&2
+          exit 1
+        }
+        tool completed
+        ;;
+      *)
+        echo "opencode double: could not read the synced plugin under $PWD/.opencode/plugin (grep exit $gate)" >&2
+        exit 1
+        ;;
+    esac
     ;;
   *)
     echo "opencode double: unknown plan step $step" >&2
@@ -111,7 +121,7 @@ phase() {
 phase "refuse touch"
 [ "$rc" -eq 0 ] || fail "a refusal followed by a compliant turn failed the phase: $out"
 case "$out" in
-  *"ok[control]: the unmatched command ran (attempt 2)"*"PASS: opencode session_id forwarding"*) ;;
+  *"ok[control]: the unmatched command ran (attempt 2 of 2)"*"PASS: opencode session_id forwarding"*) ;;
   *) fail "a refusal followed by a compliant turn did not pass on the second control attempt: $out" ;;
 esac
 [ "$launches" = 3 ] || fail "a retried control plus the proof launched the harness $launches times, not 3: $out"

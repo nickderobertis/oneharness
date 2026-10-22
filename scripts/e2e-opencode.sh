@@ -132,6 +132,7 @@ TOML
   # without invoking its shell tool at all (no `touch` tool call in its events),
   # which is agent flakiness, not a verdict. Only that case is retried; a touch
   # the agent attempted that still left no file fails hard.
+  # llmlint: ignore-block[tool_output_is_signal] WHICH attempt won is the signal, not chatter, as in `oh_control_mode_enforce`: the retry is a backstop for a model that declined the turn, so a control that passes only on its second attempt every night is one about to fail, and only this line can say so in a CI-only suite.
   for attempt in 1 2; do
     _oh_oc_gate_run "$sandbox" "$allowfile"
     status="$(oh_field '.results[0].status')"
@@ -140,18 +141,21 @@ TOML
       skip "opencode is not installed (oneharness reported status=skipped); nothing to verify"
     fi
     [ ! -e "$sandbox/$allowfile" ] || break
-    printf '%s' "$OH_REPORT" >"$report"
+    if ! printf '%s' "$OH_REPORT" >"$report"; then
+      rm -rf "$sandbox"
+      fail "opencode: could not write the control turn's report to $report — check that the host temp dir is writable and has space"
+    fi
     if _oh_touch_attempted "$report" "$allowfile"; then
       break
     fi
-    note "  note: attempt $attempt never invoked the shell tool on the touch (a refusal, not a gate verdict)"
   done
   if [ ! -e "$sandbox/$allowfile" ]; then
     oh_dump
     rm -rf "$sandbox"
-    fail "opencode: the positive control never ran ($allowfile absent after $attempt attempt(s)) — cannot trust the session_id deny as a real block (does OpenCode run shell headlessly here?)"
+    fail "opencode: the positive control never ran ($allowfile absent after $attempt attempt(s)), so the session_id deny cannot be trusted as a real block. Next: read the events dumped above — a bash tool call that errored means the gate blocked a needle the payload never carries (pipe that payload to \`oneharness gate opencode --deny-if-contains <needle>\` by hand); no bash tool call on either attempt means the model declined the turn, so tighten the prompt"
   fi
-  note "  ok[control]: the unmatched command ran (attempt $attempt)"
+  note "  ok[control]: the unmatched command ran (attempt $attempt of 2)"
+  # llmlint: ignore-end[tool_output_is_signal]
   rm -rf "$sandbox"
 
   note "  session-id[proof]: denying on the session_id key must block the touch"

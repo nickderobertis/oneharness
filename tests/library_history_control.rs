@@ -66,7 +66,10 @@ impl Drop for PoolCleanup {
 #[test]
 fn buffered_controlled_candidates_announce_once_including_a_retried_turn() {
     let profiles = ProfileScratch::new();
-    let store = ScratchDir::new("bc").unwrap();
+    // Both execution models bind control sockets under this store. macOS's
+    // per-user temp directory is too long for its 104-byte socket addresses.
+    let socket_root = std::fs::canonicalize("/tmp").unwrap();
+    let store = ScratchDir::under(&socket_root, "bc").unwrap();
     let cwd = store.join("cwd");
     std::fs::create_dir(&cwd).unwrap();
     // Explicit config plus no ambient overrides keeps the per-dispatch Codex

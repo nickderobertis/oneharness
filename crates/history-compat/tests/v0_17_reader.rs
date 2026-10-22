@@ -40,18 +40,13 @@ fn mock_bin() -> PathBuf {
     workspace_bin("oneharness-mock-harness")
 }
 
-/// `--env` sending the mock harness's coverage profile outside the target
-/// directory: a harness torn down after the TERM grace leaves a truncated
-/// `.profraw`, and one of those fails the whole `just coverage` merge. The
-/// same redirect `crates/oneharness-e2e/tests/cli.rs` applies to every run it drives.
-fn mock_profile_redirect() -> String {
-    format!(
-        "LLVM_PROFILE_FILE={}",
-        std::env::temp_dir()
-            .join("oneharness-killed-mock-%p.profraw")
-            .display()
-    )
-}
+/// `--env` sending the mock harness's coverage profile into a directory the
+/// test owns, out of the target directory `just coverage` collects from — the
+/// same redirect `crates/oneharness-e2e/tests/cli.rs` applies to every run it
+/// drives; the module says why.
+#[path = "../../../tests/profile-scratch/profile_scratch.rs"]
+mod profile_scratch;
+use profile_scratch::profile_redirect;
 
 #[test]
 fn oneharness_v0_17_0_reads_the_history_this_build_writes() {
@@ -72,7 +67,7 @@ fn oneharness_v0_17_0_reads_the_history_this_build_writes() {
             "--bin",
             &format!("codex={}", mock_bin().display()),
             "--env",
-            &mock_profile_redirect(),
+            &profile_redirect(&scratch),
             "--stream",
             "--format",
             "json",
@@ -173,7 +168,7 @@ fn oneharness_v0_17_0_never_reads_rewrites_or_deletes_a_segment() {
             )
             .args(["run", "--harness", "codex", "--prompt", name])
             .args(["--bin", &format!("codex={}", mock_bin().display())])
-            .args(["--env", &mock_profile_redirect()])
+            .args(["--env", &profile_redirect(&scratch)])
             .args(["--history", "--history-dir", &store.display().to_string()])
             .args([
                 "--history-name",

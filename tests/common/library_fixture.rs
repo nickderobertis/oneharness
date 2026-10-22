@@ -27,25 +27,25 @@ pub fn bin_override(id: &str) -> String {
 
 /// A harness child this test will have killed must not leave a truncated
 /// coverage profile in the target directory, where `just coverage` would collect
-/// it and fail the whole merge. Same redirect the CLI suite applies.
-pub fn profile_redirect() -> String {
-    format!(
-        "LLVM_PROFILE_FILE={}",
-        std::env::temp_dir()
-            .join("oneharness-killed-mock-%p.profraw")
-            .display()
-    )
-}
+/// it and fail the whole merge — nor in bare system temp, where nothing removes
+/// it. Same redirect the CLI suite applies.
+#[path = "../profile-scratch/profile_scratch.rs"]
+mod profile_scratch;
+// Each binary uses the subset it needs, as with `dead_code` above.
+#[allow(unused_imports)]
+pub use profile_scratch::{profile_redirect, ProfileScratch, PROFILE_PATTERN};
 
 /// A hermetic single-harness request against the mock fixture. `no_config` keeps
 /// the developer's real config files and `ONEHARNESS_*` overrides out of the
-/// assertion, exactly as `ONEHARNESS_NO_CONFIG=1` does for the CLI suite.
-pub fn request(id: &str, env: &[(&str, &str)]) -> RunRequest {
+/// assertion, exactly as `ONEHARNESS_NO_CONFIG=1` does for the CLI suite. The
+/// mock's coverage profile goes into `profiles`, which the test holds until the
+/// run has ended.
+pub fn request(profiles: &ProfileScratch, id: &str, env: &[(&str, &str)]) -> RunRequest {
     let mut child_env: Vec<String> = env
         .iter()
         .map(|(key, value)| format!("{key}={value}"))
         .collect();
-    child_env.push(profile_redirect());
+    child_env.push(profiles.as_str().to_string());
     RunRequest {
         harness: vec![id.to_string()],
         prompt: vec!["hi".to_string()],

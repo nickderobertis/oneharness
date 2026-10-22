@@ -836,6 +836,7 @@ fn error_record_failure(dialect: FailureDialect, value: &Value) -> Option<Failur
     harness_quota_failure(dialect, &serialized, work)
         .or_else(|| harness_auth_refusal(dialect, &serialized, work))
         .or_else(|| zero_work_rate_limit_rejection(value, work))
+        .or_else(|| provider_auth_rejection(value))
         .or_else(|| match_failure(&serialized))
 }
 
@@ -852,7 +853,8 @@ fn error_record_failure(dialect: FailureDialect, value: &Value) -> Option<Failur
 /// Both halves are load-bearing. **`429` specifically**, not any rejection: it
 /// says *this identity may not run right now*, the one condition another
 /// identity can serve — a zero-work `500` is a provider fault the next candidate
-/// hits too, and `401`/`403` already fall through as [`FailureKind::Auth`].
+/// hits too, and `401`/`403` already fall through as [`FailureKind::Auth`]
+/// ([`provider_auth_rejection`]).
 /// **Zero work**, on the [`record_work_evidence`] reading the adapter path uses
 /// so the two can never disagree: a 429 that landed after real tokens describes
 /// a run, and falling through it pays the next candidate to redo it, so that
@@ -865,6 +867,29 @@ fn zero_work_rate_limit_rejection(value: &Value, work: RunWork) -> Option<Failur
     (work == RunWork::None).then_some(())?;
     (value.get("api_error_status").and_then(Value::as_u64) == Some(429))
         .then_some(FailureKind::Quota)
+}
+
+/// The **structural** auth rule: a provider rejection whose record declares
+/// `api_error_status: 401` or `403` is [`FailureKind::Auth`], whatever else the
+/// record says.
+///
+/// The generic vocabulary cannot be trusted with this record, because it scans
+/// the whole serialized record and reads `rate_limit` before `auth`: Claude
+/// Code's invalid-key answer (`"api_error_status":401`, `Invalid API key · Fix
+/// external API key`) also carries random UUIDs and millisecond timings, and
+/// whenever one of them happens to contain `429` the coarse needle reported the
+/// invalid key as a rate limit. That stopped a fallback chain an auth failure
+/// should have handed on, and intermittently failed the live `same-harness auth
+/// fallback` probe. The status code is what the provider did, so it decides
+/// before any wording does.
+///
+/// Dialect-agnostic for the same reason as [`zero_work_rate_limit_rejection`].
+fn provider_auth_rejection(value: &Value) -> Option<FailureKind> {
+    matches!(
+        value.get("api_error_status").and_then(Value::as_u64),
+        Some(401 | 403)
+    )
+    .then_some(FailureKind::Auth)
 }
 
 /// Whether the harness itself declares this terminal record an **API failure** —
@@ -1813,6 +1838,30 @@ mod tests {
                 "{prose:?} did no work, so the chain must try the next candidate"
             );
         }
+    }
+
+    /// A real Claude Code 2.1.308 invalid-key answer (`ANTHROPIC_API_KEY` set to
+    /// a non-key), whose random UUIDs and timings sometimes contain `429`. It is
+    /// `auth` either way: verbatim, and with its `duration_ms` landing on the
+    /// digits the coarse rate-limit needle reads.
+    #[test]
+    fn an_invalid_key_is_auth_whatever_digits_its_record_carries() {
+        let capture = include_str!("../../../../tests/fixtures/claude-invalid-api-key.json");
+        let unlucky = capture.replace(r#""duration_ms":272"#, r#""duration_ms":429"#);
+        assert_ne!(unlucky, capture, "the fixture's duration must be rewritten");
+        for record in [capture, unlucky.as_str()] {
+            let got = detect_harness_provider_failure(FailureDialect::ClaudeCode, record)
+                .expect("the invalid key must be classified");
+            assert_eq!(got.kind, FailureKind::Auth, "{record}");
+            assert_eq!(got.source, "stdout");
+        }
+        let forbidden = r#"{"type":"result","is_error":true,"api_error_status":403,"duration_ms":1429,"result":"Request not allowed"}"#;
+        assert_eq!(
+            detect_harness_provider_failure(FailureDialect::Generic, forbidden)
+                .unwrap()
+                .kind,
+            FailureKind::Auth
+        );
     }
 
     /// The discriminator that keeps the structural rule safe, and its two edges.

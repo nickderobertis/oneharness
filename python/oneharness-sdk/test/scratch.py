@@ -129,26 +129,28 @@ def retire(directory: Path) -> None:
         rename(gone, directory)
 
 
-#: How long :func:`rename` keeps trying on Windows, in seconds.
-RENAME_PATIENCE = 2.0
+#: How long a refused :func:`rename` keeps trying, in seconds: two on Windows,
+#: and none elsewhere.
+RENAME_PATIENCE = 2.0 if sys.platform == "win32" else 0.0
 
 
-def rename(source: Path, target: Path) -> None:
-    """Rename ``source`` to ``target``, retried on Windows for ``RENAME_PATIENCE``.
+def rename(source: Path, target: Path, patience: float = RENAME_PATIENCE) -> None:
+    """Rename ``source`` to ``target``, retried for up to ``patience`` seconds.
 
     Windows refuses to rename a directory while any handle is open inside it,
     and a sibling run's leak gate opens each swept directory's marker to read
     it. That refusal lasts only as long as the read. Given up on at once, it left
     a directory under its swept name that this run's own gate then reported as a
     leak, so a sibling's sweep alone could fail this run. A unix rename is not
-    refused by an open handle, so a failure there is final at once.
+    refused by an open handle, so a failure there is final at once. Once
+    ``patience`` has passed, the last attempt's error is raised.
     """
-    deadline = time.monotonic() + RENAME_PATIENCE
+    deadline = time.monotonic() + patience
     while True:
         try:
             source.rename(target)
             return
         except OSError:
-            if sys.platform != "win32" or time.monotonic() >= deadline:
+            if time.monotonic() >= deadline:
                 raise
             time.sleep(0.005)

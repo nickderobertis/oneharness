@@ -3,6 +3,7 @@
 use std::io;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 /// The prefix every scratch directory's name carries.
 ///
@@ -195,8 +196,7 @@ fn retire(path: &Path) {
 }
 
 /// How long [`rename`] keeps trying on Windows.
-#[cfg(windows)]
-const RENAME_PATIENCE: std::time::Duration = std::time::Duration::from_secs(2);
+const RENAME_PATIENCE: Duration = Duration::from_secs(2);
 
 /// [`std::fs::rename`], retried on Windows for up to [`RENAME_PATIENCE`].
 ///
@@ -207,20 +207,24 @@ const RENAME_PATIENCE: std::time::Duration = std::time::Duration::from_secs(2);
 /// leak, so a sibling's sweep alone could fail this run. A unix rename is not
 /// refused by an open handle, so a failure there is final at once.
 fn rename(from: &Path, to: &Path) -> io::Result<()> {
-    #[cfg(windows)]
-    {
-        let deadline = std::time::Instant::now() + RENAME_PATIENCE;
-        loop {
-            match std::fs::rename(from, to) {
-                Err(_) if std::time::Instant::now() < deadline => {
-                    std::thread::sleep(std::time::Duration::from_millis(5));
-                }
-                done => return done,
-            }
+    let patience = if cfg!(windows) {
+        RENAME_PATIENCE
+    } else {
+        Duration::ZERO
+    };
+    rename_within(from, to, patience)
+}
+
+/// [`std::fs::rename`], tried again every few milliseconds until it succeeds
+/// or `patience` has passed, when the last attempt's error is returned.
+fn rename_within(from: &Path, to: &Path, patience: Duration) -> io::Result<()> {
+    let deadline = Instant::now() + patience;
+    loop {
+        match std::fs::rename(from, to) {
+            Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(5)),
+            done => return done,
         }
     }
-    #[cfg(not(windows))]
-    std::fs::rename(from, to)
 }
 
 #[cfg(test)]
@@ -527,6 +531,67 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
         assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+    }
+
+    /// A directory holding `content`, and a non-empty one standing where it is
+    /// to be renamed to, which refuses the rename on every platform until it is
+    /// gone.
+    fn blocked_rename(root: &Path, content: &str) -> (PathBuf, PathBuf) {
+        let (from, to) = (root.join("from"), root.join("to"));
+        std::fs::create_dir(&from).unwrap();
+        std::fs::write(from.join("content"), content).unwrap();
+        std::fs::create_dir(&to).unwrap();
+        std::fs::write(to.join("blocker"), "").unwrap();
+        (from, to)
+    }
+
+    #[test]
+    fn a_rename_refused_for_a_moment_succeeds_within_its_patience() {
+        // Windows refuses a rename while a sibling's gate holds a handle inside,
+        // and only for as long as it holds it. A blocker removed while the
+        // rename is retrying stands in for that read ending.
+        let root = ScratchDir::new(&tag("rename-recovers")).unwrap();
+        let (from, to) = blocked_rename(root.path(), "moved");
+        assert!(
+            std::fs::rename(&from, &to).is_err(),
+            "the blocker must refuse"
+        );
+        let renamed = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                std::thread::sleep(Duration::from_millis(100));
+                std::fs::remove_dir_all(&to).unwrap();
+            });
+            rename_within(&from, &to, Duration::from_secs(10))
+        });
+        renamed.unwrap();
+        assert!(!from.exists());
+        assert_eq!(
+            std::fs::read_to_string(to.join("content")).unwrap(),
+            "moved"
+        );
+    }
+
+    #[test]
+    fn a_rename_refused_past_its_patience_fails_and_moves_nothing() {
+        let root = ScratchDir::new(&tag("rename-exhausted")).unwrap();
+        let (from, to) = blocked_rename(root.path(), "stays");
+        let started = Instant::now();
+        let refused = rename_within(&from, &to, Duration::from_millis(200));
+        assert!(refused.is_err(), "a rename still blocked must fail loudly");
+        assert!(
+            started.elapsed() >= Duration::from_millis(200),
+            "gave up after {:?}, before its patience ran out",
+            started.elapsed()
+        );
+        assert_eq!(
+            std::fs::read_to_string(from.join("content")).unwrap(),
+            "stays"
+        );
+        assert!(to.join("blocker").exists());
+        // With no patience, as on unix, the first refusal is the answer.
+        let started = Instant::now();
+        assert!(rename_within(&from, &to, Duration::ZERO).is_err());
+        assert!(started.elapsed() < Duration::from_millis(200));
     }
 
     #[test]

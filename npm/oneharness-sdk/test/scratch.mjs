@@ -53,15 +53,12 @@ function runToken() {
 	return process.env[RUN_ENV] || undefined;
 }
 
-/** How long a rename keeps trying on Windows, in milliseconds. */
-const RENAME_PATIENCE_MS = 2000;
-
-/** The pause between tries, in milliseconds. */
+/** The pause between rename attempts, in milliseconds. */
 const RENAME_PAUSE_MS = 5;
 
 /**
- * Whether a failed rename may yet succeed: on Windows, until
- * `RENAME_PATIENCE_MS` has passed since `started`.
+ * How long a refused rename keeps trying, in milliseconds: two seconds on
+ * Windows, and none elsewhere.
  *
  * Windows refuses to rename a directory while any handle is open inside it,
  * and a sibling run's leak gate opens each swept directory's marker to read
@@ -69,49 +66,55 @@ const RENAME_PAUSE_MS = 5;
  * a directory under its swept name that this run's own gate then reported as a
  * leak, so a sibling's sweep alone could fail this run. A unix rename is not
  * refused by an open handle, so a failure there is final at once.
- *
- * @param {number} started
- * @returns {boolean}
  */
-function renameMayRecover(started) {
-	return (
-		process.platform === "win32" && Date.now() - started < RENAME_PATIENCE_MS
-	);
-}
+const RENAME_PATIENCE_MS = process.platform === "win32" ? 2000 : 0;
 
 /**
- * `rename`, retried while `renameMayRecover` says so.
+ * `rename`, tried again every few milliseconds until it succeeds or
+ * `patience` milliseconds have passed, when the last attempt's error is thrown.
+ * Exported so a test can drive a refusal that clears, and one that does not.
  *
  * @param {string} from
  * @param {string} to
+ * @param {number} [patience]
  * @returns {Promise<void>}
  */
-async function renamePatiently(from, to) {
-	const started = Date.now();
+export async function renamePatiently(
+	from,
+	to,
+	patience = RENAME_PATIENCE_MS,
+) {
+	const deadline = Date.now() + patience;
 	for (;;) {
 		try {
 			return await rename(from, to);
 		} catch (error) {
-			if (!renameMayRecover(started)) throw error;
+			if (Date.now() >= deadline) throw error;
 			await new Promise((wake) => setTimeout(wake, RENAME_PAUSE_MS));
 		}
 	}
 }
 
 /**
- * `renameSync`, retried while `renameMayRecover` says so.
+ * The same as `renamePatiently`, for a caller with no `await` to spend.
  *
  * @param {string} from
  * @param {string} to
+ * @param {number} [patience]
  */
-function renameSyncPatiently(from, to) {
-	const started = Date.now();
+export function renameSyncPatiently(from, to, patience = RENAME_PATIENCE_MS) {
+	const deadline = Date.now() + patience;
 	for (;;) {
 		try {
 			return renameSync(from, to);
 		} catch (error) {
-			if (!renameMayRecover(started)) throw error;
-			Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, RENAME_PAUSE_MS);
+			if (Date.now() >= deadline) throw error;
+			Atomics.wait(
+				new Int32Array(new SharedArrayBuffer(4)),
+				0,
+				0,
+				RENAME_PAUSE_MS,
+			);
 		}
 	}
 }

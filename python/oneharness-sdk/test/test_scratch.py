@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
+import time
 import unittest
 from contextlib import ExitStack, redirect_stderr
 from io import StringIO
@@ -257,6 +260,50 @@ class ScratchTests(unittest.TestCase):
             finally:
                 root.chmod(0o700)
             self.assertFalse((directory / "inside.txt").exists(), "not emptied")
+
+    def blocked_rename(self, tag: str, content: str) -> tuple[Path, Path]:
+        """A directory holding ``content``, and a non-empty one standing where it
+        is to be renamed to, which refuses the rename on every platform until it
+        is gone."""
+        root = scratch(self, tag)
+        source, target = root / "from", root / "to"
+        source.mkdir()
+        (source / "content").write_text(content, encoding="utf-8")
+        target.mkdir()
+        (target / "blocker").write_text("", encoding="utf-8")
+        with self.assertRaises(OSError):
+            source.rename(target)
+        return source, target
+
+    def test_a_rename_refused_for_a_moment_succeeds_within_its_patience(self) -> None:
+        """Windows refuses a rename while a sibling's gate holds a handle inside,
+        and only for as long as it holds it. A blocker removed while the rename
+        is retrying stands in for that read ending."""
+        for index, rename in enumerate((scratch_module.rename, package_e2e.rename)):
+            source, target = self.blocked_rename(f"rename-recovers-{index}", "moved")
+            remover = threading.Timer(0.1, shutil.rmtree, (target,))
+            remover.start()
+            try:
+                rename(source, target, 10.0)
+            finally:
+                remover.join()
+            self.assertFalse(source.exists())
+            self.assertEqual((target / "content").read_text(encoding="utf-8"), "moved")
+
+    def test_a_rename_refused_past_its_patience_fails_and_moves_nothing(self) -> None:
+        for index, rename in enumerate((scratch_module.rename, package_e2e.rename)):
+            source, target = self.blocked_rename(f"rename-exhausted-{index}", "stays")
+            started = time.monotonic()
+            with self.assertRaises(OSError):
+                rename(source, target, 0.2)
+            self.assertGreaterEqual(time.monotonic() - started, 0.2)
+            self.assertEqual((source / "content").read_text(encoding="utf-8"), "stays")
+            self.assertTrue((target / "blocker").exists())
+            # With no patience, as on unix, the first refusal is the answer.
+            started = time.monotonic()
+            with self.assertRaises(OSError):
+                rename(source, target, 0.0)
+            self.assertLess(time.monotonic() - started, 0.2)
 
     def test_a_control_store_is_rooted_at_tmp_rather_than_the_temp_dir(self) -> None:
         """Its path becomes a socket address, and macOS's per-user temp dir alone

@@ -88,15 +88,17 @@ def retire(directory: Path) -> None:
         rename(gone, directory)
 
 
-def rename(source: Path, target: Path) -> None:
+def rename(
+    source: Path, target: Path, patience: float = 2.0 if sys.platform == "win32" else 0.0
+) -> None:
     """Rename a scratch directory, as `test.scratch.rename` does, which says why."""
-    deadline = time.monotonic() + 2.0
+    deadline = time.monotonic() + patience
     while True:
         try:
             source.rename(target)
             return
         except OSError:
-            if sys.platform != "win32" or time.monotonic() >= deadline:
+            if time.monotonic() >= deadline:
                 raise
             time.sleep(0.005)
 

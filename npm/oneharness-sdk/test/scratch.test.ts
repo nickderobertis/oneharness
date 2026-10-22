@@ -7,6 +7,7 @@ import {
 	readdirSync,
 	readFileSync,
 	realpathSync,
+	renameSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
@@ -22,6 +23,8 @@ import {
 	RUN_MARKER,
 	removeScratch,
 	removeScratchAsync,
+	renamePatiently,
+	renameSyncPatiently,
 	retireScratch,
 	retireScratchSync,
 	scratch,
@@ -389,6 +392,89 @@ test.skipIf(!permissionsBind())(
 		}
 	},
 );
+
+test("an unmarked scratch directory that cannot be renamed is removed in place", async () => {
+	// With no marker there is no ownership to lose, so removal goes on. A
+	// non-empty directory standing where it would be renamed off the sweep
+	// refuses that rename on every platform.
+	const root = await scratch("unmarked-unrenamable");
+	for (const [mode, retire] of retirements) {
+		const name = `${PREFIX}stuck-${mode}`;
+		const directory = resolve(root, name);
+		await underRunToken(undefined, async () => {
+			placeScratchSync(directory);
+		});
+		writeFileSync(resolve(directory, "inside.txt"), "content");
+		const gone = resolve(root, `.${name}.gone`);
+		mkdirSync(gone);
+		writeFileSync(resolve(gone, "blocker"), "");
+		await retire(directory);
+		expect(existsSync(directory)).toBe(false);
+		expect(existsSync(resolve(gone, "blocker"))).toBe(true);
+	}
+}, 15_000); // Windows retries the refused rename for two seconds per retirement.
+
+/**
+ * A directory holding `content`, and a non-empty one standing where it is to
+ * be renamed to, which refuses the rename on every platform until it is gone.
+ */
+async function blockedRename(tag: string, content: string) {
+	const root = await scratch(tag);
+	const [from, to] = [resolve(root, "from"), resolve(root, "to")];
+	mkdirSync(from);
+	writeFileSync(resolve(from, "content"), content);
+	mkdirSync(to);
+	writeFileSync(resolve(to, "blocker"), "");
+	expect(() => renameSync(from, to)).toThrow();
+	return { from, to };
+}
+
+test("a rename refused for a moment succeeds within its patience", async () => {
+	// Windows refuses a rename while a sibling's gate holds a handle inside,
+	// and only for as long as it holds it. A blocker removed while the rename
+	// is retrying stands in for that read ending: by a timer for the awaited
+	// rename, and by another process for the one that blocks this thread.
+	const awaited = await blockedRename("rename-recovers-async", "awaited");
+	setTimeout(() => rmSync(awaited.to, { recursive: true }), 100);
+	await renamePatiently(awaited.from, awaited.to, 10_000);
+	expect(existsSync(awaited.from)).toBe(false);
+	expect(readFileSync(resolve(awaited.to, "content"), "utf8")).toBe("awaited");
+
+	const blocking = await blockedRename("rename-recovers-sync", "blocking");
+	const remover = spawn(process.execPath, [
+		"-e",
+		`setTimeout(() => require("node:fs").rmSync(${JSON.stringify(blocking.to)}, { recursive: true }), 100)`,
+	]);
+	const removed = new Promise((done) => remover.on("exit", done));
+	renameSyncPatiently(blocking.from, blocking.to, 10_000);
+	await removed;
+	expect(existsSync(blocking.from)).toBe(false);
+	expect(readFileSync(resolve(blocking.to, "content"), "utf8")).toBe(
+		"blocking",
+	);
+});
+
+test("a rename refused past its patience fails and moves nothing", async () => {
+	const { from, to } = await blockedRename("rename-exhausted", "stays");
+	const attempts = [
+		["async", (patience: number) => renamePatiently(from, to, patience)],
+		[
+			"sync",
+			async (patience: number) => renameSyncPatiently(from, to, patience),
+		],
+	] as const;
+	for (const [mode, attempt] of attempts) {
+		let started = Date.now();
+		await expect(attempt(200)).rejects.toThrow();
+		expect(Date.now() - started, mode).toBeGreaterThanOrEqual(200);
+		expect(readFileSync(resolve(from, "content"), "utf8")).toBe("stays");
+		expect(existsSync(resolve(to, "blocker"))).toBe(true);
+		// With no patience, as on unix, the first refusal is the answer.
+		started = Date.now();
+		await expect(attempt(0)).rejects.toThrow();
+		expect(Date.now() - started, mode).toBeLessThan(200);
+	}
+});
 
 test("a scratch directory made with no gate watching carries no marker", async () => {
 	await underRunToken(undefined, async () => {

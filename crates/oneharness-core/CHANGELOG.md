@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.0](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.28.8...oneharness-core-v0.29.0) - 2026-10-22
+
+### Added
+
+- *(history)* [**breaking**] write each run's prompt and location when it begins ([#1527](https://github.com/nickderobertis/oneharness/pull/1527))
+
 ## [0.28.8](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.28.7...oneharness-core-v0.28.8) - 2026-10-21
 
 ### Fixed

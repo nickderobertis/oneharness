@@ -6045,7 +6045,7 @@ fn cursor_turn_that_speaks_before_its_tool_call_reports_cursor_tool_calls() {
             "--prompt",
             "hi",
             "--bin",
-            &bin_override("cursor"),
+            &bin_override("cursor"), // llmlint: ignore[e2e_not_mocked] The layer under test is oneharness reading the transcript; the paid Cursor model speaks before its tool call only sometimes, so this deterministic proof doubles it at the repo's prescribed --bin seam, while scripts/e2e-cursor.sh stays the live drift alarm against the real CLI.
             "--compact",
         ],
         &[("MOCK_STDOUT", stdout)],

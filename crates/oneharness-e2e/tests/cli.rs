@@ -4174,7 +4174,9 @@ fn a_lossy_output_format_is_refused_by_the_variant_qualified_identity() {
     // bare `claude-code` would not tell an operator running several which of
     // their configured variants to re-run.
     let mock = mock_bin().display().to_string();
-    let store = session_store_dir("variant-format");
+    let scratch = session_store_dir("variant-format");
+    let store = scratch.join("store");
+    std::fs::create_dir(&store).unwrap();
     let fx = ConfigFixture::new(
         "session-variant-format",
         &format!(
@@ -4374,7 +4376,9 @@ fn a_record_bound_to_an_unrunnable_identity_starts_fresh_rather_than_failing() {
 fn session_print_command_reports_the_handle_without_writing_the_store() {
     // `--print-command` builds argv but runs nothing, so a create must not write
     // a store record, yet still report the (as-yet tokenless) handle.
-    let store = session_store_dir("dry");
+    let scratch = session_store_dir("dry");
+    let store = scratch.join("store");
+    std::fs::create_dir(&store).unwrap();
     let store_arg = store.display().to_string();
     let cwd = session_store_dir("dry-cwd");
     let output = run(
@@ -4412,7 +4416,9 @@ fn session_create_without_a_session_id_warns_and_stores_nothing() {
     // If a session-capable harness happens to expose no id on a given run, the
     // handle cannot be continued: oneharness warns and stores nothing rather than
     // persisting an unusable record.
-    let store = session_store_dir("noid");
+    let scratch = session_store_dir("noid");
+    let store = scratch.join("store");
+    std::fs::create_dir(&store).unwrap();
     let store_arg = store.display().to_string();
     let cwd = session_store_dir("noid-cwd");
     let output = run(

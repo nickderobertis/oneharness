@@ -22,13 +22,24 @@ from pathlib import Path
 #: leave the gate silently passing.
 PREFIX = "oneharness-python-"
 
+#: The variable ``scripts/check-temp-leaks.sh`` hands every process of its run,
+#: naming that run, and the file each scratch directory here carries it in.
+#:
+#: Spelled as ``oneharness_core::io::scratch`` spells them, which is where the
+#: gate reads them; ``scripts/check-scratch-prefixes.sh`` holds the two in step.
+#: The marker is how the gate tells another live run's scratch from this run's
+#: without reading this process's environment, which Windows does not expose.
+RUN_ENV = "OH_TEMP_LEAKS_RUN"
+RUN_MARKER = ".oh-temp-leaks-run"
+
 
 def scratch(case: unittest.TestCase, tag: str) -> Path:
     """Return a private directory for ``case``, removed when that case ends.
 
-    ``tag`` distinguishes one case's directory from another's. The name ends in
-    this process's id, which is how ``scripts/check-temp-leaks.sh`` tells another
-    checkout's live directory from one this run left behind.
+    ``tag`` distinguishes one case's directory from another's. Under the leak
+    gate it carries that run's ``RUN_MARKER``; the name also ends in this
+    process's id, which is how ``scripts/check-temp-leaks.sh`` tells another
+    checkout's live directory from one this run left behind without a marker.
     """
     return _scratch_under(case, tag, None)
 
@@ -52,4 +63,11 @@ def control_scratch(case: unittest.TestCase, tag: str) -> Path:
 def _scratch_under(case: unittest.TestCase, tag: str, root: str | None) -> Path:
     directory = Path(tempfile.mkdtemp(prefix=f"{PREFIX}{tag}-", suffix=f"-{os.getpid()}", dir=root))
     case.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+    _mark_run(directory)
     return directory
+
+
+def _mark_run(directory: Path) -> None:
+    token = os.environ.get(RUN_ENV, "")
+    if token:
+        (directory / RUN_MARKER).write_text(token, encoding="utf-8")

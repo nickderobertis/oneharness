@@ -6,9 +6,12 @@ import os
 import sys
 import tempfile
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
+from unittest import mock
 
-from .scratch import PREFIX, control_scratch, scratch
+from . import package_e2e
+from .scratch import PREFIX, RUN_ENV, RUN_MARKER, control_scratch, scratch
 
 
 class ScratchTests(unittest.TestCase):
@@ -55,6 +58,36 @@ class ScratchTests(unittest.TestCase):
         directory out of its verdict; a name without it counts as this run's leak."""
         directory = scratch(self, "pid-probe")
         self.assertTrue(directory.name.endswith(f"-{os.getpid()}"), directory.name)
+
+    def test_every_scratch_directory_made_under_the_leak_gate_names_its_run(self) -> None:
+        """`scripts/check-temp-leaks.sh` reads that marker to tell this run's
+        scratch from a sibling run's without reading this process's environment,
+        which it cannot do on Windows. Each maker here writes it, including the
+        package journey's, which makes its directory on its own."""
+        with (
+            mock.patch.dict(os.environ, {RUN_ENV: "4242.python-probe"}),
+            ExitStack() as stack,
+        ):
+            made = [
+                scratch(self, "marker-probe"),
+                control_scratch(self, "mark"),
+                package_e2e.scratch_dir(stack, "marker-probe"),
+            ]
+            for directory in made:
+                self.assertEqual(
+                    (directory / RUN_MARKER).read_text(encoding="utf-8"), "4242.python-probe"
+                )
+
+    def test_a_scratch_directory_made_with_no_gate_watching_carries_no_marker(self) -> None:
+        with mock.patch.dict(os.environ), ExitStack() as stack:
+            os.environ.pop(RUN_ENV, None)
+            made = [
+                scratch(self, "unmarked-probe"),
+                control_scratch(self, "unmk"),
+                package_e2e.scratch_dir(stack, "unmarked-probe"),
+            ]
+            for directory in made:
+                self.assertFalse((directory / RUN_MARKER).exists(), directory)
 
     def test_a_control_store_is_rooted_at_tmp_rather_than_the_temp_dir(self) -> None:
         """Its path becomes a socket address, and macOS's per-user temp dir alone

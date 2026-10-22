@@ -18,6 +18,10 @@ ROOT = Path(__file__).resolve().parents[3]
 # holds the two in step. Spelled here rather than imported from `test.scratch`
 # because this file runs as a script, which has no package to import from.
 PREFIX = "oneharness-python-"
+# The leak gate's run token and the marker that carries it, spelled as
+# `test.scratch` spells them and held in step by the same check.
+RUN_ENV = "OH_TEMP_LEAKS_RUN"
+RUN_MARKER = ".oh-temp-leaks-run"
 
 
 def scratch_dir(stack: ExitStack, tag: str) -> Path:
@@ -25,15 +29,20 @@ def scratch_dir(stack: ExitStack, tag: str) -> Path:
 
     There is no test framework here to hang a teardown on, so the caller's
     :class:`contextlib.ExitStack` is the hook — it unwinds on the way out of a
-    failed run exactly as it does on a clean one. The name ends in this
-    process's id, which is how `scripts/check-temp-leaks.sh` tells another
-    run's live directory from one this run left behind.
+    failed run exactly as it does on a clean one. Under the leak gate it carries
+    that run's `RUN_MARKER`; the name also ends in this process's id, which is
+    how `scripts/check-temp-leaks.sh` tells another run's live directory from
+    one this run left behind without a marker.
     """
-    return Path(
+    directory = Path(
         stack.enter_context(
             tempfile.TemporaryDirectory(prefix=f"{PREFIX}{tag}-", suffix=f"-{os.getpid()}")
         )
     )
+    token = os.environ.get(RUN_ENV, "")
+    if token:
+        (directory / RUN_MARKER).write_text(token, encoding="utf-8")
+    return directory
 
 
 def cargo_version() -> str:

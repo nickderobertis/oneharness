@@ -45,12 +45,22 @@ fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 scratch_source="$repo_root/crates/oneharness-core/src/io/scratch.rs"
-prefix=$(sed -n 's/^pub const PREFIX: &str = "\(.*\)";$/\1/p' "$scratch_source")
-if [ -z "$prefix" ]; then
-  echo "check-temp-leaks: could not read the scratch prefix from $scratch_source." >&2
-  echo "  fix: restore the 'pub const PREFIX: &str = \"...\";' declaration, or point this gate at wherever it moved to." >&2
-  exit 2
-fi
+# So are the name of the variable that carries this run's token to every process
+# it starts, and the file inside each scratch directory its maker writes that
+# token into.
+scratch_constant() {
+  local value
+  value=$(sed -n 's/^\(pub \)\{0,1\}const '"$1"': &str = "\(.*\)";$/\2/p' "$scratch_source")
+  if [ -z "$value" ]; then
+    echo "check-temp-leaks: could not read $1 from $scratch_source." >&2
+    echo "  fix: restore the 'const $1: &str = \"...\";' declaration, or point this gate at wherever it moved to." >&2
+    return 2
+  fi
+  printf '%s' "$value"
+}
+prefix=$(scratch_constant PREFIX) || exit 2
+token_name=$(scratch_constant RUN_ENV) || exit 2
+run_marker=$(scratch_constant RUN_MARKER) || exit 2
 
 # Each root is resolved before it is swept: `find` does not follow a symlinked
 # starting point, so a root spelled through one would match nothing and report
@@ -169,30 +179,44 @@ for dir in "${scratch_roots[@]}"; do
   if [ -n "$dir" ] && { [ -e "$dir" ] || [ -L "$dir" ]; }; then present_before+="$dir"$'\n'; fi
 done
 
-# Every process of this run carries the token, which is how a scratch directory's
-# maker is told apart from another checkout's below.
-marker_name=OH_TEMP_LEAKS_RUN
-run_marker="$marker_name=$$.$RANDOM$RANDOM"
+# Every process of this run carries the token, which is how a scratch directory
+# is told apart from another checkout's below.
+run_token="$$.$RANDOM$RANDOM"
 status=0
-env "$run_marker" "$@" >"$transcript" 2>&1 || status=$?
+env "$token_name=$run_token" "$@" >"$transcript" 2>&1 || status=$?
 
 unwatched=0
 after=$(snapshot) || unwatched=1
 leaked=$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after"))
 
 # `/tmp` is shared with every other checkout on the host, and their suites mint
-# the same names, so a directory made during this run need not be this run's. A
-# scratch directory ends in the id of the process that made it
-# (`io::scratch::ScratchDir::name`, whose unit test pins that suffix for this
-# gate; `check-scratch-prefixes.sh` holds the SDK suites' helpers to it). A
-# maker still alive whose environment lacks this run's token is someone else's
-# run in progress — a gate that counted it failed a publication on another
-# checkout's live coverage suite. A maker that carries the token, has exited, or
-# whose environment cannot be read is this run's, and its directory is a leak.
-# The suffix is taken at its word, not proven: this gate catches the
-# repository's own suites leaking by accident, so a name that spells another
-# live process's pid on purpose would pass it.
-named_for_a_live_process_lacking_the_run_marker() {
+# the same names, so a directory made during this run need not be this run's.
+# Each maker the gate covers (`io::scratch::ScratchDir`, and the SDK suites'
+# helpers that `check-scratch-prefixes.sh` holds to its spellings) writes the
+# token it inherited into the directory's `$run_marker` as it makes it. A
+# directory whose marker names this run is this run's, and a leak; one whose
+# marker names another run is that run's to answer for, alive or not. That rule
+# reads no process, so it holds on Windows, where no environment can be read.
+# The marker's word is taken, not proven: this gate catches the repository's
+# own suites leaking by accident, so a marker copied on purpose would pass it.
+marked_run() {
+  local marker="$1/$run_marker" token
+  [ -f "$marker" ] || return 1
+  token=$(cat -- "$marker" 2>/dev/null) || return 1
+  [ -n "$token" ] || return 1
+  printf '%s' "$token"
+}
+
+# A directory with no marker to read — a maker that predates it, or one this
+# gate cannot read — falls back to its maker's environment. Its name ends in the
+# id of the process that made it (`io::scratch::ScratchDir::name`, whose unit
+# test pins that suffix for this gate; `check-scratch-prefixes.sh` holds the SDK
+# suites' helpers to it). A maker still alive whose environment lacks this run's
+# token is someone else's run in progress — a gate that counted it failed a
+# publication on another checkout's live coverage suite. A maker that carries the
+# token, has exited, or whose environment cannot be read is this run's, and its
+# directory is a leak. The suffix is taken at its word, as the marker is.
+named_for_a_live_process_lacking_the_run_token() {
   local pid=${1##*-} environment command
   case "$pid" in '' | *[!0-9]*) return 1 ;; esac
   if [ -r "/proc/$pid/environ" ]; then
@@ -206,13 +230,19 @@ named_for_a_live_process_lacking_the_run_marker() {
     environment=$(tr ' ' '\n' <<<"$environment")
   fi
   [ -n "$environment" ] || return 1
-  ! grep -qxF "$run_marker" <<<"$environment"
+  ! grep -qxF "$token_name=$run_token" <<<"$environment"
 }
 if [ -n "$leaked" ]; then
   kept="" left_out=""
   while IFS= read -r dir; do
-    if named_for_a_live_process_lacking_the_run_marker "$dir"; then
-      left_out+="${left_out:+, }$dir (pid ${dir##*-})"
+    if token=$(marked_run "$dir"); then
+      if [ "$token" = "$run_token" ]; then
+        kept+="$dir"$'\n'
+      else
+        left_out+="${left_out:+, }$dir (marked for run $token)"
+      fi
+    elif named_for_a_live_process_lacking_the_run_token "$dir"; then
+      left_out+="${left_out:+, }$dir (pid ${dir##*-}, alive without this run's $token_name)"
     else
       kept+="$dir"$'\n'
     fi
@@ -221,7 +251,7 @@ if [ -n "$leaked" ]; then
   # Said rather than dropped, on one line: a descendant of this run that cleared
   # its own environment reads exactly like another checkout's run.
   [ -z "$left_out" ] ||
-    echo "check-temp-leaks: left out as other checkouts' runs, their makers alive without this run's $marker_name: $left_out; if one is this run's own, end it and rerun" >&2
+    echo "check-temp-leaks: left out as other checkouts' runs: $left_out; if one is this run's own, end it and rerun" >&2
 fi
 
 if [ "$status" -ne 0 ] || [ -n "$leaked" ] || [ "$unwatched" -eq 1 ]; then

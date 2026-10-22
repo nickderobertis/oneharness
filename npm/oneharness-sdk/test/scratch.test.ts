@@ -1,12 +1,14 @@
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	controlScratch,
 	PREFIX,
+	RUN_ENV,
+	RUN_MARKER,
 	removeScratch,
 	scratch,
 	scratchSync,
@@ -125,6 +127,55 @@ test("scratch names end in the id of the process that made them", () => {
 	// out of its verdict; a name without it is counted as this run's leak.
 	const directory = scratchSync("pid-probe");
 	expect(directory.split(/[\\/]/u).at(-1)).toEndWith(`-${process.pid}`);
+});
+
+/**
+ * Run `body` with the leak gate's run token set to `token`, or unset when it is
+ * `undefined`, restoring whatever this run inherited afterwards.
+ */
+async function underRunToken(
+	token: string | undefined,
+	body: () => Promise<void>,
+): Promise<void> {
+	const inherited = process.env[RUN_ENV];
+	if (token === undefined) delete process.env[RUN_ENV];
+	else process.env[RUN_ENV] = token;
+	try {
+		await body();
+	} finally {
+		if (inherited === undefined) delete process.env[RUN_ENV];
+		else process.env[RUN_ENV] = inherited;
+	}
+}
+
+test("every scratch directory made under the leak gate names its run", async () => {
+	// `scripts/check-temp-leaks.sh` reads that marker to tell this run's
+	// scratch from a sibling run's without reading this process's environment,
+	// which it cannot do on Windows. Each of the three ways to make one writes
+	// it, since each makes its directory on its own.
+	await underRunToken("4242.node-probe", async () => {
+		for (const directory of [
+			await scratch("marker-probe"),
+			await controlScratch("mark"),
+			scratchSync("marker-sync-probe"),
+		]) {
+			expect(readFileSync(resolve(directory, RUN_MARKER), "utf8")).toBe(
+				"4242.node-probe",
+			);
+		}
+	});
+});
+
+test("a scratch directory made with no gate watching carries no marker", async () => {
+	await underRunToken(undefined, async () => {
+		for (const directory of [
+			await scratch("unmarked-probe"),
+			await controlScratch("unmk"),
+			scratchSync("unmarked-sync-probe"),
+		]) {
+			expect(existsSync(resolve(directory, RUN_MARKER))).toBe(false);
+		}
+	});
 });
 
 test("a control store is rooted at /tmp rather than the temp dir", async () => {

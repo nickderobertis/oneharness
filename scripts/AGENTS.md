@@ -32,3 +32,14 @@ Subtree rules for the repository's tooling scripts.
   model's reply. Start it through `oh_echo_without_context` (`e2e-lib.sh`),
   which launches from an empty sandbox outside any checkout with every context
   home pointed into it; `check-qwen-context-free.sh` holds it to that.
+- **An echo probe asks for the marker alone and runs once.** `oh_prompt` names
+  the test suite and requests exactly the marker, with no reassurance about
+  trust or secrets (models read that as injection); `oh_assert_echoed` checks
+  the marker with no retry. `check-echo-probe.sh` holds the request, the single
+  launch, and both verdicts.
+- **A live positive control retries only a turn that never acted.** A phase
+  whose control needs the model to run a tool may retry when the report shows
+  no such tool call, never when the call ran and the outcome was wrong; and it
+  calls `oh_run` in the phase's own shell, not inside `$(...)`, or `oh_dump`
+  shows the previous phase's report. `check-opencode-session-control.sh` holds
+  OpenCode's session_id control to both.

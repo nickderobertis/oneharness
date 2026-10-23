@@ -274,7 +274,12 @@ impl EventStream {
         let Some((label, partials)) = recognize(value) else {
             return Vec::new();
         };
-        self.recognizer.get_or_insert(label);
+        // Cursor's assistant messages share the Anthropic content-block shape,
+        // so a turn that speaks before its first tool call matches the generic
+        // reading first; the harness-specific shape names the transcript.
+        if self.recognizer.is_none() || self.recognizer == Some(GENERIC_RECOGNIZER) {
+            self.recognizer = Some(label);
+        }
         let mut finished = Vec::new();
         for partial in partials {
             match partial.phase {
@@ -357,6 +362,10 @@ impl EventStream {
     }
 }
 
+/// The recognizer label shared by more than one harness's transcript; any
+/// harness-specific label seen in the same transcript replaces it.
+const GENERIC_RECOGNIZER: &str = "content-blocks";
+
 /// Try each known harness transcript shape against one JSON value, returning the
 /// recognizer label (for `events_source`) and the events it yielded, or `None`.
 /// The shapes are mutually exclusive in practice (each keys off a distinct field
@@ -386,7 +395,7 @@ fn recognize(value: &Value) -> Option<(&'static str, Vec<PartialEvent>)> {
     // and an assistant message's text and thinking blocks.
     let blocks = content_block_events(value);
     if !blocks.is_empty() {
-        return Some(("content-blocks", blocks));
+        return Some((GENERIC_RECOGNIZER, blocks));
     }
     None
 }
@@ -1669,6 +1678,24 @@ mod tests {
         assert_eq!(got.events[0].name.as_deref(), Some("shell"));
         assert_eq!(got.events[0].input, Some(json!({"command": "echo hi"})));
         assert_eq!(got.events[0].output.as_deref(), Some("hi\n"));
+    }
+
+    #[test]
+    fn cursor_turn_that_speaks_before_its_tool_call_is_labelled_cursor() {
+        // Live cursor-agent 2026-10: an assistant text record (content-block
+        // shape) precedes the `tool_call` pair; the transcript is still Cursor's.
+        let raw = concat!(
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"I'll print that now."}]}}"#,
+            "\n",
+            r#"{"type":"tool_call","subtype":"completed","call_id":"c1","tool_call":{"shellToolCall":{"args":{"command":"echo hi"},"result":{"success":{"command":"echo hi","exitCode":0,"stdout":"hi\n","stderr":""}}},"toolCallId":"c1"}}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Done."}]}}"#,
+            "\n",
+        );
+        let got = extract_events(raw, OutputFormat::StreamJson).unwrap();
+        assert_eq!(got.source, "stream-json:cursor-tool-calls");
+        let kinds: Vec<_> = got.events.iter().map(|e| e.kind.as_str()).collect();
+        assert_eq!(kinds, ["message", "tool_call", "message"]);
     }
 
     #[test]

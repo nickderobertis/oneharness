@@ -34,12 +34,32 @@ fn toggle(yes: bool, no: bool) -> Option<bool> {
 }
 
 pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
-    let request = RunRequest::from(args);
+    let mut request = RunRequest::from(args);
+    // The stdout sink speaks only the streaming protocol. Library sinks also
+    // receive history announcements for buffered runs, so select this sink
+    // using the same config layers before handing the request to the engine.
+    let stream = match request.stream {
+        Some(stream) => stream,
+        None => {
+            let project_start = request.cwd.clone().unwrap_or_else(|| {
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+            });
+            oneharness_core::io::config::load(&request.config, request.no_config, &project_start)?
+                .config
+                .stream
+                .unwrap_or(false)
+        }
+    };
+    request.stream = Some(stream);
     let mut sink = StdoutEvents::new(StreamView::of(args.stdout));
     let outcome = oneharness_core::io::run::run(
         &request,
         RunControls {
-            events: Some(&mut sink),
+            events: if stream && !request.print_command {
+                Some(&mut sink)
+            } else {
+                None
+            },
             cancel: CancelToken::new(),
             // The CLI owns the host's signal disposition for a run: a harness is
             // its own process-group leader, so a SIGINT that simply killed

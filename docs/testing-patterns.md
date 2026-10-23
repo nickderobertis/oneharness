@@ -44,6 +44,7 @@ const report = await new OneHarness().runMock(
 | `MOCK_OUTPUT_GATE` | Wait before output until this path exists, failing after 30 seconds. |
 | `MOCK_SLEEP_MS` | Delay before output/exit, in milliseconds. |
 | `MOCK_ARGV_FILE` | Write argv, one argument per line, to this path. |
+| `MOCK_INPUT_FILE` | Write `{"argv":[…],"stdin":"…"}` here, byte-exact, before answering. |
 | `MOCK_ECHO_PWD` | Emit `PWD=<inherited PWD>` and exit. |
 | `MOCK_ECHO_ENV` | Emit the named environment variable and value, then exit. |
 | `MOCK_CAT_FILE` | Emit the current contents of this file and exit. |

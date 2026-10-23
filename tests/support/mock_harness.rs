@@ -19,6 +19,9 @@
 //!   MOCK_OUTPUT_GATE path that must exist before output (bounded to 30s)
 //!   MOCK_SLEEP_MS   milliseconds to sleep before exiting (to force a timeout)
 //!   MOCK_ARGV_FILE  if set, the received argv (one per line) is written here
+//!   MOCK_INPUT_FILE if set, `{"argv":[…],"stdin":"…"}` is written here: the
+//!                   received argv and ALL of stdin, byte-exact (an argument
+//!                   holding a newline stays one element), before answering
 //!   MOCK_ECHO_PWD   if set, write `PWD=<the inherited $PWD>` to stdout and exit
 //!                   (used to assert that --cwd keeps $PWD consistent)
 //!   MOCK_ECHO_ENV   if set to a variable NAME, write `NAME=<inherited value>`
@@ -2376,6 +2379,21 @@ pub fn run() -> ! {
 
     if let Ok(path) = std::env::var("MOCK_ARGV_FILE") {
         let _ = std::fs::write(path, argv.join("\n"));
+    }
+
+    if let Ok(path) = std::env::var("MOCK_INPUT_FILE") {
+        // A recording that dropped or mangled stdin would pass for a delivery
+        // that never happened, so an unreadable or non-UTF-8 stdin fails loudly.
+        let mut stdin = String::new();
+        if let Err(err) = std::io::Read::read_to_string(&mut std::io::stdin(), &mut stdin) {
+            let _ = writeln!(
+                std::io::stderr(),
+                "mock harness: MOCK_INPUT_FILE could not read stdin: {err}"
+            );
+            std::process::exit(2);
+        }
+        let input = serde_json::json!({ "argv": argv, "stdin": stdin });
+        let _ = std::fs::write(path, input.to_string());
     }
 
     if let Ok(path) = mock_var("MOCK_CODEX_PLUGINS_LOG") {

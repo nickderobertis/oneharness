@@ -11,6 +11,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -61,13 +62,118 @@ def control_scratch(case: unittest.TestCase, tag: str) -> Path:
 
 
 def _scratch_under(case: unittest.TestCase, tag: str, root: str | None) -> Path:
-    directory = Path(tempfile.mkdtemp(prefix=f"{PREFIX}{tag}-", suffix=f"-{os.getpid()}", dir=root))
-    case.addCleanup(shutil.rmtree, directory, ignore_errors=True)
-    _mark_run(directory)
+    directory = make_marked(f"{PREFIX}{tag}-", root)
+    case.addCleanup(retire, directory)
     return directory
 
 
-def _mark_run(directory: Path) -> None:
+def make_marked(prefix: str, root: str | None) -> Path:
+    """Make a directory named ``prefix``, a random part and this process's id.
+
+    Under the leak gate it is made and marked under a name the gate does not
+    sweep, then renamed into place. A sibling run's gate sweeping the same temp
+    dir therefore never sees it unmarked. An unmarked directory would fall back
+    to this process's environment, which Windows cannot read, so the gate
+    would count it as that run's own leak.
+    """
     token = os.environ.get(RUN_ENV, "")
-    if token:
-        (directory / RUN_MARKER).write_text(token, encoding="utf-8")
+    if not token:
+        return Path(tempfile.mkdtemp(prefix=prefix, suffix=f"-{os.getpid()}", dir=root))
+    staged = Path(tempfile.mkdtemp(prefix=f".{prefix}", suffix=f"-{os.getpid()}.new", dir=root))
+    directory = staged.with_name(staged.name[1 : -len(".new")])
+    try:
+        (staged / RUN_MARKER).write_text(token, encoding="utf-8")
+        rename(staged, directory)
+    except BaseException:
+        shutil.rmtree(staged, ignore_errors=True)
+        raise
+    return directory
+
+
+def retire(directory: Path) -> None:
+    """Remove ``directory`` without ever leaving it visible to the gate unmarked.
+
+    A sibling run's leak gate counts an unmarked directory as its own leak on
+    Windows, where it cannot read this process's environment. So it is renamed
+    off the sweep first, and only then emptied. A marked directory that cannot
+    be renamed (Windows refuses while a handle stays open inside past
+    :func:`rename`'s retries) is left whole and marked, a leak its own run's
+    gate still reports; an unmarked one has no ownership to lose and is
+    removed in place. Its marker is removed first, so whatever a failed
+    removal leaves is the same in every order the filesystem lists entries.
+    That remainder gets its original marker back while still hidden, then
+    returns to the swept name.
+    """
+    gone = directory.with_name(f".{directory.name}.gone")
+    try:
+        marker: bytes | None = (directory / RUN_MARKER).read_bytes()
+    except OSError:
+        marker = None
+    try:
+        rename(directory, gone)
+    except OSError as error:
+        if marker is None:
+            shutil.rmtree(directory, ignore_errors=True)
+        else:
+            print(
+                f"scratch: left {directory} in place, still marked for its run, because it"
+                f" could not be renamed off the leak gate's sweep: {error}",
+                file=sys.stderr,
+            )
+        return
+    remove(gone)
+    if gone.exists():
+        if marker is not None:
+            (gone / RUN_MARKER).write_bytes(marker)
+        rename(gone, directory)
+
+
+#: How long a refused :func:`rename` keeps trying, in seconds: two on Windows,
+#: and none elsewhere.
+RENAME_PATIENCE = 2.0 if sys.platform == "win32" else 0.0
+
+
+def rename(source: Path, target: Path, patience: float = RENAME_PATIENCE) -> None:
+    """Rename ``source`` to ``target``, retried for up to ``patience`` seconds.
+
+    Windows refuses to rename a directory while any handle is open inside it,
+    and a sibling run's leak gate opens each swept directory's marker to read
+    it. That refusal lasts only as long as the read. Given up on at once, it left
+    a directory under its swept name that this run's own gate then reported as a
+    leak, so a sibling's sweep alone could fail this run. A unix rename is not
+    refused by an open handle, so a failure there is final at once, and so is a
+    missing ``source`` anywhere, since no sibling's read can end and make it
+    appear. Once ``patience`` has passed, the last attempt's error is raised.
+    """
+    deadline = time.monotonic() + patience
+    while True:
+        try:
+            source.rename(target)
+            return
+        except OSError as error:
+            if isinstance(error, FileNotFoundError) or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.005)
+
+
+def remove(directory: Path, patience: float = RENAME_PATIENCE) -> None:
+    """Remove ``directory``, its marker first, retried for up to ``patience`` seconds.
+
+    Windows defers deleting a file another process holds open, such as a virus
+    scanner reading a marker just written, so the directory around it cannot be
+    removed until that handle closes. Given up on at once, a retired directory
+    that only needed that moment came back under its swept name, a leak in this
+    run's own gate. Whatever is left once ``patience`` has passed stays for the
+    caller to find.
+    """
+    deadline = time.monotonic() + patience
+    while True:
+        try:
+            (directory / RUN_MARKER).unlink(missing_ok=True)
+        except OSError:
+            pass
+        else:
+            shutil.rmtree(directory, ignore_errors=True)
+        if not directory.exists() or time.monotonic() >= deadline:
+            return
+        time.sleep(0.005)

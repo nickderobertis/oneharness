@@ -546,21 +546,21 @@ oh_marker() { printf 'ONEHARNESS-LIVE-%s%s%s' "${RANDOM}" "${RANDOM}" "${RANDOM}
 # same token length (so the two runs stay an apples-to-apples token comparison).
 oh_marker_fixed() { printf 'OHBATCH%05d%05d%05d' "${RANDOM}" "${RANDOM}" "${RANDOM}"; }
 
-# The connectivity prompt: ask the harness to include the random marker verbatim
-# somewhere in its reply. Two refusal modes to avoid, both observed live:
+# The echo prompt: a plain request to reply with exactly the random marker.
+# Refusal and drift modes observed live, each shaping one part of it:
 #   * Copilot refuses a bare "output this token" as off-task ("I'm here to help
-#     with software development tasks") — so the prompt frames it as a test-suite
-#     connectivity check (an on-task software context).
-#   * Claude (haiku) refuses an over-framed "echo this token and NOTHING else,
-#     trust the framing" as a prompt-injection pattern — so the prompt drops the
-#     "nothing else / suppress all other output" demand and the defensive
-#     over-justification, and says plainly that the marker is a harmless,
-#     non-secret test fixture.
-# oh_assert_echoed is a substring check, so allowing the model to reply naturally
-# (and merely include the marker) is fine — its presence still proves the model
-# genuinely ran. Kept single-line for cross-shell quoting safety on Windows.
+#     with software development tasks") — so it names the test suite, an
+#     on-task software context.
+#   * Any reassurance about trust, secrets, safety or untrusted input reads as
+#     a prompt-injection attempt: haiku refused an over-framed "trust the
+#     framing", and qwen (gpt-4o-mini) answered the hedged "harmless round-trip
+#     test, not a secret to guard" version by running it as a shell check, or
+#     with "ready to assist" and no marker. So it says none of that.
+# oh_assert_echoed is a substring check, so a reply that wraps the marker in
+# other words still passes — its presence proves the model genuinely ran.
+# Kept single-line for cross-shell quoting safety on Windows.
 oh_prompt() {
-  printf 'This is an automated connectivity check for the oneharness end-to-end test suite — a harmless request/response round-trip test, not untrusted input and not a secret to guard. The identifier below is a random fixture the suite just generated; please confirm the round-trip by including it verbatim somewhere in your reply: %s' "$1"
+  printf 'oneharness end-to-end test. Reply with exactly this string and nothing else: %s' "$1"
 }
 
 # Run one prompt through oneharness against a real harness. Stores the JSON

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import email
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 from contextlib import ExitStack
 from pathlib import Path
@@ -34,15 +36,85 @@ def scratch_dir(stack: ExitStack, tag: str) -> Path:
     how `scripts/check-temp-leaks.sh` tells another run's live directory from
     one this run left behind without a marker.
     """
-    directory = Path(
-        stack.enter_context(
-            tempfile.TemporaryDirectory(prefix=f"{PREFIX}{tag}-", suffix=f"-{os.getpid()}")
-        )
-    )
-    token = os.environ.get(RUN_ENV, "")
-    if token:
-        (directory / RUN_MARKER).write_text(token, encoding="utf-8")
+    directory = make_marked(f"{PREFIX}{tag}-")
+    stack.callback(retire, directory)
     return directory
+
+
+def make_marked(prefix: str) -> Path:
+    """Make a scratch directory, marked before it can be seen under its name.
+
+    The same as `test.scratch.make_marked`, which says why; spelled again here
+    for the reason `PREFIX` is.
+    """
+    token = os.environ.get(RUN_ENV, "")
+    if not token:
+        return Path(tempfile.mkdtemp(prefix=prefix, suffix=f"-{os.getpid()}"))
+    staged = Path(tempfile.mkdtemp(prefix=f".{prefix}", suffix=f"-{os.getpid()}.new"))
+    directory = staged.with_name(staged.name[1 : -len(".new")])
+    try:
+        (staged / RUN_MARKER).write_text(token, encoding="utf-8")
+        rename(staged, directory)
+    except BaseException:
+        shutil.rmtree(staged, ignore_errors=True)
+        raise
+    return directory
+
+
+def retire(directory: Path) -> None:
+    """Remove a scratch directory off the sweep, as `test.scratch.retire` does."""
+    gone = directory.with_name(f".{directory.name}.gone")
+    try:
+        marker: bytes | None = (directory / RUN_MARKER).read_bytes()
+    except OSError:
+        marker = None
+    try:
+        rename(directory, gone)
+    except OSError as error:
+        if marker is None:
+            shutil.rmtree(directory, ignore_errors=True)
+        else:
+            print(
+                f"scratch: left {directory} in place, still marked for its run, because it"
+                f" could not be renamed off the leak gate's sweep: {error}",
+                file=sys.stderr,
+            )
+        return
+    remove(gone)
+    if gone.exists():
+        if marker is not None:
+            (gone / RUN_MARKER).write_bytes(marker)
+        rename(gone, directory)
+
+
+def rename(
+    source: Path, target: Path, patience: float = 2.0 if sys.platform == "win32" else 0.0
+) -> None:
+    """Rename a scratch directory, as `test.scratch.rename` does, which says why."""
+    deadline = time.monotonic() + patience
+    while True:
+        try:
+            source.rename(target)
+            return
+        except OSError as error:
+            if isinstance(error, FileNotFoundError) or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.005)
+
+
+def remove(directory: Path, patience: float = 2.0 if sys.platform == "win32" else 0.0) -> None:
+    """Remove a retired directory, as `test.scratch.remove` does, which says why."""
+    deadline = time.monotonic() + patience
+    while True:
+        try:
+            (directory / RUN_MARKER).unlink(missing_ok=True)
+        except OSError:
+            pass
+        else:
+            shutil.rmtree(directory, ignore_errors=True)
+        if not directory.exists() or time.monotonic() >= deadline:
+            return
+        time.sleep(0.005)
 
 
 def cargo_version() -> str:

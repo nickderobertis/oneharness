@@ -6019,6 +6019,52 @@ fn normalizes_tool_events_from_cursor_stream_json_content_blocks() {
 }
 
 #[test]
+fn cursor_turn_that_speaks_before_its_tool_call_reports_cursor_tool_calls() {
+    // The live cursor-agent shape the macOS e2e met on 2026-10-22: an assistant
+    // text record (content-block shape) precedes Cursor's own `tool_call` pair.
+    // The transcript is still Cursor's, so `events_source` names its recognizer.
+    let stdout = concat!(
+        r#"{"type":"system","subtype":"init","session_id":"11111111-2222-3333-4444-555555555555"}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"I'll print that exact text to stdout now."}]}}"#,
+        "\n",
+        r#"{"type":"tool_call","subtype":"started","call_id":"c1","tool_call":{"shellToolCall":{"args":{"command":"echo MARK"}}}}"#,
+        "\n",
+        r#"{"type":"tool_call","subtype":"completed","call_id":"c1","tool_call":{"shellToolCall":{"args":{"command":"echo MARK"},"result":{"success":{"command":"echo MARK","exitCode":0,"stdout":"MARK\n","stderr":""}}}}}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"I did it."}]}}"#,
+        "\n",
+        r#"{"type":"result","subtype":"success","result":"I did it.","session_id":"11111111-2222-3333-4444-555555555555"}"#,
+        "\n",
+    );
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "cursor",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("cursor"), // llmlint: ignore[e2e_not_mocked] The layer under test is oneharness reading the transcript; the paid Cursor model speaks before its tool call only sometimes, so this deterministic proof doubles it at the repo's prescribed --bin seam, while scripts/e2e-cursor.sh stays the live drift alarm against the real CLI.
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", stdout)],
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let value = json_stdout(&output);
+    let result = &value["results"][0];
+    assert_eq!(result["events_source"], "stream-json:cursor-tool-calls");
+    let kinds: Vec<&str> = result["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["message", "tool_call", "message"]);
+    assert_eq!(result["events"][1]["input"]["command"], "echo MARK");
+}
+
+#[test]
 fn claude_stream_json_surfaces_content_block_events() {
     // The flagship path: Claude Code's default `json` result has no transcript,
     // but under `--output-format stream-json` it emits the Anthropic content-block
@@ -21930,6 +21976,67 @@ fn fallback_falls_through_an_auth_failure_to_a_working_harness() {
     assert_eq!(results[1]["harness"], "codex");
     assert_eq!(results[1]["status"], "ok");
 }
+
+// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run` — its config loading, classification and fallback driver — end to end; only the paid Claude Code CLI is replaced, by the repository's own subprocess double (oneharness-mock-harness), because no real account can be made to emit an invalid-key record whose random UUIDs and timings contain `429` on demand. The record replayed is the byte-for-byte capture of the real one (tests/fixtures/claude-invalid-api-key.json), and `scripts/e2e-variants.sh` drives the same chain against the real CLI.
+/// The live `same-harness auth fallback` probe, replayed: Claude Code's real
+/// invalid-key answer states `"api_error_status":401`, but its random UUIDs and
+/// timings sometimes contain `429`, which the generic vocabulary read as a rate
+/// limit, so the report named the invalid key a rate limit. The record below is
+/// the real capture with its `duration_ms` landing on those digits, and once more
+/// with the provider's status turned to the `403` a forbidden key answers; the
+/// status must decide either way, and the chain must reach the working variant.
+#[test]
+fn fallback_falls_through_an_invalid_key_whose_record_carries_429_digits() {
+    let mock = mock_bin().display().to_string();
+    let capture = include_str!("../../../tests/fixtures/claude-invalid-api-key.json").trim_end();
+    let unlucky = capture.replace(r#""duration_ms":272"#, r#""duration_ms":429"#);
+    assert_ne!(unlucky, capture, "the duration must be rewritten");
+    let forbidden = unlucky.replace(r#""api_error_status":401"#, r#""api_error_status":403"#);
+    assert_ne!(forbidden, unlucky, "the status must be rewritten");
+    for (status, record) in [("401", &unlucky), ("403", &forbidden)] {
+        let project = format!(
+            r#"
+            harnesses = ["claude-code:invalid", "claude-code:working"]
+            run_mode = "fallback"
+
+            [harness.claude-code.variant.invalid]
+            bin = '{mock}'
+            env = {{ MOCK_EXIT = "1", MOCK_STDOUT = '{record}' }}
+
+            [harness.claude-code.variant.working]
+            bin = '{mock}'
+            "#
+        );
+        let fx = ConfigFixture::new(
+            &format!("fallback-invalid-key-429-digits-{status}"),
+            &project,
+            "",
+        );
+        let output = run_with_config(
+            &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+            &[],
+            &fx.user_config(),
+        );
+        assert!(
+            output.status.success(),
+            "{status}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let v = json_stdout(&output);
+        let results = v["results"].as_array().unwrap();
+        assert_eq!(results.len(), 2, "{status}: {v}");
+        assert_eq!(results[0]["harness_id"], "claude-code:invalid", "{status}");
+        assert_eq!(results[0]["status"], "nonzero", "{status}");
+        assert_eq!(results[0]["failure_kind"], "auth", "{status}");
+        assert_eq!(
+            v["fallback"]["fell_through"][0]["reason"], "auth",
+            "{status}"
+        );
+        assert_eq!(v["fallback"]["ran"], "claude-code:working", "{status}");
+        assert_eq!(results[1]["status"], "ok", "{status}");
+    }
+}
+// llmlint: ignore-end[e2e_not_mocked]
 
 #[test]
 fn fallback_falls_through_a_clean_exit_provider_auth_error() {
@@ -42166,4 +42273,190 @@ fn buffered_openings_keep_each_batch_prompt_and_skip_unvisited_fallback_candidat
         .collect();
     assert_eq!(starts.len(), 1);
     assert_eq!(starts[0]["harness_id"], "claude-code");
+}
+
+#[test]
+fn buffered_history_stdout_keeps_its_bytes_and_explicit_stream_overrides_config() {
+    let bin = mock_bin().display().to_string().replace('\\', "\\\\"); // llmlint: ignore[e2e_not_mocked] This journey drives the real CLI and its config/output boundary; only the paid harness subprocess is replaced at the existing binary seam.
+    for configured in [false, true] {
+        let fx = ConfigFixture::new(
+            "buffered-history-stdout",
+            &format!("harnesses = [\"claude-code\"]\nstream = {configured}\n[harness.claude-code]\nbin = \"{bin}\"\n"),
+            "",
+        );
+        let store = ScratchDir::new("buffered-history-stdout").unwrap();
+        for choice in [None, Some(false), Some(true)] {
+            for compact in [false, true] {
+                let cwd = fx.cwd();
+                let dir = store.display().to_string();
+                let mut args = vec![
+                    "run",
+                    "--prompt",
+                    "hello",
+                    "--cwd",
+                    &cwd,
+                    "--history",
+                    "--history-dir",
+                    &dir,
+                ];
+                match choice {
+                    Some(true) => args.push("--stream"),
+                    Some(false) => args.push("--no-stream"),
+                    None => {}
+                }
+                if compact {
+                    args.push("--compact");
+                } else {
+                    args.extend(["--format", "json"]);
+                }
+                let output = run_with_config_as_typed(
+                    &args,
+                    &[("MOCK_STDOUT", r#"{"result":"finished"}"#)],
+                    &fx.user_config(),
+                );
+                assert!(output.status.success(), "{output:?}");
+                if choice.unwrap_or(configured) {
+                    let lines: Vec<Value> = String::from_utf8_lossy(&output.stdout)
+                        .lines()
+                        .map(|line| serde_json::from_str(line).unwrap())
+                        .collect();
+                    assert_eq!(lines[0]["type"], "run-started");
+                    assert_eq!(lines.last().unwrap()["type"], "result");
+                } else {
+                    let report: oneharness_core::domain::report::RunReport =
+                        serde_json::from_slice(&output.stdout)
+                            .expect("one buffered report document");
+                    assert_eq!(report.results[0].text.as_deref(), Some("finished"));
+                    // Pin the existing buffered byte protocol: the serialized
+                    // report and exactly one newline, without stream envelopes.
+                    let mut expected = if compact {
+                        serde_json::to_vec(&report).unwrap()
+                    } else {
+                        serde_json::to_vec_pretty(&report).unwrap()
+                    };
+                    expected.push(b'\n');
+                    assert_eq!(output.stdout, expected);
+                }
+            }
+        }
+    }
+}
+
+/// What the mock harness recorded under `MOCK_INPUT_FILE`: its argv and stdin.
+fn recorded_input(path: &Path) -> (Vec<String>, String) {
+    let input: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let argv = input["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|arg| arg.as_str().unwrap().to_string())
+        .collect();
+    (argv, input["stdin"].as_str().unwrap().to_string())
+}
+
+#[test]
+fn buffered_and_streamed_runs_deliver_the_whole_prompt_and_system_to_the_harness() {
+    // The live probes this pins: claude-code answering a multi-line `--system`,
+    // and qwen run in a `--cwd` where `oneharness sync` wrote its settings. Each
+    // input must reach the harness whole, as one argv element or as all of stdin.
+    let claude_bin = bin_override("claude-code"); // llmlint: ignore[e2e_not_mocked] This journey drives the real CLI; only the paid harness subprocess is replaced at the existing binary seam, which is what records the input it was handed.
+    let record = ScratchDir::new("delivered-input").unwrap();
+    let input_file = record.join("input.json");
+    let input_arg = input_file.display().to_string();
+    let delivered = |argv: &[String], stdin: &str, text: &str| {
+        argv.iter().any(|arg| arg == text) || stdin == text
+    };
+
+    let prompt = "Follow your system instructions.";
+    let system = "You are a connectivity-check fixture.\nFollow the next instruction exactly.\nReply with this single token verbatim and nothing else: OH-MARK-1";
+    for stream in ["--no-stream", "--stream"] {
+        let _ = std::fs::remove_file(&input_file);
+        let output = run(
+            &[
+                "run",
+                "--harness",
+                "claude-code",
+                "--prompt",
+                prompt,
+                "--system",
+                system,
+                "--bin",
+                &claude_bin,
+                stream,
+                "--compact",
+            ],
+            &[("MOCK_INPUT_FILE", &input_arg)],
+        );
+        assert!(output.status.success(), "{stream}: {output:?}");
+        let (argv, stdin) = recorded_input(&input_file);
+        assert!(
+            delivered(&argv, &stdin, prompt),
+            "{stream}: prompt not whole in {argv:?} / {stdin:?}"
+        );
+        assert!(
+            delivered(&argv, &stdin, system),
+            "{stream}: system not whole in {argv:?} / {stdin:?}"
+        );
+    }
+
+    let fx = ConfigFixture::new(
+        "delivered-input-synced",
+        "[harness.qwen]\nallowed_tools = [\"run_shell_command(ls)\"]\ndenied_tools = [\"run_shell_command(rm)\"]\n",
+        "",
+    );
+    let cwd = fx.cwd();
+    let project_config = fx.dir.join("oneharness.toml").display().to_string();
+    let sync = run_with_config(
+        &[
+            "sync",
+            "--harness",
+            "qwen",
+            "--cwd",
+            &cwd,
+            "--config",
+            &project_config,
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(sync.status.success(), "{sync:?}");
+    assert!(fx.dir.join(".qwen").join("settings.json").is_file());
+    let qwen_bin = bin_override("qwen"); // llmlint: ignore[e2e_not_mocked] As for claude-code above: the real CLI runs, and only the paid qwen subprocess is replaced at the binary seam, to record what it was handed.
+    let prompt = "Reply with exactly this token and nothing else: OH-MARK-2";
+    for stream in ["--no-stream", "--stream"] {
+        let args = [
+            "run",
+            "--harness",
+            "qwen",
+            "--prompt",
+            prompt,
+            "--cwd",
+            &cwd,
+            "--bin",
+            &qwen_bin,
+            "--mode",
+            "bypass",
+            stream,
+            "--compact",
+        ];
+        let envs = [("MOCK_INPUT_FILE", input_arg.as_str())];
+        // Hermetic, as the live probe runs it, then with the project config
+        // that sync read discovered from `--cwd`.
+        for configured in [false, true] {
+            let label = if configured { "configured" } else { "hermetic" };
+            let _ = std::fs::remove_file(&input_file);
+            let output = if configured {
+                run_with_config(&args, &envs, &fx.user_config())
+            } else {
+                run(&args, &envs)
+            };
+            assert!(output.status.success(), "{label} {stream}: {output:?}");
+            let (argv, stdin) = recorded_input(&input_file);
+            assert!(
+                delivered(&argv, &stdin, prompt),
+                "{label} {stream}: prompt not whole in {argv:?} / {stdin:?}"
+            );
+        }
+    }
 }

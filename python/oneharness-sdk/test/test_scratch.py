@@ -3,15 +3,56 @@
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
+import textwrap
+import threading
+import time
 import unittest
-from contextlib import ExitStack
+from contextlib import ExitStack, redirect_stderr, suppress
+from io import StringIO
 from pathlib import Path
+from typing import Callable
 from unittest import mock
 
 from . import package_e2e
+from . import scratch as scratch_module
 from .scratch import PREFIX, RUN_ENV, RUN_MARKER, control_scratch, scratch
+
+# Makes and removes scratch directories through both makers in a loop, then
+# leaves one behind as a real leak would, for the observer below to watch from
+# another process the way a sibling run's leak gate does.
+CHURN = textwrap.dedent(
+    """
+    import sys, unittest
+    from contextlib import ExitStack
+    from test import package_e2e
+    from test.scratch import scratch
+
+    case = unittest.TestCase()
+    for cycle in range(int(sys.argv[1])):
+        scratch(case, f"churn-{cycle}")
+        case.doCleanups()
+        with ExitStack() as stack:
+            package_e2e.scratch_dir(stack, f"churn-e2e-{cycle}")
+    scratch(unittest.TestCase(), "leaked")
+    """
+)
+
+#: Whether this user can be refused a write by a directory's permissions:
+#: Windows ignores the mode bits, and a privileged user writes through them.
+PERMISSIONS_BIND = sys.platform != "win32" and os.geteuid() != 0
+
+#: Whether a removal can be held off here: on Windows by an open handle, and
+#: elsewhere by permissions this user obeys.
+REMOVAL_BLOCKS = PERMISSIONS_BIND or sys.platform == "win32"
+
+
+def entries(root: Path) -> list[str]:
+    """What ``root`` holds besides the leak gate's marker for this run, if any."""
+    return sorted(name for name in os.listdir(root) if name != RUN_MARKER)
 
 
 class ScratchTests(unittest.TestCase):
@@ -88,6 +129,248 @@ class ScratchTests(unittest.TestCase):
             ]
             for directory in made:
                 self.assertFalse((directory / RUN_MARKER).exists(), directory)
+
+    def test_a_sibling_gate_never_sees_a_scratch_directory_without_its_marker(self) -> None:
+        """The gate on one project sweeps the same temp dir while a sibling
+        makes and removes its scratch. On Windows it cannot read that process's
+        environment, so any swept directory it found unmarked counted as its own
+        leak. So another process churns here while this one lists the root
+        throughout, and every swept name must hold the churner's marker while it
+        exists."""
+        root = scratch(self, "observed")
+        churn_run = "4242.python-churn"
+        environment = {**os.environ, "TMPDIR": str(root), "TEMP": str(root), "TMP": str(root)}
+        environment[RUN_ENV] = churn_run
+        churner = subprocess.Popen(
+            [sys.executable, "-c", CHURN, "300"],
+            cwd=Path(__file__).resolve().parents[1],
+            env=environment,
+        )
+        seen = 0
+        unmarked: list[str] = []
+        while churner.poll() is None:
+            for name in os.listdir(root):
+                if not name.startswith(PREFIX):
+                    continue
+                seen += 1
+                directory = root / name
+                try:
+                    marker = (directory / RUN_MARKER).read_text(encoding="utf-8")
+                except OSError:
+                    marker = None
+                # Each cycle's name is its own, so a directory still there after a
+                # failed read is the one that was read.
+                if marker != churn_run and directory.exists():
+                    unmarked.append(name)
+        self.assertEqual(churner.returncode, 0)
+        self.assertGreater(seen, 0, "the observer never overlapped a scratch directory")
+        self.assertEqual(unmarked, [])
+        # A directory that really is left behind is still the churner's leak: it
+        # stands under the swept name, marked for its run, with nothing staged or
+        # retired beside it.
+        left = entries(root)
+        self.assertEqual(len(left), 1, left)
+        [leaked] = left
+        self.assertTrue(leaked.startswith(f"{PREFIX}leaked-"), leaked)
+        self.assertEqual((root / leaked / RUN_MARKER).read_text(encoding="utf-8"), churn_run)
+
+    def test_a_scratch_directory_that_cannot_be_marked_leaves_nothing_behind(self) -> None:
+        """The marker is written under a name the gate does not sweep, so a
+        failure once that staging exists would leave a directory no gate could
+        ever report. A run token holding a lone surrogate cannot be written as
+        UTF-8, so the marker write really fails after staging exists."""
+        root = scratch(self, "unmarkable")
+        for make in (
+            lambda: scratch_module.make_marked(f"{PREFIX}unmarked-", str(root)),
+            lambda: package_e2e.make_marked(f"{PREFIX}unmarked-"),
+        ):
+            with (
+                mock.patch.dict(os.environ, {RUN_ENV: "4242.\udcff"}),
+                mock.patch.object(tempfile, "tempdir", str(root)),
+                self.assertRaises(UnicodeEncodeError),
+            ):
+                make()
+            self.assertEqual(entries(root), [])
+
+    def test_a_scratch_directory_already_gone_is_given_back_without_complaint(self) -> None:
+        """Removal renames a directory off the sweep first, and falls back to
+        removing it in place when that rename fails, as it does on Windows while
+        a handle is open inside, or here, where nothing is left."""
+        for retire in (scratch_module.retire, package_e2e.retire):
+            directory = Path(tempfile.mkdtemp(prefix=f"{PREFIX}already-gone-"))
+            directory.rmdir()
+            retire(directory)
+            self.assertFalse(directory.exists())
+
+    @unittest.skipUnless(PERMISSIONS_BIND, "needs POSIX permissions an unprivileged user obeys")
+    def test_a_partly_removed_scratch_directory_returns_to_the_sweep_with_its_marker(
+        self,
+    ) -> None:
+        """Removal renames a directory off the sweep and removes its marker
+        before anything else. If the rest cannot be removed, the remainder must
+        not stay hidden, nor come back unmarked: it returns still owned by its
+        run, which is what makes it that run's leak in the gate."""
+        root = scratch(self, "unremovable")
+        for index, retire in enumerate((scratch_module.retire, package_e2e.retire)):
+            run = f"4242.python-unremovable-{index}"
+            with mock.patch.dict(os.environ, {RUN_ENV: run}):
+                directory = scratch_module.make_marked(f"{PREFIX}stuck-{index}-", str(root))
+            locked = directory / "locked"
+            locked.mkdir()
+            (locked / "file").write_text("held", encoding="utf-8")
+            locked.chmod(0o500)
+            try:
+                retire(directory)
+            finally:
+                locked.chmod(0o700)
+            self.assertIn(directory.name, entries(root))
+            self.assertEqual((directory / RUN_MARKER).read_text(encoding="utf-8"), run)
+        self.assertEqual([name for name in entries(root) if name.startswith(".")], [])
+
+    @unittest.skipUnless(PERMISSIONS_BIND, "needs POSIX permissions an unprivileged user obeys")
+    def test_a_marked_scratch_directory_that_cannot_be_renamed_is_left_whole(self) -> None:
+        """Removing it in place would take its marker first and leave it visible
+        unmarked, the race the staging names exist to close. So it stays as it
+        was: under its swept name, owned by its run."""
+        root = scratch(self, "unrenamable")
+        for index, retire in enumerate((scratch_module.retire, package_e2e.retire)):
+            run = f"4242.python-unrenamable-{index}"
+            with mock.patch.dict(os.environ, {RUN_ENV: run}):
+                directory = scratch_module.make_marked(f"{PREFIX}stuck-{index}-", str(root))
+            (directory / "inside.txt").write_text("content", encoding="utf-8")
+            root.chmod(0o500)
+            said = StringIO()
+            try:
+                with redirect_stderr(said):
+                    retire(directory)
+            finally:
+                root.chmod(0o700)
+            self.assertEqual((directory / RUN_MARKER).read_text(encoding="utf-8"), run)
+            self.assertTrue((directory / "inside.txt").exists(), "emptied in place")
+            # Giving up is said, beside the leak its run's gate will report.
+            self.assertIn(f"scratch: left {directory} in place", said.getvalue())
+
+    @unittest.skipUnless(PERMISSIONS_BIND, "needs POSIX permissions an unprivileged user obeys")
+    def test_an_unmarked_scratch_directory_that_cannot_be_renamed_is_removed_in_place(
+        self,
+    ) -> None:
+        """With no marker there is no ownership to lose, so removal goes on."""
+        root = scratch(self, "unmarked-unrenamable")
+        for index, retire in enumerate((scratch_module.retire, package_e2e.retire)):
+            with mock.patch.dict(os.environ):
+                os.environ.pop(RUN_ENV, None)
+                directory = scratch_module.make_marked(f"{PREFIX}stuck-{index}-", str(root))
+            (directory / "inside.txt").write_text("content", encoding="utf-8")
+            root.chmod(0o500)
+            try:
+                retire(directory)
+            finally:
+                root.chmod(0o700)
+            self.assertFalse((directory / "inside.txt").exists(), "not emptied")
+
+    def blocked_rename(self, tag: str, content: str) -> tuple[Path, Path]:
+        """A directory holding ``content``, and a non-empty one standing where it
+        is to be renamed to, which refuses the rename on every platform until it
+        is gone."""
+        root = scratch(self, tag)
+        source, target = root / "from", root / "to"
+        source.mkdir()
+        (source / "content").write_text(content, encoding="utf-8")
+        target.mkdir()
+        (target / "blocker").write_text("", encoding="utf-8")
+        with self.assertRaises(OSError):
+            source.rename(target)
+        return source, target
+
+    def test_a_rename_refused_for_a_moment_succeeds_within_its_patience(self) -> None:
+        """Windows refuses a rename while a sibling's gate holds a handle inside,
+        and only for as long as it holds it. A blocker removed while the rename
+        is retrying stands in for that read ending."""
+        for index, rename in enumerate((scratch_module.rename, package_e2e.rename)):
+            source, target = self.blocked_rename(f"rename-recovers-{index}", "moved")
+            remover = threading.Timer(0.1, shutil.rmtree, (target,))
+            remover.start()
+            try:
+                rename(source, target, 10.0)
+            finally:
+                remover.join()
+            self.assertFalse(source.exists())
+            self.assertEqual((target / "content").read_text(encoding="utf-8"), "moved")
+
+    def test_a_rename_refused_past_its_patience_fails_and_moves_nothing(self) -> None:
+        for index, rename in enumerate((scratch_module.rename, package_e2e.rename)):
+            source, target = self.blocked_rename(f"rename-exhausted-{index}", "stays")
+            started = time.monotonic()
+            with self.assertRaises(OSError):
+                rename(source, target, 0.2)
+            self.assertGreaterEqual(time.monotonic() - started, 0.2)
+            self.assertEqual((source / "content").read_text(encoding="utf-8"), "stays")
+            self.assertTrue((target / "blocker").exists())
+            # With no patience, as on unix, the first refusal is the answer.
+            started = time.monotonic()
+            with self.assertRaises(OSError):
+                rename(source, target, 0.0)
+            self.assertLess(time.monotonic() - started, 0.2)
+
+    def test_a_rename_of_a_missing_source_fails_at_once_whatever_its_patience(self) -> None:
+        """Retiring a directory a test already removed would otherwise hold its
+        cleanup for the whole patience on Windows."""
+        root = scratch(self, "rename-missing")
+        for rename in (scratch_module.rename, package_e2e.rename):
+            started = time.monotonic()
+            with self.assertRaises(FileNotFoundError):
+                rename(root / "missing", root / "to", 10.0)
+            self.assertLess(time.monotonic() - started, 1.0)
+
+    def blocked_removal(self, tag: str) -> tuple[Path, Callable[[], None]]:
+        """A marked directory whose content cannot be removed until the returned
+        release runs: on Windows a handle held open inside, as a scanner's read
+        holds one, and elsewhere a subdirectory refusing writes."""
+        directory = scratch(self, tag) / "held"
+        inner = directory / "inner"
+        inner.mkdir(parents=True)
+        (directory / RUN_MARKER).write_text("4242.python-held", encoding="utf-8")
+        (inner / "file").write_text("held", encoding="utf-8")
+        if sys.platform == "win32":
+            release = (inner / "file").open(encoding="utf-8").close
+        else:
+            inner.chmod(0o500)
+
+            def release() -> None:
+                # A removal that went through has taken it with it.
+                with suppress(FileNotFoundError):
+                    inner.chmod(0o700)
+
+        self.addCleanup(release)
+        return directory, release
+
+    @unittest.skipUnless(REMOVAL_BLOCKS, "needs a removal this user can be refused")
+    def test_a_removal_refused_for_a_moment_succeeds_within_its_patience(self) -> None:
+        """Windows defers a delete while another process holds the file, and
+        only until it closes it; a blocker released while the removal is
+        retrying stands in for that."""
+        for index, remove in enumerate((scratch_module.remove, package_e2e.remove)):
+            directory, release = self.blocked_removal(f"remove-recovers-{index}")
+            releaser = threading.Timer(0.1, release)
+            releaser.start()
+            try:
+                remove(directory, 10.0)
+            finally:
+                releaser.join()
+            self.assertFalse(directory.exists())
+
+    @unittest.skipUnless(REMOVAL_BLOCKS, "needs a removal this user can be refused")
+    def test_a_removal_refused_past_its_patience_leaves_the_rest_unmarked(self) -> None:
+        """What is left is the caller's to find, and its marker has gone first,
+        so retirement puts that marker back before it returns the remainder."""
+        for index, remove in enumerate((scratch_module.remove, package_e2e.remove)):
+            directory, release = self.blocked_removal(f"remove-exhausted-{index}")
+            started = time.monotonic()
+            remove(directory, 0.2)
+            self.assertGreaterEqual(time.monotonic() - started, 0.2)
+            self.assertTrue((directory / "inner").is_dir())
+            self.assertFalse((directory / RUN_MARKER).exists())
+            release()
 
     def test_a_control_store_is_rooted_at_tmp_rather_than_the_temp_dir(self) -> None:
         """Its path becomes a socket address, and macOS's per-user temp dir alone

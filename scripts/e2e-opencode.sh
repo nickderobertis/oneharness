@@ -88,17 +88,18 @@ oh_mock_enforce opencode
 # never occurs (file PRESENT); the only difference between the two phases is the
 # deny needle, which isolates the session_id field as the cause of the block.
 oh_opencode_session_id_forwarded() {
-  local bin sandbox out status denyfile allowfile
+  local bin sandbox status denyfile allowfile report attempt
   bin="$(oh_bin)"
   [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
   local rules='Rules: you MUST actually invoke your shell tool with that exact command — never decide on your own that it is not permitted; attempt it. Use only the shell tool, and do NOT create the file by any other means.'
 
-  # Sync a single-hook gate (deny needle $2) into a fresh sandbox and drive the
-  # real OpenCode through one `touch $1`, under bypass so the gate is the sole
-  # decider. Echoes the sandbox path; the caller checks for the file.
-  _oh_oc_gate_run() {
-    local file="$1" needle="$2" sb cfg
+  # Sync a single-hook gate (deny needle $1) into a fresh sandbox. Echoes the
+  # sandbox path. It runs no turn: `oh_run` must run in this shell, not the
+  # caller's `$(...)`, or `oh_field`/`oh_dump` read the previous phase's report
+  # (a failed control once dumped the mock-stub turn before it).
+  _oh_oc_gate_sandbox() {
+    local needle="$1" sb cfg
     sb="$(mktemp -d)"
     sb="$(oh_native_path "$sb")"
     git init -q "$sb" 2>/dev/null || true
@@ -111,39 +112,63 @@ TOML
     if ! cfg="$(ONEHARNESS_NO_CONFIG='' "$bin" sync --harness opencode \
       --cwd "$sb" --config "$sb/oneharness.toml" --compact 2>&1)"; then
       printf '%s\n' "$cfg" >&2
-      rm -rf "$sb"
+      rm -rf "$sb" || note "  could not remove the scratch directory $sb — delete it by hand"
       fail "opencode: oneharness sync failed to install the session_id gate"
     fi
-    oh_run opencode "You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command, then stop: touch $sb/$file. $rules" --cwd "$sb"
     printf '%s' "$sb"
+  }
+
+  # Drive the real OpenCode through one `touch $2` in sandbox $1, under bypass
+  # so the gate is the sole decider; the caller checks for the file.
+  _oh_oc_gate_run() {
+    oh_run opencode "You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command, then stop: touch $1/$2. $rules" --cwd "$1"
   }
 
   note "  session-id[control]: a needle absent from the payload must let the touch run"
   allowfile="ohsess-allow-${RANDOM}${RANDOM}.txt"
-  sandbox="$(_oh_oc_gate_run "$allowfile" "OHSESSNEVER${RANDOM}${RANDOM}")"
-  status="$(oh_field '.results[0].status')"
-  if [ "$status" = "skipped" ]; then
-    rm -rf "$sandbox"
-    skip "opencode is not installed (oneharness reported status=skipped); nothing to verify"
-  fi
+  sandbox="$(_oh_oc_gate_sandbox "OHSESSNEVER${RANDOM}${RANDOM}")"
+  report="$sandbox/.oh-report.json"
+  # Up to two turns, as `oh_mock_enforce` allows: a model occasionally answers
+  # without invoking its shell tool at all (no `touch` tool call in its events),
+  # which is agent flakiness, not a verdict. Only that case is retried; a touch
+  # the agent attempted that still left no file fails hard.
+  # llmlint: ignore-block[tool_output_is_signal] WHICH attempt won is the signal, not chatter, as in `oh_control_mode_enforce`: the retry is a backstop for a model that declined the turn, so a control that passes only on its second attempt every night is one about to fail, and only this line can say so in a CI-only suite.
+  for attempt in 1 2; do
+    _oh_oc_gate_run "$sandbox" "$allowfile"
+    status="$(oh_field '.results[0].status')"
+    if [ "$status" = "skipped" ]; then
+      rm -rf "$sandbox" || note "  could not remove the scratch directory $sandbox — delete it by hand"
+      skip "opencode is not installed (oneharness reported status=skipped); nothing to verify"
+    fi
+    [ ! -e "$sandbox/$allowfile" ] || break
+    if ! printf '%s' "$OH_REPORT" >"$report"; then
+      rm -rf "$sandbox" || note "  could not remove the scratch directory $sandbox — delete it by hand"
+      fail "opencode: could not write the control turn's report to $report — check that the host temp dir is writable and has space"
+    fi
+    if _oh_touch_attempted "$report" "$allowfile"; then
+      break
+    fi
+  done
   if [ ! -e "$sandbox/$allowfile" ]; then
     oh_dump
-    rm -rf "$sandbox"
-    fail "opencode: the positive control never ran ($allowfile absent) — cannot trust the session_id deny as a real block (does OpenCode run shell headlessly here?)"
+    rm -rf "$sandbox" || note "  could not remove the scratch directory $sandbox — delete it by hand"
+    fail "opencode: the positive control never ran ($allowfile absent after $attempt attempt(s)), so the session_id deny cannot be trusted as a real block. Next: read the events dumped above — a bash tool call that errored means the gate blocked a needle the payload never carries (pipe that payload to \`oneharness gate opencode --deny-if-contains <needle>\` by hand); no bash tool call on either attempt means the model declined the turn, so tighten the prompt"
   fi
-  note "  ok[control]: the unmatched command ran"
-  rm -rf "$sandbox"
+  note "  ok[control]: the unmatched command ran (attempt $attempt of 2)"
+  # llmlint: ignore-end[tool_output_is_signal]
+  rm -rf "$sandbox" || note "  could not remove the scratch directory $sandbox — delete it by hand"
 
   note "  session-id[proof]: denying on the session_id key must block the touch"
   denyfile="ohsess-deny-${RANDOM}${RANDOM}.txt"
-  sandbox="$(_oh_oc_gate_run "$denyfile" "session_id")"
+  sandbox="$(_oh_oc_gate_sandbox "session_id")"
+  _oh_oc_gate_run "$sandbox" "$denyfile"
   if [ -e "$sandbox/$denyfile" ]; then
     oh_dump
-    rm -rf "$sandbox"
+    rm -rf "$sandbox" || note "  could not remove the scratch directory $sandbox — delete it by hand"
     fail "opencode: the gate did NOT fire on the session_id key — the shim's payload is missing session_id, so input.sessionID is not being forwarded (session_id regression)"
   fi
   note "  ok[proof]: the payload carried session_id, so the gate fired"
-  rm -rf "$sandbox"
+  rm -rf "$sandbox" || note "  could not remove the scratch directory $sandbox — delete it by hand"
   note "PASS: opencode session_id forwarding"
 }
 

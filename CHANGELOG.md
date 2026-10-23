@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.26.1](https://github.com/nickderobertis/oneharness/compare/v0.26.0...v0.26.1) - 2026-10-23
+
+### Fixed
+
+- *(history)* tell a sink each run began when the run does not stream ([#1530](https://github.com/nickderobertis/oneharness/pull/1530))
+
 ## [0.26.0](https://github.com/nickderobertis/oneharness/compare/v0.25.10...v0.26.0) - 2026-10-22
 
 ### Added

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.1](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.29.0...oneharness-core-v0.29.1) - 2026-10-23
+
+### Fixed
+
+- *(history)* tell a sink each run began when the run does not stream ([#1530](https://github.com/nickderobertis/oneharness/pull/1530))
+
 ## [0.29.0](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.28.8...oneharness-core-v0.29.0) - 2026-10-22
 
 ### Added

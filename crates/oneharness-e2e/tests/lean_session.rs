@@ -2134,3 +2134,58 @@ fn compact_refuses_an_empty_session_name() {
     assert_eq!(out.status.code(), Some(2), "{out:?}");
     assert!(stderr(&out).contains("--session"), "{}", stderr(&out));
 }
+
+/// `list`'s text view carries each harness's new capabilities on its own row.
+#[test]
+fn the_list_text_view_states_each_lean_capability() {
+    let out = oh(&["list", "--format", "text"], &[], None);
+    assert!(out.status.success(), "{out:?}");
+    let text = String::from_utf8(out.stdout).unwrap();
+    let row = |id: &str| {
+        let at = text
+            .lines()
+            .position(|l| l.starts_with(&format!("{id} (")))
+            .unwrap();
+        text.lines()
+            .skip(at + 1)
+            .find(|l| l.trim_start().starts_with("auto_compact "))
+            .unwrap_or_else(|| panic!("{id} has a lean capability row:\n{text}"))
+            .trim()
+            .to_string()
+    };
+    assert_eq!(
+        row("claude-code"),
+        "auto_compact yes · compact_now yes · tool_set yes · skills_off yes · mcp_off yes · images yes · call_usage yes"
+    );
+    assert_eq!(
+        row("codex"),
+        "auto_compact yes · compact_now yes · tool_set no · skills_off yes · mcp_off yes · images yes · call_usage yes"
+    );
+    assert_eq!(
+        row("goose"),
+        "auto_compact no · compact_now no · tool_set no · skills_off no · mcp_off no · images no · call_usage no"
+    );
+}
+
+/// `compact`'s text view says how it ended, the context sizes the harness
+/// reported, and, when it did not complete, why.
+#[test]
+fn the_compact_text_view_states_the_outcome_sizes_and_reason() {
+    let s = Sessions::new("text-view");
+    s.turn("claude-code", "alpha");
+    let out = s.compact("claude-code", &["--format", "text"]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap(),
+        "completed · session watch on claude-code · context 6809 → 7405 tokens\n"
+    );
+    let out = s.compact(
+        "claude-code",
+        &["--format", "text", "--env", "MOCK_COMPACT_FAIL=refuse"],
+    );
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap(),
+        "failed · session watch on claude-code\n  Not enough messages to compact.\n"
+    );
+}

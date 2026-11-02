@@ -317,7 +317,13 @@ describe("OneHarness", () => {
 	registerScratchCleanup();
 
 	test("generated validators match the shared SDK acceptance matrix", () => {
-		const schemas = {
+		// Only `safeParse(...).success` is read here; naming that narrower shape
+		// keeps TypeScript from instantiating the union of every root's full
+		// type, which the version-gated history record makes too deep to infer.
+		const schemas: Record<
+			string,
+			{ safeParse(value: unknown): { success: boolean } }
+		> = {
 			run_options: RunOptionsSchema,
 			history_lookup: HistoryLookupSchema,
 			history_list_options: HistoryListOptionsSchema,
@@ -329,10 +335,12 @@ describe("OneHarness", () => {
 		};
 		expect(contractMatrix.cases.length).toBeGreaterThan(0);
 		for (const fixture of contractMatrix.cases) {
-			expect(
-				schemas[fixture.root].safeParse(fixture.value).success,
-				fixture.name,
-			).toBe(fixture.accepted);
+			const schema = schemas[fixture.root];
+			if (schema === undefined)
+				throw new Error(`no generated validator for root ${fixture.root}`);
+			expect(schema.safeParse(fixture.value).success, fixture.name).toBe(
+				fixture.accepted,
+			);
 		}
 	});
 
@@ -1505,6 +1513,63 @@ describe("OneHarness", () => {
 		expect(malformed.results[0]?.status).toBe("ok");
 		expect(malformed.results[0]?.text).toBeNull();
 		expect(malformed.results[0]?.stdout).toBe("{not-json");
+	});
+
+	test("forwards the lean-session options and compacts a session", async () => {
+		const dir = await scratch("lean");
+		const argvFile = resolve(dir, "argv");
+		await sdk().run({
+			prompt: "hi",
+			harnesses: ["claude-code"],
+			mode: "bypass",
+			autoCompactTokens: 90000,
+			toolSet: ["shell", "read"],
+			noSkills: true,
+			noMcp: true,
+			env: { MOCK_ARGV_FILE: argvFile },
+			bins: { "claude-code": mock },
+		});
+		const argv = (await readFile(argvFile, "utf8")).split("\n");
+		expect(
+			argv.slice(argv.indexOf("--tools"), argv.indexOf("--tools") + 3),
+		).toEqual(["--tools", "Bash", "Read"]);
+		expect(argv).toContain("--disable-slash-commands");
+		expect(argv).toContain("--strict-mcp-config");
+
+		const env = {
+			CLAUDE_CONFIG_DIR: resolve(dir, "home"),
+			MOCK_CLAUDE_SESSIONS: "1",
+		};
+		const session = {
+			session: "watch",
+			sessionDir: resolve(dir, "store"),
+			cwd: dir,
+			env,
+			bins: { "claude-code": mock },
+		};
+		for (const prompt of ["alpha", "beta"])
+			await sdk().run({
+				prompt,
+				harnesses: ["claude-code"],
+				mode: "bypass",
+				...session,
+			});
+		const outcome = await sdk().compact(session);
+		expect(outcome.status).toBe("completed");
+		expect(outcome.context_tokens_before).toBe(6809);
+		const next = await sdk().run({
+			prompt: "gamma",
+			harnesses: ["claude-code"],
+			mode: "bypass",
+			...session,
+		});
+		expect(next.results[0]?.text).toBe(
+			"context: [summary of: alpha, beta, gamma]",
+		);
+		const unknown = await sdk()
+			.compact({ ...session, session: "nobody" })
+			.catch((error: unknown) => error);
+		expect(unknown).toBeInstanceOf(Error);
 	});
 
 	test("forwards optional reasoning without confusing thinking with actions", async () => {

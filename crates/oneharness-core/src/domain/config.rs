@@ -1375,13 +1375,13 @@ pub struct ConfigReport {
     /// (or neither) is set — the effective mode then derives from `bypass`.
     pub mode: Field<PermissionMode>,
     pub timeout: Field<u64>,
-    /// The layered `auto_compact_tokens`, if any.
+    // The layered `auto_compact_tokens`, `tool_set`, `load_skills` and
+    // `load_mcp`, each unset unless a layer sets it. `//` rather than `///`:
+    // a doc comment beside a `Field` `$ref` makes the SDK generator inline a
+    // fresh copy of the type under a new name.
     pub auto_compact_tokens: Field<u64>,
-    /// The layered `tool_set`, if any (unset loads the harness's own tools).
     pub tool_set: Field<Vec<ToolClass>>,
-    /// The layered `load_skills`, if any.
     pub load_skills: Field<bool>,
-    /// The layered `load_mcp`, if any.
     pub load_mcp: Field<bool>,
     pub output_format: Field<OutputFormat>,
     /// Whether config asks every `run` to stream (`--stream` / ONEHARNESS_STREAM);

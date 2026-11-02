@@ -631,6 +631,52 @@ fn interrupting_a_session_nobody_is_running_is_answered_rather_than_hung() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// capability: compact
+#[test]
+fn compacting_answers_for_the_session_the_store_holds_and_refuses_one_it_does_not() {
+    // A supervisor compacting between turns: a name the store never bound is
+    // its mistake (a usage error, nothing spawned), and a session whose harness
+    // has no compaction is an answer it branches on, not a crash.
+    use oneharness_core::domain::compact::CompactStatus;
+    use oneharness_core::io::compact::{compact_session, CompactRequest};
+    use oneharness_core::io::run::RunControls;
+    use oneharness_core::io::session as session_io;
+
+    let dir = scratch("compact-surface");
+    let request = |name: &str| CompactRequest {
+        session: name.to_string(),
+        session_dir: Some(dir.to_path_buf()),
+        cwd: Some(dir.to_path_buf()),
+        no_config: true,
+        ..CompactRequest::default()
+    };
+    let unknown = compact_session(&request("never-run"), RunControls::default(), None);
+    assert!(
+        matches!(unknown, Err(OneharnessError::CompactSessionUnknown { .. })),
+        "{unknown:?}"
+    );
+
+    let store = session_io::session_path(&dir, &dir, "kept");
+    session_io::write(
+        &store,
+        &dir,
+        &"opencode".parse().unwrap(),
+        "kept",
+        "ses_1",
+        None,
+    )
+    .expect("a session record");
+    let outcome =
+        compact_session(&request("kept"), RunControls::default(), None).expect("a valid request");
+    assert_eq!(outcome.status, CompactStatus::Unsupported, "{outcome:?}");
+    assert_eq!(
+        outcome.token.as_deref(),
+        Some("ses_1"),
+        "the session is untouched"
+    );
+    assert!(outcome.error.unwrap_or_default().contains("opencode"));
+}
+
 // capability: historyList
 // capability: history
 // capability: historyClear

@@ -18,6 +18,7 @@ use thiserror::Error;
 use crate::domain::batch::BatchStrategy;
 use crate::domain::fallback::RunMode;
 use crate::domain::history::{HistoryId, HistoryLabels};
+use crate::domain::lean::ToolClass;
 use crate::domain::mode::PermissionMode;
 use crate::domain::report::OutputFormat;
 
@@ -258,6 +259,28 @@ pub struct RunOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "u64")]
     pub timeout_seconds: Option<u64>,
+    /// Compact a session's context once it reaches this many tokens (a
+    /// positive integer), through each harness's own knob.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "u64", range(min = 1))]
+    pub auto_compact_tokens: Option<u64>,
+    /// Load only these built-in tool classes; every other built-in tool is
+    /// not loaded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Vec<ToolClass>")]
+    pub tool_set: Option<Vec<ToolClass>>,
+    /// Load no skills list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub no_skills: Option<bool>,
+    /// Load no MCP server or MCP tool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub no_mcp: Option<bool>,
+    /// Image files attached to the prompt as images the model sees.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Vec<String>")]
+    pub images: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "bool")]
     pub events: Option<bool>,
@@ -812,6 +835,45 @@ pub struct InterruptOptions {
     pub cwd: Option<String>,
 }
 
+/// Options accepted by the language SDKs' `compact()`: compact a named
+/// session now (`oneharness compact`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "CompactOptions")]
+pub struct CompactOptions {
+    /// The caller-owned session name (`run`'s `session`).
+    pub session: NonEmptyString,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub session_dir: Option<String>,
+    /// The harness identity the session is expected to be bound to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub harness: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "u64")]
+    pub timeout_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "BTreeMap<String, String>")]
+    pub env: Option<BTreeMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "BTreeMap<String, String>")]
+    pub bins: Option<BTreeMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Vec<String>")]
+    // llmlint: ignore[invalid_states_unrepresentable] The same config/no_config pair every options contract carries; the SDKs refuse both together.
+    pub config: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub no_config: Option<bool>,
+}
+
 /// Options accepted by the language SDKs' `historyClear()`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1045,6 +1107,11 @@ mod tests {
             mode: Some(PermissionMode::ReadOnly),
             cwd: None,
             timeout_seconds: Some(30),
+            auto_compact_tokens: None,
+            tool_set: None,
+            no_skills: None,
+            no_mcp: None,
+            images: None,
             events: Some(true),
             history: None,
             history_name: None,

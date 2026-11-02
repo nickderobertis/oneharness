@@ -1253,6 +1253,34 @@
       }
     },
     {
+      "name": "history record v1.12 accepts unsupported_input",
+      "root": "history_record",
+      "accepted": true,
+      "value": {
+        "schema_version": "1.12", "history_id": "0198f0d0-7b31-7000-8000-0000000000f1",
+        "session": "session", "name": "name", "labels": {}, "project": "/tmp/project",
+        "timestamp": "2026-11-02T00:00:01Z", "harness": "goose", "harness_id": "goose", "model": null, "prompt": "describe",
+        "permission_mode": "bypass", "status": "skipped", "exit_code": null, "duration_ms": null,
+        "finished_at": null, "text": null, "text_source": null,
+        "usage": {"input_tokens": null, "output_tokens": null, "cache_read_tokens": null, "cache_write_tokens": null, "cost_usd": null},
+        "session_id": null, "events": null, "failure_kind": "unsupported_input", "error": "`goose` has no image input, so a run with `images` was not sent to it"
+      }
+    },
+    {
+      "name": "history record v1.11 rejects unsupported_input",
+      "root": "history_record",
+      "accepted": false,
+      "value": {
+        "schema_version": "1.11", "history_id": "0198f0d0-7b31-7000-8000-0000000000f2",
+        "session": "session", "name": "name", "labels": {}, "project": "/tmp/project",
+        "timestamp": "2026-11-02T00:00:01Z", "harness": "goose", "harness_id": "goose", "model": null, "prompt": "describe",
+        "permission_mode": "bypass", "status": "skipped", "exit_code": null, "duration_ms": null,
+        "finished_at": null, "text": null, "text_source": null,
+        "usage": {"input_tokens": null, "output_tokens": null, "cache_read_tokens": null, "cache_write_tokens": null, "cost_usd": null},
+        "session_id": null, "events": null, "failure_kind": "unsupported_input", "error": "`goose` has no image input, so a run with `images` was not sent to it"
+      }
+    },
+    {
       "name": "history record v1.9 rejects app_server_lost",
       "root": "history_record",
       "accepted": false,

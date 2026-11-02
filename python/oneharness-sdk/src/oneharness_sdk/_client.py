@@ -37,6 +37,8 @@ from ._generated_types import (
     HistoryStreamEnvelope,
     HistoryWatchOptions,
     InitOptions,
+    CompactOptions,
+    CompactOutcome,
     InterruptOptions,
     InterruptResponse,
     MockOptions,
@@ -594,6 +596,25 @@ class OneHarness:
             stdin=cast("str", parsed["event"]),
         )
         return verdict if verdict.strip() else None
+
+    async def compact(self, options: CompactOptions) -> CompactOutcome:
+        """Compact a named session now, on a fork its name continues once done.
+
+        Every outcome is an answer, not a raise: `cancelled`, `failed` and
+        `unsupported` leave the session exactly as it was, so a non-zero exit
+        still yields the outcome.
+        """
+        # cast: `_call` validated this document against `compact_outcome`.
+        return cast(
+            "CompactOutcome",
+            await self._call(
+                "compact",
+                options,
+                "compact_options",
+                "compact_outcome",
+                accept_json_on_nonzero=True,
+            ),
+        )
 
     async def interrupt(self, options: InterruptOptions) -> InterruptResponse:
         """Abort a controlled session's in-flight turn, optionally redirecting it.

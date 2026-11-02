@@ -1096,11 +1096,12 @@ pub struct RunArgs {
     #[arg(long, value_name = "N")]
     pub auto_compact_tokens: Option<std::num::NonZeroU64>,
 
-    /// Load only these built-in tool classes, comma-separated: shell, read.
-    /// Every other built-in tool is not loaded (Claude Code: --tools Bash
-    /// Read; Codex: every tool its config can remove). Empty loads none.
+    /// Load only these built-in tool classes: shell, read (comma-separated,
+    /// or repeat the flag; the occurrences are joined). Every other built-in
+    /// tool is not loaded (Claude Code: --tools Bash Read; Codex: every tool
+    /// its config can remove). `--tool-set ""` loads none.
     #[arg(long, value_name = "CLASSES", value_parser = tool_set_parser)]
-    pub tool_set: Option<ToolSetArg>,
+    pub tool_set: Vec<ToolSetArg>,
 
     /// Load no skills list (Claude Code: --disable-slash-commands; Codex:
     /// skills.include_instructions=false).

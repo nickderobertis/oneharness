@@ -1,4 +1,84 @@
 {
+  "compact": {
+    "always": [
+      "--compact",
+      "--format",
+      "json"
+    ],
+    "argv": [
+      "compact"
+    ],
+    "bindings": [
+      {
+        "flag": "--session",
+        "kind": "value",
+        "option": "session",
+        "unless": null
+      },
+      {
+        "flag": "--session-dir",
+        "kind": "value",
+        "option": "sessionDir",
+        "unless": null
+      },
+      {
+        "flag": "--harness",
+        "kind": "value",
+        "option": "harness",
+        "unless": null
+      },
+      {
+        "flag": "--cwd",
+        "kind": "value",
+        "option": "cwd",
+        "unless": null
+      },
+      {
+        "flag": "--model",
+        "kind": "value",
+        "option": "model",
+        "unless": null
+      },
+      {
+        "flag": "--timeout",
+        "kind": "value",
+        "option": "timeoutSeconds",
+        "unless": null
+      },
+      {
+        "flag": "--env",
+        "kind": "key-value",
+        "option": "env",
+        "unless": null
+      },
+      {
+        "flag": "--bin",
+        "kind": "key-value",
+        "option": "bins",
+        "unless": null
+      },
+      {
+        "flag": "--config",
+        "kind": "repeated",
+        "option": "config",
+        "unless": "noConfig",
+        "unless_resolution": "refuse"
+      },
+      {
+        "flag": "--no-config",
+        "kind": "switch",
+        "option": "noConfig",
+        "unless": null
+      }
+    ],
+    "method": "compact",
+    "options": "compact_options",
+    "output": "compact_outcome",
+    "rust": "oneharness_core::io::compact::compact_session",
+    "stdin": false,
+    "stdout": "json",
+    "uncovered": []
+  },
   "config": {
     "always": [
       "--compact",
@@ -824,6 +904,36 @@
         "unless": null
       },
       {
+        "flag": "--auto-compact-tokens",
+        "kind": "value",
+        "option": "autoCompactTokens",
+        "unless": null
+      },
+      {
+        "flag": "--tool-set",
+        "kind": "repeated",
+        "option": "toolSet",
+        "unless": null
+      },
+      {
+        "flag": "--no-skills",
+        "kind": "switch",
+        "option": "noSkills",
+        "unless": null
+      },
+      {
+        "flag": "--no-mcp",
+        "kind": "switch",
+        "option": "noMcp",
+        "unless": null
+      },
+      {
+        "flag": "--image",
+        "kind": "repeated",
+        "option": "images",
+        "unless": null
+      },
+      {
         "flag": "--cwd",
         "kind": "value",
         "option": "cwd",
@@ -1122,6 +1232,36 @@
         "flag": "--timeout",
         "kind": "value",
         "option": "timeoutSeconds",
+        "unless": null
+      },
+      {
+        "flag": "--auto-compact-tokens",
+        "kind": "value",
+        "option": "autoCompactTokens",
+        "unless": null
+      },
+      {
+        "flag": "--tool-set",
+        "kind": "repeated",
+        "option": "toolSet",
+        "unless": null
+      },
+      {
+        "flag": "--no-skills",
+        "kind": "switch",
+        "option": "noSkills",
+        "unless": null
+      },
+      {
+        "flag": "--no-mcp",
+        "kind": "switch",
+        "option": "noMcp",
+        "unless": null
+      },
+      {
+        "flag": "--image",
+        "kind": "repeated",
+        "option": "images",
         "unless": null
       },
       {

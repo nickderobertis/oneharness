@@ -87,6 +87,21 @@ export interface HarnessInfo {
    * into that file (see the README support matrix).
    */
   supports_allowed_tools: boolean;
+  /**
+   * Whether `auto_compact_tokens` reaches this harness's own compaction
+   * knob. Every `supports_*` flag below is read from the translation table
+   * ([`crate::domain::lean::TRANSLATIONS`]): `false` means a run asking for
+   * the setting carries a diagnostic (or, for images, refuses the harness).
+   */
+  supports_auto_compact: boolean;
+  /**
+   * Whether a result's `calls` can carry per-call usage.
+   */
+  supports_call_usage: boolean;
+  /**
+   * Whether `oneharness compact` can compact this harness's sessions.
+   */
+  supports_compact_now: boolean;
   supports_denied_tools: boolean;
   /**
    * Whether `run --resume <session> --fork` is supported — branching a new
@@ -94,6 +109,14 @@ export interface HarnessInfo {
    */
   supports_fork: boolean;
   supports_hooks: boolean;
+  /**
+   * Whether `images` reach the model as images.
+   */
+  supports_images: boolean;
+  /**
+   * Whether `load_mcp = false` loads no MCP server.
+   */
+  supports_mcp_off: boolean;
   /**
    * Whether `oneharness mock <id>` can express a pre-tool *deny* for this
    * harness (the same protocol `oneharness gate` speaks).
@@ -123,12 +146,21 @@ export interface HarnessInfo {
    */
   supports_resume: boolean;
   /**
+   * Whether `load_skills = false` loads no skills list.
+   */
+  supports_skills_off: boolean;
+  /**
    * Whether a large system prompt can be delivered off the argv via a file
    * flag (Claude Code's `--append-system-prompt-file`). `false` does not mean a
    * large system is unhandled — for a harness whose system rides the prompt it
    * travels on stdin with the prompt; see the README large-prompt matrix.
    */
   supports_system_file: boolean;
+  /**
+   * Whether `tool_set` loads exactly the named classes (`false` for codex,
+   * which applies it in part and says so).
+   */
+  supports_tool_set: boolean;
   /**
    * The project-scoped config file `oneharness sync` writes for this
    * harness; `null` when it has none (sync settings are then rejected).

@@ -1,6 +1,8 @@
 /* Generated from oneharness Rust JSON Schemas. Do not edit. */
 
 import { z } from "zod";
+import type { CompactOptions } from "./compact-options.js";
+import type { CompactOutcome, CompactStatus } from "./compact-outcome.js";
 import type { ConfigOptions } from "./config-options.js";
 import type {
   AppServerMode,
@@ -8,6 +10,7 @@ import type {
   Field,
   Field10,
   Field11,
+  Field12,
   Field2,
   Field3,
   Field4,
@@ -28,6 +31,7 @@ import type {
   ControlReason,
   ControlReport,
   ControlVerb,
+  Diagnostic,
   ExecutionTelemetry,
   FailureKind,
   FallThrough,
@@ -37,6 +41,7 @@ import type {
   RunResult,
   RunWork,
   SessionReport,
+  Setting,
   Status,
   TimingSource,
   ToolCallStatus,
@@ -66,7 +71,7 @@ import type { InitOptions } from "./init-options.js";
 import type { InterruptOptions } from "./interrupt-options.js";
 import type { InterruptResponse } from "./interrupt-response.js";
 import type { MockOptions } from "./mock-options.js";
-import type { HistoryLabels, OutputFormat, PermissionMode, RunMode, RunOptions } from "./options.js";
+import type { HistoryLabels, OutputFormat, PermissionMode, RunMode, RunOptions, ToolClass } from "./options.js";
 import type { HarnessInfo, ListReport, ModeInfo, VariantInfo } from "./registry.js";
 import type { RunStreamEnvelope } from "./run-stream-envelope.js";
 import type { SyncOptions } from "./sync-options.js";
@@ -161,6 +166,45 @@ export const BatchReportSchema: z.ZodType<BatchReport> = z.looseObject({
 
 export const BatchStrategySchema: z.ZodType<BatchStrategy> = z.union([z.literal("speed"), z.literal("min-tokens")]);
 
+export const CompactOptionsSchema: z.ZodType<CompactOptions> = z.strictObject({
+  bins: z.record(z.string(), z.string()).optional(),
+  config: z.array(z.string()).optional(),
+  cwd: z.string().optional(),
+  env: z.record(z.string(), z.string()).optional(),
+  harness: z.string().optional(),
+  model: z.string().optional(),
+  noConfig: z.boolean().optional(),
+  session: z
+    .string()
+    .min(1)
+    .refine((value) => value !== undefined, { message: "Required" }),
+  sessionDir: z.string().optional(),
+  timeoutSeconds: z.int().gte(0).optional(),
+});
+
+export const CompactOutcomeSchema: z.ZodType<CompactOutcome> = z.looseObject({
+  context_tokens_after: z
+    .union([z.int().gte(0), z.null()])
+    .refine((value) => value !== undefined, { message: "Required" }),
+  context_tokens_before: z
+    .union([z.int().gte(0), z.null()])
+    .refine((value) => value !== undefined, { message: "Required" }),
+  error: z.union([z.string(), z.null()]).optional(),
+  harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
+  schema_version: z.string().refine((value) => value !== undefined, { message: "Required" }),
+  session: z.string().refine((value) => value !== undefined, { message: "Required" }),
+  status: z.lazy(() => CompactStatusSchema).refine((value) => value !== undefined, { message: "Required" }),
+  token: z.union([z.string(), z.null()]).optional(),
+  usage: z.lazy(() => UsageSchema).refine((value) => value !== undefined, { message: "Required" }),
+});
+
+export const CompactStatusSchema: z.ZodType<CompactStatus> = z.union([
+  z.literal("completed"),
+  z.literal("cancelled"),
+  z.literal("unsupported"),
+  z.literal("failed"),
+]);
+
 export const ConfigOptionsSchema: z.ZodType<ConfigOptions> = z.strictObject({
   config: z.array(z.string()).optional(),
   cwd: z.string().optional(),
@@ -170,6 +214,7 @@ export const ConfigOptionsSchema: z.ZodType<ConfigOptions> = z.strictObject({
 export const ConfigReportSchema: z.ZodType<ConfigReport> = z.looseObject({
   all: z.lazy(() => FieldSchema).refine((value) => value !== undefined, { message: "Required" }),
   allowed_tools: z.lazy(() => Field2Schema).refine((value) => value !== undefined, { message: "Required" }),
+  auto_compact_tokens: z.lazy(() => Field5Schema).refine((value) => value !== undefined, { message: "Required" }),
   bypass: z.lazy(() => FieldSchema).refine((value) => value !== undefined, { message: "Required" }),
   config_files: z.array(z.string()).refine((value) => value !== undefined, { message: "Required" }),
   denied_tools: z.lazy(() => Field2Schema).refine((value) => value !== undefined, { message: "Required" }),
@@ -196,24 +241,27 @@ export const ConfigReportSchema: z.ZodType<ConfigReport> = z.looseObject({
     )
     .refine((value) => value !== undefined, { message: "Required" }),
   history_pointer_file: z.lazy(() => Field3Schema).refine((value) => value !== undefined, { message: "Required" }),
-  hooks: z.lazy(() => Field10Schema).refine((value) => value !== undefined, { message: "Required" }),
-  max_parallel: z.lazy(() => Field8Schema).refine((value) => value !== undefined, { message: "Required" }),
+  hooks: z.lazy(() => Field11Schema).refine((value) => value !== undefined, { message: "Required" }),
+  load_mcp: z.lazy(() => FieldSchema).refine((value) => value !== undefined, { message: "Required" }),
+  load_skills: z.lazy(() => FieldSchema).refine((value) => value !== undefined, { message: "Required" }),
+  max_parallel: z.lazy(() => Field9Schema).refine((value) => value !== undefined, { message: "Required" }),
   mode: z.lazy(() => Field4Schema).refine((value) => value !== undefined, { message: "Required" }),
   model: z.lazy(() => Field3Schema).refine((value) => value !== undefined, { message: "Required" }),
   models: z.lazy(() => Field2Schema).refine((value) => value !== undefined, { message: "Required" }),
-  output_format: z.lazy(() => Field6Schema).refine((value) => value !== undefined, { message: "Required" }),
+  output_format: z.lazy(() => Field7Schema).refine((value) => value !== undefined, { message: "Required" }),
   reasoning: z.lazy(() => Field3Schema).refine((value) => value !== undefined, { message: "Required" }),
   require_available: z.lazy(() => FieldSchema).refine((value) => value !== undefined, { message: "Required" }),
-  run_mode: z.lazy(() => Field9Schema).refine((value) => value !== undefined, { message: "Required" }),
+  run_mode: z.lazy(() => Field10Schema).refine((value) => value !== undefined, { message: "Required" }),
   schema_file: z.lazy(() => Field3Schema).refine((value) => value !== undefined, { message: "Required" }),
-  schema_max_retries: z.lazy(() => Field7Schema).refine((value) => value !== undefined, { message: "Required" }),
+  schema_max_retries: z.lazy(() => Field8Schema).refine((value) => value !== undefined, { message: "Required" }),
   schema_version: z.string().refine((value) => value !== undefined, { message: "Required" }),
   server_overloaded_max_retries: z
-    .lazy(() => Field7Schema)
+    .lazy(() => Field8Schema)
     .refine((value) => value !== undefined, { message: "Required" }),
   stream: z.lazy(() => FieldSchema).refine((value) => value !== undefined, { message: "Required" }),
   system: z.lazy(() => Field3Schema).refine((value) => value !== undefined, { message: "Required" }),
   timeout: z.lazy(() => Field5Schema).refine((value) => value !== undefined, { message: "Required" }),
+  tool_set: z.lazy(() => Field6Schema).refine((value) => value !== undefined, { message: "Required" }),
 });
 
 export const ControlEventSchema: z.ZodType<ControlEvent> = z.union([
@@ -277,6 +325,12 @@ export const DetectReportSchema: z.ZodType<DetectReport> = z.looseObject({
   schema_version: z.string().refine((value) => value !== undefined, { message: "Required" }),
 });
 
+export const DiagnosticSchema: z.ZodType<Diagnostic> = z.looseObject({
+  harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
+  message: z.string().refine((value) => value !== undefined, { message: "Required" }),
+  setting: z.lazy(() => SettingSchema).refine((value) => value !== undefined, { message: "Required" }),
+});
+
 export const ExecutionTelemetrySchema: z.ZodType<ExecutionTelemetry> = z.union([
   z.looseObject({
     finished_at: z
@@ -337,6 +391,7 @@ export const FailureKindSchema: z.ZodType<FailureKind> = z.union([
   z.literal("model_mismatch"),
   z.literal("server_overloaded"),
   z.literal("app_server_lost"),
+  z.literal("unsupported_input"),
 ]);
 
 export const FallThroughSchema: z.ZodType<FallThrough> = z.looseObject({
@@ -358,6 +413,7 @@ export const FallThroughReasonSchema: z.ZodType<FallThroughReason> = z.union([
   z.literal("rate-limit"),
   z.literal("server-overloaded"),
   z.literal("app-server-lost"),
+  z.literal("unsupported-input"),
 ]);
 
 export const FallbackReportSchema: z.ZodType<FallbackReport> = z.looseObject({
@@ -376,11 +432,18 @@ export const FieldSchema: z.ZodType<Field> = z.looseObject({
 export const Field10Schema: z.ZodType<Field10> = z.looseObject({
   source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
   value: z
-    .union([z.array(z.lazy(() => HookEntrySchema)), z.null()])
+    .union([z.lazy(() => RunModeSchema), z.null()])
     .refine((value) => value !== undefined, { message: "Required" }),
 });
 
 export const Field11Schema: z.ZodType<Field11> = z.looseObject({
+  source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+  value: z
+    .union([z.array(z.lazy(() => HookEntrySchema)), z.null()])
+    .refine((value) => value !== undefined, { message: "Required" }),
+});
+
+export const Field12Schema: z.ZodType<Field12> = z.looseObject({
   source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
   value: z
     .union([z.lazy(() => AppServerModeSchema), z.null()])
@@ -412,13 +475,15 @@ export const Field5Schema: z.ZodType<Field5> = z.looseObject({
 export const Field6Schema: z.ZodType<Field6> = z.looseObject({
   source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
   value: z
-    .union([z.lazy(() => OutputFormatSchema), z.null()])
+    .union([z.array(z.lazy(() => ToolClassSchema)), z.null()])
     .refine((value) => value !== undefined, { message: "Required" }),
 });
 
 export const Field7Schema: z.ZodType<Field7> = z.looseObject({
   source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-  value: z.union([z.int().gte(0), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+  value: z
+    .union([z.lazy(() => OutputFormatSchema), z.null()])
+    .refine((value) => value !== undefined, { message: "Required" }),
 });
 
 export const Field8Schema: z.ZodType<Field8> = z.looseObject({
@@ -428,9 +493,7 @@ export const Field8Schema: z.ZodType<Field8> = z.looseObject({
 
 export const Field9Schema: z.ZodType<Field9> = z.looseObject({
   source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
-  value: z
-    .union([z.lazy(() => RunModeSchema), z.null()])
-    .refine((value) => value !== undefined, { message: "Required" }),
+  value: z.union([z.int().gte(0), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
 });
 
 export const FileStatusSchema: z.ZodType<FileStatus> = z.union([
@@ -464,15 +527,22 @@ export const HarnessInfoSchema: z.ZodType<HarnessInfo> = z.looseObject({
   output_format: z.lazy(() => OutputFormatSchema).refine((value) => value !== undefined, { message: "Required" }),
   session_capable: z.boolean().refine((value) => value !== undefined, { message: "Required" }),
   supports_allowed_tools: z.boolean().refine((value) => value !== undefined, { message: "Required" }),
+  supports_auto_compact: z.boolean().refine((value) => value !== undefined, { message: "Required" }),
+  supports_call_usage: z.boolean().refine((value) => value !== undefined, { message: "Required" }),
+  supports_compact_now: z.boolean().refine((value) => value !== undefined, { message: "Required" }),
   supports_denied_tools: z.boolean().refine((value) => value !== undefined, { message: "Required" }),
   supports_fork: z.boolean().refine((value) => value !== undefined, { message: "Required" }),
   supports_hooks: z.boolean().refine((value) => value !== undefined, { message: "Required" }),
+  supports_images: z.boolean().refine((value) => value !== undefined, { message: "Required" }),
+  supports_mcp_off: z.boolean().refine((value) => value !== undefined, { message: "Required" }),
   supports_mock_deny: z.boolean().refine((value) => value !== undefined, { message: "Required" }),
   supports_native_schema: z.boolean().refine((value) => value !== undefined, { message: "Required" }),
   supports_prompt_stdin: z.boolean().refine((value) => value !== undefined, { message: "Required" }),
   supports_reasoning: z.boolean().refine((value) => value !== undefined, { message: "Required" }),
   supports_resume: z.boolean().refine((value) => value !== undefined, { message: "Required" }),
+  supports_skills_off: z.boolean().refine((value) => value !== undefined, { message: "Required" }),
   supports_system_file: z.boolean().refine((value) => value !== undefined, { message: "Required" }),
+  supports_tool_set: z.boolean().refine((value) => value !== undefined, { message: "Required" }),
   sync_file: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
   variants: z.array(z.lazy(() => VariantInfoSchema)).refine((value) => value !== undefined, { message: "Required" }),
 });
@@ -480,7 +550,7 @@ export const HarnessInfoSchema: z.ZodType<HarnessInfo> = z.looseObject({
 export const HarnessReportSchema: z.ZodType<HarnessReport> = z.looseObject({
   allowed_tools: z.lazy(() => Field2Schema).refine((value) => value !== undefined, { message: "Required" }),
   analytics: z.union([z.lazy(() => FieldSchema), z.null()]).optional(),
-  app_server: z.union([z.lazy(() => Field11Schema), z.null()]).optional(),
+  app_server: z.union([z.lazy(() => Field12Schema), z.null()]).optional(),
   apps: z.union([z.lazy(() => FieldSchema), z.null()]).optional(),
   args: z.lazy(() => Field2Schema).refine((value) => value !== undefined, { message: "Required" }),
   bin: z.lazy(() => Field3Schema).refine((value) => value !== undefined, { message: "Required" }),
@@ -564,6 +634,7 @@ export const HistoryEventLineSchema: z.ZodType<HistoryEventLine> = z.union([
         z.literal("1.9"),
         z.literal("1.10"),
         z.literal("1.11"),
+        z.literal("1.12"),
       ])
       .refine((value) => value !== undefined, { message: "Required" }),
     session_name: z
@@ -656,7 +727,9 @@ export const HistoryLineSchema: z.ZodType<HistoryLine> = z.union([
       .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
       .refine((value) => value !== undefined, { message: "Required" }),
     prompt: z.string().refine((value) => value !== undefined, { message: "Required" }),
-    schema_version: z.literal("1.11").refine((value) => value !== undefined, { message: "Required" }),
+    schema_version: z
+      .union([z.literal("1.11"), z.literal("1.12")])
+      .refine((value) => value !== undefined, { message: "Required" }),
     started: z.lazy(() => UtcInstantSchema).refine((value) => value !== undefined, { message: "Required" }),
     type: z.literal("run-started").refine((value) => value !== undefined, { message: "Required" }),
   }),
@@ -685,6 +758,7 @@ export const HistoryLineSchema: z.ZodType<HistoryLine> = z.union([
           z.literal("1.9"),
           z.literal("1.10"),
           z.literal("1.11"),
+          z.literal("1.12"),
         ])
         .refine((value) => value !== undefined, { message: "Required" }),
       session_name: z
@@ -806,6 +880,7 @@ export const HistoryLineSchema: z.ZodType<HistoryLine> = z.union([
                     z.literal("1.9"),
                     z.literal("1.10"),
                     z.literal("1.11"),
+                    z.literal("1.12"),
                   ])
                   .refine((value) => value !== undefined, { message: "Required" }),
                 session: z.string().refine((value) => value !== undefined, { message: "Required" }),
@@ -898,6 +973,7 @@ export const HistoryLineSchema: z.ZodType<HistoryLine> = z.union([
                     z.literal("1.9"),
                     z.literal("1.10"),
                     z.literal("1.11"),
+                    z.literal("1.12"),
                   ])
                   .refine((value) => value !== undefined, { message: "Required" }),
                 session: z.string().refine((value) => value !== undefined, { message: "Required" }),
@@ -992,6 +1068,7 @@ export const HistoryLineSchema: z.ZodType<HistoryLine> = z.union([
                     z.literal("1.9"),
                     z.literal("1.10"),
                     z.literal("1.11"),
+                    z.literal("1.12"),
                   ])
                   .refine((value) => value !== undefined, { message: "Required" }),
                 session: z.string().refine((value) => value !== undefined, { message: "Required" }),
@@ -1070,6 +1147,7 @@ export const HistoryLineSchema: z.ZodType<HistoryLine> = z.union([
                     z.literal("1.9"),
                     z.literal("1.10"),
                     z.literal("1.11"),
+                    z.literal("1.12"),
                   ])
                   .refine((value) => value !== undefined, { message: "Required" }),
                 session: z.string().refine((value) => value !== undefined, { message: "Required" }),
@@ -1154,6 +1232,7 @@ export const HistoryLineSchema: z.ZodType<HistoryLine> = z.union([
                     z.literal("1.9"),
                     z.literal("1.10"),
                     z.literal("1.11"),
+                    z.literal("1.12"),
                   ])
                   .refine((value) => value !== undefined, { message: "Required" }),
                 session: z.string().refine((value) => value !== undefined, { message: "Required" }),
@@ -1243,6 +1322,7 @@ export const HistoryLineSchema: z.ZodType<HistoryLine> = z.union([
                     z.literal("1.9"),
                     z.literal("1.10"),
                     z.literal("1.11"),
+                    z.literal("1.12"),
                   ])
                   .refine((value) => value !== undefined, { message: "Required" }),
                 session: z.string().refine((value) => value !== undefined, { message: "Required" }),
@@ -1284,6 +1364,7 @@ export const HistoryLineSchema: z.ZodType<HistoryLine> = z.union([
                       z.literal("1.9"),
                       z.literal("1.10"),
                       z.literal("1.11"),
+                      z.literal("1.12"),
                     ])
                     .optional(),
                 }),
@@ -1314,7 +1395,14 @@ export const HistoryLineSchema: z.ZodType<HistoryLine> = z.union([
             }),
             z.looseObject({
               schema_version: z
-                .union([z.literal("1.7"), z.literal("1.8"), z.literal("1.9"), z.literal("1.10"), z.literal("1.11")])
+                .union([
+                  z.literal("1.7"),
+                  z.literal("1.8"),
+                  z.literal("1.9"),
+                  z.literal("1.10"),
+                  z.literal("1.11"),
+                  z.literal("1.12"),
+                ])
                 .optional(),
               status: z.union([z.literal("nonzero"), z.literal("timeout"), z.literal("cancelled")]).optional(),
               work: z
@@ -1330,7 +1418,7 @@ export const HistoryLineSchema: z.ZodType<HistoryLine> = z.union([
           z.looseObject({
             observed_model: z.string().refine((value) => value !== undefined, { message: "Required" }),
             schema_version: z
-              .union([z.literal("1.8"), z.literal("1.9"), z.literal("1.10"), z.literal("1.11")])
+              .union([z.literal("1.8"), z.literal("1.9"), z.literal("1.10"), z.literal("1.11"), z.literal("1.12")])
               .optional(),
           }),
         ]),
@@ -1359,6 +1447,7 @@ export const HistoryLineSchema: z.ZodType<HistoryLine> = z.union([
               z.literal("1.9"),
               z.literal("1.10"),
               z.literal("1.11"),
+              z.literal("1.12"),
             ])
             .optional(),
         }),
@@ -1368,38 +1457,74 @@ export const HistoryLineSchema: z.ZodType<HistoryLine> = z.union([
       z.intersection(
         z.intersection(
           z.intersection(
-            z.union([
-              z.looseObject({
-                failure_kind: z
-                  .union([
-                    z.literal("auth"),
-                    z.literal("rate_limit"),
-                    z.literal("model_not_found"),
-                    z.literal("quota"),
-                    z.literal("tool_deferred"),
-                    z.literal("untrusted_directory"),
-                    z.literal("input_too_large"),
-                    z.literal("model_mismatch"),
-                    z.literal("server_overloaded"),
-                    z.literal("app_server_lost"),
-                    z.literal(null),
-                  ])
-                  .optional(),
-              }),
-              z.looseObject({
-                schema_version: z
-                  .union([
-                    z.literal("1.5"),
-                    z.literal("1.6"),
-                    z.literal("1.7"),
-                    z.literal("1.8"),
-                    z.literal("1.9"),
-                    z.literal("1.10"),
-                    z.literal("1.11"),
-                  ])
-                  .optional(),
-              }),
-            ]),
+            z.intersection(
+              z.union([
+                z.looseObject({
+                  failure_kind: z
+                    .union([
+                      z.literal("auth"),
+                      z.literal("rate_limit"),
+                      z.literal("model_not_found"),
+                      z.literal("quota"),
+                      z.literal("tool_deferred"),
+                      z.literal("untrusted_directory"),
+                      z.literal("input_too_large"),
+                      z.literal("model_mismatch"),
+                      z.literal("server_overloaded"),
+                      z.literal("app_server_lost"),
+                      z.literal("unsupported_input"),
+                      z.literal(null),
+                    ])
+                    .optional(),
+                }),
+                z.looseObject({
+                  schema_version: z
+                    .union([
+                      z.literal("1.5"),
+                      z.literal("1.6"),
+                      z.literal("1.7"),
+                      z.literal("1.8"),
+                      z.literal("1.9"),
+                      z.literal("1.10"),
+                      z.literal("1.11"),
+                      z.literal("1.12"),
+                    ])
+                    .optional(),
+                }),
+              ]),
+              z.union([
+                z.looseObject({
+                  failure_kind: z
+                    .union([
+                      z.literal("auth"),
+                      z.literal("rate_limit"),
+                      z.literal("model_not_found"),
+                      z.literal("quota"),
+                      z.literal("session_not_found"),
+                      z.literal("tool_deferred"),
+                      z.literal("model_mismatch"),
+                      z.literal("server_overloaded"),
+                      z.literal("app_server_lost"),
+                      z.literal("unsupported_input"),
+                      z.literal(null),
+                    ])
+                    .optional(),
+                }),
+                z.looseObject({
+                  schema_version: z
+                    .union([
+                      z.literal("1.6"),
+                      z.literal("1.7"),
+                      z.literal("1.8"),
+                      z.literal("1.9"),
+                      z.literal("1.10"),
+                      z.literal("1.11"),
+                      z.literal("1.12"),
+                    ])
+                    .optional(),
+                }),
+              ]),
+            ),
             z.union([
               z.looseObject({
                 failure_kind: z
@@ -1410,23 +1535,18 @@ export const HistoryLineSchema: z.ZodType<HistoryLine> = z.union([
                     z.literal("quota"),
                     z.literal("session_not_found"),
                     z.literal("tool_deferred"),
-                    z.literal("model_mismatch"),
+                    z.literal("untrusted_directory"),
+                    z.literal("input_too_large"),
                     z.literal("server_overloaded"),
                     z.literal("app_server_lost"),
+                    z.literal("unsupported_input"),
                     z.literal(null),
                   ])
                   .optional(),
               }),
               z.looseObject({
                 schema_version: z
-                  .union([
-                    z.literal("1.6"),
-                    z.literal("1.7"),
-                    z.literal("1.8"),
-                    z.literal("1.9"),
-                    z.literal("1.10"),
-                    z.literal("1.11"),
-                  ])
+                  .union([z.literal("1.8"), z.literal("1.9"), z.literal("1.10"), z.literal("1.11"), z.literal("1.12")])
                   .optional(),
               }),
             ]),
@@ -1443,15 +1563,16 @@ export const HistoryLineSchema: z.ZodType<HistoryLine> = z.union([
                   z.literal("tool_deferred"),
                   z.literal("untrusted_directory"),
                   z.literal("input_too_large"),
-                  z.literal("server_overloaded"),
+                  z.literal("model_mismatch"),
                   z.literal("app_server_lost"),
+                  z.literal("unsupported_input"),
                   z.literal(null),
                 ])
                 .optional(),
             }),
             z.looseObject({
               schema_version: z
-                .union([z.literal("1.8"), z.literal("1.9"), z.literal("1.10"), z.literal("1.11")])
+                .union([z.literal("1.9"), z.literal("1.10"), z.literal("1.11"), z.literal("1.12")])
                 .optional(),
             }),
           ]),
@@ -1469,13 +1590,14 @@ export const HistoryLineSchema: z.ZodType<HistoryLine> = z.union([
                 z.literal("untrusted_directory"),
                 z.literal("input_too_large"),
                 z.literal("model_mismatch"),
-                z.literal("app_server_lost"),
+                z.literal("server_overloaded"),
+                z.literal("unsupported_input"),
                 z.literal(null),
               ])
               .optional(),
           }),
           z.looseObject({
-            schema_version: z.union([z.literal("1.9"), z.literal("1.10"), z.literal("1.11")]).optional(),
+            schema_version: z.union([z.literal("1.10"), z.literal("1.11"), z.literal("1.12")]).optional(),
           }),
         ]),
       ),
@@ -1493,12 +1615,13 @@ export const HistoryLineSchema: z.ZodType<HistoryLine> = z.union([
               z.literal("input_too_large"),
               z.literal("model_mismatch"),
               z.literal("server_overloaded"),
+              z.literal("app_server_lost"),
               z.literal(null),
             ])
             .optional(),
         }),
         z.looseObject({
-          schema_version: z.union([z.literal("1.10"), z.literal("1.11")]).optional(),
+          schema_version: z.literal("1.12").optional(),
         }),
       ]),
     ),
@@ -1752,6 +1875,7 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.intersection(
                   z.literal("1.9"),
                   z.literal("1.10"),
                   z.literal("1.11"),
+                  z.literal("1.12"),
                 ])
                 .refine((value) => value !== undefined, { message: "Required" }),
               session: z.string().refine((value) => value !== undefined, { message: "Required" }),
@@ -2033,6 +2157,7 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.intersection(
                   z.literal("1.9"),
                   z.literal("1.10"),
                   z.literal("1.11"),
+                  z.literal("1.12"),
                 ])
                 .refine((value) => value !== undefined, { message: "Required" }),
               session: z.string().refine((value) => value !== undefined, { message: "Required" }),
@@ -2117,6 +2242,7 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.intersection(
                   z.literal("1.9"),
                   z.literal("1.10"),
                   z.literal("1.11"),
+                  z.literal("1.12"),
                 ])
                 .refine((value) => value !== undefined, { message: "Required" }),
               session: z.string().refine((value) => value !== undefined, { message: "Required" }),
@@ -2195,6 +2321,7 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.intersection(
                   z.literal("1.9"),
                   z.literal("1.10"),
                   z.literal("1.11"),
+                  z.literal("1.12"),
                 ])
                 .refine((value) => value !== undefined, { message: "Required" }),
               session: z.string().refine((value) => value !== undefined, { message: "Required" }),
@@ -2281,6 +2408,7 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.intersection(
                   z.literal("1.9"),
                   z.literal("1.10"),
                   z.literal("1.11"),
+                  z.literal("1.12"),
                 ])
                 .refine((value) => value !== undefined, { message: "Required" }),
               session: z.string().refine((value) => value !== undefined, { message: "Required" }),
@@ -2597,6 +2725,7 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.intersection(
                     z.literal("1.9"),
                     z.literal("1.10"),
                     z.literal("1.11"),
+                    z.literal("1.12"),
                   ])
                   .optional(),
               }),
@@ -2627,7 +2756,14 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.intersection(
           }),
           z.looseObject({
             schema_version: z
-              .union([z.literal("1.7"), z.literal("1.8"), z.literal("1.9"), z.literal("1.10"), z.literal("1.11")])
+              .union([
+                z.literal("1.7"),
+                z.literal("1.8"),
+                z.literal("1.9"),
+                z.literal("1.10"),
+                z.literal("1.11"),
+                z.literal("1.12"),
+              ])
               .optional(),
             status: z.union([z.literal("nonzero"), z.literal("timeout"), z.literal("cancelled")]).optional(),
             work: z
@@ -2643,7 +2779,7 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.intersection(
         z.looseObject({
           observed_model: z.string().refine((value) => value !== undefined, { message: "Required" }),
           schema_version: z
-            .union([z.literal("1.8"), z.literal("1.9"), z.literal("1.10"), z.literal("1.11")])
+            .union([z.literal("1.8"), z.literal("1.9"), z.literal("1.10"), z.literal("1.11"), z.literal("1.12")])
             .optional(),
         }),
       ]),
@@ -2672,6 +2808,7 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.intersection(
             z.literal("1.9"),
             z.literal("1.10"),
             z.literal("1.11"),
+            z.literal("1.12"),
           ])
           .optional(),
       }),
@@ -2681,38 +2818,74 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.intersection(
     z.intersection(
       z.intersection(
         z.intersection(
-          z.union([
-            z.looseObject({
-              failure_kind: z
-                .union([
-                  z.literal("auth"),
-                  z.literal("rate_limit"),
-                  z.literal("model_not_found"),
-                  z.literal("quota"),
-                  z.literal("tool_deferred"),
-                  z.literal("untrusted_directory"),
-                  z.literal("input_too_large"),
-                  z.literal("model_mismatch"),
-                  z.literal("server_overloaded"),
-                  z.literal("app_server_lost"),
-                  z.literal(null),
-                ])
-                .optional(),
-            }),
-            z.looseObject({
-              schema_version: z
-                .union([
-                  z.literal("1.5"),
-                  z.literal("1.6"),
-                  z.literal("1.7"),
-                  z.literal("1.8"),
-                  z.literal("1.9"),
-                  z.literal("1.10"),
-                  z.literal("1.11"),
-                ])
-                .optional(),
-            }),
-          ]),
+          z.intersection(
+            z.union([
+              z.looseObject({
+                failure_kind: z
+                  .union([
+                    z.literal("auth"),
+                    z.literal("rate_limit"),
+                    z.literal("model_not_found"),
+                    z.literal("quota"),
+                    z.literal("tool_deferred"),
+                    z.literal("untrusted_directory"),
+                    z.literal("input_too_large"),
+                    z.literal("model_mismatch"),
+                    z.literal("server_overloaded"),
+                    z.literal("app_server_lost"),
+                    z.literal("unsupported_input"),
+                    z.literal(null),
+                  ])
+                  .optional(),
+              }),
+              z.looseObject({
+                schema_version: z
+                  .union([
+                    z.literal("1.5"),
+                    z.literal("1.6"),
+                    z.literal("1.7"),
+                    z.literal("1.8"),
+                    z.literal("1.9"),
+                    z.literal("1.10"),
+                    z.literal("1.11"),
+                    z.literal("1.12"),
+                  ])
+                  .optional(),
+              }),
+            ]),
+            z.union([
+              z.looseObject({
+                failure_kind: z
+                  .union([
+                    z.literal("auth"),
+                    z.literal("rate_limit"),
+                    z.literal("model_not_found"),
+                    z.literal("quota"),
+                    z.literal("session_not_found"),
+                    z.literal("tool_deferred"),
+                    z.literal("model_mismatch"),
+                    z.literal("server_overloaded"),
+                    z.literal("app_server_lost"),
+                    z.literal("unsupported_input"),
+                    z.literal(null),
+                  ])
+                  .optional(),
+              }),
+              z.looseObject({
+                schema_version: z
+                  .union([
+                    z.literal("1.6"),
+                    z.literal("1.7"),
+                    z.literal("1.8"),
+                    z.literal("1.9"),
+                    z.literal("1.10"),
+                    z.literal("1.11"),
+                    z.literal("1.12"),
+                  ])
+                  .optional(),
+              }),
+            ]),
+          ),
           z.union([
             z.looseObject({
               failure_kind: z
@@ -2723,23 +2896,18 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.intersection(
                   z.literal("quota"),
                   z.literal("session_not_found"),
                   z.literal("tool_deferred"),
-                  z.literal("model_mismatch"),
+                  z.literal("untrusted_directory"),
+                  z.literal("input_too_large"),
                   z.literal("server_overloaded"),
                   z.literal("app_server_lost"),
+                  z.literal("unsupported_input"),
                   z.literal(null),
                 ])
                 .optional(),
             }),
             z.looseObject({
               schema_version: z
-                .union([
-                  z.literal("1.6"),
-                  z.literal("1.7"),
-                  z.literal("1.8"),
-                  z.literal("1.9"),
-                  z.literal("1.10"),
-                  z.literal("1.11"),
-                ])
+                .union([z.literal("1.8"), z.literal("1.9"), z.literal("1.10"), z.literal("1.11"), z.literal("1.12")])
                 .optional(),
             }),
           ]),
@@ -2756,15 +2924,16 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.intersection(
                 z.literal("tool_deferred"),
                 z.literal("untrusted_directory"),
                 z.literal("input_too_large"),
-                z.literal("server_overloaded"),
+                z.literal("model_mismatch"),
                 z.literal("app_server_lost"),
+                z.literal("unsupported_input"),
                 z.literal(null),
               ])
               .optional(),
           }),
           z.looseObject({
             schema_version: z
-              .union([z.literal("1.8"), z.literal("1.9"), z.literal("1.10"), z.literal("1.11")])
+              .union([z.literal("1.9"), z.literal("1.10"), z.literal("1.11"), z.literal("1.12")])
               .optional(),
           }),
         ]),
@@ -2782,13 +2951,14 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.intersection(
               z.literal("untrusted_directory"),
               z.literal("input_too_large"),
               z.literal("model_mismatch"),
-              z.literal("app_server_lost"),
+              z.literal("server_overloaded"),
+              z.literal("unsupported_input"),
               z.literal(null),
             ])
             .optional(),
         }),
         z.looseObject({
-          schema_version: z.union([z.literal("1.9"), z.literal("1.10"), z.literal("1.11")]).optional(),
+          schema_version: z.union([z.literal("1.10"), z.literal("1.11"), z.literal("1.12")]).optional(),
         }),
       ]),
     ),
@@ -2806,12 +2976,13 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.intersection(
             z.literal("input_too_large"),
             z.literal("model_mismatch"),
             z.literal("server_overloaded"),
+            z.literal("app_server_lost"),
             z.literal(null),
           ])
           .optional(),
       }),
       z.looseObject({
-        schema_version: z.union([z.literal("1.10"), z.literal("1.11")]).optional(),
+        schema_version: z.literal("1.12").optional(),
       }),
     ]),
   ),
@@ -3136,6 +3307,7 @@ export const RunModeSchema: z.ZodType<RunMode> = z.union([z.literal("parallel"),
 
 export const RunOptionsSchema: z.ZodType<RunOptions> = z.strictObject({
   all: z.boolean().optional(),
+  autoCompactTokens: z.int().gte(1).optional(),
   batchPrompts: z.array(z.string()).optional(),
   batchStrategy: z.lazy(() => BatchStrategySchema).optional(),
   bins: z.record(z.string(), z.string()).optional(),
@@ -3152,6 +3324,7 @@ export const RunOptionsSchema: z.ZodType<RunOptions> = z.strictObject({
   historyLabels: z.lazy(() => HistoryLabelsSchema).optional(),
   historyName: z.string().optional(),
   historyPointerFile: z.string().min(1).optional(),
+  images: z.array(z.string()).optional(),
   maxParallel: z.int().gte(0).optional(),
   mockHarnesses: z.array(z.string()).optional(),
   mockRules: z.string().optional(),
@@ -3159,6 +3332,8 @@ export const RunOptionsSchema: z.ZodType<RunOptions> = z.strictObject({
   models: z.array(z.string()).optional(),
   noConfig: z.boolean().optional(),
   noHistory: z.boolean().optional(),
+  noMcp: z.boolean().optional(),
+  noSkills: z.boolean().optional(),
   outputDir: z.string().optional(),
   outputFormat: z.lazy(() => OutputFormatSchema).optional(),
   passthrough: z.array(z.string()).optional(),
@@ -3182,6 +3357,7 @@ export const RunOptionsSchema: z.ZodType<RunOptions> = z.strictObject({
   system: z.string().optional(),
   systemFile: z.string().optional(),
   timeoutSeconds: z.int().gte(0).optional(),
+  toolSet: z.array(z.lazy(() => ToolClassSchema)).optional(),
 });
 
 export const RunReportSchema: z.ZodType<RunReport> = z.looseObject({
@@ -3221,7 +3397,9 @@ export const RunReportSchema: z.ZodType<RunReport> = z.looseObject({
 export const RunResultSchema: z.ZodType<RunResult> = z.looseObject({
   available: z.boolean().refine((value) => value !== undefined, { message: "Required" }),
   bin: z.string().refine((value) => value !== undefined, { message: "Required" }),
+  calls: z.union([z.array(z.lazy(() => UsageSchema)), z.null()]).optional(),
   command: z.array(z.string()).refine((value) => value !== undefined, { message: "Required" }),
+  diagnostics: z.array(z.lazy(() => DiagnosticSchema)).optional(),
   duration_ms: z.union([z.int().gte(0), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
   error: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
   events: z
@@ -3335,6 +3513,16 @@ export const SessionReportSchema: z.ZodType<SessionReport> = z.looseObject({
   token: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
 });
 
+export const SettingSchema: z.ZodType<Setting> = z.union([
+  z.literal("auto_compact_tokens"),
+  z.literal("compact_now"),
+  z.literal("tool_set"),
+  z.literal("load_skills"),
+  z.literal("load_mcp"),
+  z.literal("images"),
+  z.literal("calls"),
+]);
+
 export const StatusSchema: z.ZodType<Status> = z.union([
   z.literal("ok"),
   z.literal("nonzero"),
@@ -3392,6 +3580,8 @@ export const ToolCallStatusSchema: z.ZodType<ToolCallStatus> = z.union([
   z.literal("timeout"),
   z.literal("interrupted"),
 ]);
+
+export const ToolClassSchema: z.ZodType<ToolClass> = z.union([z.literal("shell"), z.literal("read")]);
 
 export const UnavailableReasonSchema: z.ZodType<UnavailableReason> = z.union([
   z.literal("api_key_auth"),
@@ -3533,7 +3723,7 @@ export const VariantInfoSchema: z.ZodType<VariantInfo> = z.looseObject({
 export const VariantReportSchema: z.ZodType<VariantReport> = z.looseObject({
   allowed_tools: z.lazy(() => Field2Schema).refine((value) => value !== undefined, { message: "Required" }),
   analytics: z.union([z.lazy(() => FieldSchema), z.null()]).optional(),
-  app_server: z.union([z.lazy(() => Field11Schema), z.null()]).optional(),
+  app_server: z.union([z.lazy(() => Field12Schema), z.null()]).optional(),
   apps: z.union([z.lazy(() => FieldSchema), z.null()]).optional(),
   args: z.lazy(() => Field2Schema).refine((value) => value !== undefined, { message: "Required" }),
   bin: z.lazy(() => Field3Schema).refine((value) => value !== undefined, { message: "Required" }),

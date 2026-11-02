@@ -28,6 +28,10 @@ export type OutputFormat = "text" | "json" | "stream-json";
  * free of `clap`.
  */
 export type RunMode = "parallel" | "fallback";
+/**
+ * A harness-agnostic class of built-in tool a turn may load (`tool_set`).
+ */
+export type ToolClass = "shell" | "read";
 
 /**
  * Options accepted by `OneHarness.run()` in the published Node SDK.
@@ -41,6 +45,11 @@ export interface RunOptions {
    * Run against every supported harness.
    */
   all?: boolean | undefined;
+  /**
+   * Compact a session's context once it reaches this many tokens (a
+   * positive integer), through each harness's own knob.
+   */
+  autoCompactTokens?: number | undefined;
   /**
    * Further prompts, making this a **batch**: one harness fanned over each
    * prompt, sharing the cacheable `system`/model prefix. Combined order is
@@ -85,6 +94,10 @@ export interface RunOptions {
    */
   historyPointerFile?: string | undefined;
   /**
+   * Image files attached to the prompt as images the model sees.
+   */
+  images?: readonly string[] | undefined;
+  /**
    * Maximum harnesses (or, in a batch, prompts) to run concurrently.
    */
   maxParallel?: number | undefined;
@@ -109,6 +122,14 @@ export interface RunOptions {
    * `ONEHARNESS_HISTORY` environment override.
    */
   noHistory?: boolean | undefined;
+  /**
+   * Load no MCP server or MCP tool.
+   */
+  noMcp?: boolean | undefined;
+  /**
+   * Load no skills list.
+   */
+  noSkills?: boolean | undefined;
   /**
    * Write each harness's raw stdout/stderr under this directory.
    */
@@ -169,6 +190,11 @@ export interface RunOptions {
    */
   systemFile?: string | undefined;
   timeoutSeconds?: number | undefined;
+  /**
+   * Load only these built-in tool classes; every other built-in tool is
+   * not loaded.
+   */
+  toolSet?: readonly ToolClass[] | undefined;
 }
 export interface HistoryLabels {
   [k: string]: string;

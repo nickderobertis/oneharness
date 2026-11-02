@@ -1126,6 +1126,51 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(verdict)["hookSpecificOutput"]["permissionDecision"], "deny")
         self.assertIn("cat secret", spy.read_text(encoding="utf-8"))
 
+    async def test_lean_options_reach_the_harness_and_compact_continues_the_fork(self) -> None:
+        """Forward the lean-session options, then compact a kept session."""
+        root = scratch(self, "lean")
+        argv_file = root / "argv"
+        client = self.client()
+        await client.run(
+            {
+                "prompt": "hi",
+                "harnesses": ["claude-code"],
+                "mode": "bypass",
+                "auto_compact_tokens": 90000,
+                "tool_set": ["shell", "read"],
+                "no_skills": True,
+                "no_mcp": True,
+                "env": {"MOCK_ARGV_FILE": str(argv_file)},
+                "bins": {"claude-code": str(MOCK)},
+            }
+        )
+        argv = argv_file.read_text(encoding="utf-8").split("\n")
+        at = argv.index("--tools")
+        self.assertEqual(argv[at : at + 3], ["--tools", "Bash", "Read"])
+        self.assertIn("--disable-slash-commands", argv)
+        self.assertIn("--strict-mcp-config", argv)
+
+        session = {
+            "session": "watch",
+            "session_dir": str(root / "store"),
+            "cwd": str(root),
+            "env": {"CLAUDE_CONFIG_DIR": str(root / "home"), "MOCK_CLAUDE_SESSIONS": "1"},
+            "bins": {"claude-code": str(MOCK)},
+        }
+        for prompt in ("alpha", "beta"):
+            await client.run(
+                {"prompt": prompt, "harnesses": ["claude-code"], "mode": "bypass", **session}
+            )
+        outcome = await client.compact(session)
+        self.assertEqual(outcome["status"], "completed")
+        self.assertEqual(outcome["context_tokens_before"], 6809)
+        after = await client.run(
+            {"prompt": "gamma", "harnesses": ["claude-code"], "mode": "bypass", **session}
+        )
+        self.assertEqual(after["results"][0]["text"], "context: [summary of: alpha, beta, gamma]")
+        with self.assertRaises(Exception):
+            await client.compact({**session, "session": "nobody"})
+
     async def test_interrupt_refuses_a_session_no_run_is_serving(self) -> None:
         """Return the refusal frame instead of raising on a non-zero exit."""
         session_dir = str(control_scratch(self, "interrupt"))

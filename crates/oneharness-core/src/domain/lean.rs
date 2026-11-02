@@ -681,7 +681,9 @@ fn claude_auto_compact() -> &'static Translation {
 pub struct Diagnostic {
     /// The harness id the run used.
     pub harness: String,
-    /// The setting it could not apply (or applied in part).
+    // The setting it could not apply (or applied in part). A `//` comment on
+    // purpose: a `$ref` with a sibling description is inlined by the SDK
+    // generator, which then loses `Setting` as an exported name.
     pub setting: Setting,
     /// What happened instead.
     pub message: String,

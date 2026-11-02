@@ -31,6 +31,10 @@ export type OutputFormat = "text" | "json" | "stream-json";
  * free of `clap`.
  */
 export type RunMode = "parallel" | "fallback";
+/**
+ * A harness-agnostic class of built-in tool a turn may load (`tool_set`).
+ */
+export type ToolClass = "shell" | "read";
 
 /**
  * The `oneharness config` report: the fully layered configuration with the
@@ -40,6 +44,7 @@ export type RunMode = "parallel" | "fallback";
 export interface ConfigReport {
   all: Field;
   allowed_tools: Field2;
+  auto_compact_tokens: Field5;
   bypass: Field;
   /**
    * The files consulted, in layering order (user first, project last).
@@ -69,22 +74,25 @@ export interface ConfigReport {
     [k: string]: Field3;
   };
   history_pointer_file: Field3;
-  hooks: Field10;
-  max_parallel: Field8;
+  hooks: Field11;
+  load_mcp: Field;
+  load_skills: Field;
+  max_parallel: Field9;
   mode: Field4;
   model: Field3;
   models: Field21;
-  output_format: Field6;
+  output_format: Field7;
   reasoning: Field31;
   require_available: Field;
-  run_mode: Field9;
+  run_mode: Field10;
   schema_file: Field3;
-  schema_max_retries: Field7;
+  schema_max_retries: Field8;
   schema_version: string;
-  server_overloaded_max_retries: Field7;
+  server_overloaded_max_retries: Field8;
   stream: Field1;
   system: Field3;
   timeout: Field5;
+  tool_set: Field6;
   [k: string]: unknown;
 }
 /**
@@ -112,6 +120,16 @@ export interface Field2 {
  * plus where it came from (a config file path, or [`DEFAULT_SOURCE`]). Both
  * are `null` when the field is unset everywhere and has no built-in default.
  */
+export interface Field5 {
+  source: string | null;
+  value: number | null;
+  [k: string]: unknown;
+}
+/**
+ * One resolved field in the `oneharness config` report: the effective value
+ * plus where it came from (a config file path, or [`DEFAULT_SOURCE`]). Both
+ * are `null` when the field is unset everywhere and has no built-in default.
+ */
 export interface Field3 {
   source: string | null;
   value: string | null;
@@ -130,7 +148,7 @@ export interface HarnessReport {
    * The resolved `app_server` (`"shared"` by default), present only for
    * `codex`.
    */
-  app_server?: Field11 | null | undefined;
+  app_server?: Field12 | null | undefined;
   /**
    * The resolved `apps` opt-in (`false` by default), present only for
    * `codex`.
@@ -175,19 +193,9 @@ export interface HarnessReport {
  * plus where it came from (a config file path, or [`DEFAULT_SOURCE`]). Both
  * are `null` when the field is unset everywhere and has no built-in default.
  */
-export interface Field11 {
+export interface Field12 {
   source: string | null;
   value: AppServerMode | null;
-  [k: string]: unknown;
-}
-/**
- * One resolved field in the `oneharness config` report: the effective value
- * plus where it came from (a config file path, or [`DEFAULT_SOURCE`]). Both
- * are `null` when the field is unset everywhere and has no built-in default.
- */
-export interface Field5 {
-  source: string | null;
-  value: number | null;
   [k: string]: unknown;
 }
 export interface VariantReport {
@@ -201,7 +209,7 @@ export interface VariantReport {
    * The `app_server` a launch of this variant resolves to: the variant's
    * own, else its harness's, else `"shared"`. Present only for `codex`.
    */
-  app_server?: Field11 | null | undefined;
+  app_server?: Field12 | null | undefined;
   /**
    * The apps opt-in a launch of this variant resolves to: the variant's
    * own, else its harness's, else `false`. Present only for `codex`.
@@ -250,7 +258,7 @@ export interface VariantReport {
  * plus where it came from (a config file path, or [`DEFAULT_SOURCE`]). Both
  * are `null` when the field is unset everywhere and has no built-in default.
  */
-export interface Field10 {
+export interface Field11 {
   source: string | null;
   value: HookEntry[] | null;
   [k: string]: unknown;
@@ -293,7 +301,7 @@ export interface HookEntry {
  * plus where it came from (a config file path, or [`DEFAULT_SOURCE`]). Both
  * are `null` when the field is unset everywhere and has no built-in default.
  */
-export interface Field8 {
+export interface Field9 {
   source: string | null;
   value: number | null;
   [k: string]: unknown;
@@ -322,7 +330,7 @@ export interface Field21 {
  * plus where it came from (a config file path, or [`DEFAULT_SOURCE`]). Both
  * are `null` when the field is unset everywhere and has no built-in default.
  */
-export interface Field6 {
+export interface Field7 {
   source: string | null;
   value: OutputFormat | null;
   [k: string]: unknown;
@@ -342,7 +350,7 @@ export interface Field31 {
  * built-in default, attributed to [`DEFAULT_SOURCE`]) — the report says what
  * a run would do, so an unset mode is never shown as `null`.
  */
-export interface Field9 {
+export interface Field10 {
   source: string | null;
   value: RunMode | null;
   [k: string]: unknown;
@@ -352,7 +360,7 @@ export interface Field9 {
  * plus where it came from (a config file path, or [`DEFAULT_SOURCE`]). Both
  * are `null` when the field is unset everywhere and has no built-in default.
  */
-export interface Field7 {
+export interface Field8 {
   source: string | null;
   value: number | null;
   [k: string]: unknown;
@@ -365,5 +373,15 @@ export interface Field7 {
 export interface Field1 {
   source: string | null;
   value: boolean | null;
+  [k: string]: unknown;
+}
+/**
+ * One resolved field in the `oneharness config` report: the effective value
+ * plus where it came from (a config file path, or [`DEFAULT_SOURCE`]). Both
+ * are `null` when the field is unset everywhere and has no built-in default.
+ */
+export interface Field6 {
+  source: string | null;
+  value: ToolClass[] | null;
   [k: string]: unknown;
 }

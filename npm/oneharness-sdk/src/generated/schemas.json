@@ -170,6 +170,36 @@
           "unless": null
         },
         {
+          "option": "autoCompactTokens",
+          "flag": "--auto-compact-tokens",
+          "kind": "value",
+          "unless": null
+        },
+        {
+          "option": "toolSet",
+          "flag": "--tool-set",
+          "kind": "repeated",
+          "unless": null
+        },
+        {
+          "option": "noSkills",
+          "flag": "--no-skills",
+          "kind": "switch",
+          "unless": null
+        },
+        {
+          "option": "noMcp",
+          "flag": "--no-mcp",
+          "kind": "switch",
+          "unless": null
+        },
+        {
+          "option": "images",
+          "flag": "--image",
+          "kind": "repeated",
+          "unless": null
+        },
+        {
           "option": "cwd",
           "flag": "--cwd",
           "kind": "value",
@@ -468,6 +498,36 @@
           "option": "timeoutSeconds",
           "flag": "--timeout",
           "kind": "value",
+          "unless": null
+        },
+        {
+          "option": "autoCompactTokens",
+          "flag": "--auto-compact-tokens",
+          "kind": "value",
+          "unless": null
+        },
+        {
+          "option": "toolSet",
+          "flag": "--tool-set",
+          "kind": "repeated",
+          "unless": null
+        },
+        {
+          "option": "noSkills",
+          "flag": "--no-skills",
+          "kind": "switch",
+          "unless": null
+        },
+        {
+          "option": "noMcp",
+          "flag": "--no-mcp",
+          "kind": "switch",
+          "unless": null
+        },
+        {
+          "option": "images",
+          "flag": "--image",
+          "kind": "repeated",
           "unless": null
         },
         {
@@ -983,6 +1043,86 @@
           "option": "cwd",
           "flag": "--cwd",
           "kind": "value",
+          "unless": null
+        }
+      ],
+      "uncovered": []
+    },
+    {
+      "method": "compact",
+      "argv": [
+        "compact"
+      ],
+      "options": "compact_options",
+      "output": "compact_outcome",
+      "stdout": "json",
+      "stdin": false,
+      "rust": "oneharness_core::io::compact::compact_session",
+      "always": [
+        "--compact",
+        "--format",
+        "json"
+      ],
+      "bindings": [
+        {
+          "option": "session",
+          "flag": "--session",
+          "kind": "value",
+          "unless": null
+        },
+        {
+          "option": "sessionDir",
+          "flag": "--session-dir",
+          "kind": "value",
+          "unless": null
+        },
+        {
+          "option": "harness",
+          "flag": "--harness",
+          "kind": "value",
+          "unless": null
+        },
+        {
+          "option": "cwd",
+          "flag": "--cwd",
+          "kind": "value",
+          "unless": null
+        },
+        {
+          "option": "model",
+          "flag": "--model",
+          "kind": "value",
+          "unless": null
+        },
+        {
+          "option": "timeoutSeconds",
+          "flag": "--timeout",
+          "kind": "value",
+          "unless": null
+        },
+        {
+          "option": "env",
+          "flag": "--env",
+          "kind": "key-value",
+          "unless": null
+        },
+        {
+          "option": "bins",
+          "flag": "--bin",
+          "kind": "key-value",
+          "unless": null
+        },
+        {
+          "option": "config",
+          "flag": "--config",
+          "kind": "repeated",
+          "unless": "noConfig",
+          "unless_resolution": "refuse"
+        },
+        {
+          "option": "noConfig",
+          "flag": "--no-config",
+          "kind": "switch",
           "unless": null
         }
       ],
@@ -1875,6 +2015,28 @@
           "interrupt"
         ]
       },
+      "Diagnostic": {
+        "description": "A setting a harness could not apply, named in the run's report.",
+        "type": "object",
+        "properties": {
+          "harness": {
+            "description": "The harness id the run used.",
+            "type": "string"
+          },
+          "message": {
+            "description": "What happened instead.",
+            "type": "string"
+          },
+          "setting": {
+            "$ref": "#/$defs/Setting"
+          }
+        },
+        "required": [
+          "harness",
+          "setting",
+          "message"
+        ]
+      },
       "ExecutionTelemetry": {
         "description": "Measured execution telemetry for one harness run: when the invocation ran,\nand — when the harness's transcript supports it — how its wall clock split\nbetween provider latency and tool work.\n\nCarried from the runner/parser to the history writer *and*, since report\nschema `0.5`, serialized on [`RunResult::telemetry`]. Exposing it there is\nwhat lets a consumer read the numbers off the run it just made instead of\nre-opening the history file the same run wrote.\n\nInternally tagged by `source`, so the variant is a value a consumer switches\non rather than a shape it has to sniff. Every variant states only what was\nactually measured — there is no variant meaning \"no telemetry\"; that is a\n`null` field.",
         "oneOf": [
@@ -2030,6 +2192,11 @@
             "description": "The shared Codex app-server a pooled dispatch's turn ran on went away\nunder it: the connection reached EOF, was closed, or refused a write\n(`EPIPE`) while oneharness's own record showed a turn started and not\ncompleted. The server crashed or was restarted, not the turn — so it is\nnever a turn failure, and a fallback chain moves on to its next\ncandidate (`\"app-server-lost\"`).",
             "type": "string",
             "const": "app_server_lost"
+          },
+          {
+            "description": "The request carried an input this harness cannot take — today an\nimage (`images`) on a harness with no image input — so the harness was\nrefused for the run before it started, and a fallback chain moves on\n(`\"unsupported-input\"`). Its `error` names the input.",
+            "type": "string",
+            "const": "unsupported_input"
           }
         ]
       },
@@ -2121,6 +2288,11 @@
             "description": "The shared Codex app-server went away under the candidate's live turn.",
             "type": "string",
             "const": "app-server-lost"
+          },
+          {
+            "description": "The harness cannot take an input the request carried (an image).",
+            "type": "string",
+            "const": "unsupported-input"
           }
         ]
       },
@@ -2221,11 +2393,28 @@
             "description": "The binary name or path oneharness resolved and would invoke.",
             "type": "string"
           },
+          "calls": {
+            "description": "One usage per model call the turn made, in order, read from the\nharness's own stream or session record (see\n[`crate::domain::lean::Setting::Calls`]). Absent where the harness\nexposes no per-call figures, and then `diagnostics` says why. The\nrun's `usage` total is unchanged by it. Added in report schema `0.13`.",
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/$defs/Usage"
+            }
+          },
           "command": {
             "description": "The exact argv oneharness built; its first element is the binary.",
             "type": "array",
             "items": {
               "type": "string"
+            }
+          },
+          "diagnostics": {
+            "description": "Each setting this run's harness could not apply, or applied in part\n(`auto_compact_tokens`, `tool_set`, `load_skills`, `load_mcp`, `calls`):\nthe run proceeded, and this says what it did instead. Absent when\nempty. Added in report schema `0.13`.",
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Diagnostic"
             }
           },
           "duration_ms": {
@@ -2516,6 +2705,46 @@
           "phase",
           "token",
           "store_file"
+        ]
+      },
+      "Setting": {
+        "description": "One of the settings this module translates.",
+        "oneOf": [
+          {
+            "description": "Compact a session's context once it reaches this many tokens.",
+            "type": "string",
+            "const": "auto_compact_tokens"
+          },
+          {
+            "description": "Compact a named session immediately (`oneharness compact`).",
+            "type": "string",
+            "const": "compact_now"
+          },
+          {
+            "description": "Load only these built-in tool classes.",
+            "type": "string",
+            "const": "tool_set"
+          },
+          {
+            "description": "`false` loads no skills list.",
+            "type": "string",
+            "const": "load_skills"
+          },
+          {
+            "description": "`false` loads no MCP server or MCP tool.",
+            "type": "string",
+            "const": "load_mcp"
+          },
+          {
+            "description": "Attach image files to the prompt as images.",
+            "type": "string",
+            "const": "images"
+          },
+          {
+            "description": "One usage per model call (`RunResult::calls`).",
+            "type": "string",
+            "const": "calls"
+          }
         ]
       },
       "Status": {
@@ -3052,6 +3281,28 @@
           "interrupt"
         ]
       },
+      "Diagnostic": {
+        "description": "A setting a harness could not apply, named in the run's report.",
+        "type": "object",
+        "properties": {
+          "harness": {
+            "description": "The harness id the run used.",
+            "type": "string"
+          },
+          "message": {
+            "description": "What happened instead.",
+            "type": "string"
+          },
+          "setting": {
+            "$ref": "#/$defs/Setting"
+          }
+        },
+        "required": [
+          "harness",
+          "setting",
+          "message"
+        ]
+      },
       "ExecutionTelemetry": {
         "description": "Measured execution telemetry for one harness run: when the invocation ran,\nand — when the harness's transcript supports it — how its wall clock split\nbetween provider latency and tool work.\n\nCarried from the runner/parser to the history writer *and*, since report\nschema `0.5`, serialized on [`RunResult::telemetry`]. Exposing it there is\nwhat lets a consumer read the numbers off the run it just made instead of\nre-opening the history file the same run wrote.\n\nInternally tagged by `source`, so the variant is a value a consumer switches\non rather than a shape it has to sniff. Every variant states only what was\nactually measured — there is no variant meaning \"no telemetry\"; that is a\n`null` field.",
         "oneOf": [
@@ -3207,6 +3458,11 @@
             "description": "The shared Codex app-server a pooled dispatch's turn ran on went away\nunder it: the connection reached EOF, was closed, or refused a write\n(`EPIPE`) while oneharness's own record showed a turn started and not\ncompleted. The server crashed or was restarted, not the turn — so it is\nnever a turn failure, and a fallback chain moves on to its next\ncandidate (`\"app-server-lost\"`).",
             "type": "string",
             "const": "app_server_lost"
+          },
+          {
+            "description": "The request carried an input this harness cannot take — today an\nimage (`images`) on a harness with no image input — so the harness was\nrefused for the run before it started, and a fallback chain moves on\n(`\"unsupported-input\"`). Its `error` names the input.",
+            "type": "string",
+            "const": "unsupported_input"
           }
         ]
       },
@@ -3298,6 +3554,11 @@
             "description": "The shared Codex app-server went away under the candidate's live turn.",
             "type": "string",
             "const": "app-server-lost"
+          },
+          {
+            "description": "The harness cannot take an input the request carried (an image).",
+            "type": "string",
+            "const": "unsupported-input"
           }
         ]
       },
@@ -3562,11 +3823,28 @@
             "description": "The binary name or path oneharness resolved and would invoke.",
             "type": "string"
           },
+          "calls": {
+            "description": "One usage per model call the turn made, in order, read from the\nharness's own stream or session record (see\n[`crate::domain::lean::Setting::Calls`]). Absent where the harness\nexposes no per-call figures, and then `diagnostics` says why. The\nrun's `usage` total is unchanged by it. Added in report schema `0.13`.",
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/$defs/Usage"
+            }
+          },
           "command": {
             "description": "The exact argv oneharness built; its first element is the binary.",
             "type": "array",
             "items": {
               "type": "string"
+            }
+          },
+          "diagnostics": {
+            "description": "Each setting this run's harness could not apply, or applied in part\n(`auto_compact_tokens`, `tool_set`, `load_skills`, `load_mcp`, `calls`):\nthe run proceeded, and this says what it did instead. Absent when\nempty. Added in report schema `0.13`.",
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Diagnostic"
             }
           },
           "duration_ms": {
@@ -3859,6 +4137,46 @@
           "store_file"
         ]
       },
+      "Setting": {
+        "description": "One of the settings this module translates.",
+        "oneOf": [
+          {
+            "description": "Compact a session's context once it reaches this many tokens.",
+            "type": "string",
+            "const": "auto_compact_tokens"
+          },
+          {
+            "description": "Compact a named session immediately (`oneharness compact`).",
+            "type": "string",
+            "const": "compact_now"
+          },
+          {
+            "description": "Load only these built-in tool classes.",
+            "type": "string",
+            "const": "tool_set"
+          },
+          {
+            "description": "`false` loads no skills list.",
+            "type": "string",
+            "const": "load_skills"
+          },
+          {
+            "description": "`false` loads no MCP server or MCP tool.",
+            "type": "string",
+            "const": "load_mcp"
+          },
+          {
+            "description": "Attach image files to the prompt as images.",
+            "type": "string",
+            "const": "images"
+          },
+          {
+            "description": "One usage per model call (`RunResult::calls`).",
+            "type": "string",
+            "const": "calls"
+          }
+        ]
+      },
       "Status": {
         "description": "The outcome of attempting to run one harness.",
         "oneOf": [
@@ -3996,6 +4314,12 @@
         "description": "Run against every supported harness.",
         "type": "boolean"
       },
+      "autoCompactTokens": {
+        "description": "Compact a session's context once it reaches this many tokens (a\npositive integer), through each harness's own knob.",
+        "type": "integer",
+        "format": "uint64",
+        "minimum": 1
+      },
       "batchPrompts": {
         "description": "Further prompts, making this a **batch**: one harness fanned over each\nprompt, sharing the cacheable `system`/model prefix. Combined order is\n`prompt`, then these, then `promptFiles` — the CLI's own order.",
         "type": "array",
@@ -4068,6 +4392,13 @@
         "type": "string",
         "minLength": 1
       },
+      "images": {
+        "description": "Image files attached to the prompt as images the model sees.",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
       "maxParallel": {
         "description": "Maximum harnesses (or, in a batch, prompts) to run concurrently.",
         "type": "integer",
@@ -4100,6 +4431,14 @@
       },
       "noHistory": {
         "description": "Do NOT record history for this run, overriding config or the\n`ONEHARNESS_HISTORY` environment override.",
+        "type": "boolean"
+      },
+      "noMcp": {
+        "description": "Load no MCP server or MCP tool.",
+        "type": "boolean"
+      },
+      "noSkills": {
+        "description": "Load no skills list.",
         "type": "boolean"
       },
       "outputDir": {
@@ -4187,6 +4526,13 @@
         "type": "integer",
         "format": "uint64",
         "minimum": 0
+      },
+      "toolSet": {
+        "description": "Load only these built-in tool classes; every other built-in tool is\nnot loaded.",
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/ToolClass"
+        }
       }
     },
     "additionalProperties": false,
@@ -4295,6 +4641,21 @@
             "description": "Run the selected harnesses in priority order (the `--harness` / config\norder, else registry order under `--all`), stopping at the first that\nactually runs the task; fall through only the candidates that cannot run\nat all (see [`startup_failure_reason`]). The default wherever a run mode\nis left unset — in the request, every config layer and the environment.",
             "type": "string",
             "const": "fallback"
+          }
+        ]
+      },
+      "ToolClass": {
+        "description": "A harness-agnostic class of built-in tool a turn may load (`tool_set`).",
+        "oneOf": [
+          {
+            "description": "Run commands.",
+            "type": "string",
+            "const": "shell"
+          },
+          {
+            "description": "Read files.",
+            "type": "string",
+            "const": "read"
           }
         ]
       }
@@ -4743,7 +5104,8 @@
               "schema_version": {
                 "type": "string",
                 "enum": [
-                  "1.11"
+                  "1.11",
+                  "1.12"
                 ]
               },
               "started": {
@@ -4805,7 +5167,8 @@
                           "1.8",
                           "1.9",
                           "1.10",
-                          "1.11"
+                          "1.11",
+                          "1.12"
                         ]
                       },
                       "session_name": {
@@ -4950,7 +5313,8 @@
                               "1.8",
                               "1.9",
                               "1.10",
-                              "1.11"
+                              "1.11",
+                              "1.12"
                             ]
                           }
                         },
@@ -5014,7 +5378,8 @@
                               "1.8",
                               "1.9",
                               "1.10",
-                              "1.11"
+                              "1.11",
+                              "1.12"
                             ]
                           },
                           "status": {
@@ -5063,7 +5428,8 @@
                           "1.8",
                           "1.9",
                           "1.10",
-                          "1.11"
+                          "1.11",
+                          "1.12"
                         ]
                       }
                     },
@@ -5104,7 +5470,8 @@
                           "1.8",
                           "1.9",
                           "1.10",
-                          "1.11"
+                          "1.11",
+                          "1.12"
                         ]
                       }
                     }
@@ -5130,6 +5497,7 @@
                               "model_mismatch",
                               "server_overloaded",
                               "app_server_lost",
+                              "unsupported_input",
                               null
                             ]
                           }
@@ -5147,7 +5515,8 @@
                               "1.8",
                               "1.9",
                               "1.10",
-                              "1.11"
+                              "1.11",
+                              "1.12"
                             ]
                           }
                         }
@@ -5170,6 +5539,7 @@
                               "model_mismatch",
                               "server_overloaded",
                               "app_server_lost",
+                              "unsupported_input",
                               null
                             ]
                           }
@@ -5186,7 +5556,8 @@
                               "1.8",
                               "1.9",
                               "1.10",
-                              "1.11"
+                              "1.11",
+                              "1.12"
                             ]
                           }
                         }
@@ -5210,6 +5581,7 @@
                               "input_too_large",
                               "server_overloaded",
                               "app_server_lost",
+                              "unsupported_input",
                               null
                             ]
                           }
@@ -5224,7 +5596,8 @@
                               "1.8",
                               "1.9",
                               "1.10",
-                              "1.11"
+                              "1.11",
+                              "1.12"
                             ]
                           }
                         }
@@ -5248,6 +5621,7 @@
                               "input_too_large",
                               "model_mismatch",
                               "app_server_lost",
+                              "unsupported_input",
                               null
                             ]
                           }
@@ -5261,7 +5635,8 @@
                             "enum": [
                               "1.9",
                               "1.10",
-                              "1.11"
+                              "1.11",
+                              "1.12"
                             ]
                           }
                         }
@@ -5285,6 +5660,7 @@
                               "input_too_large",
                               "model_mismatch",
                               "server_overloaded",
+                              "unsupported_input",
                               null
                             ]
                           }
@@ -5297,7 +5673,44 @@
                             "type": "string",
                             "enum": [
                               "1.10",
-                              "1.11"
+                              "1.11",
+                              "1.12"
+                            ]
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "failure_kind": {
+                            "enum": [
+                              "auth",
+                              "rate_limit",
+                              "model_not_found",
+                              "quota",
+                              "session_not_found",
+                              "tool_deferred",
+                              "untrusted_directory",
+                              "input_too_large",
+                              "model_mismatch",
+                              "server_overloaded",
+                              "app_server_lost",
+                              null
+                            ]
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "schema_version": {
+                            "type": "string",
+                            "enum": [
+                              "1.12"
                             ]
                           }
                         }
@@ -5409,7 +5822,8 @@
                           "1.8",
                           "1.9",
                           "1.10",
-                          "1.11"
+                          "1.11",
+                          "1.12"
                         ]
                       },
                       "session": {
@@ -5616,7 +6030,8 @@
                           "1.8",
                           "1.9",
                           "1.10",
-                          "1.11"
+                          "1.11",
+                          "1.12"
                         ]
                       },
                       "session": {
@@ -5821,7 +6236,8 @@
                           "1.8",
                           "1.9",
                           "1.10",
-                          "1.11"
+                          "1.11",
+                          "1.12"
                         ]
                       },
                       "session": {
@@ -6007,7 +6423,8 @@
                           "1.8",
                           "1.9",
                           "1.10",
-                          "1.11"
+                          "1.11",
+                          "1.12"
                         ]
                       },
                       "session": {
@@ -6192,7 +6609,8 @@
                           "1.8",
                           "1.9",
                           "1.10",
-                          "1.11"
+                          "1.11",
+                          "1.12"
                         ]
                       },
                       "session": {
@@ -6394,7 +6812,8 @@
                           "1.8",
                           "1.9",
                           "1.10",
-                          "1.11"
+                          "1.11",
+                          "1.12"
                         ]
                       },
                       "session": {
@@ -6640,6 +7059,11 @@
             "description": "The shared Codex app-server a pooled dispatch's turn ran on went away\nunder it: the connection reached EOF, was closed, or refused a write\n(`EPIPE`) while oneharness's own record showed a turn started and not\ncompleted. The server crashed or was restarted, not the turn — so it is\nnever a turn failure, and a fallback chain moves on to its next\ncandidate (`\"app-server-lost\"`).",
             "type": "string",
             "const": "app_server_lost"
+          },
+          {
+            "description": "The request carried an input this harness cannot take — today an\nimage (`images`) on a harness with no image input — so the harness was\nrefused for the run before it started, and a fallback chain moves on\n(`\"unsupported-input\"`). Its `error` names the input.",
+            "type": "string",
+            "const": "unsupported_input"
           }
         ]
       },
@@ -6873,7 +7297,8 @@
                       "1.8",
                       "1.9",
                       "1.10",
-                      "1.11"
+                      "1.11",
+                      "1.12"
                     ]
                   }
                 },
@@ -6937,7 +7362,8 @@
                       "1.8",
                       "1.9",
                       "1.10",
-                      "1.11"
+                      "1.11",
+                      "1.12"
                     ]
                   },
                   "status": {
@@ -6986,7 +7412,8 @@
                   "1.8",
                   "1.9",
                   "1.10",
-                  "1.11"
+                  "1.11",
+                  "1.12"
                 ]
               }
             },
@@ -7027,7 +7454,8 @@
                   "1.8",
                   "1.9",
                   "1.10",
-                  "1.11"
+                  "1.11",
+                  "1.12"
                 ]
               }
             }
@@ -7053,6 +7481,7 @@
                       "model_mismatch",
                       "server_overloaded",
                       "app_server_lost",
+                      "unsupported_input",
                       null
                     ]
                   }
@@ -7070,7 +7499,8 @@
                       "1.8",
                       "1.9",
                       "1.10",
-                      "1.11"
+                      "1.11",
+                      "1.12"
                     ]
                   }
                 }
@@ -7093,6 +7523,7 @@
                       "model_mismatch",
                       "server_overloaded",
                       "app_server_lost",
+                      "unsupported_input",
                       null
                     ]
                   }
@@ -7109,7 +7540,8 @@
                       "1.8",
                       "1.9",
                       "1.10",
-                      "1.11"
+                      "1.11",
+                      "1.12"
                     ]
                   }
                 }
@@ -7133,6 +7565,7 @@
                       "input_too_large",
                       "server_overloaded",
                       "app_server_lost",
+                      "unsupported_input",
                       null
                     ]
                   }
@@ -7147,7 +7580,8 @@
                       "1.8",
                       "1.9",
                       "1.10",
-                      "1.11"
+                      "1.11",
+                      "1.12"
                     ]
                   }
                 }
@@ -7171,6 +7605,7 @@
                       "input_too_large",
                       "model_mismatch",
                       "app_server_lost",
+                      "unsupported_input",
                       null
                     ]
                   }
@@ -7184,7 +7619,8 @@
                     "enum": [
                       "1.9",
                       "1.10",
-                      "1.11"
+                      "1.11",
+                      "1.12"
                     ]
                   }
                 }
@@ -7208,6 +7644,7 @@
                       "input_too_large",
                       "model_mismatch",
                       "server_overloaded",
+                      "unsupported_input",
                       null
                     ]
                   }
@@ -7220,7 +7657,44 @@
                     "type": "string",
                     "enum": [
                       "1.10",
-                      "1.11"
+                      "1.11",
+                      "1.12"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "failure_kind": {
+                    "enum": [
+                      "auth",
+                      "rate_limit",
+                      "model_not_found",
+                      "quota",
+                      "session_not_found",
+                      "tool_deferred",
+                      "untrusted_directory",
+                      "input_too_large",
+                      "model_mismatch",
+                      "server_overloaded",
+                      "app_server_lost",
+                      null
+                    ]
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "schema_version": {
+                    "type": "string",
+                    "enum": [
+                      "1.12"
                     ]
                   }
                 }
@@ -7532,7 +8006,8 @@
               "1.8",
               "1.9",
               "1.10",
-              "1.11"
+              "1.11",
+              "1.12"
             ]
           },
           "session": {
@@ -8194,7 +8669,8 @@
               "1.8",
               "1.9",
               "1.10",
-              "1.11"
+              "1.11",
+              "1.12"
             ]
           },
           "session": {
@@ -8394,7 +8870,8 @@
               "1.8",
               "1.9",
               "1.10",
-              "1.11"
+              "1.11",
+              "1.12"
             ]
           },
           "session": {
@@ -8592,7 +9069,8 @@
               "1.8",
               "1.9",
               "1.10",
-              "1.11"
+              "1.11",
+              "1.12"
             ]
           },
           "session": {
@@ -8791,7 +9269,8 @@
               "1.8",
               "1.9",
               "1.10",
-              "1.11"
+              "1.11",
+              "1.12"
             ]
           },
           "session": {
@@ -9755,6 +10234,11 @@
             "description": "The shared Codex app-server a pooled dispatch's turn ran on went away\nunder it: the connection reached EOF, was closed, or refused a write\n(`EPIPE`) while oneharness's own record showed a turn started and not\ncompleted. The server crashed or was restarted, not the turn — so it is\nnever a turn failure, and a fallback chain moves on to its next\ncandidate (`\"app-server-lost\"`).",
             "type": "string",
             "const": "app_server_lost"
+          },
+          {
+            "description": "The request carried an input this harness cannot take — today an\nimage (`images`) on a harness with no image input — so the harness was\nrefused for the run before it started, and a fallback chain moves on\n(`\"unsupported-input\"`). Its `error` names the input.",
+            "type": "string",
+            "const": "unsupported_input"
           }
         ]
       },
@@ -10144,6 +10628,11 @@
             "description": "The shared Codex app-server a pooled dispatch's turn ran on went away\nunder it: the connection reached EOF, was closed, or refused a write\n(`EPIPE`) while oneharness's own record showed a turn started and not\ncompleted. The server crashed or was restarted, not the turn — so it is\nnever a turn failure, and a fallback chain moves on to its next\ncandidate (`\"app-server-lost\"`).",
             "type": "string",
             "const": "app_server_lost"
+          },
+          {
+            "description": "The request carried an input this harness cannot take — today an\nimage (`images`) on a harness with no image input — so the harness was\nrefused for the run before it started, and a fallback chain moves on\n(`\"unsupported-input\"`). Its `error` names the input.",
+            "type": "string",
+            "const": "unsupported_input"
           }
         ]
       },
@@ -10185,7 +10674,8 @@
                       "1.8",
                       "1.9",
                       "1.10",
-                      "1.11"
+                      "1.11",
+                      "1.12"
                     ]
                   },
                   "session_name": {
@@ -10336,7 +10826,8 @@
                           "1.8",
                           "1.9",
                           "1.10",
-                          "1.11"
+                          "1.11",
+                          "1.12"
                         ]
                       }
                     },
@@ -10400,7 +10891,8 @@
                           "1.8",
                           "1.9",
                           "1.10",
-                          "1.11"
+                          "1.11",
+                          "1.12"
                         ]
                       },
                       "status": {
@@ -10449,7 +10941,8 @@
                       "1.8",
                       "1.9",
                       "1.10",
-                      "1.11"
+                      "1.11",
+                      "1.12"
                     ]
                   }
                 },
@@ -10490,7 +10983,8 @@
                       "1.8",
                       "1.9",
                       "1.10",
-                      "1.11"
+                      "1.11",
+                      "1.12"
                     ]
                   }
                 }
@@ -10516,6 +11010,7 @@
                           "model_mismatch",
                           "server_overloaded",
                           "app_server_lost",
+                          "unsupported_input",
                           null
                         ]
                       }
@@ -10533,7 +11028,8 @@
                           "1.8",
                           "1.9",
                           "1.10",
-                          "1.11"
+                          "1.11",
+                          "1.12"
                         ]
                       }
                     }
@@ -10556,6 +11052,7 @@
                           "model_mismatch",
                           "server_overloaded",
                           "app_server_lost",
+                          "unsupported_input",
                           null
                         ]
                       }
@@ -10572,7 +11069,8 @@
                           "1.8",
                           "1.9",
                           "1.10",
-                          "1.11"
+                          "1.11",
+                          "1.12"
                         ]
                       }
                     }
@@ -10596,6 +11094,7 @@
                           "input_too_large",
                           "server_overloaded",
                           "app_server_lost",
+                          "unsupported_input",
                           null
                         ]
                       }
@@ -10610,7 +11109,8 @@
                           "1.8",
                           "1.9",
                           "1.10",
-                          "1.11"
+                          "1.11",
+                          "1.12"
                         ]
                       }
                     }
@@ -10634,6 +11134,7 @@
                           "input_too_large",
                           "model_mismatch",
                           "app_server_lost",
+                          "unsupported_input",
                           null
                         ]
                       }
@@ -10647,7 +11148,8 @@
                         "enum": [
                           "1.9",
                           "1.10",
-                          "1.11"
+                          "1.11",
+                          "1.12"
                         ]
                       }
                     }
@@ -10671,6 +11173,7 @@
                           "input_too_large",
                           "model_mismatch",
                           "server_overloaded",
+                          "unsupported_input",
                           null
                         ]
                       }
@@ -10683,7 +11186,44 @@
                         "type": "string",
                         "enum": [
                           "1.10",
-                          "1.11"
+                          "1.11",
+                          "1.12"
+                        ]
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "failure_kind": {
+                        "enum": [
+                          "auth",
+                          "rate_limit",
+                          "model_not_found",
+                          "quota",
+                          "session_not_found",
+                          "tool_deferred",
+                          "untrusted_directory",
+                          "input_too_large",
+                          "model_mismatch",
+                          "server_overloaded",
+                          "app_server_lost",
+                          null
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "schema_version": {
+                        "type": "string",
+                        "enum": [
+                          "1.12"
                         ]
                       }
                     }
@@ -10995,7 +11535,8 @@
                   "1.8",
                   "1.9",
                   "1.10",
-                  "1.11"
+                  "1.11",
+                  "1.12"
                 ]
               },
               "session": {
@@ -11657,7 +12198,8 @@
                   "1.8",
                   "1.9",
                   "1.10",
-                  "1.11"
+                  "1.11",
+                  "1.12"
                 ]
               },
               "session": {
@@ -11857,7 +12399,8 @@
                   "1.8",
                   "1.9",
                   "1.10",
-                  "1.11"
+                  "1.11",
+                  "1.12"
                 ]
               },
               "session": {
@@ -12055,7 +12598,8 @@
                   "1.8",
                   "1.9",
                   "1.10",
-                  "1.11"
+                  "1.11",
+                  "1.12"
                 ]
               },
               "session": {
@@ -12254,7 +12798,8 @@
                   "1.8",
                   "1.9",
                   "1.10",
-                  "1.11"
+                  "1.11",
+                  "1.12"
                 ]
               },
               "session": {
@@ -13399,6 +13944,11 @@
             "description": "The shared Codex app-server a pooled dispatch's turn ran on went away\nunder it: the connection reached EOF, was closed, or refused a write\n(`EPIPE`) while oneharness's own record showed a turn started and not\ncompleted. The server crashed or was restarted, not the turn — so it is\nnever a turn failure, and a fallback chain moves on to its next\ncandidate (`\"app-server-lost\"`).",
             "type": "string",
             "const": "app_server_lost"
+          },
+          {
+            "description": "The request carried an input this harness cannot take — today an\nimage (`images`) on a harness with no image input — so the harness was\nrefused for the run before it started, and a fallback chain moves on\n(`\"unsupported-input\"`). Its `error` names the input.",
+            "type": "string",
+            "const": "unsupported_input"
           }
         ]
       },
@@ -13453,7 +14003,8 @@
                           "1.8",
                           "1.9",
                           "1.10",
-                          "1.11"
+                          "1.11",
+                          "1.12"
                         ]
                       }
                     },
@@ -13517,7 +14068,8 @@
                           "1.8",
                           "1.9",
                           "1.10",
-                          "1.11"
+                          "1.11",
+                          "1.12"
                         ]
                       },
                       "status": {
@@ -13566,7 +14118,8 @@
                       "1.8",
                       "1.9",
                       "1.10",
-                      "1.11"
+                      "1.11",
+                      "1.12"
                     ]
                   }
                 },
@@ -13607,7 +14160,8 @@
                       "1.8",
                       "1.9",
                       "1.10",
-                      "1.11"
+                      "1.11",
+                      "1.12"
                     ]
                   }
                 }
@@ -13633,6 +14187,7 @@
                           "model_mismatch",
                           "server_overloaded",
                           "app_server_lost",
+                          "unsupported_input",
                           null
                         ]
                       }
@@ -13650,7 +14205,8 @@
                           "1.8",
                           "1.9",
                           "1.10",
-                          "1.11"
+                          "1.11",
+                          "1.12"
                         ]
                       }
                     }
@@ -13673,6 +14229,7 @@
                           "model_mismatch",
                           "server_overloaded",
                           "app_server_lost",
+                          "unsupported_input",
                           null
                         ]
                       }
@@ -13689,7 +14246,8 @@
                           "1.8",
                           "1.9",
                           "1.10",
-                          "1.11"
+                          "1.11",
+                          "1.12"
                         ]
                       }
                     }
@@ -13713,6 +14271,7 @@
                           "input_too_large",
                           "server_overloaded",
                           "app_server_lost",
+                          "unsupported_input",
                           null
                         ]
                       }
@@ -13727,7 +14286,8 @@
                           "1.8",
                           "1.9",
                           "1.10",
-                          "1.11"
+                          "1.11",
+                          "1.12"
                         ]
                       }
                     }
@@ -13751,6 +14311,7 @@
                           "input_too_large",
                           "model_mismatch",
                           "app_server_lost",
+                          "unsupported_input",
                           null
                         ]
                       }
@@ -13764,7 +14325,8 @@
                         "enum": [
                           "1.9",
                           "1.10",
-                          "1.11"
+                          "1.11",
+                          "1.12"
                         ]
                       }
                     }
@@ -13788,6 +14350,7 @@
                           "input_too_large",
                           "model_mismatch",
                           "server_overloaded",
+                          "unsupported_input",
                           null
                         ]
                       }
@@ -13800,7 +14363,44 @@
                         "type": "string",
                         "enum": [
                           "1.10",
-                          "1.11"
+                          "1.11",
+                          "1.12"
+                        ]
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "failure_kind": {
+                        "enum": [
+                          "auth",
+                          "rate_limit",
+                          "model_not_found",
+                          "quota",
+                          "session_not_found",
+                          "tool_deferred",
+                          "untrusted_directory",
+                          "input_too_large",
+                          "model_mismatch",
+                          "server_overloaded",
+                          "app_server_lost",
+                          null
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "schema_version": {
+                        "type": "string",
+                        "enum": [
+                          "1.12"
                         ]
                       }
                     }
@@ -14112,7 +14712,8 @@
                   "1.8",
                   "1.9",
                   "1.10",
-                  "1.11"
+                  "1.11",
+                  "1.12"
                 ]
               },
               "session": {
@@ -14774,7 +15375,8 @@
                   "1.8",
                   "1.9",
                   "1.10",
-                  "1.11"
+                  "1.11",
+                  "1.12"
                 ]
               },
               "session": {
@@ -14974,7 +15576,8 @@
                   "1.8",
                   "1.9",
                   "1.10",
-                  "1.11"
+                  "1.11",
+                  "1.12"
                 ]
               },
               "session": {
@@ -15172,7 +15775,8 @@
                   "1.8",
                   "1.9",
                   "1.10",
-                  "1.11"
+                  "1.11",
+                  "1.12"
                 ]
               },
               "session": {
@@ -15371,7 +15975,8 @@
                   "1.8",
                   "1.9",
                   "1.10",
-                  "1.11"
+                  "1.11",
+                  "1.12"
                 ]
               },
               "session": {
@@ -16609,6 +17214,18 @@
             "description": "Whether the unified allow/deny rule lists and hooks table can be synced\ninto that file (see the README support matrix).",
             "type": "boolean"
           },
+          "supports_auto_compact": {
+            "description": "Whether `auto_compact_tokens` reaches this harness's own compaction\nknob. Every `supports_*` flag below is read from the translation table\n([`crate::domain::lean::TRANSLATIONS`]): `false` means a run asking for\nthe setting carries a diagnostic (or, for images, refuses the harness).",
+            "type": "boolean"
+          },
+          "supports_call_usage": {
+            "description": "Whether a result's `calls` can carry per-call usage.",
+            "type": "boolean"
+          },
+          "supports_compact_now": {
+            "description": "Whether `oneharness compact` can compact this harness's sessions.",
+            "type": "boolean"
+          },
           "supports_denied_tools": {
             "type": "boolean"
           },
@@ -16617,6 +17234,14 @@
             "type": "boolean"
           },
           "supports_hooks": {
+            "type": "boolean"
+          },
+          "supports_images": {
+            "description": "Whether `images` reach the model as images.",
+            "type": "boolean"
+          },
+          "supports_mcp_off": {
+            "description": "Whether `load_mcp = false` loads no MCP server.",
             "type": "boolean"
           },
           "supports_mock_deny": {
@@ -16639,8 +17264,16 @@
             "description": "Whether `run --resume <session>` is supported for this harness.",
             "type": "boolean"
           },
+          "supports_skills_off": {
+            "description": "Whether `load_skills = false` loads no skills list.",
+            "type": "boolean"
+          },
           "supports_system_file": {
             "description": "Whether a large system prompt can be delivered off the argv via a file\nflag (Claude Code's `--append-system-prompt-file`). `false` does not mean a\nlarge system is unhandled — for a harness whose system rides the prompt it\ntravels on stdin with the prompt; see the README large-prompt matrix.",
+            "type": "boolean"
+          },
+          "supports_tool_set": {
+            "description": "Whether `tool_set` loads exactly the named classes (`false` for codex,\nwhich applies it in part and says so).",
             "type": "boolean"
           },
           "sync_file": {
@@ -16679,6 +17312,13 @@
           "mock_rewrite",
           "supports_prompt_stdin",
           "supports_system_file",
+          "supports_auto_compact",
+          "supports_compact_now",
+          "supports_tool_set",
+          "supports_skills_off",
+          "supports_mcp_off",
+          "supports_images",
+          "supports_call_usage",
           "example_command",
           "variants"
         ]
@@ -16974,6 +17614,9 @@
       "allowed_tools": {
         "$ref": "#/$defs/Field2"
       },
+      "auto_compact_tokens": {
+        "$ref": "#/$defs/Field5"
+      },
       "bypass": {
         "$ref": "#/$defs/Field"
       },
@@ -17024,10 +17667,16 @@
         "$ref": "#/$defs/Field3"
       },
       "hooks": {
-        "$ref": "#/$defs/Field10"
+        "$ref": "#/$defs/Field11"
+      },
+      "load_mcp": {
+        "$ref": "#/$defs/Field"
+      },
+      "load_skills": {
+        "$ref": "#/$defs/Field"
       },
       "max_parallel": {
-        "$ref": "#/$defs/Field8"
+        "$ref": "#/$defs/Field9"
       },
       "mode": {
         "description": "The configured `mode`, if any. Unset when only the legacy `bypass` field\n(or neither) is set — the effective mode then derives from `bypass`.",
@@ -17041,7 +17690,7 @@
         "$ref": "#/$defs/Field2"
       },
       "output_format": {
-        "$ref": "#/$defs/Field6"
+        "$ref": "#/$defs/Field7"
       },
       "reasoning": {
         "description": "Reasoning / thinking effort (`--reasoning` / `ONEHARNESS_REASONING`), if\nany. Forwarded to reasoning-capable harnesses only.",
@@ -17052,19 +17701,19 @@
       },
       "run_mode": {
         "description": "The effective run mode: a configured value, else `fallback` (the\nbuilt-in default, attributed to [`DEFAULT_SOURCE`]) — the report says what\na run would do, so an unset mode is never shown as `null`.",
-        "$ref": "#/$defs/Field9"
+        "$ref": "#/$defs/Field10"
       },
       "schema_file": {
         "$ref": "#/$defs/Field3"
       },
       "schema_max_retries": {
-        "$ref": "#/$defs/Field7"
+        "$ref": "#/$defs/Field8"
       },
       "schema_version": {
         "type": "string"
       },
       "server_overloaded_max_retries": {
-        "$ref": "#/$defs/Field7"
+        "$ref": "#/$defs/Field8"
       },
       "stream": {
         "description": "Whether config asks every `run` to stream (`--stream` / ONEHARNESS_STREAM);\ndefaults to false, the built-in buffered report.",
@@ -17075,6 +17724,9 @@
       },
       "timeout": {
         "$ref": "#/$defs/Field5"
+      },
+      "tool_set": {
+        "$ref": "#/$defs/Field6"
       }
     },
     "required": [
@@ -17090,6 +17742,10 @@
       "bypass",
       "mode",
       "timeout",
+      "auto_compact_tokens",
+      "tool_set",
+      "load_skills",
+      "load_mcp",
       "output_format",
       "stream",
       "schema_file",
@@ -17157,6 +17813,32 @@
             ]
           },
           "value": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/RunMode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "value",
+          "source"
+        ]
+      },
+      "Field11": {
+        "description": "One resolved field in the `oneharness config` report: the effective value\nplus where it came from (a config file path, or [`DEFAULT_SOURCE`]). Both\nare `null` when the field is unset everywhere and has no built-in default.",
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "value": {
             "type": [
               "array",
               "null"
@@ -17171,7 +17853,7 @@
           "source"
         ]
       },
-      "Field11": {
+      "Field12": {
         "description": "One resolved field in the `oneharness config` report: the effective value\nplus where it came from (a config file path, or [`DEFAULT_SOURCE`]). Both\nare `null` when the field is unset everywhere and has no built-in default.",
         "type": "object",
         "properties": {
@@ -17305,6 +17987,31 @@
             ]
           },
           "value": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/$defs/ToolClass"
+            }
+          }
+        },
+        "required": [
+          "value",
+          "source"
+        ]
+      },
+      "Field7": {
+        "description": "One resolved field in the `oneharness config` report: the effective value\nplus where it came from (a config file path, or [`DEFAULT_SOURCE`]). Both\nare `null` when the field is unset everywhere and has no built-in default.",
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "value": {
             "anyOf": [
               {
                 "$ref": "#/$defs/OutputFormat"
@@ -17320,7 +18027,7 @@
           "source"
         ]
       },
-      "Field7": {
+      "Field8": {
         "description": "One resolved field in the `oneharness config` report: the effective value\nplus where it came from (a config file path, or [`DEFAULT_SOURCE`]). Both\nare `null` when the field is unset everywhere and has no built-in default.",
         "type": "object",
         "properties": {
@@ -17344,7 +18051,7 @@
           "source"
         ]
       },
-      "Field8": {
+      "Field9": {
         "description": "One resolved field in the `oneharness config` report: the effective value\nplus where it came from (a config file path, or [`DEFAULT_SOURCE`]). Both\nare `null` when the field is unset everywhere and has no built-in default.",
         "type": "object",
         "properties": {
@@ -17361,32 +18068,6 @@
             ],
             "format": "uint",
             "minimum": 0
-          }
-        },
-        "required": [
-          "value",
-          "source"
-        ]
-      },
-      "Field9": {
-        "description": "One resolved field in the `oneharness config` report: the effective value\nplus where it came from (a config file path, or [`DEFAULT_SOURCE`]). Both\nare `null` when the field is unset everywhere and has no built-in default.",
-        "type": "object",
-        "properties": {
-          "source": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "value": {
-            "anyOf": [
-              {
-                "$ref": "#/$defs/RunMode"
-              },
-              {
-                "type": "null"
-              }
-            ]
           }
         },
         "required": [
@@ -17416,7 +18097,7 @@
             "description": "The resolved `app_server` (`\"shared\"` by default), present only for\n`codex`.",
             "anyOf": [
               {
-                "$ref": "#/$defs/Field11"
+                "$ref": "#/$defs/Field12"
               },
               {
                 "type": "null"
@@ -17637,6 +18318,21 @@
           }
         ]
       },
+      "ToolClass": {
+        "description": "A harness-agnostic class of built-in tool a turn may load (`tool_set`).",
+        "oneOf": [
+          {
+            "description": "Run commands.",
+            "type": "string",
+            "const": "shell"
+          },
+          {
+            "description": "Read files.",
+            "type": "string",
+            "const": "read"
+          }
+        ]
+      },
       "VariantReport": {
         "type": "object",
         "properties": {
@@ -17658,7 +18354,7 @@
             "description": "The `app_server` a launch of this variant resolves to: the variant's\nown, else its harness's, else `\"shared\"`. Present only for `codex`.",
             "anyOf": [
               {
-                "$ref": "#/$defs/Field11"
+                "$ref": "#/$defs/Field12"
               },
               {
                 "type": "null"
@@ -18962,6 +19658,213 @@
             "type": "string",
             "const": "crush-http"
           }
+        ]
+      }
+    }
+  },
+  "compact_options": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "CompactOptions",
+    "description": "Options accepted by the language SDKs' `compact()`: compact a named\nsession now (`oneharness compact`).",
+    "type": "object",
+    "properties": {
+      "bins": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "string"
+        }
+      },
+      "config": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "cwd": {
+        "type": "string"
+      },
+      "env": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "string"
+        }
+      },
+      "harness": {
+        "description": "The harness identity the session is expected to be bound to.",
+        "type": "string"
+      },
+      "model": {
+        "type": "string"
+      },
+      "noConfig": {
+        "type": "boolean"
+      },
+      "session": {
+        "description": "The caller-owned session name (`run`'s `session`).",
+        "type": "string",
+        "minLength": 1
+      },
+      "sessionDir": {
+        "type": "string"
+      },
+      "timeoutSeconds": {
+        "type": "integer",
+        "format": "uint64",
+        "minimum": 0
+      }
+    },
+    "additionalProperties": false,
+    "required": [
+      "session"
+    ]
+  },
+  "compact_outcome": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "CompactOutcome",
+    "description": "The `oneharness compact` report.",
+    "type": "object",
+    "properties": {
+      "context_tokens_after": {
+        "description": "The context size after compaction, where the harness reports it\n(claude-code's `compact_boundary.post_tokens`); `null` otherwise.",
+        "type": [
+          "integer",
+          "null"
+        ],
+        "format": "uint64",
+        "minimum": 0
+      },
+      "context_tokens_before": {
+        "description": "The context size before compaction, where the harness reports it\n(claude-code's `compact_boundary.pre_tokens`); `null` otherwise.",
+        "type": [
+          "integer",
+          "null"
+        ],
+        "format": "uint64",
+        "minimum": 0
+      },
+      "error": {
+        "description": "Why the compaction is `unsupported` or `failed`; absent otherwise.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "harness": {
+        "description": "The harness identity the session is bound to.",
+        "type": "string"
+      },
+      "schema_version": {
+        "type": "string"
+      },
+      "session": {
+        "description": "The session name compacted.",
+        "type": "string"
+      },
+      "status": {
+        "$ref": "#/$defs/CompactStatus"
+      },
+      "token": {
+        "description": "The native session token the name continues after this call: the\ncompacted fork's on `completed`, the untouched original's otherwise.\n`null` when the request was refused before a session was resolved.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "usage": {
+        "description": "The compaction's own usage, every field `null` where the harness\nreports none.",
+        "$ref": "#/$defs/Usage"
+      }
+    },
+    "required": [
+      "schema_version",
+      "status",
+      "session",
+      "harness",
+      "context_tokens_before",
+      "context_tokens_after",
+      "usage"
+    ],
+    "$defs": {
+      "CompactStatus": {
+        "description": "How a compaction ended.",
+        "oneOf": [
+          {
+            "description": "The harness compacted a fork of the session, and the session name now\ncontinues the compacted fork.",
+            "type": "string",
+            "const": "completed"
+          },
+          {
+            "description": "The caller cancelled; the harness process was ended and the session is\nexactly as it was.",
+            "type": "string",
+            "const": "cancelled"
+          },
+          {
+            "description": "The harness has no compaction oneharness can drive.",
+            "type": "string",
+            "const": "unsupported"
+          },
+          {
+            "description": "The harness did not complete the compaction (its own refusal, a\nnon-zero exit, a timeout); the session is exactly as it was and `error`\nsays why.",
+            "type": "string",
+            "const": "failed"
+          }
+        ]
+      },
+      "Usage": {
+        "description": "Normalized token/cost accounting. Every field is best-effort and independently\nnullable: a harness may report tokens but not dollar cost (cost is commonly\nabsent on subscription auth), or report nothing at all (plain-text harnesses).",
+        "type": "object",
+        "properties": {
+          "cache_read_tokens": {
+            "description": "Prompt tokens served from the provider's prompt cache (a cheap read of a\npreviously-written prefix), when the harness reports them. `None` when the\nharness does not surface cache counts — never `0` as a guess.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0
+          },
+          "cache_write_tokens": {
+            "description": "Prompt tokens written to the provider's prompt cache (a.k.a. cache\ncreation), when the harness reports them. `None` when not surfaced.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0
+          },
+          "cost_usd": {
+            "description": "Total cost in USD, when the harness reports it (often absent on\nsubscription auth, where there is no per-call dollar figure).",
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "input_tokens": {
+            "description": "Prompt/input tokens billed, when the harness reports them.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0
+          },
+          "output_tokens": {
+            "description": "Completion/output tokens billed, when the harness reports them.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "input_tokens",
+          "output_tokens",
+          "cache_read_tokens",
+          "cache_write_tokens",
+          "cost_usd"
         ]
       }
     }

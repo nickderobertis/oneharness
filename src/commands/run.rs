@@ -239,7 +239,16 @@ impl From<&RunArgs> for RunRequest {
             output_dir: args.output_dir.clone(),
             timeout: args.timeout,
             auto_compact_tokens: args.auto_compact_tokens,
-            tool_set: args.tool_set.clone().map(|set| set.0),
+            // Every occurrence's classes, joined; no occurrence defers to config.
+            tool_set: (!args.tool_set.is_empty()).then(|| {
+                let mut classes = Vec::new();
+                for class in args.tool_set.iter().flat_map(|set| &set.0) {
+                    if !classes.contains(class) {
+                        classes.push(*class);
+                    }
+                }
+                classes
+            }),
             load_skills: args.no_skills.then_some(false),
             load_mcp: args.no_mcp.then_some(false),
             images: args.image.clone(),
@@ -333,7 +342,9 @@ mod tests {
             "--auto-compact-tokens",
             "90000",
             "--tool-set",
-            "shell,read",
+            "shell",
+            "--tool-set",
+            "read,shell",
             "--no-skills",
             "--no-mcp",
             "--image",

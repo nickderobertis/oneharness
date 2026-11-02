@@ -3357,7 +3357,10 @@ export const RunOptionsSchema: z.ZodType<RunOptions> = z.strictObject({
   system: z.string().optional(),
   systemFile: z.string().optional(),
   timeoutSeconds: z.int().gte(0).optional(),
-  toolSet: z.array(z.lazy(() => ToolClassSchema)).optional(),
+  toolSet: z
+    .array(z.lazy(() => ToolClassSchema))
+    .min(1)
+    .optional(),
 });
 
 export const RunReportSchema: z.ZodType<RunReport> = z.looseObject({

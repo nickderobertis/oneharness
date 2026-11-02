@@ -192,7 +192,11 @@ export interface RunOptions {
   timeoutSeconds?: number | undefined;
   /**
    * Load only these built-in tool classes; every other built-in tool is
-   * not loaded.
+   * not loaded. At least one: each class is sent as its own `--tool-set`,
+   * so an empty array would send nothing at all and is refused rather than
+   * silently loading the harness's own tools.
+   *
+   * @minItems 1
    */
   toolSet?: readonly ToolClass[] | undefined;
 }

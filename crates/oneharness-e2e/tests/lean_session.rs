@@ -27,19 +27,6 @@ const ALL_IDS: &[&str] = &[
     "cursor",
 ];
 
-/// The `ONEHARNESS_*` overrides a hermetic config journey strips.
-const AMBIENT: &[&str] = &[
-    "ONEHARNESS_AUTO_COMPACT_TOKENS",
-    "ONEHARNESS_TOOL_SET",
-    "ONEHARNESS_LOAD_SKILLS",
-    "ONEHARNESS_LOAD_MCP",
-    "ONEHARNESS_TIMEOUT",
-    "ONEHARNESS_HARNESSES",
-    "ONEHARNESS_MODE",
-    "ONEHARNESS_OUTPUT_FORMAT",
-    "ONEHARNESS_RUN_MODE",
-];
-
 fn workspace_bin(name: &str) -> PathBuf {
     let test_exe = std::env::current_exe().expect("test executable path");
     let profile_dir = test_exe
@@ -80,7 +67,9 @@ fn oh(args: &[&str], envs: &[(&str, &str)], config: Option<&Path>) -> Output {
             cmd.env("ONEHARNESS_NO_CONFIG", "1");
         }
     }
-    for var in AMBIENT {
+    // Every ambient `ONEHARNESS_*` override, so the machine's own settings
+    // never reshape an assertion; a journey that wants one passes it in `envs`.
+    for (var, _) in std::env::vars().filter(|(var, _)| var.starts_with("ONEHARNESS_")) {
         cmd.env_remove(var);
     }
     let mut argv: Vec<&str> = args.to_vec();
@@ -2185,8 +2174,13 @@ fn the_compact_text_view_states_the_outcome_sizes_and_reason() {
     );
     assert_eq!(out.status.code(), Some(1), "{out:?}");
     assert_eq!(
-        String::from_utf8(out.stdout).unwrap(),
-        "failed · session watch on claude-code\n  Not enough messages to compact.\n"
+        String::from_utf8_lossy(&out.stdout),
+        "failed · session watch on claude-code\n"
+    );
+    assert!(
+        stderr(&out).contains("compact failed: Not enough messages to compact."),
+        "{}",
+        stderr(&out)
     );
 }
 
@@ -2312,4 +2306,55 @@ fn an_explicit_timeout_of_zero_lifts_a_configured_compaction_deadline() {
     );
     let lifted = compact(&["--timeout", "0"]);
     assert_eq!(lifted["status"], "completed", "{lifted}");
+}
+
+/// codex reads files through its shell: `read` keeps it (and says so), and
+/// only an empty set turns it off.
+#[test]
+fn a_codex_tool_set_keeps_the_shell_for_read_and_drops_it_only_when_empty() {
+    let printed = |set: &str| {
+        let out = oh(
+            &[
+                "run",
+                "--harness",
+                "codex",
+                "--prompt",
+                "hi",
+                "--tool-set",
+                set,
+                "--print-command",
+            ],
+            &[],
+            None,
+        );
+        strings(&json(&out)["results"][0]["command"])
+    };
+    assert!(has_seq(&printed(""), &["-c", "features.shell_tool=false"]));
+    assert!(!printed("read")
+        .iter()
+        .any(|a| a == "features.shell_tool=false"));
+    let b = bin("codex");
+    let out = oh(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "hi",
+            "--bin",
+            &b,
+            "--mode",
+            "bypass",
+            "--tool-set",
+            "read",
+        ],
+        &[],
+        None,
+    );
+    let result = json(&out)["results"][0].clone();
+    let said = diagnostics_for(&result, "tool_set");
+    assert!(
+        said[0]["message"].as_str().unwrap().contains("reads files"),
+        "{result}"
+    );
 }

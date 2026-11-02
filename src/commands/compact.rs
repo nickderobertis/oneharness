@@ -10,7 +10,7 @@ use oneharness_core::errors::OneharnessError;
 use oneharness_core::io::compact::{compact_session, CompactRequest};
 use oneharness_core::io::run::RunControls;
 
-use crate::cli::CompactArgs;
+use crate::cli::{CompactArgs, StdoutFormat};
 use crate::commands::{print_report, printable};
 
 impl TryFrom<&CompactArgs> for CompactRequest {
@@ -48,6 +48,18 @@ pub fn run(args: &CompactArgs) -> Result<i32, OneharnessError> {
     };
     let outcome = compact_session(&CompactRequest::try_from(args)?, controls, None)?;
     print_report(&outcome, args.stdout, render_text)?;
+    // The text view is the report; why a compaction did not complete is a
+    // diagnostic, so it goes to stderr (the JSON document carries it as
+    // `error`).
+    if !matches!(args.stdout, StdoutFormat::Json { .. }) {
+        if let Some(error) = &outcome.error {
+            eprintln!(
+                "oneharness: compact {}: {}",
+                outcome.status.as_str(),
+                printable(error)
+            );
+        }
+    }
     Ok(if outcome.status == CompactStatus::Completed {
         0
     } else {
@@ -60,12 +72,8 @@ fn render_text(outcome: &CompactOutcome) -> String {
         (Some(before), Some(after)) => format!(" · context {before} → {after} tokens"),
         _ => String::new(),
     };
-    let error = outcome
-        .error
-        .as_deref()
-        .map_or_else(String::new, |e| format!("\n  {}", printable(e)));
     format!(
-        "{status} · session {session} on {harness}{tokens}{error}\n",
+        "{status} · session {session} on {harness}{tokens}\n",
         status = outcome.status.as_str(),
         session = printable(&outcome.session),
         harness = outcome.harness,

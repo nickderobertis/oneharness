@@ -2394,7 +2394,7 @@
             "type": "string"
           },
           "calls": {
-            "description": "One usage per model call the turn made, in order, read from the\nharness's own stream or session record (see\n[`crate::domain::lean::Setting::Calls`]). Absent where the harness\nexposes no per-call figures, and then `diagnostics` says why. The\nrun's `usage` total is unchanged by it. Added in report schema `0.13`.",
+            "description": "One usage per model call the turn made, in order, read from the\nharness's own stream or session record (see\n[`crate::domain::lean::Setting::Calls`]). Like `usage`, it covers the\nrun's final attempt when a retry ran it again. Absent where the harness\nexposes no per-call figures, and then `diagnostics` says why. The\nrun's `usage` total is unchanged by it. Added in report schema `0.13`.",
             "type": [
               "array",
               "null"
@@ -3824,7 +3824,7 @@
             "type": "string"
           },
           "calls": {
-            "description": "One usage per model call the turn made, in order, read from the\nharness's own stream or session record (see\n[`crate::domain::lean::Setting::Calls`]). Absent where the harness\nexposes no per-call figures, and then `diagnostics` says why. The\nrun's `usage` total is unchanged by it. Added in report schema `0.13`.",
+            "description": "One usage per model call the turn made, in order, read from the\nharness's own stream or session record (see\n[`crate::domain::lean::Setting::Calls`]). Like `usage`, it covers the\nrun's final attempt when a retry ran it again. Absent where the harness\nexposes no per-call figures, and then `diagnostics` says why. The\nrun's `usage` total is unchanged by it. Added in report schema `0.13`.",
             "type": [
               "array",
               "null"
@@ -4528,11 +4528,12 @@
         "minimum": 0
       },
       "toolSet": {
-        "description": "Load only these built-in tool classes; every other built-in tool is\nnot loaded.",
+        "description": "Load only these built-in tool classes; every other built-in tool is\nnot loaded. At least one: each class is sent as its own `--tool-set`,\nso an empty array would send nothing at all and is refused rather than\nsilently loading the harness's own tools.",
         "type": "array",
         "items": {
           "$ref": "#/$defs/ToolClass"
-        }
+        },
+        "minItems": 1
       }
     },
     "additionalProperties": false,

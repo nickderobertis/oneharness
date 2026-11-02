@@ -777,6 +777,30 @@
       "value": { "prompt": "hi", "historyPointerFile": "" }
     },
     {
+      "name": "run lean options",
+      "root": "run_options",
+      "accepted": true,
+      "value": { "prompt": "p", "autoCompactTokens": 120000, "toolSet": ["shell", "read"], "noSkills": true, "noMcp": true, "images": ["/tmp/frame.png"] }
+    },
+    {
+      "name": "run tool set must name a class",
+      "root": "run_options",
+      "accepted": false,
+      "value": { "prompt": "p", "toolSet": [] }
+    },
+    {
+      "name": "run tool set refuses an unknown class",
+      "root": "run_options",
+      "accepted": false,
+      "value": { "prompt": "p", "toolSet": ["edit"] }
+    },
+    {
+      "name": "run auto compact tokens must be positive",
+      "root": "run_options",
+      "accepted": false,
+      "value": { "prompt": "p", "autoCompactTokens": 0 }
+    },
+    {
       "name": "run empty prompt",
       "root": "run_options",
       "accepted": false,

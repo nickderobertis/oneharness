@@ -265,9 +265,15 @@ pub struct RunOptions {
     #[schemars(with = "u64", range(min = 1))]
     pub auto_compact_tokens: Option<std::num::NonZeroU64>,
     /// Load only these built-in tool classes; every other built-in tool is
-    /// not loaded.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "Vec<ToolClass>")]
+    /// not loaded. At least one: each class is sent as its own `--tool-set`,
+    /// so an empty array would send nothing at all and is refused rather than
+    /// silently loading the harness's own tools.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "non_empty_tool_set"
+    )]
+    #[schemars(with = "Vec<ToolClass>", length(min = 1))]
     pub tool_set: Option<Vec<ToolClass>>,
     /// Load no skills list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -833,6 +839,20 @@ pub struct InterruptOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
     pub cwd: Option<String>,
+}
+
+/// `RunOptions::tool_set`, refused when present but empty — the rule its
+/// schema's `minItems` states for the SDK validators.
+fn non_empty_tool_set<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Vec<ToolClass>>, D::Error> {
+    let classes = Option::<Vec<ToolClass>>::deserialize(deserializer)?;
+    if classes.as_ref().is_some_and(Vec::is_empty) {
+        return Err(serde::de::Error::custom(
+            "`toolSet` names at least one class; leave it out to load the harness's own tools",
+        ));
+    }
+    Ok(classes)
 }
 
 /// Options accepted by the language SDKs' `compact()`: compact a named

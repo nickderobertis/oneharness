@@ -296,6 +296,8 @@ const CLAUDE: &str = "claude-code";
 const CLAUDE_VERSION: &str = "2.1.316";
 const CODEX: &str = "codex";
 const CODEX_VERSION: &str = "0.159.2";
+/// The codex feature that loads its shell, which reads files too.
+const CODEX_SHELL_TOOL: &str = "features.shell_tool";
 
 const fn knob(knob: Knob, unit: Unit) -> KnobSpec {
     KnobSpec { knob, unit }
@@ -492,17 +494,20 @@ const CODEX_TABLE: [Translation; 7] = [
             knob(Knob::ConfigOverride("features.view_image"), Unit::Switch),
             knob(Knob::ConfigOverride("features.sleep_tool"), Unit::Switch),
             knob(Knob::ConfigOverride("web_search"), Unit::Switch),
+            knob(Knob::ConfigOverride(CODEX_SHELL_TOOL), Unit::Switch),
         ],
         mapping: "shell and read both mean codex's own shell (`exec_command`, `write_stdin`), \
-                  which reads files too; every other tool codex lets configuration remove is \
-                  removed: `-c features.goals=false`, `-c features.view_image=false`, \
+                  which reads files too, so either keeps it and an empty set turns it off \
+                  (`-c features.shell_tool=false`); every other tool codex lets configuration \
+                  remove is removed: `-c features.goals=false`, `-c features.view_image=false`, \
                   `-c features.sleep_tool=false`, `-c web_search=\"disabled\"`",
         residual: Some(
             "codex 0.159.2 has no setting that removes `apply_patch`, `request_user_input`, the \
              multi-agent `collaboration` tools or `clock__curr_time`, so they stay loaded",
         ),
         source: "requests captured from codex 0.159.2 at a stub endpoint: each override removed \
-                 its tool; no feature or config key removed the residual tools",
+                 its tool (`features.shell_tool=false` removed `exec_command` and \
+                 `write_stdin`); no feature or config key removed the residual tools",
     },
     Translation {
         harness: CODEX,
@@ -785,10 +790,16 @@ pub fn deliver(
                 }
             }
             CODEX => {
+                // codex reads files through its shell, so `read` keeps it as
+                // `shell` does; only a set naming neither turns it off.
+                let keeps_shell = !classes.is_empty();
                 for spec in t.knobs {
                     let Knob::ConfigOverride(key) = spec.knob else {
                         continue;
                     };
+                    if key == CODEX_SHELL_TOOL && keeps_shell {
+                        continue;
+                    }
                     let value = if key == "web_search" {
                         format!("{key}=\"disabled\"")
                     } else {
@@ -797,10 +808,17 @@ pub fn deliver(
                     out.args.extend(["-c".to_string(), value]);
                 }
                 if let Some(residual) = t.residual {
+                    let shell = if classes.contains(&ToolClass::Shell) || classes.is_empty() {
+                        String::new()
+                    } else {
+                        " The shell (`exec_command`) also stays loaded: codex reads files \
+                         through it, so `read` needs it."
+                            .to_string()
+                    };
                     out.diagnostics.push(Diagnostic::new(
                         id,
                         Setting::ToolSet,
-                        format!("`tool_set` applied in part: {residual}"),
+                        format!("`tool_set` applied in part: {residual}.{shell}"),
                     ));
                 }
             }
@@ -1268,6 +1286,8 @@ mod tests {
                 }
                 for k in t.knobs {
                     let name = match k.knob {
+                        // Off only for a set naming neither shell nor read.
+                        Knob::ConfigOverride(CODEX_SHELL_TOOL) => continue,
                         Knob::Env(n) | Knob::Flag(n) | Knob::ConfigOverride(n) => n,
                         _ => continue,
                     };
@@ -1296,6 +1316,24 @@ mod tests {
             ),
             LeanDelivery::default()
         );
+        let tools = |classes: Vec<ToolClass>| {
+            let lean = LeanSettings {
+                tool_set: Some(classes),
+                ..LeanSettings::default()
+            };
+            deliver(CODEX, &lean, &[], PermissionMode::Default)
+        };
+        let shell_off = format!("{CODEX_SHELL_TOOL}=false");
+        assert!(
+            tools(vec![]).args.contains(&shell_off),
+            "an empty set drops the shell"
+        );
+        let read_only = tools(vec![ToolClass::Read]);
+        assert!(
+            !read_only.args.contains(&shell_off),
+            "read needs codex's shell"
+        );
+        assert!(read_only.diagnostics[0].message.contains("reads files"));
     }
 
     #[test]

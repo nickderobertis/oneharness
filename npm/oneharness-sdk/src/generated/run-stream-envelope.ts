@@ -548,7 +548,8 @@ export interface RunResult {
   /**
    * One usage per model call the turn made, in order, read from the
    * harness's own stream or session record (see
-   * [`crate::domain::lean::Setting::Calls`]). Absent where the harness
+   * [`crate::domain::lean::Setting::Calls`]). Like `usage`, it covers the
+   * run's final attempt when a retry ran it again. Absent where the harness
    * exposes no per-call figures, and then `diagnostics` says why. The
    * run's `usage` total is unchanged by it. Added in report schema `0.13`.
    */

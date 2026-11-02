@@ -18,6 +18,7 @@ pub mod history;
 pub mod history_index;
 pub mod hooks;
 pub mod http;
+pub mod lean;
 pub mod mock;
 pub mod mode;
 // The shared Codex model catalog's pure half; only `io::model_catalog` reads

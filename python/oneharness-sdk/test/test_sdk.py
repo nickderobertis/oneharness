@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Optional, cast
 
 from oneharness_sdk import (
+    CompactOptions,
     ContractError,
     HistoryListOptions,
     HistoryLookup,
@@ -98,6 +99,7 @@ POPULATED: dict[str, Any] = {
     "after": "0198f0d0-7b31-7000-8000-000000000001",
     "all": True,
     "allProjects": False,
+    "autoCompactTokens": 120000,
     "batchPrompts": ["first", "second"],
     "batchStrategy": "speed",
     "bins": {"codex": "/bin/codex"},
@@ -122,6 +124,7 @@ POPULATED: dict[str, Any] = {
     "historyLabels": {"run": "sdk"},
     "historyName": "session",
     "historyPointerFile": "/nowhere/pointers.jsonl",
+    "images": ["/nowhere/frame.png"],
     "input": "do this instead",
     "labels": {"run": "sdk"},
     "last": False,
@@ -129,9 +132,12 @@ POPULATED: dict[str, Any] = {
     "mockHarnesses": ["codex"],
     "mockRules": "/nowhere/rules.json",
     "mode": "bypass",
+    "model": "gpt-5",
     "models": ["gpt-5"],
     "noConfig": False,
     "noHistory": False,
+    "noMcp": True,
+    "noSkills": True,
     "outputDir": "/nowhere/out",
     "outputFormat": "json",
     "passthrough": ["--verbose"],
@@ -156,6 +162,7 @@ POPULATED: dict[str, Any] = {
     "system": "be terse",
     "systemFile": "/nowhere/system.txt",
     "timeoutSeconds": 30,
+    "toolSet": ["shell", "read"],
     "variant": "claude-code:work",
     "window": {"since": "2026-01-01"},
     "yes": True,
@@ -1150,26 +1157,42 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("--disable-slash-commands", argv)
         self.assertIn("--strict-mcp-config", argv)
 
-        session = {
-            "session": "watch",
-            "session_dir": str(root / "store"),
-            "cwd": str(root),
-            "env": {"CLAUDE_CONFIG_DIR": str(root / "home"), "MOCK_CLAUDE_SESSIONS": "1"},
-            "bins": {"claude-code": str(MOCK)},
-        }
-        for prompt in ("alpha", "beta"):
-            await client.run(
-                {"prompt": prompt, "harnesses": ["claude-code"], "mode": "bypass", **session}
+        store, home = str(root / "store"), str(root / "home")
+        env = {"CLAUDE_CONFIG_DIR": home, "MOCK_CLAUDE_SESSIONS": "1"}
+        bins = {"claude-code": str(MOCK)}
+
+        async def turn(prompt: str) -> RunReport:
+            return await client.run(
+                {
+                    "prompt": prompt,
+                    "harnesses": ["claude-code"],
+                    "mode": "bypass",
+                    "session": "watch",
+                    "session_dir": store,
+                    "cwd": str(root),
+                    "env": env,
+                    "bins": bins,
+                }
             )
-        outcome = await client.compact(session)
+
+        def compact_options(name: str) -> CompactOptions:
+            return {
+                "session": name,
+                "session_dir": store,
+                "cwd": str(root),
+                "env": env,
+                "bins": bins,
+            }
+
+        for prompt in ("alpha", "beta"):
+            await turn(prompt)
+        outcome = await client.compact(compact_options("watch"))
         self.assertEqual(outcome["status"], "completed")
         self.assertEqual(outcome["context_tokens_before"], 6809)
-        after = await client.run(
-            {"prompt": "gamma", "harnesses": ["claude-code"], "mode": "bypass", **session}
-        )
+        after = await turn("gamma")
         self.assertEqual(after["results"][0]["text"], "context: [summary of: alpha, beta, gamma]")
-        with self.assertRaises(Exception):
-            await client.compact({**session, "session": "nobody"})
+        with self.assertRaises(OneHarnessProcessError):
+            await client.compact(compact_options("nobody"))
 
     async def test_interrupt_refuses_a_session_no_run_is_serving(self) -> None:
         """Return the refusal frame instead of raising on a non-zero exit."""

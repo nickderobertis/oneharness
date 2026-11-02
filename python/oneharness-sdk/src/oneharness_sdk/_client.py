@@ -17,6 +17,8 @@ from jsonschema.protocols import Validator
 
 from ._errors import ContractError, HistoryNotFoundError, OneHarnessProcessError
 from ._generated_types import (
+    CompactOptions,
+    CompactOutcome,
     ConfigOptions,
     ConfigReport,
     Detection,
@@ -37,8 +39,6 @@ from ._generated_types import (
     HistoryStreamEnvelope,
     HistoryWatchOptions,
     InitOptions,
-    CompactOptions,
-    CompactOutcome,
     InterruptOptions,
     InterruptResponse,
     MockOptions,

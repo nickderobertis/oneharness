@@ -7,6 +7,7 @@ pub mod app_server;
 pub mod batch;
 // The declared capability surface the parity gate reconciles against.
 pub mod capability;
+pub mod compact;
 pub mod config;
 pub mod control;
 pub mod dialogue;

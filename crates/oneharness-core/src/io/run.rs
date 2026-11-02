@@ -5553,7 +5553,7 @@ fn effective_timeout(
     Ok(timeout)
 }
 
-fn parse_env(values: &[String]) -> Result<Vec<(String, String)>, OneharnessError> {
+pub(crate) fn parse_env(values: &[String]) -> Result<Vec<(String, String)>, OneharnessError> {
     values
         .iter()
         .map(|v| {

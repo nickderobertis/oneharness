@@ -5,6 +5,7 @@
 // The shared Codex app-server: its pool lease, sweeper, and pooled turns.
 pub mod app_server;
 pub mod cancel;
+pub mod compact;
 pub mod config;
 pub mod control;
 pub mod detect;

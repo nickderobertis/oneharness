@@ -24,7 +24,8 @@
 //!                   error answer), `exit` (the process dies), `nofork` (claude
 //!                   names no forked session), or for codex `fail-turn` (the
 //!                   turn ends `failed`), `noresult` (`thread/fork` answers no
-//!                   result) or `samefork` (it names the original thread).
+//!                   result), `samefork` (it names the original thread) or
+//!                   `exit-after` (it completes, then exits non-zero).
 //!   MOCK_COMPACT_NOISE    with MOCK_CODEX_SESSIONS, the compaction is surrounded
 //!                   by another thread's turn and another turn of the fork.
 //!   MOCK_COMPACT_USAGE    with MOCK_CODEX_SESSIONS, the fork's token totals grow
@@ -286,7 +287,10 @@ fn codex_exec(argv: &[String]) -> ! {
         None => fresh_id(),
     };
     let path = rollout(&thread);
-    let mut lines = vec![serde_json::json!({
+    // Each turn begins with codex's `task_started`, as a real rollout does.
+    let mut lines = vec![
+        serde_json::json!({"type": "event_msg", "payload": {"type": "task_started"}}).to_string(),
+        serde_json::json!({
         "type": "response_item",
         "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": prompt}]},
     })
@@ -438,6 +442,9 @@ fn codex_app_server() -> ! {
                         || (method == Some("thread/tokenUsage/updated") && !scripted_usage))
                         && v["params"]["turn"]["id"] != "01a19db2-d12d-7391-9e3c-b345b40db491"
                 }));
+                if compact_fault().as_deref() == Some("exit-after") {
+                    std::process::exit(1);
+                }
             }
             _ => {}
         }

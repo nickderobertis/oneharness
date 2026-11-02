@@ -170,14 +170,13 @@ impl Kept {
         env.extend(extra.iter().cloned());
         CompactRequest {
             harness: Some(self.id.parse().unwrap()),
-            session: "watch".to_string(),
             session_dir: Some(self.dir.join("store")),
             cwd: Some(self.dir.join("proj")),
             env,
             bin: vec![bin_override(self.id)],
             no_config: true,
             timeout: Some(60),
-            ..CompactRequest::default()
+            ..CompactRequest::new("watch".try_into().unwrap())
         }
     }
 

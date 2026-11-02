@@ -20,6 +20,7 @@ use crate::domain::harness::{self, BuildCtx, HarnessIdentity, PromptDelivery};
 use crate::domain::lean::{self, Setting};
 use crate::domain::mode::PermissionMode;
 use crate::domain::report::{OutputFormat, SCHEMA_VERSION};
+use crate::domain::sdk::NonEmptyString;
 use crate::domain::session;
 use crate::domain::signals::{self, Usage};
 use crate::errors::OneharnessError;
@@ -34,14 +35,14 @@ use crate::io::session as session_io;
 
 /// What names and reaches the session to compact, as on
 /// [`crate::io::run::RunRequest`].
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct CompactRequest {
     /// The harness identity (`base` or `base:variant`) expected to hold the
     /// session. `None` takes the identity the store bound it to; a different
     /// one is refused as `run --session` refuses it.
     pub harness: Option<HarnessIdentity>,
     /// The caller-owned session name (`run --session <name>`).
-    pub session: String,
+    pub session: NonEmptyString,
     /// Where the session store lives (`--session-dir`).
     pub session_dir: Option<PathBuf>,
     /// The project the session belongs to and where the harness runs; the
@@ -61,6 +62,27 @@ pub struct CompactRequest {
     /// Seconds before the compaction is abandoned as `failed`; `None` defers
     /// to config `timeout`, and zero or unset means no deadline.
     pub timeout: Option<u64>,
+}
+
+impl CompactRequest {
+    /// A request to compact `session` with everything else at its default:
+    /// the store's own binding, the platform session store, this process's
+    /// directory and environment, and configuration discovery.
+    #[must_use]
+    pub fn new(session: NonEmptyString) -> Self {
+        Self {
+            harness: None,
+            session,
+            session_dir: None,
+            cwd: None,
+            env: Vec::new(),
+            model: None,
+            bin: Vec::new(),
+            config: Vec::new(),
+            no_config: false,
+            timeout: None,
+        }
+    }
 }
 
 /// Compact the named session now.
@@ -101,10 +123,10 @@ pub fn compact_session(
         None => None,
     };
     let dir = session_io::resolve_dir(configured).ok_or(OneharnessError::SessionNoStore)?;
-    let path = session_io::session_path(&dir, &project, &request.session);
+    let path = session_io::session_path(&dir, &project, request.session.as_str());
     let Some(record) = session::resumable(session_io::read(&path)) else {
         return Err(OneharnessError::CompactSessionUnknown {
-            name: request.session.clone(),
+            name: request.session.to_string(),
             path: path.display().to_string(),
         });
     };
@@ -112,7 +134,7 @@ pub fn compact_session(
         Some(identity) => {
             if let Some(was) = session::harness_conflict(Some(&record), identity) {
                 return Err(OneharnessError::SessionHarnessConflict {
-                    name: request.session.clone(),
+                    name: request.session.to_string(),
                     was: was.to_string(),
                     now: identity.to_string(),
                 });
@@ -125,7 +147,7 @@ pub fn compact_session(
     let outcome = |status: CompactStatus, error: Option<String>| CompactOutcome {
         schema_version: SCHEMA_VERSION.to_string(),
         status,
-        session: request.session.clone(),
+        session: request.session.to_string(),
         harness: identity.to_string(),
         context_tokens_before: None,
         context_tokens_after: None,
@@ -211,7 +233,7 @@ pub fn compact_session(
         other => unreachable!("the translation table supports compaction on `{other}`"),
     };
     out.schema_version = SCHEMA_VERSION.to_string();
-    out.session = request.session.clone();
+    out.session = request.session.to_string();
     out.harness = identity.to_string();
     out.status = status;
     if status == CompactStatus::Completed {
@@ -223,7 +245,7 @@ pub fn compact_session(
             &path,
             &project,
             &identity,
-            &request.session,
+            request.session.as_str(),
             &fork,
             Some(&record),
         ) {
@@ -380,10 +402,21 @@ fn codex(
     let mut out = blank();
     let status = match (driven.end, ended) {
         (End::Cancelled, _) => CompactStatus::Cancelled,
-        (_, Some(compact::CodexCompaction::Completed { fork, usage })) => {
+        // Only a server that then exits cleanly is taken at its word: one
+        // that dies or hangs after announcing completion may not have
+        // persisted the fork, so the session is not rebound to it.
+        (End::Exited(Some(0)), Some(compact::CodexCompaction::Completed { fork, usage })) => {
             out.usage = usage;
             out.token = Some(fork);
             CompactStatus::Completed
+        }
+        (end, Some(compact::CodexCompaction::Completed { .. })) => {
+            out.error = Some(format!(
+                "codex reported the compaction complete, but {}; the session was not rebound",
+                end.describe(&driven.stderr)
+                    .trim_start_matches("the harness ")
+            ));
+            CompactStatus::Failed
         }
         (_, Some(compact::CodexCompaction::Failed { error })) => {
             out.error = Some(error);

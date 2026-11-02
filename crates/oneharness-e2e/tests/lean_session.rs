@@ -1122,6 +1122,11 @@ fn compact_hands_the_next_turn_the_compacted_context_on_claude_and_codex() {
 
         let after = s.turn(id, "gamma");
         assert_eq!(after["session"]["token"], fork.as_str());
+        if id == "codex" {
+            // The fork carries the original's recorded calls; the turn after
+            // compaction reports only its own.
+            assert_eq!(after["results"][0]["calls"].as_array().unwrap().len(), 3);
+        }
         assert_eq!(
             after["results"][0]["text"], "context: [summary of: alpha, beta, gamma]",
             "{id}: the compacted context, not the original"
@@ -1234,6 +1239,7 @@ fn a_failed_compaction_answers_failed_and_leaves_the_session_as_it_was() {
         ("codex", "refuse", "compaction unavailable"),
         ("codex", "fail-turn", "the compaction request failed"),
         ("codex", "exit", "before the compaction completed"),
+        ("codex", "exit-after", "reported the compaction complete"),
     ] {
         let s = Sessions::new(&format!("fail-{id}-{fault}"));
         s.turn(id, "alpha");
@@ -2075,4 +2081,56 @@ fn calls_are_reported_for_a_run_that_did_not_finish_cleanly() {
         let out = child.wait_with_output().unwrap();
         assert_eq!(calls(&out, "cancelled"), 1);
     }
+}
+
+/// A retried attempt on a resumed codex thread reports the final attempt's
+/// calls, the attempt its `usage` describes, not every attempt's.
+#[test]
+fn a_retried_codex_turn_reports_its_final_attempts_calls() {
+    let s = Sessions::new("calls-retried");
+    s.turn("codex", "alpha");
+    let schema = s.dir.join("schema.json");
+    std::fs::write(&schema, r#"{"type":"object","required":["never"]}"#).unwrap();
+    let (proj, store, b, schema) = (
+        s.path("proj"),
+        s.path("store"),
+        bin("codex"),
+        schema.display().to_string(),
+    );
+    let env = s.env("codex");
+    let mut args = vec![
+        "run",
+        "--harness",
+        "codex",
+        "--session",
+        "watch",
+        "--session-dir",
+        &store,
+        "--cwd",
+        &proj,
+        "--bin",
+        &b,
+        "--mode",
+        "bypass",
+        "--prompt",
+        "beta",
+        "--schema",
+        &schema,
+        "--schema-max-retries",
+        "1",
+    ];
+    for e in &env {
+        args.extend(["--env", e]);
+    }
+    let report = json(&oh(&args, &[], None));
+    let result = &report["results"][0];
+    assert_eq!(result["schema_attempts"], 2, "{result}");
+    assert_eq!(result["calls"].as_array().unwrap().len(), 3, "{result}");
+}
+
+#[test]
+fn compact_refuses_an_empty_session_name() {
+    let out = oh(&["compact", "--session", ""], &[], None);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(stderr(&out).contains("--session"), "{}", stderr(&out));
 }

@@ -644,11 +644,10 @@ fn compacting_answers_for_the_session_the_store_holds_and_refuses_one_it_does_no
 
     let dir = scratch("compact-surface");
     let request = |name: &str| CompactRequest {
-        session: name.to_string(),
         session_dir: Some(dir.to_path_buf()),
         cwd: Some(dir.to_path_buf()),
         no_config: true,
-        ..CompactRequest::default()
+        ..CompactRequest::new(name.try_into().unwrap())
     };
     let unknown = compact_session(&request("never-run"), RunControls::default(), None);
     assert!(

@@ -1104,17 +1104,30 @@ pub fn claude_stream_calls(stdout: &str) -> Option<Vec<Usage>> {
     (!order.is_empty()).then(|| order.iter().filter_map(|id| by_id.remove(id)).collect())
 }
 
-/// Per-call usage from the lines of a codex rollout record: one entry per
-/// `event_msg` `token_count` event carrying `info.last_token_usage`, in order.
+/// Per-call usage from the lines a run appended to a codex rollout record:
+/// one entry per `event_msg` `token_count` event carrying
+/// `info.last_token_usage`, in order, from the last turn they hold — the
+/// events after the last `event_msg` `task_started`, which codex writes as
+/// each turn begins. So a run whose attempt was retried on the same thread
+/// reports its final attempt's calls, the attempt its `usage` describes.
 #[must_use]
 pub fn codex_rollout_calls(rollout: &str) -> Vec<Usage> {
-    rollout
+    let events: Vec<Value> = rollout
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line.trim()).ok())
-        .filter(|value| {
-            value.get("type").and_then(Value::as_str) == Some("event_msg")
-                && value.pointer("/payload/type").and_then(Value::as_str) == Some("token_count")
-        })
+        .collect();
+    fn event_type(value: &Value) -> Option<&str> {
+        (value.get("type").and_then(Value::as_str) == Some("event_msg"))
+            .then(|| value.pointer("/payload/type").and_then(Value::as_str))
+            .flatten()
+    }
+    let last_turn = events
+        .iter()
+        .rposition(|value| event_type(value) == Some("task_started"))
+        .map_or(0, |at| at + 1);
+    events[last_turn..]
+        .iter()
+        .filter(|value| event_type(value) == Some("token_count"))
         .filter_map(|value| {
             let last = value
                 .pointer("/payload/info/last_token_usage")?
@@ -1337,6 +1350,17 @@ mod tests {
             "the per-call figures sum to the turn total codex reported"
         );
         assert!(claude_stream_calls("{\"type\":\"result\"}").is_none());
+        let started = "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}";
+        let counts = fixture("codex-rollout-token-counts.jsonl");
+        let two_turns = format!(
+            "{started}\n{counts}{started}\n{}",
+            counts.lines().last().unwrap()
+        );
+        assert_eq!(
+            codex_rollout_calls(&two_turns).len(),
+            1,
+            "only the last turn's calls"
+        );
     }
 
     #[test]

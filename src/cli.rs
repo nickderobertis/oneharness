@@ -186,6 +186,12 @@ fn format_parser() -> impl TypedValueParser<Value = Format> {
     })
 }
 
+/// A required name, refused when empty (`invalid value '' for '--session
+/// <NAME>': must be a non-empty string`), as the SDKs' contract refuses it.
+fn non_empty_parser() -> impl TypedValueParser<Value = NonEmptyString> {
+    StringValueParser::new().try_map(NonEmptyString::try_from)
+}
+
 /// A `FILE` operand that must name a file, held to the same boundary the SDKs'
 /// [`NonEmptyString`] holds their `file` to — one rule, so an empty operand is
 /// refused here by name (`invalid value '' for '<FILE>': must be a non-empty
@@ -373,9 +379,9 @@ pub enum Command {
 
 #[derive(Args, Debug)]
 pub struct CompactArgs {
-    /// The caller-owned session name (`run --session <NAME>`).
-    #[arg(long, value_name = "NAME")]
-    pub session: String,
+    /// The caller-owned session name (`run --session <NAME>`); not empty.
+    #[arg(long, value_name = "NAME", value_parser = non_empty_parser())]
+    pub session: NonEmptyString,
 
     /// Directory the session store lives in; must match the run's.
     /// Default: <platform state dir>/oneharness/sessions.

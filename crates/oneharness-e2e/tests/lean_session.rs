@@ -2189,3 +2189,127 @@ fn the_compact_text_view_states_the_outcome_sizes_and_reason() {
         "failed · session watch on claude-code\n  Not enough messages to compact.\n"
     );
 }
+
+/// The config report attributes each lean setting to the layer that set it.
+#[test]
+fn the_config_report_attributes_each_lean_setting_to_its_layer() {
+    let p = Project::new(
+        "provenance",
+        "extends = \"parent.toml\"\nload_mcp = false\nauto_compact_tokens = 5000\n",
+        "tool_set = [\"read\", \"shell\"]\nload_skills = false\n",
+    );
+    let cwd = p.cwd();
+    let report = json(&oh(&["config", "--cwd", &cwd], &[], Some(&p.user())));
+    let source = |field: &str| {
+        report[field]["source"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    };
+    assert_eq!(report["auto_compact_tokens"]["value"], 5000);
+    assert_eq!(
+        report["tool_set"]["value"],
+        serde_json::json!(["read", "shell"])
+    );
+    assert_eq!(report["load_skills"]["value"], false);
+    assert_eq!(report["load_mcp"]["value"], false);
+    assert!(source("auto_compact_tokens").ends_with("oneharness.toml"));
+    assert!(source("load_mcp").ends_with("oneharness.toml"));
+    assert!(source("tool_set").ends_with("parent.toml"));
+    assert!(source("load_skills").ends_with("parent.toml"));
+
+    let report = json(&oh(
+        &["config", "--cwd", &cwd],
+        &[
+            ("ONEHARNESS_TOOL_SET", "shell"),
+            ("ONEHARNESS_LOAD_MCP", "true"),
+        ],
+        Some(&p.user()),
+    ));
+    assert_eq!(report["tool_set"]["value"], serde_json::json!(["shell"]));
+    assert_eq!(report["tool_set"]["source"], "environment");
+    assert_eq!(report["load_mcp"]["value"], true);
+    assert_eq!(report["load_mcp"]["source"], "environment");
+}
+
+/// A prompt past the off-argv threshold and an image both ride claude-code's
+/// one stdin frame: the large-prompt route does not displace the image's.
+#[test]
+fn a_large_prompt_and_an_image_ride_one_claude_frame() {
+    let scratch = ScratchDir::new("lean-large-image").unwrap();
+    let image = png(&scratch, "frame.png").display().to_string();
+    let prompt = format!("look: {}", "x".repeat(70 * 1024));
+    let input = scratch.join("input.json");
+    let input_env = format!("MOCK_INPUT_FILE={}", input.display());
+    let b = bin("claude-code");
+    let out = oh(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            &prompt,
+            "--bin",
+            &b,
+            "--image",
+            &image,
+            "--env",
+            &input_env,
+        ],
+        &[],
+        None,
+    );
+    assert!(out.status.success(), "{out:?}");
+    let (argv, stdin) = recorded(&input);
+    assert!(
+        has_seq(&argv, &["--input-format", "stream-json"]),
+        "{argv:?}"
+    );
+    assert!(
+        !argv.iter().any(|a| a == "text" || a.len() > 1024),
+        "{argv:?}"
+    );
+    let frame: Value = serde_json::from_str(stdin.trim()).unwrap();
+    assert_eq!(frame["message"]["content"][0]["type"], "image");
+    assert_eq!(frame["message"]["content"][1]["text"], prompt.as_str());
+}
+
+/// `--timeout 0` lifts a configured compaction deadline, as it does for run.
+#[test]
+fn an_explicit_timeout_of_zero_lifts_a_configured_compaction_deadline() {
+    let s = Sessions::new("timeout-zero");
+    std::fs::write(s.dir.join("proj").join("oneharness.toml"), "timeout = 1\n").unwrap();
+    let user = s.dir.join("user.toml");
+    std::fs::write(&user, "").unwrap();
+    s.turn("claude-code", "alpha");
+    let (proj, store, b) = (s.path("proj"), s.path("store"), bin("claude-code"));
+    let env = s.env("claude-code");
+    let compact = |extra: &[&str]| {
+        let mut args = vec![
+            "compact",
+            "--session",
+            "watch",
+            "--session-dir",
+            &store,
+            "--cwd",
+            &proj,
+            "--bin",
+            &b,
+            "--env",
+            "MOCK_COMPACT_DELAY_MS=2500",
+        ];
+        args.extend_from_slice(extra);
+        for e in &env {
+            args.extend(["--env", e.as_str()]);
+        }
+        json(&oh(&args, &[], Some(&user)))
+    };
+    let configured = compact(&[]);
+    assert_eq!(configured["status"], "failed", "{configured}");
+    assert!(
+        configured["error"].as_str().unwrap().contains("timeout"),
+        "{configured}"
+    );
+    let lifted = compact(&["--timeout", "0"]);
+    assert_eq!(lifted["status"], "completed", "{lifted}");
+}

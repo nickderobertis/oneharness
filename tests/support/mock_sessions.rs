@@ -30,6 +30,8 @@
 //!                   by another thread's turn and another turn of the fork.
 //!   MOCK_COMPACT_USAGE    with MOCK_CODEX_SESSIONS, the fork's token totals grow
 //!                   by 60 input and 9 output tokens over the compaction.
+//!   MOCK_COMPACT_DELAY_MS with either, a compaction pauses this long midway
+//!                   and then completes.
 //!   MOCK_COMPACT_BEGUN    with either, a compaction writes part of the fork,
 //!                   writes its own pid to this path, and then holds until it is
 //!                   killed — the compaction a caller cancels mid-rewrite.
@@ -93,8 +95,15 @@ fn compact_fault() -> Option<String> {
     std::env::var("MOCK_COMPACT_FAIL").ok()
 }
 
-/// Hold a compaction mid-rewrite when the journey asked to cancel it there.
+/// Hold a compaction mid-rewrite when the journey asked to cancel it there,
+/// or slow it down (`MOCK_COMPACT_DELAY_MS`) when it asked for a slow one.
 fn begun() {
+    if let Some(ms) = std::env::var("MOCK_COMPACT_DELAY_MS")
+        .ok()
+        .and_then(|ms| ms.parse::<u64>().ok())
+    {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+    }
     if let Ok(path) = std::env::var("MOCK_COMPACT_BEGUN") {
         std::fs::write(&path, std::process::id().to_string()).expect("begun marker");
         loop {

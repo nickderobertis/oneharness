@@ -24,11 +24,8 @@ fn output_format_parser() -> impl TypedValueParser<Value = OutputFormat> {
     })
 }
 
-/// Parse `--mode` into the core [`PermissionMode`], keeping the possible-value
-/// list (and its `--help` listing + validation error) in the binary so
-/// `oneharness-core` need not depend on `clap`.
-/// `--tool-set`'s value: one comma-separated list, parsed whole so an empty
-/// value is the empty set rather than a missing one.
+/// One `--tool-set` occurrence: a comma-separated list, parsed whole so an
+/// empty value is the empty set rather than a missing one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolSetArg(pub Vec<ToolClass>);
 
@@ -36,6 +33,9 @@ fn tool_set_parser(value: &str) -> Result<ToolSetArg, String> {
     ToolClass::parse_list(value).map(ToolSetArg)
 }
 
+/// Parse `--mode` into the core [`PermissionMode`], keeping the possible-value
+/// list (and its `--help` listing + validation error) in the binary so
+/// `oneharness-core` need not depend on `clap`.
 fn mode_parser() -> impl TypedValueParser<Value = PermissionMode> {
     PossibleValuesParser::new(PermissionMode::ALL.map(|m| m.as_str()))
         .map(|s| PermissionMode::parse(&s).expect("clap restricts to valid mode tokens"))

@@ -179,11 +179,14 @@ pub fn compact_session(
         .model
         .clone()
         .or_else(|| cfg.model_for(identity.as_str()).map(str::to_string));
-    let deadline = request
-        .timeout
-        .or(cfg.timeout)
-        .filter(|secs| *secs > 0)
-        .map(|secs| Instant::now() + Duration::from_secs(secs));
+    let deadline = match request.timeout.or(cfg.timeout).filter(|secs| *secs > 0) {
+        Some(seconds) => Some(
+            Instant::now()
+                .checked_add(Duration::from_secs(seconds))
+                .ok_or(OneharnessError::TimeoutOutOfRange { seconds })?,
+        ),
+        None => None,
+    };
     if signal_cancel {
         if let Err(err) = cancel::install_signal_cancel() {
             eprintln!(
@@ -205,6 +208,7 @@ pub fn compact_session(
         "codex" => codex(
             &resolved.bin,
             &record.token,
+            model.as_deref(),
             cfg,
             identity.as_str(),
             &launch,
@@ -277,9 +281,18 @@ fn claude(
     launch: &Launch<'_>,
 ) -> (CompactStatus, CompactOutcome) {
     let spec = harness::by_id("claude-code").expect("registered");
+    // The command is the translation table's, like every other knob.
+    let command = lean::translation(spec.id, Setting::CompactNow)
+        .knobs
+        .iter()
+        .find_map(|k| match k.knob {
+            lean::Knob::PromptCommand(command) => Some(command),
+            _ => None,
+        })
+        .unwrap_or("/compact");
     let argv = (spec.build_argv)(&BuildCtx {
         bin,
-        prompt: "/compact",
+        prompt: command,
         model,
         system: None,
         resume: Some(token),
@@ -303,7 +316,7 @@ fn claude(
     out.usage = signals::extract_usage(&driven.stdout).map_or_else(Usage::default, |r| r.usage);
     let status = match driven.end {
         End::Cancelled => CompactStatus::Cancelled,
-        End::Exited(Some(0)) if read.succeeded == Some(true) => {
+        End::Exited(Some(0)) if read.result == compact::ClaudeResult::Succeeded => {
             match read.session_id.filter(|id| id != token) {
                 Some(fork) => {
                     out.token = Some(fork);
@@ -317,7 +330,10 @@ fn claude(
             }
         }
         end => {
-            out.error = Some(read.error.unwrap_or_else(|| end.describe(&driven.stderr)));
+            out.error = Some(match read.result {
+                compact::ClaudeResult::Failed(Some(said)) => said,
+                _ => end.describe(&driven.stderr),
+            });
             CompactStatus::Failed
         }
     };
@@ -329,6 +345,7 @@ fn claude(
 fn codex(
     bin: &str,
     token: &str,
+    model: Option<&str>,
     cfg: &crate::domain::config::FileConfig,
     id: &str,
     launch: &Launch<'_>,
@@ -352,7 +369,7 @@ fn codex(
         model_catalog: None,
         tools: None,
     });
-    let mut dialogue = CodexDialogue::new(token);
+    let mut dialogue = CodexDialogue::new(token, model);
     let mut ended = None;
     let opening = dialogue.open();
     let driven = drive(&argv, launch, &opening, |line| {
@@ -368,13 +385,13 @@ fn codex(
     let mut out = blank();
     let status = match (driven.end, ended) {
         (End::Cancelled, _) => CompactStatus::Cancelled,
-        (_, Some(end)) if end.completed => {
-            out.usage = end.usage;
-            out.token = end.fork;
+        (_, Some(compact::CodexCompaction::Completed { fork, usage })) => {
+            out.usage = usage;
+            out.token = Some(fork);
             CompactStatus::Completed
         }
-        (_, Some(end)) => {
-            out.error = end.error;
+        (_, Some(compact::CodexCompaction::Failed { error })) => {
+            out.error = Some(error);
             CompactStatus::Failed
         }
         (end, None) => {

@@ -17,6 +17,11 @@
 //!                   (`tests/fixtures/codex-rollout-token-counts.jsonl`), and a
 //!                   stdio `app-server` answers `thread/fork` and
 //!                   `thread/compact/start` as the captured exchange does.
+//!   MOCK_COMPACT_FAIL     with either, the compaction fails as that harness
+//!                   does: `refuse` (claude's `compact_result: failed`, codex's
+//!                   error answer), `exit` (the process dies), `nofork` (claude
+//!                   names no forked session) or `fail-turn` (codex's turn
+//!                   ends `failed`).
 //!   MOCK_COMPACT_BEGUN    with either, a compaction writes part of the fork,
 //!                   writes its own pid to this path, and then holds until it is
 //!                   killed — the compaction a caller cancels mid-rewrite.
@@ -70,6 +75,12 @@ fn append(path: &Path, lines: &[String]) {
     for line in lines {
         writeln!(file, "{line}").expect("mock session write");
     }
+}
+
+/// How a scripted compaction fails (`MOCK_COMPACT_FAIL`): `refuse`, `exit`,
+/// and per harness `nofork` (claude-code) or `fail-turn` (codex).
+fn compact_fault() -> Option<String> {
+    std::env::var("MOCK_COMPACT_FAIL").ok()
 }
 
 /// Hold a compaction mid-rewrite when the journey asked to cancel it there.
@@ -126,6 +137,25 @@ fn claude(argv: &[String]) -> ! {
     let resumed = value_after(argv, "--resume").map(str::to_string);
     if prompt == "/compact" {
         let original = resumed.expect("/compact resumes a session");
+        match compact_fault().as_deref() {
+            Some("refuse") => say(&[serde_json::json!({
+                "type": "system", "subtype": "status", "status": null,
+                "compact_result": "failed", "compact_error": "Not enough messages to compact.",
+                "session_id": original,
+            })
+            .to_string()]),
+            Some("exit") => {
+                eprintln!("mock claude: compaction crashed");
+                std::process::exit(1);
+            }
+            // The captured stream, but under the ORIGINAL session's id: a
+            // compaction that names no fork.
+            Some("nofork") => say(&CLAUDE_COMPACT
+                .lines()
+                .map(|l| l.replace(CLAUDE_COMPACT_ID, &original))
+                .collect::<Vec<_>>()),
+            _ => {}
+        }
         let from = store.join(format!("{original}.jsonl"));
         // Without `--fork-session` Claude Code compacts the original
         // transcript in place, appending to it (as captured).
@@ -304,6 +334,26 @@ fn codex_app_server() -> ! {
                 let fork = fresh_id();
                 std::fs::copy(&from, rollout(&fork)).expect("mock fork copy");
                 send(&[serde_json::json!({"id": id, "result": {"thread": {"id": fork, "forkedFromId": original}}}).to_string()]);
+            }
+            Some("thread/compact/start") if compact_fault().as_deref() == Some("refuse") => {
+                send(&[serde_json::json!({"id": id, "error": {"code": -32600, "message": "compaction unavailable"}}).to_string()]);
+            }
+            Some("thread/compact/start") if compact_fault().as_deref() == Some("exit") => {
+                std::process::exit(1);
+            }
+            Some("thread/compact/start") if compact_fault().as_deref() == Some("fail-turn") => {
+                let fork = request["params"]["threadId"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
+                send(&[serde_json::json!({"id": id, "result": {}}).to_string()]);
+                send(&recorded(&fork, |v| v["method"] == "turn/started"));
+                send(&[serde_json::json!({"method": "turn/completed", "params": {
+                    "threadId": fork,
+                    "turn": {"id": "01a19db5-aef1-7f73-a78a-d9ccb96b5511", "status": "failed",
+                             "error": {"message": "the compaction request failed"}},
+                }})
+                .to_string()]);
             }
             Some("thread/compact/start") => {
                 let fork = request["params"]["threadId"]

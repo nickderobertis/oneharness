@@ -263,7 +263,7 @@ pub struct RunOptions {
     /// positive integer), through each harness's own knob.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "u64", range(min = 1))]
-    pub auto_compact_tokens: Option<u64>,
+    pub auto_compact_tokens: Option<std::num::NonZeroU64>,
     /// Load only these built-in tool classes; every other built-in tool is
     /// not loaded.
     #[serde(default, skip_serializing_if = "Option::is_none")]

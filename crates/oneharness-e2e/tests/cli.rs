@@ -36618,21 +36618,34 @@ fn json_document_verbs(history_dir: &str) -> Vec<Vec<String>> {
             ["sync"] => vec!["--check"],
             ["usage"] => vec!["--harness", "cursor", "--bin", &cursor],
             ["interrupt"] => vec!["--session", "ghost", "--session-dir", history_dir],
-            // A session the store binds to a harness with no compaction, so
-            // `compact` answers a whole `unsupported` outcome.
+            // A session `run` binds to a harness with no compaction (opencode),
+            // so `compact` answers a whole `unsupported` outcome.
             ["compact"] => {
-                let project = std::path::Path::new(history_dir);
-                let store =
-                    oneharness_core::io::session::session_path(project, project, "nocompact");
-                oneharness_core::io::session::write(
-                    &store,
-                    project,
-                    &"opencode".parse().unwrap(),
-                    "nocompact",
-                    "ses_probe",
-                    None,
-                )
-                .unwrap();
+                let opencode = bin_override("opencode");
+                let created = run(
+                    &[
+                        "run",
+                        "--harness",
+                        "opencode",
+                        "--session",
+                        "nocompact",
+                        "--session-dir",
+                        history_dir,
+                        "--cwd",
+                        history_dir,
+                        "--bin",
+                        &opencode,
+                        "--mode",
+                        "bypass",
+                        "--prompt",
+                        "hi",
+                    ],
+                    &[(
+                        "MOCK_STDOUT",
+                        r#"{"type":"text","sessionID":"ses_probe","part":{"type":"text","text":"ok"}}"#,
+                    )],
+                );
+                assert!(created.status.success(), "{created:?}");
                 vec![
                     "--session",
                     "nocompact",

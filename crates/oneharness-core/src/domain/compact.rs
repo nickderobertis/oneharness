@@ -45,6 +45,7 @@ impl CompactStatus {
     }
 }
 
+// llmlint: ignore-block[invalid_states_unrepresentable] The flat `status` + `context_tokens_before`/`context_tokens_after` + `usage` shape is the contract agreed with this report's consumer, and `error` with the `failed` status was added by explicit manager ruling as an additive optional beside it; a status-tagged union would change that wire shape. `compact_session` is its one producer and sets `token` and `error` per status in one place.
 /// The `oneharness compact` report.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct CompactOutcome {
@@ -72,14 +73,22 @@ pub struct CompactOutcome {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
+// llmlint: ignore-end[invalid_states_unrepresentable]
+
+/// How claude-code's `/compact` stream says the compaction ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClaudeResult {
+    /// The stream never reported a `compact_result`.
+    Unreported,
+    Succeeded,
+    /// Any other result, with the harness's own `compact_error` if it gave one.
+    Failed(Option<String>),
+}
 
 /// What claude-code's stream-json `/compact` output says.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ClaudeCompaction {
-    /// `Some(true)` on `compact_result: success`, `Some(false)` on any other
-    /// result, `None` when the stream never reported one.
-    pub succeeded: Option<bool>,
-    pub error: Option<String>,
+    pub result: ClaudeResult,
     pub before: Option<u64>,
     pub after: Option<u64>,
     /// The session id the compacted conversation lives under (the fork's).
@@ -90,7 +99,12 @@ pub struct ClaudeCompaction {
 /// `tests/fixtures/claude-compact-fork.jsonl`).
 #[must_use]
 pub fn read_claude(stdout: &str) -> ClaudeCompaction {
-    let mut out = ClaudeCompaction::default();
+    let mut out = ClaudeCompaction {
+        result: ClaudeResult::Unreported,
+        before: None,
+        after: None,
+        session_id: None,
+    };
     for value in stdout
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line.trim()).ok())
@@ -99,14 +113,20 @@ pub fn read_claude(stdout: &str) -> ClaudeCompaction {
             out.session_id = value
                 .get("session_id")
                 .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
                 .map(str::to_string);
         }
         if let Some(result) = value.get("compact_result").and_then(Value::as_str) {
-            out.succeeded = Some(result == "success");
-            out.error = value
-                .get("compact_error")
-                .and_then(Value::as_str)
-                .map(str::to_string);
+            out.result = if result == "success" {
+                ClaudeResult::Succeeded
+            } else {
+                ClaudeResult::Failed(
+                    value
+                        .get("compact_error")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                )
+            };
         }
         if let Some(meta) = value.get("compact_metadata") {
             out.before = meta.get("pre_tokens").and_then(Value::as_u64);
@@ -128,13 +148,13 @@ pub enum CodexStep {
 }
 
 /// How codex's compaction of the fork ended.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct CodexCompaction {
-    pub completed: bool,
-    pub error: Option<String>,
-    /// The fork's thread id, once `thread/fork` answered.
-    pub fork: Option<String>,
-    pub usage: Usage,
+#[derive(Debug, Clone, PartialEq)]
+pub enum CodexCompaction {
+    /// The fork `fork` was compacted; `usage` is what the thread's totals grew
+    /// by over the compaction.
+    Completed { fork: String, usage: Usage },
+    /// Codex refused or did not complete it.
+    Failed { error: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,34 +165,56 @@ enum Phase {
 }
 
 /// The codex app-server conversation: `initialize`, `thread/fork` of the
-/// stored thread, `thread/compact/start` on the fork, until `turn/completed`
-/// (see `tests/fixtures/codex-app-server-fork-compact.jsonl`).
+/// stored thread, `thread/compact/start` on the fork, until that fork's
+/// compaction turn completes (see
+/// `tests/fixtures/codex-app-server-fork-compact.jsonl`). The two protocol
+/// methods are the [`Setting::CompactNow`] knobs of the translation table.
+///
+/// [`Setting::CompactNow`]: crate::domain::lean::Setting::CompactNow
 #[derive(Debug, Clone)]
 pub struct CodexDialogue {
     thread: String,
+    model: Option<String>,
     phase: Phase,
     fork: Option<String>,
-    /// The last thread token total before the compaction turn, and the last
+    /// The compaction turn's id, once the fork's `turn/started` names it.
+    turn: Option<String>,
+    /// The fork's last token total before the compaction turn, and the last
     /// within it: their difference is the compaction's own usage.
     before: Option<Usage>,
     latest: Option<Usage>,
-    compact_turn_started: bool,
 }
 
 const INITIALIZE_ID: u64 = 1;
 const FORK_ID: u64 = 2;
 const COMPACT_ID: u64 = 3;
 
+/// The translation table's two codex compaction methods, in order.
+fn codex_methods() -> (&'static str, &'static str) {
+    let knobs =
+        crate::domain::lean::translation("codex", crate::domain::lean::Setting::CompactNow).knobs;
+    match (knobs.first().map(|k| k.knob), knobs.get(1).map(|k| k.knob)) {
+        (
+            Some(crate::domain::lean::Knob::ProtocolMethod(fork)),
+            Some(crate::domain::lean::Knob::ProtocolMethod(compact)),
+        ) => (fork, compact),
+        _ => ("thread/fork", "thread/compact/start"),
+    }
+}
+
 impl CodexDialogue {
+    /// The dialogue for compacting `thread`, its fork running under `model`
+    /// when one is named.
     #[must_use]
-    pub fn new(thread: &str) -> Self {
+    pub fn new(thread: &str, model: Option<&str>) -> Self {
         Self {
             thread: thread.to_string(),
+            model: model.map(str::to_string),
             phase: Phase::Initialize,
             fork: None,
+            turn: None,
             before: None,
             latest: None,
-            compact_turn_started: false,
         }
     }
 
@@ -191,60 +233,85 @@ impl CodexDialogue {
         }))]
     }
 
+    fn failed(error: String) -> CodexStep {
+        CodexStep::Done(CodexCompaction::Failed { error })
+    }
+
+    /// Whether a notification is about the fork (and, once known, its
+    /// compaction turn) rather than any other thread the server reports on.
+    fn about_fork(&self, value: &Value) -> bool {
+        let thread = value.pointer("/params/threadId").and_then(Value::as_str);
+        let turn = value
+            .pointer("/params/turnId")
+            .or_else(|| value.pointer("/params/turn/id"))
+            .and_then(Value::as_str);
+        self.fork.is_some()
+            && thread == self.fork.as_deref()
+            && (self.turn.is_none() || turn.is_none() || turn == self.turn.as_deref())
+    }
+
     /// React to one line the server wrote.
     pub fn on_line(&mut self, line: &str) -> CodexStep {
         let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
             return CodexStep::Wait;
         };
+        let (fork_method, compact_method) = codex_methods();
+        let id = value.get("id").and_then(Value::as_u64);
         if let Some(error) = value.get("error") {
-            let id = value.get("id").and_then(Value::as_u64);
             if matches!(id, Some(FORK_ID | COMPACT_ID | INITIALIZE_ID)) {
-                return CodexStep::Done(self.ended(
-                    false,
-                    Some(format!(
-                        "codex refused the compaction: {}",
-                        error
-                            .get("message")
-                            .and_then(Value::as_str)
-                            .unwrap_or("no message")
-                    )),
+                return Self::failed(format!(
+                    "codex refused the compaction: {}",
+                    error
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("no message")
                 ));
             }
         }
-        match (self.phase, value.get("id").and_then(Value::as_u64)) {
+        match (self.phase, id) {
             (Phase::Initialize, Some(INITIALIZE_ID)) => {
                 self.phase = Phase::Fork;
+                let mut params = json!({"threadId": self.thread});
+                if let Some(model) = &self.model {
+                    params["model"] = json!(model);
+                }
                 return CodexStep::Send(vec![
                     frame(json!({"jsonrpc": "2.0", "method": "initialized", "params": {}})),
                     frame(json!({
                         "jsonrpc": "2.0",
                         "id": FORK_ID,
-                        "method": "thread/fork",
-                        "params": {"threadId": self.thread},
+                        "method": fork_method,
+                        "params": params,
                     })),
                 ]);
             }
             (Phase::Fork, Some(FORK_ID)) => {
-                let Some(fork) = value
+                // The untouched-original guarantee rests on compacting a
+                // DIFFERENT thread, so a fork codex did not name, or named as
+                // the original, is refused before anything is compacted.
+                let fork = value
                     .pointer("/result/thread/id")
                     .and_then(Value::as_str)
-                    .map(str::to_string)
-                else {
-                    return CodexStep::Done(
-                        self.ended(false, Some("codex's thread/fork named no thread".into())),
-                    );
+                    .filter(|fork| !fork.is_empty() && *fork != self.thread)
+                    .map(str::to_string);
+                let Some(fork) = fork else {
+                    return Self::failed(format!(
+                        "codex's {fork_method} named no new thread, so nothing was compacted"
+                    ));
                 };
                 self.phase = Phase::Compact;
                 self.fork = Some(fork.clone());
-                self.before = self.latest.clone();
                 return CodexStep::Send(vec![frame(json!({
                     "jsonrpc": "2.0",
                     "id": COMPACT_ID,
-                    "method": "thread/compact/start",
+                    "method": compact_method,
                     "params": {"threadId": fork},
                 }))]);
             }
             _ => {}
+        }
+        if self.phase != Phase::Compact || !self.about_fork(&value) {
+            return CodexStep::Wait;
         }
         match value.get("method").and_then(Value::as_str) {
             Some("thread/tokenUsage/updated") => {
@@ -253,43 +320,37 @@ impl CodexDialogue {
                 }
                 CodexStep::Wait
             }
-            Some("turn/started") if self.phase == Phase::Compact => {
-                self.compact_turn_started = true;
-                if self.before.is_none() {
-                    self.before = self.latest.clone();
-                }
+            Some("turn/started") if self.turn.is_none() => {
+                self.turn = value
+                    .pointer("/params/turn/id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                self.before = self.latest.clone();
                 CodexStep::Wait
             }
-            Some("turn/completed") if self.compact_turn_started => {
+            Some("turn/completed") if self.turn.is_some() => {
                 let status = value
                     .pointer("/params/turn/status")
                     .and_then(Value::as_str)
                     .unwrap_or("");
-                let error = value
-                    .pointer("/params/turn/error/message")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
                 if status == "completed" {
-                    CodexStep::Done(self.ended(true, None))
+                    CodexStep::Done(CodexCompaction::Completed {
+                        fork: self.fork.clone().unwrap_or_default(),
+                        usage: usage_delta(self.before.as_ref(), self.latest.as_ref()),
+                    })
                 } else {
-                    CodexStep::Done(self.ended(
-                        false,
-                        Some(error.unwrap_or_else(|| {
-                            format!("codex ended the compaction turn as `{status}`")
-                        })),
-                    ))
+                    Self::failed(
+                        value
+                            .pointer("/params/turn/error/message")
+                            .and_then(Value::as_str)
+                            .map_or_else(
+                                || format!("codex ended the compaction turn as `{status}`"),
+                                str::to_string,
+                            ),
+                    )
                 }
             }
             _ => CodexStep::Wait,
-        }
-    }
-
-    fn ended(&self, completed: bool, error: Option<String>) -> CodexCompaction {
-        CodexCompaction {
-            completed,
-            error,
-            fork: self.fork.clone(),
-            usage: usage_delta(self.before.as_ref(), self.latest.as_ref()),
         }
     }
 }
@@ -344,7 +405,7 @@ mod tests {
     #[test]
     fn the_recorded_claude_compaction_reads_as_a_fork_that_succeeded() {
         let read = read_claude(&fixture("claude-compact-fork.jsonl"));
-        assert_eq!(read.succeeded, Some(true));
+        assert_eq!(read.result, ClaudeResult::Succeeded);
         assert_eq!((read.before, read.after), (Some(6_809), Some(7_405)));
         assert_eq!(
             read.session_id.as_deref(),
@@ -353,17 +414,16 @@ mod tests {
         let refused = read_claude(
             r#"{"type":"system","subtype":"status","compact_result":"failed","compact_error":"Not enough messages to compact."}"#,
         );
-        assert_eq!(refused.succeeded, Some(false));
         assert_eq!(
-            refused.error.as_deref(),
-            Some("Not enough messages to compact.")
+            refused.result,
+            ClaudeResult::Failed(Some("Not enough messages to compact.".to_string()))
         );
     }
 
     #[test]
     fn the_recorded_codex_dialogue_forks_then_compacts_the_fork() {
         let original = "01a19db2-ce98-7aa2-8bc0-f060559d130d";
-        let mut d = CodexDialogue::new(original);
+        let mut d = CodexDialogue::new(original, Some("gpt-test"));
         let open: Value = serde_json::from_str(&d.open()[0]).unwrap();
         assert_eq!(open["method"], "initialize");
         let CodexStep::Send(frames) = d.on_line(r#"{"id":1,"result":{}}"#) else {
@@ -372,6 +432,7 @@ mod tests {
         let fork: Value = serde_json::from_str(&frames[1]).unwrap();
         assert_eq!(fork["method"], "thread/fork");
         assert_eq!(fork["params"]["threadId"], original);
+        assert_eq!(fork["params"]["model"], "gpt-test");
         let mut done = None;
         for line in fixture("codex-app-server-fork-compact.jsonl").lines() {
             match d.on_line(line) {
@@ -390,29 +451,57 @@ mod tests {
                 CodexStep::Wait => {}
             }
         }
-        let done = done.expect("the recorded turn completed");
-        assert!(done.completed, "{done:?}");
         assert_eq!(
-            done.fork.as_deref(),
-            Some("01a19db5-ae1c-77d2-ad64-b3e9aa7b861e")
-        );
-        assert_eq!(
-            done.usage,
-            Usage::default(),
+            done.expect("the recorded turn completed"),
+            CodexCompaction::Completed {
+                fork: "01a19db5-ae1c-77d2-ad64-b3e9aa7b861e".to_string(),
+                usage: Usage::default(),
+            },
             "the recorded totals did not grow"
         );
     }
 
     #[test]
     fn a_codex_refusal_ends_the_dialogue_as_failed() {
-        let mut d = CodexDialogue::new("t");
+        let mut d = CodexDialogue::new("t", None);
         d.on_line(r#"{"id":1,"result":{}}"#);
-        let CodexStep::Done(end) =
+        let CodexStep::Done(CodexCompaction::Failed { error }) =
             d.on_line(r#"{"id":2,"error":{"code":-32600,"message":"thread not found"}}"#)
         else {
             panic!("refusal ends it")
         };
-        assert!(!end.completed);
-        assert!(end.error.unwrap().contains("thread not found"));
+        assert!(error.contains("thread not found"));
+
+        // A fork that is the original thread is no fork.
+        let mut d = CodexDialogue::new("t", None);
+        d.on_line(r#"{"id":1,"result":{}}"#);
+        let CodexStep::Done(CodexCompaction::Failed { .. }) =
+            d.on_line(r#"{"id":2,"result":{"thread":{"id":"t"}}}"#)
+        else {
+            panic!("a fork that is the original is refused")
+        };
+
+        // Another thread's turn neither starts nor ends this compaction.
+        let mut d = CodexDialogue::new("t", None);
+        d.on_line(r#"{"id":1,"result":{}}"#);
+        d.on_line(r#"{"id":2,"result":{"thread":{"id":"f"}}}"#);
+        assert_eq!(
+            d.on_line(
+                r#"{"method":"turn/started","params":{"threadId":"other","turn":{"id":"x"}}}"#
+            ),
+            CodexStep::Wait
+        );
+        d.on_line(r#"{"method":"turn/started","params":{"threadId":"f","turn":{"id":"c"}}}"#);
+        assert_eq!(
+            d.on_line(r#"{"method":"turn/completed","params":{"threadId":"f","turn":{"id":"z","status":"completed"}}}"#),
+            CodexStep::Wait,
+            "a different turn of the fork is not the compaction"
+        );
+        let CodexStep::Done(CodexCompaction::Failed { error }) = d.on_line(
+            r#"{"method":"turn/completed","params":{"threadId":"f","turn":{"id":"c","status":"failed","error":{"message":"context too small"}}}}"#,
+        ) else {
+            panic!("a failed compaction turn ends it")
+        };
+        assert_eq!(error, "context too small");
     }
 }

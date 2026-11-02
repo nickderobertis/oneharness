@@ -171,8 +171,6 @@ fn supports(list: &Value, id: &str, flag: &str) -> bool {
         .unwrap_or_else(|| panic!("{id} {flag} is a boolean"))
 }
 
-// ---------------------------------------------------------------- config ----
-
 /// A project dir with an `oneharness.toml` (and its `extends` parent).
 struct Project {
     dir: ScratchDir,
@@ -417,8 +415,6 @@ fn an_out_of_range_setting_is_refused_naming_it() {
         assert!(stderr(&out).contains(name), "{flag}: {}", stderr(&out));
     }
 }
-
-// --------------------------------------------------------------- delivery ----
 
 /// Every lean setting on, against each harness in turn: what its process
 /// receives, and the diagnostic for each it cannot apply.
@@ -707,8 +703,6 @@ fn claude_read_only_keeps_its_floor_under_a_lean_tool_set() {
     );
 }
 
-// ----------------------------------------------------------------- images ----
-
 fn png(dir: &Path, name: &str) -> PathBuf {
     let path = dir.join(name);
     // A 1x1 PNG.
@@ -881,8 +875,6 @@ fn a_fallback_chain_moves_past_a_harness_without_image_input() {
     assert_eq!(report["results"][1]["status"], "ok");
 }
 
-// ------------------------------------------------------------------ calls ----
-
 #[test]
 fn calls_list_one_usage_per_model_call_where_the_harness_records_them() {
     let scratch = ScratchDir::new("lean-calls").unwrap();
@@ -979,8 +971,6 @@ fn calls_list_one_usage_per_model_call_where_the_harness_records_them() {
         .unwrap()
         .contains("stream-json"));
 }
-
-// ---------------------------------------------------------------- compact ----
 
 struct Sessions {
     dir: ScratchDir,
@@ -1230,4 +1220,403 @@ fn list_reports_every_new_capability_for_every_adapter() {
     );
     assert!(supports(&listed, "codex", "supports_compact_now"));
     assert!(!supports(&listed, "goose", "supports_images"));
+}
+
+/// Every way a compaction can fail leaves the session as it was: the outcome
+/// says `failed` and why, the name still continues the original, and the
+/// harness's own stored files are byte for byte unchanged.
+#[test]
+fn a_failed_compaction_answers_failed_and_leaves_the_session_as_it_was() {
+    for (id, fault, said) in [
+        ("claude-code", "refuse", "Not enough messages to compact."),
+        ("claude-code", "exit", "exited with code 1"),
+        ("claude-code", "nofork", "without naming a forked session"),
+        ("codex", "refuse", "compaction unavailable"),
+        ("codex", "fail-turn", "the compaction request failed"),
+        ("codex", "exit", "before the compaction completed"),
+    ] {
+        let s = Sessions::new(&format!("fail-{id}-{fault}"));
+        s.turn(id, "alpha");
+        let before = s.turn(id, "beta");
+        let original = before["session"]["token"].as_str().unwrap().to_string();
+        let stored = s.stored();
+        let fault_env = format!("MOCK_COMPACT_FAIL={fault}");
+        let out = s.compact(id, &["--env", &fault_env]);
+        assert_eq!(out.status.code(), Some(1), "{id} {fault}: {out:?}");
+        let outcome = json(&out);
+        assert_eq!(outcome["status"], "failed", "{id} {fault}: {outcome}");
+        assert!(
+            outcome["error"].as_str().unwrap().contains(said),
+            "{id} {fault}: {outcome}"
+        );
+        assert_eq!(outcome["token"], original.as_str());
+        for (path, bytes) in &stored {
+            assert_eq!(
+                &std::fs::read(path).unwrap(),
+                bytes,
+                "{id} {fault}: {}",
+                path.display()
+            );
+        }
+        let after = s.turn(id, "gamma");
+        assert_eq!(
+            after["results"][0]["text"], "context: [alpha, beta, gamma]",
+            "{id} {fault}"
+        );
+    }
+}
+
+#[test]
+fn a_compaction_that_cannot_start_answers_failed() {
+    let s = Sessions::new("cannot-start");
+    s.turn("claude-code", "alpha");
+    let (proj, store) = (s.path("proj"), s.path("store"));
+    let missing = format!("claude-code={}", s.dir.join("no-such-claude").display());
+    let out = oh(
+        &[
+            "compact",
+            "--session",
+            "watch",
+            "--session-dir",
+            &store,
+            "--cwd",
+            &proj,
+            "--bin",
+            &missing,
+        ],
+        &[],
+        None,
+    );
+    let outcome = json(&out);
+    assert_eq!(outcome["status"], "failed", "{outcome}");
+    assert!(
+        outcome["error"].as_str().unwrap().contains("not found"),
+        "{outcome}"
+    );
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // Executable, so it resolves; its interpreter does not exist, so
+        // starting it fails (`exec` answers ENOENT, which nothing retries).
+        let junk = s.dir.join("junk-claude");
+        std::fs::write(&junk, b"#!/nonexistent/interpreter\n").unwrap();
+        std::fs::set_permissions(&junk, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let junk = format!("claude-code={}", junk.display());
+        let out = oh(
+            &[
+                "compact",
+                "--session",
+                "watch",
+                "--session-dir",
+                &store,
+                "--cwd",
+                &proj,
+                "--bin",
+                &junk,
+            ],
+            &[],
+            None,
+        );
+        let outcome = json(&out);
+        assert_eq!(outcome["status"], "failed", "{outcome}");
+        assert!(
+            outcome["error"]
+                .as_str()
+                .unwrap()
+                .contains("could not be started"),
+            "{outcome}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_compaction_whose_fork_cannot_be_bound_keeps_the_original() {
+    use std::os::unix::fs::PermissionsExt;
+    let s = Sessions::new("unbindable");
+    s.turn("claude-code", "alpha");
+    let before = s.turn("claude-code", "beta");
+    let original = before["session"]["token"].as_str().unwrap().to_string();
+    let record = PathBuf::from(before["session"]["store_file"].as_str().unwrap());
+    let dir = record.parent().unwrap().to_path_buf();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let out = s.compact("claude-code", &[]);
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let outcome = json(&out);
+    assert_eq!(outcome["status"], "failed", "{outcome}");
+    assert!(
+        outcome["error"]
+            .as_str()
+            .unwrap()
+            .contains("could not be bound"),
+        "{outcome}"
+    );
+    assert_eq!(outcome["token"], original.as_str());
+    let after = s.turn("claude-code", "gamma");
+    assert_eq!(after["session"]["token"], original.as_str());
+}
+
+#[cfg(unix)]
+fn alive(pid: &str) -> bool {
+    Command::new("kill")
+        .args(["-0", pid])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+#[cfg(unix)]
+fn await_file(path: &Path) -> String {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        if !text.is_empty() {
+            return text;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{} never appeared",
+            path.display()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_timed_out_compaction_ends_the_harness_and_the_next_turn_continues_uncompacted() {
+    let s = Sessions::new("timeout");
+    s.turn("codex", "alpha");
+    s.turn("codex", "beta");
+    let begun = s.dir.join("begun");
+    let begun_env = format!("MOCK_COMPACT_BEGUN={}", begun.display());
+    let out = s.compact("codex", &["--timeout", "2", "--env", &begun_env]);
+    let outcome = json(&out);
+    assert_eq!(outcome["status"], "failed", "{outcome}");
+    assert!(
+        outcome["error"].as_str().unwrap().contains("timeout"),
+        "{outcome}"
+    );
+    let pid = std::fs::read_to_string(&begun).unwrap();
+    assert!(!alive(pid.trim()), "the harness {pid} was ended");
+    let after = s.turn("codex", "gamma");
+    assert_eq!(after["results"][0]["text"], "context: [alpha, beta, gamma]");
+}
+
+#[cfg(unix)]
+#[test]
+fn sigterm_cancels_a_compaction_from_the_cli_and_leaves_the_session_as_it_was() {
+    let s = Sessions::new("sigterm");
+    s.turn("claude-code", "alpha");
+    let before = s.turn("claude-code", "beta");
+    let original = before["session"]["token"].as_str().unwrap().to_string();
+    let stored = s.stored();
+    let begun = s.dir.join("begun");
+    let profiles = ProfileScratch::new();
+    let (proj, store, b) = (s.path("proj"), s.path("store"), bin("claude-code"));
+    let mut cmd = Command::new(workspace_bin("oneharness"));
+    cmd.env("ONEHARNESS_NO_CONFIG", "1")
+        .args([
+            "compact",
+            "--session",
+            "watch",
+            "--session-dir",
+            &store,
+            "--cwd",
+            &proj,
+            "--bin",
+            &b,
+            "--format",
+            "json",
+        ])
+        .args(["--env", profiles.as_str()])
+        .args(["--env", &format!("MOCK_COMPACT_BEGUN={}", begun.display())])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    for e in s.env("claude-code") {
+        cmd.args(["--env", &e]);
+    }
+    let child = cmd.spawn().unwrap();
+    let harness = await_file(&begun);
+    // Signal only the process this test started.
+    let term = Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(term.success());
+    let out = child.wait_with_output().unwrap();
+    let outcome = json(&out);
+    assert_eq!(outcome["status"], "cancelled", "{outcome}");
+    assert_eq!(outcome["token"], original.as_str());
+    assert!(!alive(harness.trim()), "the harness {harness} was ended");
+    for (path, bytes) in &stored {
+        assert_eq!(&std::fs::read(path).unwrap(), bytes, "{}", path.display());
+    }
+}
+
+#[test]
+fn an_image_run_refuses_the_shapes_an_image_cannot_ride() {
+    let scratch = ScratchDir::new("lean-image-conflicts").unwrap();
+    let image = png(&scratch, "frame.png").display().to_string();
+    let schema = scratch.join("schema.json");
+    std::fs::write(&schema, r#"{"type":"object"}"#).unwrap();
+    let schema = schema.display().to_string();
+    let store = scratch.join("store").display().to_string();
+    let b = bin("claude-code");
+    for (flags, named) in [
+        (
+            vec!["--control", "--session", "s", "--session-dir", &store],
+            "--control",
+        ),
+        (vec!["--output-format", "json"], "--output-format"),
+        (vec!["--schema", &schema], "--schema"),
+    ] {
+        let mut args = vec![
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--bin",
+            &b,
+            "--image",
+            &image,
+        ];
+        args.extend(flags.iter().copied());
+        let out = oh(&args, &[], None);
+        assert_eq!(out.status.code(), Some(2), "{named}: {out:?}");
+        assert!(stderr(&out).contains(named), "{named}: {}", stderr(&out));
+        assert!(
+            stderr(&out).contains("--image"),
+            "{named}: {}",
+            stderr(&out)
+        );
+    }
+}
+
+#[test]
+fn an_empty_tool_set_loads_no_built_in_tool_and_a_huge_threshold_is_clamped_and_said() {
+    let out = oh(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--tool-set",
+            "",
+            "--print-command",
+        ],
+        &[],
+        None,
+    );
+    let argv = strings(&json(&out)["results"][0]["command"]);
+    assert!(has_seq(&argv, &["--tools", ""]), "{argv:?}");
+
+    let scratch = ScratchDir::new("lean-clamp").unwrap();
+    let env_file = scratch.join("env.json");
+    let env_env = format!("MOCK_ENV_FILE={}", env_file.display());
+    let b = bin("claude-code");
+    let out = oh(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--bin",
+            &b,
+            "--auto-compact-tokens",
+            "2000000",
+            "--env",
+            &env_env,
+        ],
+        &[],
+        None,
+    );
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(
+        recorded_env(&env_file)["CLAUDE_CODE_AUTO_COMPACT_WINDOW"],
+        "1000000"
+    );
+    let result = json(&out)["results"][0].clone();
+    let said = diagnostics_for(&result, "auto_compact_tokens");
+    assert!(
+        said[0]["message"].as_str().unwrap().contains("967000"),
+        "{result}"
+    );
+}
+
+#[test]
+fn per_call_usage_reports_why_it_is_absent_and_reads_only_this_runs_calls() {
+    let scratch = ScratchDir::new("lean-calls-absent").unwrap();
+    let (c, x) = (bin("claude-code"), bin("codex"));
+    let reason = |out: &Output| {
+        let result = json(out)["results"][0].clone();
+        assert!(result.get("calls").is_none(), "{result}");
+        diagnostics_for(&result, "calls")[0]["message"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let out = oh(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--bin",
+            &c,
+            "--output-format",
+            "stream-json",
+        ],
+        &[(
+            "MOCK_STDOUT",
+            r#"{"type":"result","subtype":"success","result":"x"}"#,
+        )],
+        None,
+    );
+    assert!(reason(&out).contains("no assistant usage"));
+
+    let home = scratch.join("home");
+    std::fs::create_dir_all(home.join("sessions")).unwrap();
+    let home_env = format!("CODEX_HOME={}", home.display());
+    let codex = |stdout: &str| {
+        oh(
+            &[
+                "run",
+                "--harness",
+                "codex",
+                "--prompt",
+                "hi",
+                "--bin",
+                &x,
+                "--mode",
+                "bypass",
+                "--env",
+                &home_env,
+            ],
+            &[("MOCK_STDOUT", stdout)],
+            None,
+        )
+    };
+    let turn = r#"{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"ok"}}"#;
+    assert!(reason(&codex(turn)).contains("named no thread"));
+    let named = format!("{{\"type\":\"thread.started\",\"thread_id\":\"t-1\"}}\n{turn}");
+    assert!(reason(&codex(&named)).contains("no rollout record"));
+    std::fs::write(
+        home.join("sessions")
+            .join("rollout-2026-11-02T00-00-00-t-1.jsonl"),
+        "{\"type\":\"session_meta\",\"payload\":{}}\n",
+    )
+    .unwrap();
+    assert!(reason(&codex(&named)).contains("holds no token_count"));
+
+    // A resumed thread reports only the calls this run appended.
+    let s = Sessions::new("calls-resumed");
+    s.turn("codex", "alpha");
+    let second = s.turn("codex", "beta");
+    assert_eq!(second["results"][0]["calls"].as_array().unwrap().len(), 3);
 }

@@ -651,19 +651,31 @@ pub const TRANSLATIONS: [[Translation; 7]; 8] = [
     CURSOR_TABLE,
 ];
 
-/// The translation of `setting` for harness `id` (a base id).
-///
-/// # Panics
-///
-/// When the table lacks the entry, which `every_harness_has_every_setting`
-/// rules out for every registered harness.
+/// What an id the registry does not hold translates to: no knob for anything,
+/// so every setting reads as unsupported rather than as a panic.
+const UNREGISTERED: [Translation; 7] = no_lean_knobs!(
+    "unregistered",
+    "-",
+    "not a registered harness id",
+    none(
+        "unregistered",
+        "-",
+        Setting::Images,
+        "not a registered harness id"
+    )
+);
+
+/// The translation of `setting` for harness `id` (a base id). Every
+/// registered harness has every setting (`every_harness_has_every_setting`);
+/// an unregistered id answers an entry with no knobs.
 #[must_use]
 pub fn translation(id: &str, setting: Setting) -> &'static Translation {
     TRANSLATIONS
         .iter()
         .flatten()
         .find(|t| t.harness == id && t.setting == setting)
-        .unwrap_or_else(|| panic!("no `{}` translation for `{id}`", setting.as_str()))
+        .or_else(|| UNREGISTERED.iter().find(|t| t.setting == setting))
+        .unwrap_or(&UNREGISTERED[0])
 }
 
 /// Whether harness `id` honours `setting` completely.
@@ -1084,6 +1096,14 @@ mod tests {
             TRANSLATIONS.iter().flatten().count(),
             harness::all().len() * Setting::ALL.len()
         );
+    }
+
+    #[test]
+    fn an_unregistered_id_supports_nothing() {
+        for setting in Setting::ALL {
+            assert!(!supports("not-a-harness", setting));
+            assert_eq!(translation("not-a-harness", setting).setting, setting);
+        }
     }
 
     #[test]

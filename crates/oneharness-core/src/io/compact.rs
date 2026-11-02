@@ -481,7 +481,7 @@ fn drive(
     let mut pending: Vec<u8> = Vec::new();
     let mut stdout_open = true;
     let end = loop {
-        if launch.cancel.is_cancelled() {
+        if cancel::cancellation_requested(launch.cancel) {
             break End::Cancelled;
         }
         let now = Instant::now();

@@ -266,6 +266,10 @@ const ENV_OVERRIDE_VARS: &[&str] = &[
     "ONEHARNESS_MODE",
     "ONEHARNESS_BYPASS",
     "ONEHARNESS_TIMEOUT",
+    "ONEHARNESS_AUTO_COMPACT_TOKENS",
+    "ONEHARNESS_TOOL_SET",
+    "ONEHARNESS_LOAD_SKILLS",
+    "ONEHARNESS_LOAD_MCP",
     "ONEHARNESS_OUTPUT_FORMAT",
     "ONEHARNESS_SCHEMA_FILE",
     "ONEHARNESS_SCHEMA_MAX_RETRIES",
@@ -603,7 +607,7 @@ fn every_report_carries_the_shared_schema_version() {
     // so a consumer reads any of them with one number — and a bump must move
     // every surface at once. Pinned literally on purpose: asserting against the
     // constant would pass through a bump nobody intended.
-    let version = "0.12";
+    let version = "0.13";
     let printed = run(
         &[
             "run",
@@ -688,7 +692,7 @@ fn list_describes_every_harness() {
     let output = run(&["list"], &[]);
     assert!(output.status.success());
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.12");
+    assert_eq!(value["schema_version"], "0.13");
     let ids: Vec<&str> = value["harnesses"]
         .as_array()
         .unwrap()
@@ -7891,7 +7895,7 @@ fn a_host_signal_cancels_the_run_and_terminates_a_silent_harness() {
     // The report is still the contract: a cancelled run is a value a consumer
     // reads, not a process that vanished.
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.12");
+    assert_eq!(value["schema_version"], "0.13");
     let result = &value["results"][0];
     assert_eq!(result["status"], "cancelled");
     // A cancellation classifies as nothing either, so the report carries the
@@ -11029,7 +11033,7 @@ fn config_command_shows_values_with_sources() {
         String::from_utf8_lossy(&output.stderr)
     );
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.12");
+    assert_eq!(value["schema_version"], "0.13");
     assert_eq!(value["config_files"].as_array().unwrap().len(), 2);
 
     // The project file wins for model and is named as the source...
@@ -28424,7 +28428,7 @@ fn control_interrupt_aborts_a_live_turn_from_a_separate_process() {
     let output = child.wait_with_output().expect("run did not finish");
     assert!(output.status.success(), "{output:?}");
     let report: Value = serde_json::from_slice(&output.stdout).expect("run report was not JSON");
-    assert_eq!(report["schema_version"], "0.12");
+    assert_eq!(report["schema_version"], "0.13");
     assert_eq!(report["control"]["mechanism"], "claude-control-request");
     assert_eq!(report["control"]["socket"], socket.display().to_string());
     let interrupts = report["control"]["interrupts"].as_array().unwrap();
@@ -36614,6 +36618,30 @@ fn json_document_verbs(history_dir: &str) -> Vec<Vec<String>> {
             ["sync"] => vec!["--check"],
             ["usage"] => vec!["--harness", "cursor", "--bin", &cursor],
             ["interrupt"] => vec!["--session", "ghost", "--session-dir", history_dir],
+            // A session the store binds to a harness with no compaction, so
+            // `compact` answers a whole `unsupported` outcome.
+            ["compact"] => {
+                let project = std::path::Path::new(history_dir);
+                let store =
+                    oneharness_core::io::session::session_path(project, project, "nocompact");
+                oneharness_core::io::session::write(
+                    &store,
+                    project,
+                    &"opencode".parse().unwrap(),
+                    "nocompact",
+                    "ses_probe",
+                    None,
+                )
+                .unwrap();
+                vec![
+                    "--session",
+                    "nocompact",
+                    "--session-dir",
+                    history_dir,
+                    "--cwd",
+                    history_dir,
+                ]
+            }
             ["history", "list" | "clear" | "migrate" | "reindex"] => {
                 vec!["--history-dir", history_dir]
             }
@@ -36658,6 +36686,7 @@ fn every_json_verb_documents_the_format_flag_with_text_as_its_default() {
             "history pointers",
             "usage",
             "interrupt",
+            "compact",
         ],
         "the JSON-document verbs read off the clap tree"
     );

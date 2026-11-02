@@ -159,6 +159,7 @@ entry point a consumer calls instead of spawning the binary; **Python** and
 | `gate` | `oneharness gate` | `oneharness_core::domain::gate::render_deny` | yes | yes | text (see notes) |
 | `mock` | `oneharness mock` | `oneharness_core::domain::mock::decide` | yes | yes | text (see notes) |
 | `interrupt` | `oneharness interrupt` | `oneharness_core::io::control::send` | yes | yes | `interrupt_response` |
+| `compact` | `oneharness compact` | `oneharness_core::io::compact::compact_session` | yes | yes | `compact_outcome` |
 | `history` | `oneharness history show` | `oneharness_core::io::history::read_session_display` | yes | yes | `history_show_entries` |
 | `historyList` | `oneharness history list` | `oneharness_core::io::history::list_sessions` | yes | yes | `history_list` |
 | `historyWatch` | `oneharness history watch` | `oneharness_core::io::history::HistoryWatcher` | yes | yes | `history_stream_envelope` (one per line) |
@@ -207,6 +208,11 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--server-overloaded-max-retries` | `serverOverloadedMaxRetries` | `--flag VALUE` |
 | `--output-dir` | `outputDir` | `--flag VALUE` |
 | `--timeout` | `timeoutSeconds` | `--flag VALUE` |
+| `--auto-compact-tokens` | `autoCompactTokens` | `--flag VALUE` |
+| `--tool-set` | `toolSet` | `--flag VALUE` per element |
+| `--no-skills` | `noSkills` | `--flag` when true |
+| `--no-mcp` | `noMcp` | `--flag` when true |
+| `--image` | `images` | `--flag VALUE` per element |
 | `--cwd` | `cwd` | `--flag VALUE` |
 | `--env` | `env` | `--flag KEY=VALUE` per entry |
 | `--mode` | `mode` | `--flag VALUE` |
@@ -262,6 +268,11 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--server-overloaded-max-retries` | `serverOverloadedMaxRetries` | `--flag VALUE` |
 | `--output-dir` | `outputDir` | `--flag VALUE` |
 | `--timeout` | `timeoutSeconds` | `--flag VALUE` |
+| `--auto-compact-tokens` | `autoCompactTokens` | `--flag VALUE` |
+| `--tool-set` | `toolSet` | `--flag VALUE` per element |
+| `--no-skills` | `noSkills` | `--flag` when true |
+| `--no-mcp` | `noMcp` | `--flag` when true |
+| `--image` | `images` | `--flag VALUE` per element |
 | `--cwd` | `cwd` | `--flag VALUE` |
 | `--env` | `env` | `--flag KEY=VALUE` per entry |
 | `--mode` | `mode` | `--flag VALUE` |
@@ -379,6 +390,23 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--session-dir` | `sessionDir` | `--flag VALUE` |
 | `--cwd` | `cwd` | `--flag VALUE` |
 
+#### `compact` — `oneharness compact`
+
+| CLI flag | SDK option | How it is sent |
+| --- | --- | --- |
+| `--compact` | _(always sent)_ | fixed |
+| `--format` | _(always sent)_ | fixed |
+| `--session` | `session` | `--flag VALUE` |
+| `--session-dir` | `sessionDir` | `--flag VALUE` |
+| `--harness` | `harness` | `--flag VALUE` |
+| `--cwd` | `cwd` | `--flag VALUE` |
+| `--model` | `model` | `--flag VALUE` |
+| `--timeout` | `timeoutSeconds` | `--flag VALUE` |
+| `--env` | `env` | `--flag KEY=VALUE` per entry |
+| `--bin` | `bins` | `--flag KEY=VALUE` per entry |
+| `--config` | `config` | `--flag VALUE` per element (refused beside `noConfig`) |
+| `--no-config` | `noConfig` | `--flag` when true |
+
 #### `history` — `oneharness history show`
 
 | CLI flag | SDK option | How it is sent |
@@ -491,6 +519,7 @@ caller rather than being dropped.
 | `sync_report` | `check`, `config_files`, `exact`, `results`, `schema_version` | 16 | yes | yes | yes |
 | `usage_report` | `identities`, `observed_at`, `schema_version` | 42 | yes | yes | yes |
 | `interrupt_response` | `error`, `mechanism`, `ok`, `reason`, `redirected`, `v` | 6 | yes | yes | yes |
+| `compact_outcome` | `context_tokens_after`, `context_tokens_before`, `error`, `harness`, `schema_version`, `session`, `status`, `token`, `usage` | 14 | yes | yes | yes |
 | `history_show_entries` | `duration_ms`, `error`, `events`, `exit_code`, `failure_kind`, `finished_at`, `harness`, `harness_id`, `history_id`, `labels`, `model`, `model_ms`, `name`, `observed_model`, `observed_tool_ms`, `permission_mode`, `project`, `prompt`, `run_id`, `schema_version`, `session`, `session_id`, `started_at`, `status`, `text`, `text_source`, `time_to_first_token_ms`, `timestamp`, `tool_ms`, `type`, `usage`, `variant`, `work` | 44 | yes | yes | yes |
 | `history_list` | `harnesses`, `id`, `labels`, `name`, `path`, `project`, `record_count`, `running`, `started` | 9 | yes | yes | yes |
 | `history_stream_envelope` | `line`, `record`, `type` | 48 | yes | yes | yes |

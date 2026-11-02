@@ -329,7 +329,7 @@ fn claude(
         model_catalog: None,
         tools: None,
     });
-    let driven = drive(&argv, launch, &[], |_| Vec::new());
+    let driven = drive(&argv, launch, &[], |_| Reply::Frames(Vec::new()));
     let read = compact::read_claude(&driven.stdout);
     let mut out = blank();
     out.context_tokens_before = read.before;
@@ -395,11 +395,11 @@ fn codex(
     let opening = dialogue.open();
     let driven = drive(&argv, launch, &opening, |line| {
         match dialogue.on_line(line) {
-            CodexStep::Send(frames) => frames,
-            CodexStep::Wait => Vec::new(),
+            CodexStep::Send(frames) => Reply::Frames(frames),
+            CodexStep::Wait => Reply::Frames(Vec::new()),
             CodexStep::Done(end) => {
                 ended = Some(end);
-                vec![String::new()]
+                Reply::Close
             }
         }
     });
@@ -468,15 +468,28 @@ struct Driven {
     stderr: String,
 }
 
+/// What the driver does after a stdout line.
+enum Reply {
+    /// Write these frames (possibly none) and keep reading.
+    Frames(Vec<String>),
+    /// The conversation is over: close stdin, so a server exits on EOF.
+    Close,
+}
+
+/// After the launcher exits, how long lines it already wrote are still read
+/// for, so a reply buffered in the pipe is not lost — and a descendant that
+/// kept stdout open cannot hold the compaction past it.
+const EXIT_DRAIN_GRACE: Duration = Duration::from_millis(500);
+
 /// Run `argv` with `opening` written to its stdin, answering each stdout line
-/// with the frames `on_line` returns. An empty frame closes stdin (the
-/// conversation is over and the server exits on EOF). Bounded by the launch's
-/// deadline and cancel token, both of which end the whole process tree.
+/// with `on_line`'s [`Reply`]. Bounded by the launch's deadline and cancel
+/// token, both of which end the whole process tree, and by the launcher's
+/// own exit: once it exits, stdout is read only for [`EXIT_DRAIN_GRACE`].
 fn drive(
     argv: &[String],
     launch: &Launch<'_>,
     opening: &[String],
-    mut on_line: impl FnMut(&str) -> Vec<String>,
+    mut on_line: impl FnMut(&str) -> Reply,
 ) -> Driven {
     let mut command = Command::new(crate::io::process::resolve_program(&argv[0]));
     command
@@ -510,10 +523,6 @@ fn drive(
     let mut stdin = process.take_stdin();
     let write = |stdin: &mut Option<std::process::ChildStdin>, frames: &[String]| {
         for frame in frames {
-            if frame.is_empty() {
-                *stdin = None;
-                return;
-            }
             if let Some(pipe) = stdin.as_mut() {
                 if pipe
                     .write_all(frame.as_bytes())
@@ -529,6 +538,9 @@ fn drive(
     write(&mut stdin, opening);
     let mut pending: Vec<u8> = Vec::new();
     let mut stdout_open = true;
+    // The launcher's exit code once it has exited, and until when its
+    // already-written lines are still read.
+    let mut exited: Option<(Option<i32>, Instant)> = None;
     let end = loop {
         if cancel::cancellation_requested(launch.cancel) {
             break End::Cancelled;
@@ -537,29 +549,39 @@ fn drive(
         if launch.deadline.is_some_and(|deadline| now >= deadline) {
             break End::TimedOut;
         }
+        if let Some((code, until)) = exited {
+            if !stdout_open || now >= until {
+                break End::Exited(code);
+            }
+        } else {
+            match process.wait_until(now + Duration::from_millis(1)) {
+                Ok(Some(status)) => exited = Some((status.code(), now + EXIT_DRAIN_GRACE)),
+                Ok(None) => {}
+                Err(_) => break End::Exited(None),
+            }
+        }
         let slice = now + CANCEL_POLL_SLICE;
         let slice = launch
             .deadline
             .map_or(slice, |deadline| slice.min(deadline));
-        if stdout_open {
-            match process.recv_stdout_until(slice) {
-                PipeEvent::Data(bytes) => {
-                    pending.extend_from_slice(&bytes);
-                    while let Some(at) = pending.iter().position(|b| *b == b'\n') {
-                        let line: Vec<u8> = pending.drain(..=at).collect();
-                        let frames = on_line(&String::from_utf8_lossy(&line));
-                        write(&mut stdin, &frames);
+        let slice = exited.map_or(slice, |(_, until)| slice.min(until));
+        if !stdout_open {
+            std::thread::sleep(slice.saturating_duration_since(Instant::now()));
+            continue;
+        }
+        match process.recv_stdout_until(slice) {
+            PipeEvent::Data(bytes) => {
+                pending.extend_from_slice(&bytes);
+                while let Some(at) = pending.iter().position(|b| *b == b'\n') {
+                    let line: Vec<u8> = pending.drain(..=at).collect();
+                    match on_line(&String::from_utf8_lossy(&line)) {
+                        Reply::Frames(frames) => write(&mut stdin, &frames),
+                        Reply::Close => stdin = None,
                     }
                 }
-                PipeEvent::Closed => stdout_open = false,
-                PipeEvent::Deadline => {}
             }
-        } else {
-            match process.wait_until(slice) {
-                Ok(Some(status)) => break End::Exited(status.code()),
-                Ok(None) => {}
-                Err(_) => break End::Exited(None),
-            }
+            PipeEvent::Closed => stdout_open = false,
+            PipeEvent::Deadline => {}
         }
     };
     drop(stdin);

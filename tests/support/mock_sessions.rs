@@ -32,7 +32,10 @@
 //!   MOCK_COMPACT_USAGE    with MOCK_CODEX_SESSIONS, the fork's token totals grow
 //!                   by 60 input and 9 output tokens over the compaction.
 //!   MOCK_COMPACT_OVERFLOW with MOCK_CLAUDE_SESSIONS, the compaction's result
-//!                   reports per-model input counts whose sum overflows a u64.
+//!                   reports per-model input counts whose sum overflows a u64
+//!                   and costs whose sum overflows an f64.
+//!   MOCK_COMPACT_ORPHAN   with MOCK_CLAUDE_SESSIONS, the compaction leaves a
+//!                   descendant holding its stdout open for 30s, and exits.
 //!   MOCK_COMPACT_DELAY_MS with either, a compaction pauses this long midway
 //!                   and then completes.
 //!   MOCK_COMPACT_BEGUN    with either, a compaction writes part of the fork,
@@ -201,6 +204,11 @@ fn claude(argv: &[String]) -> ! {
             &[serde_json::json!({"type":"user","message":{"role":"user","content":summary},"session_id":fork}).to_string()],
         );
         let overflow = std::env::var_os("MOCK_COMPACT_OVERFLOW").is_some();
+        if std::env::var_os("MOCK_COMPACT_ORPHAN").is_some() {
+            // A descendant that keeps this process's stdout open long after
+            // it exits, as an npm launcher's native child can.
+            let _ = std::process::Command::new("sleep").arg("30").spawn();
+        }
         let lines: Vec<String> = CLAUDE_COMPACT
             .lines()
             .map(|l| l.replace(CLAUDE_COMPACT_ID, &fork))
@@ -208,9 +216,11 @@ fn claude(argv: &[String]) -> ! {
                 let mut value: serde_json::Value = serde_json::from_str(&l).expect("captured JSON");
                 if overflow && value["type"] == "result" {
                     // Two models whose input counts cannot be summed in a u64.
+                    // Two models whose input counts cannot be summed in a
+                    // u64, and whose costs sum past an f64.
                     value["model_usage_since_last_result"] = serde_json::json!({
-                        "a": {"inputTokens": u64::MAX, "outputTokens": 3},
-                        "b": {"inputTokens": 2, "outputTokens": 4},
+                        "a": {"inputTokens": u64::MAX, "outputTokens": 3, "costUSD": f64::MAX},
+                        "b": {"inputTokens": 2, "outputTokens": 4, "costUSD": f64::MAX},
                     });
                     return value.to_string();
                 }

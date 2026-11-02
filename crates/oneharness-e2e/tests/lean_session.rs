@@ -2717,7 +2717,25 @@ fn a_compaction_total_that_overflows_is_reported_unavailable() {
     let outcome = json(&s.compact("claude-code", &["--env", "MOCK_COMPACT_OVERFLOW=1"]));
     assert_eq!(outcome["status"], "completed", "{outcome}");
     assert!(outcome["usage"]["input_tokens"].is_null(), "{outcome}");
+    assert!(outcome["usage"]["cost_usd"].is_null(), "{outcome}");
     assert_eq!(outcome["usage"]["output_tokens"], 7, "{outcome}");
+}
+
+/// A launcher that exits while a descendant still holds its stdout does not
+/// hold the compaction: it ends at the launcher's exit, with no deadline set.
+#[cfg(unix)]
+#[test]
+fn a_compaction_ends_when_its_launcher_exits_even_if_a_descendant_holds_stdout() {
+    let s = Sessions::new("orphan");
+    s.turn("claude-code", "alpha");
+    let started = std::time::Instant::now();
+    let outcome = json(&s.compact("claude-code", &["--env", "MOCK_COMPACT_ORPHAN=1"]));
+    assert_eq!(outcome["status"], "completed", "{outcome}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(15),
+        "held for {:?} by the descendant",
+        started.elapsed()
+    );
 }
 
 /// An explicit `--model` beats the configured one, and an out-of-range

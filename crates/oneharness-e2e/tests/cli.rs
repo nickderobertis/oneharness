@@ -31255,13 +31255,6 @@ fn a_controlled_codex_turn_opens_under_the_candidates_own_model() {
     }
 }
 
-/// An open response that names NO model is no claim at all, so the turn
-/// proceeds under the requested model exactly as before the check existed:
-/// `turn/start` goes out naming it and the report's `observed_model` is `null`
-/// (never copied from the request). Refusing here would end every controlled
-/// turn against an app-server whose open response carries no `model`, with
-/// nothing to say the model was wrong.
-#[cfg(unix)]
 /// The lean settings reach a controlled codex turn's own app-server child
 /// (`app_server = "per-dispatch"`): `--no-mcp` disables each server the codex
 /// home declares and `--no-skills` drops the skills list.
@@ -31337,6 +31330,13 @@ fn a_controlled_per_dispatch_codex_turn_loads_no_mcp_and_no_skills() {
     assert!(pair("skills.include_instructions=false"), "{argv:?}");
 }
 
+/// An open response that names NO model is no claim at all, so the turn
+/// proceeds under the requested model exactly as before the check existed:
+/// `turn/start` goes out naming it and the report's `observed_model` is `null`
+/// (never copied from the request). Refusing here would end every controlled
+/// turn against an app-server whose open response carries no `model`, with
+/// nothing to say the model was wrong.
+#[cfg(unix)]
 #[test]
 fn a_controlled_codex_turn_proceeds_when_the_server_names_no_model() {
     let mock = mock_bin().display().to_string();

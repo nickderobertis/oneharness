@@ -24,6 +24,11 @@
 //!                   holding a newline stays one element), before answering
 //!   MOCK_ECHO_PWD   if set, write `PWD=<the inherited $PWD>` to stdout and exit
 //!                   (used to assert that --cwd keeps $PWD consistent)
+//!   MOCK_ENV_FILE   if set, the whole inherited environment is written here
+//!                   as one JSON object before answering
+//!   MOCK_CLAUDE_SESSIONS / MOCK_CODEX_SESSIONS / MOCK_COMPACT_BEGUN  act like
+//!                   a harness keeping its own session store (see
+//!                   `mock_sessions.rs`)
 //!   MOCK_ECHO_ENV   if set to a variable NAME, write `NAME=<inherited value>`
 //!                   to stdout and exit (used to assert per-harness env injection)
 //!   MOCK_CAT_FILE   if set to a path, write that file's current contents to
@@ -373,6 +378,9 @@
 //!                   releases fails its own assertion rather than hanging.
 
 use std::io::Write;
+
+#[path = "mock_sessions.rs"]
+mod sessions;
 
 /// How long the request reader keeps listening for a line the caller should not
 /// have sent, when a request log is being written and no reply delay sets its
@@ -2396,9 +2404,20 @@ pub fn run() -> ! {
         let _ = std::fs::write(path, input.to_string());
     }
 
+    if let Ok(path) = std::env::var("MOCK_ENV_FILE") {
+        // Every inherited variable, as one JSON object: what a journey asserts
+        // a setting delivered by environment (and nothing else) reached.
+        let env: serde_json::Map<String, serde_json::Value> = std::env::vars()
+            .map(|(key, value)| (key, serde_json::Value::String(value)))
+            .collect();
+        let _ = std::fs::write(path, serde_json::Value::Object(env).to_string());
+    }
+
     if let Ok(path) = mock_var("MOCK_CODEX_PLUGINS_LOG") {
         record_codex_plugins(&path, &argv);
     }
+
+    sessions::run_if_requested(&argv);
 
     if let Ok(path) = mock_var("MOCK_CODEX_CATALOG_LOG") {
         codex_model_catalog(&path, &argv);

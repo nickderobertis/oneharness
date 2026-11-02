@@ -6509,6 +6509,7 @@ fn a_timed_out_controlled_turn_keeps_its_usage_as_work_evidence() {
 }
 // llmlint: ignore-end[e2e_not_mocked]
 
+// llmlint: ignore-block[e2e_not_mocked] These journeys must drive the real built `oneharness` against the repository's mock harness standing in for each harness's process: that is this change's stated acceptance bar, since the paid, authenticated CLIs cannot run in the deterministic gate. Only the harness subprocess is replaced, at the existing `--bin` seam, and it replays output captured from the real CLIs (tests/fixtures); the live suites hold the same paths to the real harnesses.
 /// The lean settings reach the shared app-server a controlled codex turn runs
 /// on: the pooled server is launched with `--no-mcp`'s disabled stub for each
 /// server the codex home declares and `--no-skills`'s override.
@@ -6539,3 +6540,4 @@ fn a_controlled_codex_turn_on_the_shared_server_loads_no_mcp_and_no_skills() {
     assert!(pair("features.apps=false"), "{argv:?}");
     assert!(pair("skills.include_instructions=false"), "{argv:?}");
 }
+// llmlint: ignore-end[e2e_not_mocked]

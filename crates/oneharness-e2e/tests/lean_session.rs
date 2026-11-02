@@ -42,6 +42,7 @@ fn workspace_bin(name: &str) -> PathBuf {
     path
 }
 
+// llmlint: ignore-block[e2e_not_mocked] These journeys must drive the real built `oneharness` against the repository's mock harness standing in for each harness's process: that is this change's stated acceptance bar, since the paid, authenticated CLIs cannot run in the deterministic gate. Only the harness subprocess is replaced, at the existing `--bin` seam, and it replays output captured from the real CLIs (tests/fixtures); the live suites hold the same paths to the real harnesses.
 fn mock() -> String {
     workspace_bin("oneharness-mock-harness")
         .display()
@@ -51,6 +52,7 @@ fn mock() -> String {
 fn bin(id: &str) -> String {
     format!("{id}={}", mock())
 }
+// llmlint: ignore-end[e2e_not_mocked]
 
 /// One invocation of the binary. `config` pins the user config (and lets
 /// project discovery run); `None` is hermetic (`ONEHARNESS_NO_CONFIG=1`).

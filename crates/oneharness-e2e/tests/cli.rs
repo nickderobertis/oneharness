@@ -31255,6 +31255,7 @@ fn a_controlled_codex_turn_opens_under_the_candidates_own_model() {
     }
 }
 
+// llmlint: ignore-block[e2e_not_mocked] These journeys must drive the real built `oneharness` against the repository's mock harness standing in for each harness's process: that is this change's stated acceptance bar, since the paid, authenticated CLIs cannot run in the deterministic gate. Only the harness subprocess is replaced, at the existing `--bin` seam, and it replays output captured from the real CLIs (tests/fixtures); the live suites hold the same paths to the real harnesses.
 /// The lean settings reach a controlled codex turn's own app-server child
 /// (`app_server = "per-dispatch"`): `--no-mcp` disables each server the codex
 /// home declares and `--no-skills` drops the skills list.
@@ -31329,6 +31330,7 @@ fn a_controlled_per_dispatch_codex_turn_loads_no_mcp_and_no_skills() {
     );
     assert!(pair("skills.include_instructions=false"), "{argv:?}");
 }
+// llmlint: ignore-end[e2e_not_mocked]
 
 /// An open response that names NO model is no claim at all, so the turn
 /// proceeds under the requested model exactly as before the check existed:
@@ -36696,7 +36698,7 @@ fn json_document_verbs(history_dir: &str) -> Vec<Vec<String>> {
             // A session `run` binds to a harness with no compaction (opencode),
             // so `compact` answers a whole `unsupported` outcome.
             ["compact"] => {
-                let opencode = bin_override("opencode");
+                let opencode = bin_override("opencode"); // llmlint: ignore[e2e_not_mocked] The real `oneharness run` creates the session `compact` is then driven against; only the opencode subprocess is replaced, at the existing `--bin` seam, because the paid CLI cannot run in the deterministic gate.
                 let created = run(
                     &[
                         "run",

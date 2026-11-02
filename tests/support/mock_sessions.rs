@@ -127,7 +127,13 @@ fn claude(argv: &[String]) -> ! {
     if prompt == "/compact" {
         let original = resumed.expect("/compact resumes a session");
         let from = store.join(format!("{original}.jsonl"));
-        let fork = fresh_id();
+        // Without `--fork-session` Claude Code compacts the original
+        // transcript in place, appending to it (as captured).
+        let fork = if argv.iter().any(|a| a == "--fork-session") {
+            fresh_id()
+        } else {
+            original.clone()
+        };
         let to = store.join(format!("{fork}.jsonl"));
         let summary = format!("summary of: {}", claude_context(&from).join(", "));
         append(

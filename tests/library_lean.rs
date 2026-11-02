@@ -17,7 +17,7 @@ use serde_json::Value;
 
 #[path = "common/library_fixture.rs"]
 mod fixture;
-use fixture::{bin_override, request, ProfileScratch};
+use fixture::{bin_override, ProfileScratch};
 
 fn read_json(path: &Path) -> Value {
     serde_json::from_slice(&std::fs::read(path).expect("the mock recorded it")).unwrap()
@@ -37,16 +37,26 @@ fn a_run_request_delivers_every_lean_setting_and_image_to_claude_code() {
     png(&image);
     let input_env = format!("{}", input.display());
     let env_env = format!("{}", env_file.display());
-    let mut req = request(
-        &profiles,
-        "claude-code",
-        &[("MOCK_INPUT_FILE", &input_env), ("MOCK_ENV_FILE", &env_env)],
-    );
-    req.auto_compact_tokens = std::num::NonZeroU64::new(200_000);
-    req.tool_set = Some(vec![ToolClass::Shell, ToolClass::Read]);
-    req.load_skills = Some(false);
-    req.load_mcp = Some(false);
-    req.images = vec![image.clone()];
+    // Built as a Rust dependent builds it: a struct literal naming the image
+    // by path, with the agreed `images: Vec<PathBuf>`.
+    let req = RunRequest {
+        harness: vec!["claude-code".to_string()],
+        prompt: vec!["hi".to_string()],
+        bin: vec![bin_override("claude-code")],
+        env: vec![
+            format!("MOCK_INPUT_FILE={input_env}"),
+            format!("MOCK_ENV_FILE={env_env}"),
+            profiles.as_str().to_string(),
+        ],
+        no_config: true,
+        timeout: Some(60),
+        auto_compact_tokens: std::num::NonZeroU64::new(200_000),
+        tool_set: Some(vec![ToolClass::Shell, ToolClass::Read]),
+        load_skills: Some(false),
+        load_mcp: Some(false),
+        images: vec![image.clone()],
+        ..RunRequest::default()
+    };
     let outcome = run(&req, RunControls::default()).expect("a valid request");
     assert_eq!(outcome.exit_code, 0, "{:?}", outcome.report.results[0]);
 
@@ -63,6 +73,14 @@ fn a_run_request_delivers_every_lean_setting_and_image_to_claude_code() {
     assert!(argv.contains(&"--strict-mcp-config"));
     let frame: Value = serde_json::from_str(recorded["stdin"].as_str().unwrap().trim()).unwrap();
     assert_eq!(frame["message"]["content"][0]["type"], "image");
+    assert_eq!(
+        frame["message"]["content"][0]["source"]["media_type"],
+        "image/png"
+    );
+    assert_eq!(
+        frame["message"]["content"][0]["source"]["data"], "iVBORw0KGgoAAAANSUhEUg==",
+        "the file's own bytes, base64-encoded"
+    );
     assert_eq!(frame["message"]["content"][1]["text"], "hi");
     let env = read_json(&env_file);
     assert_eq!(env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "233000");
@@ -76,10 +94,21 @@ fn a_run_request_delivers_codex_its_overrides_and_image_flag() {
     let image = scratch.join("frame.png");
     png(&image);
     let input_env = format!("{}", input.display());
-    let mut req = request(&profiles, "codex", &[("MOCK_INPUT_FILE", &input_env)]);
-    req.auto_compact_tokens = std::num::NonZeroU64::new(50_000);
-    req.load_skills = Some(false);
-    req.images = vec![image.clone()];
+    let req = RunRequest {
+        harness: vec!["codex".to_string()],
+        prompt: vec!["hi".to_string()],
+        bin: vec![bin_override("codex")],
+        env: vec![
+            format!("MOCK_INPUT_FILE={input_env}"),
+            profiles.as_str().to_string(),
+        ],
+        no_config: true,
+        timeout: Some(60),
+        auto_compact_tokens: std::num::NonZeroU64::new(50_000),
+        load_skills: Some(false),
+        images: vec![image.clone()],
+        ..RunRequest::default()
+    };
     let outcome = run(&req, RunControls::default()).expect("a valid request");
     assert_eq!(outcome.exit_code, 0, "{:?}", outcome.report.results[0]);
     let argv: Vec<String> = read_json(&input)["argv"]
@@ -307,5 +336,60 @@ fn a_cancelled_compaction_ends_the_harness_and_leaves_the_session_as_it_was() {
             "{id}: the original context"
         );
         assert_eq!(token, original);
+    }
+}
+
+/// An image path that is missing, unreadable or not an image is refused as a
+/// usage error before any harness starts: the request is an `Err`, and the
+/// harness process never ran to record what it was handed.
+#[test]
+fn a_run_request_naming_an_unusable_image_spawns_nothing() {
+    use oneharness_core::errors::OneharnessError;
+    let profiles = ProfileScratch::new();
+    let scratch = ScratchDir::new("library-lean-bad-image").unwrap();
+    let not_an_image = scratch.join("notes.png");
+    std::fs::write(&not_an_image, "plain text").unwrap();
+    let mut cases = vec![scratch.join("missing.png"), not_an_image];
+    #[cfg(unix)]
+    let locked = {
+        use std::os::unix::fs::PermissionsExt;
+        let locked = scratch.join("locked.png");
+        png(&locked);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        cases.push(locked.clone());
+        locked
+    };
+    for (index, bad) in cases.iter().enumerate() {
+        let input = scratch.join(format!("input-{index}.json"));
+        let good = scratch.join(format!("good-{index}.png"));
+        png(&good);
+        let req = RunRequest {
+            harness: vec!["codex".to_string()],
+            prompt: vec!["hi".to_string()],
+            bin: vec![bin_override("codex")],
+            env: vec![
+                format!("MOCK_INPUT_FILE={}", input.display()),
+                profiles.as_str().to_string(),
+            ],
+            no_config: true,
+            timeout: Some(60),
+            // A valid image beside the bad one: one unusable path refuses all.
+            images: vec![good, bad.clone()],
+            ..RunRequest::default()
+        };
+        let refused = run(&req, RunControls::default());
+        match refused {
+            Err(OneharnessError::ImageUnreadable { path, .. }) => {
+                assert_eq!(path, bad.display().to_string());
+            }
+            Err(other) => panic!("{}: expected ImageUnreadable, got {other}", bad.display()),
+            Ok(_) => panic!("{}: the run was not refused", bad.display()),
+        }
+        assert!(!input.exists(), "{}: no harness was started", bad.display());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
     }
 }

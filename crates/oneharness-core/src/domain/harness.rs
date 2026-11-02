@@ -1803,14 +1803,14 @@ fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
     match c.tools {
         Some(classes) => {
             let names = lean::claude_tool_names(classes, c.mode, CLAUDE_READ_ONLY_TOOLS);
-            a.push("--tools".into());
+            a.push(lean::claude_tools_flag().into());
             if names.is_empty() {
                 a.push(String::new());
             }
             a.extend(names.into_iter().map(String::from));
         }
         None if c.mode == PermissionMode::ReadOnly => {
-            a.push("--tools".into());
+            a.push(lean::claude_tools_flag().into());
             for tool in CLAUDE_READ_ONLY_TOOLS {
                 a.push((*tool).into());
             }

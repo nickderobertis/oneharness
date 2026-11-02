@@ -885,6 +885,20 @@ pub fn codex_mcp_server_names(config_toml: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The flag Claude Code takes its one built-in tool list on: the table's
+/// `tool_set` knob, which read-only's narrowing rides too.
+#[must_use]
+pub fn claude_tools_flag() -> &'static str {
+    match translation(CLAUDE, Setting::ToolSet)
+        .knobs
+        .first()
+        .map(|k| k.knob)
+    {
+        Some(Knob::Flag(flag)) => flag,
+        _ => "--tools",
+    }
+}
+
 /// Claude Code's tool names for `classes` under `mode`, in its own spelling,
 /// read from the table's `--tools` mapping. Under read-only the list is
 /// intersected with `read_only` (that mode's own tools).
@@ -904,14 +918,75 @@ pub fn claude_tool_names(
         .collect()
 }
 
-/// An image file's content, read and checked at the `io` boundary.
+/// The image formats a run may attach, recognized by their leading bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageFormat {
+    Png,
+    Jpeg,
+    Gif,
+    Webp,
+}
+
+impl ImageFormat {
+    /// The format `bytes` begin as, or `None` for anything else.
+    #[must_use]
+    pub fn sniff(bytes: &[u8]) -> Option<ImageFormat> {
+        if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+            Some(ImageFormat::Png)
+        } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+            Some(ImageFormat::Jpeg)
+        } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+            Some(ImageFormat::Gif)
+        } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+            Some(ImageFormat::Webp)
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub fn media_type(self) -> &'static str {
+        match self {
+            ImageFormat::Png => "image/png",
+            ImageFormat::Jpeg => "image/jpeg",
+            ImageFormat::Gif => "image/gif",
+            ImageFormat::Webp => "image/webp",
+        }
+    }
+}
+
+/// An image file's checked content: built only from the bytes it was read
+/// as, so its format and encoding always agree with them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageInput {
-    /// The path as the caller gave it (what a path-taking harness receives).
-    pub path: String,
-    pub media_type: &'static str,
-    /// The file's bytes, base64-encoded (what claude-code's frame carries).
-    pub base64: String,
+    path: String,
+    format: ImageFormat,
+    base64: String,
+}
+
+impl ImageInput {
+    /// The image at `path` whose content is `bytes`, or `None` when those
+    /// bytes are not a PNG, JPEG, GIF or WebP image.
+    #[must_use]
+    pub fn from_bytes(path: &std::path::Path, bytes: &[u8]) -> Option<ImageInput> {
+        Some(ImageInput {
+            path: path.display().to_string(),
+            format: ImageFormat::sniff(bytes)?,
+            base64: base64_encode(bytes),
+        })
+    }
+
+    /// The path a path-taking harness receives (absolute, as `io::lean`
+    /// resolves it).
+    #[must_use]
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    #[must_use]
+    pub fn format(&self) -> ImageFormat {
+        self.format
+    }
 }
 
 /// Standard base64 (RFC 4648, padded) of `bytes`, for an image's frame block.
@@ -932,23 +1007,6 @@ pub fn base64_encode(bytes: &[u8]) -> String {
         }
     }
     out
-}
-
-/// The media type of an image by its leading bytes; `None` for anything that
-/// is not PNG, JPEG, GIF or WebP.
-#[must_use]
-pub fn image_media_type(bytes: &[u8]) -> Option<&'static str> {
-    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-        Some("image/png")
-    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
-        Some("image/jpeg")
-    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-        Some("image/gif")
-    } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
-        Some("image/webp")
-    } else {
-        None
-    }
 }
 
 /// Whether harness `id` takes images inside its stdin frame (claude-code),
@@ -975,10 +1033,10 @@ pub fn image_args(id: &str, images: &[ImageInput]) -> Vec<String> {
     let mut out = Vec::new();
     for image in images {
         if id == CODEX {
-            out.push(format!("{flag}={}", image.path));
+            out.push(format!("{flag}={}", image.path()));
         } else {
             out.push(flag.to_string());
-            out.push(image.path.clone());
+            out.push(image.path().to_string());
         }
     }
     out
@@ -993,7 +1051,7 @@ pub fn claude_image_frame(prompt: &str, images: &[ImageInput]) -> String {
         .map(|image| {
             serde_json::json!({
                 "type": "image",
-                "source": {"type": "base64", "media_type": image.media_type, "data": image.base64},
+                "source": {"type": "base64", "media_type": image.format.media_type(), "data": image.base64},
             })
         })
         .collect();
@@ -1164,8 +1222,35 @@ mod tests {
                 let t = translation(spec.id, setting);
                 let reported = d.diagnostics.iter().any(|x| x.setting == setting);
                 assert_eq!(reported, !t.supported(), "{} {setting:?}", spec.id);
-                // claude-code's tool set rides BuildCtx, not these args.
+                // claude-code's tool set rides BuildCtx into its own adapter,
+                // so it is held to the table on the argv that adapter builds.
                 if spec.id == CLAUDE && setting == Setting::ToolSet {
+                    let classes = [ToolClass::Shell, ToolClass::Read];
+                    let argv = (spec.build_argv)(&harness::BuildCtx {
+                        bin: "claude",
+                        prompt: "hi",
+                        model: None,
+                        system: None,
+                        resume: None,
+                        fork: false,
+                        mode: PermissionMode::Default,
+                        output_format: spec.output_format,
+                        schema: None,
+                        system_file: None,
+                        delivery: harness::PromptDelivery::Argv,
+                        plugins: false,
+                        apps: false,
+                        analytics: false,
+                        model_catalog: None,
+                        tools: Some(&classes),
+                    });
+                    let Knob::Flag(flag) = t.knobs[0].knob else {
+                        panic!("claude-code's tool set is a flag")
+                    };
+                    assert!(
+                        argv.windows(3).any(|w| w == [flag, "Bash", "Read"]),
+                        "{argv:?}"
+                    );
                     continue;
                 }
                 for k in t.knobs {
@@ -1256,24 +1341,32 @@ mod tests {
 
     #[test]
     fn images_are_sniffed_and_delivered_per_harness() {
-        assert_eq!(image_media_type(b"\x89PNG\r\n\x1a\nxx"), Some("image/png"));
-        assert_eq!(image_media_type(b"plain"), None);
+        assert_eq!(
+            ImageFormat::sniff(b"\x89PNG\r\n\x1a\nxx"),
+            Some(ImageFormat::Png)
+        );
+        assert_eq!(ImageFormat::sniff(b"plain"), None);
         assert_eq!(base64_encode(b"ABC"), "QUJD");
         assert_eq!(base64_encode(b"AB"), "QUI=");
         assert_eq!(base64_encode(b"A"), "QQ==");
         assert_eq!(base64_encode(b""), "");
-        let img = ImageInput {
-            path: "/p/a.png".into(),
-            media_type: "image/png",
-            base64: "QUJD".into(),
-        };
+        assert!(ImageInput::from_bytes(std::path::Path::new("/p/a.txt"), b"ABC").is_none());
+        let img = ImageInput::from_bytes(std::path::Path::new("/p/a.png"), b"\x89PNG\r\n\x1a\n")
+            .expect("a png");
         let one = std::slice::from_ref(&img);
         assert_eq!(image_args(CODEX, one), vec!["--image=/p/a.png"]);
         assert_eq!(image_args("opencode", one), vec!["-f", "/p/a.png"]);
         assert_eq!(image_args("copilot", one), vec!["--attachment", "/p/a.png"]);
         assert!(image_args(CLAUDE, one).is_empty());
         let frame: Value = serde_json::from_str(&claude_image_frame("hi", one)).unwrap();
-        assert_eq!(frame["message"]["content"][0]["source"]["data"], "QUJD");
+        assert_eq!(
+            frame["message"]["content"][0]["source"]["data"],
+            "iVBORw0KGgo="
+        );
+        assert_eq!(
+            frame["message"]["content"][0]["source"]["media_type"],
+            "image/png"
+        );
         assert_eq!(frame["message"]["content"][1]["text"], "hi");
     }
 }

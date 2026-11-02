@@ -22,8 +22,13 @@
 //!   MOCK_COMPACT_FAIL     with either, the compaction fails as that harness
 //!                   does: `refuse` (claude's `compact_result: failed`, codex's
 //!                   error answer), `exit` (the process dies), `nofork` (claude
-//!                   names no forked session) or `fail-turn` (codex's turn
-//!                   ends `failed`).
+//!                   names no forked session), or for codex `fail-turn` (the
+//!                   turn ends `failed`), `noresult` (`thread/fork` answers no
+//!                   result) or `samefork` (it names the original thread).
+//!   MOCK_COMPACT_NOISE    with MOCK_CODEX_SESSIONS, the compaction is surrounded
+//!                   by another thread's turn and another turn of the fork.
+//!   MOCK_COMPACT_USAGE    with MOCK_CODEX_SESSIONS, the fork's token totals grow
+//!                   by 60 input and 9 output tokens over the compaction.
 //!   MOCK_COMPACT_BEGUN    with either, a compaction writes part of the fork,
 //!                   writes its own pid to this path, and then holds until it is
 //!                   killed — the compaction a caller cancels mid-rewrite.
@@ -36,6 +41,8 @@ const CLAUDE_COMPACT_ID: &str = "9e02ec47-3a9e-4737-a89a-ce9ed05abf43";
 const CODEX_TOKEN_COUNTS: &str = include_str!("../fixtures/codex-rollout-token-counts.jsonl");
 const CODEX_FORK_COMPACT: &str = include_str!("../fixtures/codex-app-server-fork-compact.jsonl");
 const CODEX_FORK_ID: &str = "01a19db5-ae1c-77d2-ad64-b3e9aa7b861e";
+/// The captured compaction turn's id.
+const CODEX_COMPACT_TURN: &str = "01a19db5-aef1-7f73-a78a-d9ccb96b5511";
 
 /// Answer as a session-keeping harness when one of the knobs is set.
 pub fn run_if_requested(argv: &[String]) {
@@ -336,6 +343,20 @@ fn codex_app_server() -> ! {
                     send(&[serde_json::json!({"id": id, "error": {"code": -32600, "message": format!("thread not found: {original}")}}).to_string()]);
                     continue;
                 }
+                match compact_fault().as_deref() {
+                    Some("noresult") => {
+                        send(&[serde_json::json!({"id": id}).to_string()]);
+                        continue;
+                    }
+                    Some("samefork") => {
+                        send(&[
+                            serde_json::json!({"id": id, "result": {"thread": {"id": original}}})
+                                .to_string(),
+                        ]);
+                        continue;
+                    }
+                    _ => {}
+                }
                 let fork = fresh_id();
                 std::fs::copy(&from, rollout(&fork)).expect("mock fork copy");
                 send(&[serde_json::json!({"id": id, "result": {"thread": {"id": fork, "forkedFromId": original}}}).to_string()]);
@@ -368,9 +389,34 @@ fn codex_app_server() -> ! {
                 let path = rollout(&fork);
                 let summary = format!("summary of: {}", codex_context(&path).join(", "));
                 send(&[serde_json::json!({"id": id, "result": {}}).to_string()]);
+                let usage = |input: u64, output: u64, turn: &str| {
+                    serde_json::json!({"method": "thread/tokenUsage/updated", "params": {
+                        "threadId": fork, "turnId": turn,
+                        "tokenUsage": {"total": {"inputTokens": input, "outputTokens": output,
+                            "cachedInputTokens": 0, "cacheWriteInputTokens": 0, "totalTokens": input + output}},
+                    }})
+                    .to_string()
+                };
+                if std::env::var_os("MOCK_COMPACT_USAGE").is_some() {
+                    send(&[usage(100, 10, "earlier-turn")]);
+                }
+                if std::env::var_os("MOCK_COMPACT_NOISE").is_some() {
+                    // Another thread's turn, starting and completing first.
+                    send(&[
+                        serde_json::json!({"method": "turn/started", "params": {"threadId": "someone-else", "turn": {"id": "x"}}}).to_string(),
+                        serde_json::json!({"method": "turn/completed", "params": {"threadId": "someone-else", "turn": {"id": "x", "status": "failed"}}}).to_string(),
+                    ]);
+                }
                 send(&recorded(&fork, |v| {
                     matches!(v["method"].as_str(), Some("turn/started" | "item/started"))
                 }));
+                if std::env::var_os("MOCK_COMPACT_NOISE").is_some() {
+                    // A different turn of the fork ending: not the compaction.
+                    send(&[serde_json::json!({"method": "turn/completed", "params": {"threadId": fork, "turn": {"id": "not-the-compaction", "status": "failed"}}}).to_string()]);
+                }
+                if std::env::var_os("MOCK_COMPACT_USAGE").is_some() {
+                    send(&[usage(160, 19, CODEX_COMPACT_TURN)]);
+                }
                 append(
                     &path,
                     &[serde_json::json!({"type":"event_msg","payload":{"type":"context_compaction_started"}}).to_string()],
@@ -383,11 +429,14 @@ fn codex_app_server() -> ! {
                             .to_string(),
                     ],
                 );
+                // With scripted usage, its series replaces the recorded one: a
+                // server reports one consistent set of totals.
+                let scripted_usage = std::env::var_os("MOCK_COMPACT_USAGE").is_some();
                 send(&recorded(&fork, |v| {
-                    matches!(
-                        v["method"].as_str(),
-                        Some("thread/tokenUsage/updated" | "item/completed" | "turn/completed")
-                    ) && v["params"]["turn"]["id"] != "01a19db2-d12d-7391-9e3c-b345b40db491"
+                    let method = v["method"].as_str();
+                    (matches!(method, Some("item/completed" | "turn/completed"))
+                        || (method == Some("thread/tokenUsage/updated") && !scripted_usage))
+                        && v["params"]["turn"]["id"] != "01a19db2-d12d-7391-9e3c-b345b40db491"
                 }));
             }
             _ => {}

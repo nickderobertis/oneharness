@@ -29,13 +29,8 @@ pub fn read_images(paths: &[PathBuf]) -> Result<Vec<ImageInput>, OneharnessError
             };
             let absolute = std::path::absolute(path).map_err(|e| unreadable(e.to_string()))?;
             let bytes = std::fs::read(&absolute).map_err(|e| unreadable(e.to_string()))?;
-            let media_type = lean::image_media_type(&bytes)
-                .ok_or_else(|| unreadable("not a PNG, JPEG, GIF or WebP image".to_string()))?;
-            Ok(ImageInput {
-                path: absolute.display().to_string(),
-                media_type,
-                base64: lean::base64_encode(&bytes),
-            })
+            ImageInput::from_bytes(&absolute, &bytes)
+                .ok_or_else(|| unreadable("not a PNG, JPEG, GIF or WebP image".to_string()))
         })
         .collect()
 }

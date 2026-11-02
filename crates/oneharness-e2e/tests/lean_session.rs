@@ -1875,3 +1875,204 @@ fn a_claude_message_repeated_per_block_is_one_call_read_from_its_last_emission()
         .collect();
     assert_eq!(pairs, vec![(5, 7), (9, 4)]);
 }
+
+/// Each accepted format reaches claude-code under its own media type.
+#[test]
+fn jpeg_gif_and_webp_images_reach_claude_under_their_own_media_types() {
+    let scratch = ScratchDir::new("lean-image-formats").unwrap();
+    let files = [
+        ("a.jpg", b"\xff\xd8\xff\xe0jpeg".to_vec(), "image/jpeg"),
+        ("b.gif", b"GIF87a....".to_vec(), "image/gif"),
+        ("c.gif", b"GIF89a....".to_vec(), "image/gif"),
+        (
+            "d.webp",
+            b"RIFF\x10\x00\x00\x00WEBPVP8 ".to_vec(),
+            "image/webp",
+        ),
+    ];
+    let mut args: Vec<String> = [
+        "run",
+        "--harness",
+        "claude-code",
+        "--prompt",
+        "look",
+        "--bin",
+    ]
+    .iter()
+    .map(|a| a.to_string())
+    .collect();
+    args.push(bin("claude-code"));
+    for (name, bytes, _) in &files {
+        let path = scratch.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        args.extend(["--image".to_string(), path.display().to_string()]);
+    }
+    let input = scratch.join("input.json");
+    args.extend([
+        "--env".to_string(),
+        format!("MOCK_INPUT_FILE={}", input.display()),
+    ]);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let out = oh(&args, &[], None);
+    assert!(out.status.success(), "{out:?}");
+    let (_, stdin) = recorded(&input);
+    let frame: Value = serde_json::from_str(stdin.trim()).unwrap();
+    let types: Vec<&str> = frame["message"]["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|c| c["source"]["media_type"].as_str())
+        .collect();
+    let expected: Vec<&str> = files.iter().map(|(_, _, t)| *t).collect();
+    assert_eq!(types, expected);
+}
+
+/// Under read-only the shell is withheld from a lean tool set, and the run
+/// says so.
+#[test]
+fn a_read_only_run_withholds_the_shell_and_says_so() {
+    let scratch = ScratchDir::new("lean-read-only").unwrap();
+    let input = scratch.join("input.json");
+    let input_env = format!("MOCK_INPUT_FILE={}", input.display());
+    let b = bin("claude-code");
+    let out = oh(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--bin",
+            &b,
+            "--mode",
+            "read-only",
+            "--tool-set",
+            "shell,read",
+            "--env",
+            &input_env,
+        ],
+        &[],
+        None,
+    );
+    assert!(out.status.success(), "{out:?}");
+    let (argv, _) = recorded(&input);
+    assert!(!argv.iter().any(|a| a == "Bash"), "{argv:?}");
+    let result = json(&out)["results"][0].clone();
+    let said = diagnostics_for(&result, "tool_set");
+    assert!(
+        said[0]["message"].as_str().unwrap().contains("withheld"),
+        "{result}"
+    );
+}
+
+/// codex's compaction is read only off the fork's own compaction turn: a
+/// response without a result, a "fork" that is the original, and another
+/// thread's or turn's notifications neither advance nor end it.
+#[test]
+fn a_codex_compaction_reads_only_the_forks_own_turn() {
+    for (fault, said) in [
+        ("noresult", "without a result"),
+        ("samefork", "named no new thread"),
+    ] {
+        let s = Sessions::new(&format!("codex-{fault}"));
+        s.turn("codex", "alpha");
+        let stored = s.stored();
+        let fault_env = format!("MOCK_COMPACT_FAIL={fault}");
+        let outcome = json(&s.compact("codex", &["--env", &fault_env]));
+        assert_eq!(outcome["status"], "failed", "{fault}: {outcome}");
+        assert!(
+            outcome["error"].as_str().unwrap().contains(said),
+            "{fault}: {outcome}"
+        );
+        for (path, bytes) in &stored {
+            assert_eq!(
+                &std::fs::read(path).unwrap(),
+                bytes,
+                "{fault}: {}",
+                path.display()
+            );
+        }
+    }
+
+    let s = Sessions::new("codex-noise");
+    s.turn("codex", "alpha");
+    let outcome = json(&s.compact(
+        "codex",
+        &[
+            "--env",
+            "MOCK_COMPACT_NOISE=1",
+            "--env",
+            "MOCK_COMPACT_USAGE=1",
+        ],
+    ));
+    assert_eq!(outcome["status"], "completed", "{outcome}");
+    assert_eq!(outcome["usage"]["input_tokens"], 60, "{outcome}");
+    assert_eq!(outcome["usage"]["output_tokens"], 9, "{outcome}");
+    let after = s.turn("codex", "beta");
+    assert_eq!(
+        after["results"][0]["text"],
+        "context: [summary of: alpha, beta]"
+    );
+}
+
+/// A run that ends non-zero, times out or is cancelled still reports the
+/// calls it made before it ended.
+#[test]
+fn calls_are_reported_for_a_run_that_did_not_finish_cleanly() {
+    let first = r#"{"type":"assistant","message":{"id":"m-1","usage":{"input_tokens":5,"output_tokens":2}}}"#;
+    let stream =
+        format!("{first}\n{{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"x\"}}");
+    let b = bin("claude-code");
+    let base = [
+        "run",
+        "--harness",
+        "claude-code",
+        "--prompt",
+        "hi",
+        "--bin",
+        &b,
+        "--output-format",
+        "stream-json",
+    ];
+    let calls = |out: &Output, status: &str| {
+        let result = json(out)["results"][0].clone();
+        assert_eq!(result["status"], status, "{result}");
+        result["calls"].as_array().map_or(0, Vec::len)
+    };
+
+    let out = oh(&base, &[("MOCK_STDOUT", &stream), ("MOCK_EXIT", "1")], None);
+    assert_eq!(calls(&out, "nonzero"), 1);
+
+    let mut timed = base.to_vec();
+    timed.extend(["--timeout", "1"]);
+    let out = oh(
+        &timed,
+        &[("MOCK_STDOUT", &stream), ("MOCK_STREAM_DELAY_MS", "5000")],
+        None,
+    );
+    assert_eq!(calls(&out, "timeout"), 1);
+
+    #[cfg(unix)]
+    {
+        let profiles = ProfileScratch::new();
+        let child = Command::new(workspace_bin("oneharness"))
+            .env("ONEHARNESS_NO_CONFIG", "1")
+            .env("MOCK_STDOUT", &stream)
+            .env("MOCK_STREAM_DELAY_MS", "30000")
+            .args(base)
+            .args(["--env", profiles.as_str(), "--format", "json"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        // Signal only the process this test started.
+        assert!(Command::new("kill")
+            .args(["-TERM", &child.id().to_string()])
+            .status()
+            .unwrap()
+            .success());
+        let out = child.wait_with_output().unwrap();
+        assert_eq!(calls(&out, "cancelled"), 1);
+    }
+}

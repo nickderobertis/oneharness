@@ -169,7 +169,7 @@ impl Kept {
         let mut env = self.env(profiles);
         env.extend(extra.iter().cloned());
         CompactRequest {
-            harness: Some(self.id.to_string()),
+            harness: Some(self.id.parse().unwrap()),
             session: "watch".to_string(),
             session_dir: Some(self.dir.join("store")),
             cwd: Some(self.dir.join("proj")),

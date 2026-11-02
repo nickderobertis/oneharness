@@ -1570,6 +1570,37 @@ describe("OneHarness", () => {
 			.compact({ ...session, session: "nobody" })
 			.catch((error: unknown) => error);
 		expect(unknown).toBeInstanceOf(Error);
+
+		// A harness refusal is an outcome, not a throw: the name keeps its
+		// session and the outcome says why.
+		const refused = await sdk().compact({
+			...session,
+			env: { ...env, MOCK_COMPACT_FAIL: "refuse" },
+		});
+		expect(refused.status).toBe("failed");
+		expect(refused.error).toContain("Not enough messages");
+		expect(refused.token).toBe(outcome.token);
+
+		// A harness without compaction answers `unsupported`.
+		const opencode = {
+			session: "other",
+			sessionDir: resolve(dir, "store"),
+			cwd: dir,
+			bins: { opencode: mock },
+		};
+		await sdk().run({
+			prompt: "hi",
+			harnesses: ["opencode"],
+			mode: "bypass",
+			...opencode,
+			env: {
+				MOCK_STDOUT:
+					'{"type":"text","sessionID":"ses_1","part":{"type":"text","text":"ok"}}',
+			},
+		});
+		const unsupported = await sdk().compact(opencode);
+		expect(unsupported.status).toBe("unsupported");
+		expect(unsupported.error).toContain("opencode");
 	});
 
 	test("forwards optional reasoning without confusing thinking with actions", async () => {

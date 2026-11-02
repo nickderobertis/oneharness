@@ -17,6 +17,8 @@
 //!                   (`tests/fixtures/codex-rollout-token-counts.jsonl`), and a
 //!                   stdio `app-server` answers `thread/fork` and
 //!                   `thread/compact/start` as the captured exchange does.
+//!   MOCK_COMPACT_LOG      with MOCK_CODEX_SESSIONS, every request the stdio
+//!                   `app-server` receives is appended here, one per line.
 //!   MOCK_COMPACT_FAIL     with either, the compaction fails as that harness
 //!                   does: `refuse` (claude's `compact_result: failed`, codex's
 //!                   error answer), `exit` (the process dies), `nofork` (claude
@@ -316,6 +318,9 @@ fn codex_app_server() -> ! {
         let Ok(request) = serde_json::from_str::<serde_json::Value>(&line) else {
             continue;
         };
+        if let Ok(log) = std::env::var("MOCK_COMPACT_LOG") {
+            append(Path::new(&log), std::slice::from_ref(&line));
+        }
         let id = request["id"].clone();
         match request["method"].as_str() {
             Some("initialize") => {

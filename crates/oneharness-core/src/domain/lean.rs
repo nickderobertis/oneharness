@@ -222,12 +222,14 @@ impl Translation {
 /// that same value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ClaudeWindowRule {
-    pub output_reserve: u64,
-    pub buffer: u64,
-    pub min_window: u64,
-    pub max_window: u64,
+    output_reserve: u64,
+    buffer: u64,
+    min_window: u64,
+    max_window: u64,
 }
 
+/// Claude Code 2.1.316's rule, the only one there is: its fields are private
+/// so no caller can state a window whose arithmetic does not hold.
 pub const CLAUDE_WINDOW_RULE: ClaudeWindowRule = ClaudeWindowRule {
     output_reserve: 20_000,
     buffer: 13_000,

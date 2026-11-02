@@ -1194,6 +1194,38 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(OneHarnessProcessError):
             await client.compact(compact_options("nobody"))
 
+        refusing = compact_options("watch")
+        refusing["env"] = {**env, "MOCK_COMPACT_FAIL": "refuse"}
+        refused = await client.compact(refusing)
+        self.assertEqual(refused["status"], "failed")
+        self.assertIn("Not enough messages", refused["error"])
+        self.assertEqual(refused["token"], outcome["token"])
+
+        await client.run(
+            {
+                "prompt": "hi",
+                "harnesses": ["opencode"],
+                "mode": "bypass",
+                "session": "other",
+                "session_dir": store,
+                "cwd": str(root),
+                "env": {
+                    "MOCK_STDOUT": '{"type":"text","sessionID":"ses_1","part":{"type":"text","text":"ok"}}'
+                },
+                "bins": {"opencode": str(MOCK)},
+            }
+        )
+        unsupported = await client.compact(
+            {
+                "session": "other",
+                "session_dir": store,
+                "cwd": str(root),
+                "bins": {"opencode": str(MOCK)},
+            }
+        )
+        self.assertEqual(unsupported["status"], "unsupported")
+        self.assertIn("opencode", unsupported["error"])
+
     async def test_interrupt_refuses_a_session_no_run_is_serving(self) -> None:
         """Return the refusal frame instead of raising on a non-zero exit."""
         session_dir = str(control_scratch(self, "interrupt"))

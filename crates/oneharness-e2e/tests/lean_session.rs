@@ -1620,3 +1620,258 @@ fn per_call_usage_reports_why_it_is_absent_and_reads_only_this_runs_calls() {
     let second = s.turn("codex", "beta");
     assert_eq!(second["results"][0]["calls"].as_array().unwrap().len(), 3);
 }
+
+/// `compact` without `--model`/`--timeout` takes them from configuration, and
+/// runs the harness under its identity's own environment (a variant's `env`
+/// added, its `unset_env` removed), exactly as `run` would.
+#[test]
+fn compact_resolves_the_configured_model_timeout_and_identity_environment() {
+    let s = Sessions::new("configured");
+    let proj = s.dir.join("proj");
+    std::fs::write(
+        proj.join("oneharness.toml"),
+        "timeout = 2\n\
+         [harness.codex]\nmodel = \"gpt-configured\"\n\
+         [harness.claude-code]\nmodel = \"claude-configured\"\n\
+         [harness.claude-code.variant.work]\nunset_env = [\"OH_LEAN_SECRET\"]\n\
+         [harness.claude-code.variant.work.env]\nOH_LEAN_VARIANT = \"from-variant\"\n",
+    )
+    .unwrap();
+    let user = s.dir.join("user.toml");
+    std::fs::write(&user, "").unwrap();
+    let (proj_s, store) = (s.path("proj"), s.path("store"));
+
+    // codex: the fork runs under the configured model, and the configured
+    // timeout ends a compaction that never finishes.
+    s.turn("codex", "alpha");
+    let log = s.dir.join("requests.jsonl");
+    let begun = s.dir.join("begun");
+    let b = bin("codex");
+    let mut args = vec![
+        "compact".to_string(),
+        "--session".into(),
+        "watch".into(),
+        "--session-dir".into(),
+        store.clone(),
+        "--cwd".into(),
+        proj_s.clone(),
+        "--bin".into(),
+        b,
+        "--env".into(),
+        format!("MOCK_COMPACT_LOG={}", log.display()),
+        "--env".into(),
+        format!("MOCK_COMPACT_BEGUN={}", begun.display()),
+    ];
+    for e in s.env("codex") {
+        args.extend(["--env".to_string(), e]);
+    }
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let out = oh(&args, &[], Some(&user));
+    let outcome = json(&out);
+    assert_eq!(outcome["status"], "failed", "{outcome}");
+    assert!(
+        outcome["error"].as_str().unwrap().contains("timeout"),
+        "{outcome}"
+    );
+    let fork: Value = std::fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .find(|r| r["method"] == "thread/fork")
+        .expect("the fork was requested");
+    assert_eq!(fork["params"]["model"], "gpt-configured");
+
+    // claude-code: a variant identity's session compacts under that
+    // identity's environment and the configured model.
+    let c = Sessions::new("configured-variant");
+    let cproj = c.dir.join("proj");
+    std::fs::copy(proj.join("oneharness.toml"), cproj.join("oneharness.toml")).unwrap();
+    std::fs::write(c.dir.join("user.toml"), "").unwrap();
+    let cuser = c.dir.join("user.toml");
+    let (cp, cs, cb) = (c.path("proj"), c.path("store"), bin("claude-code"));
+    let env = c.env("claude-code");
+    let mut create = vec![
+        "run",
+        "--harness",
+        "claude-code:work",
+        "--session",
+        "watch",
+        "--session-dir",
+        &cs,
+        "--cwd",
+        &cp,
+        "--bin",
+        &cb,
+        "--mode",
+        "bypass",
+        "--prompt",
+        "alpha",
+    ];
+    for e in &env {
+        create.extend(["--env", e]);
+    }
+    let created = oh(&create, &[], Some(&cuser));
+    assert!(created.status.success(), "{created:?}");
+    let argv_file = c.dir.join("argv");
+    let env_file = c.dir.join("env.json");
+    let (argv_env, env_env) = (
+        format!("MOCK_ARGV_FILE={}", argv_file.display()),
+        format!("MOCK_ENV_FILE={}", env_file.display()),
+    );
+    let mut compact = vec![
+        "compact",
+        "--session",
+        "watch",
+        "--session-dir",
+        &cs,
+        "--cwd",
+        &cp,
+        "--bin",
+        &cb,
+        "--env",
+        &argv_env,
+        "--env",
+        &env_env,
+    ];
+    for e in &env {
+        compact.extend(["--env", e]);
+    }
+    let out = oh(
+        &compact,
+        &[("OH_LEAN_SECRET", "must-not-reach")],
+        Some(&cuser),
+    );
+    let outcome = json(&out);
+    assert_eq!(outcome["status"], "completed", "{outcome}");
+    assert_eq!(outcome["harness"], "claude-code:work");
+    let argv: Vec<String> = std::fs::read_to_string(&argv_file)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    assert!(
+        has_seq(&argv, &["--model", "claude-configured"]),
+        "{argv:?}"
+    );
+    let env = recorded_env(&env_file);
+    assert_eq!(env["OH_LEAN_VARIANT"], "from-variant");
+    assert!(
+        !env.contains_key("OH_LEAN_SECRET"),
+        "the variant's unset_env applies"
+    );
+}
+
+/// `--no-mcp` on codex disables every server its configuration would load:
+/// the home config's and each `.codex/config.toml` from the working
+/// directory upward, each named once.
+#[test]
+fn no_mcp_disables_codex_servers_from_home_and_every_ancestor_project() {
+    let scratch = ScratchDir::new("lean-mcp-ancestors").unwrap();
+    let home = scratch.join("home");
+    let project = scratch.join("project");
+    let work = project.join("sub");
+    for dir in [&home, &project.join(".codex"), &work.join(".codex")] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    std::fs::write(
+        home.join("config.toml"),
+        "[mcp_servers.docs]\ncommand = \"d\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        project.join(".codex").join("config.toml"),
+        "[mcp_servers.docs]\ncommand = \"d\"\n[mcp_servers.\"team tools\"]\nurl = \"http://x\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        work.join(".codex").join("config.toml"),
+        "[mcp_servers.local]\ncommand = \"l\"\n",
+    )
+    .unwrap();
+    let input = scratch.join("input.json");
+    let (home_env, input_env, cwd, b) = (
+        format!("CODEX_HOME={}", home.display()),
+        format!("MOCK_INPUT_FILE={}", input.display()),
+        work.display().to_string(),
+        bin("codex"),
+    );
+    let out = oh(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "hi",
+            "--bin",
+            &b,
+            "--mode",
+            "bypass",
+            "--cwd",
+            &cwd,
+            "--no-mcp",
+            "--env",
+            &home_env,
+            "--env",
+            &input_env,
+        ],
+        &[],
+        None,
+    );
+    assert!(out.status.success(), "{out:?}");
+    let (argv, _) = recorded(&input);
+    let stubs: Vec<&String> = argv
+        .iter()
+        .filter(|a| a.starts_with("mcp_servers."))
+        .collect();
+    for name in ["docs", "\"team tools\"", "local"] {
+        let wanted = format!("mcp_servers.{name}={{command=\"true\",enabled=false}}");
+        assert_eq!(
+            stubs.iter().filter(|a| ***a == wanted).count(),
+            1,
+            "{name}: {stubs:?}"
+        );
+    }
+    assert_eq!(stubs.len(), 3, "{stubs:?}");
+}
+
+/// A message emitted once per content block is one call, read from its last
+/// emission, and calls keep the order their messages first appeared in.
+#[test]
+fn a_claude_message_repeated_per_block_is_one_call_read_from_its_last_emission() {
+    let stream = [
+        r#"{"type":"assistant","message":{"id":"m-1","usage":{"input_tokens":5,"output_tokens":1}}}"#,
+        r#"{"type":"assistant","message":{"id":"m-2","usage":{"input_tokens":9,"output_tokens":4}}}"#,
+        r#"{"type":"assistant","message":{"id":"m-1","usage":{"input_tokens":5,"output_tokens":7}}}"#,
+        r#"{"type":"result","subtype":"success","result":"done"}"#,
+    ]
+    .join("\n");
+    let b = bin("claude-code");
+    let out = oh(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--bin",
+            &b,
+            "--output-format",
+            "stream-json",
+        ],
+        &[("MOCK_STDOUT", &stream)],
+        None,
+    );
+    let calls = json(&out)["results"][0]["calls"].clone();
+    let pairs: Vec<(u64, u64)> = calls
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| {
+            (
+                c["input_tokens"].as_u64().unwrap(),
+                c["output_tokens"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(pairs, vec![(5, 7), (9, 4)]);
+}

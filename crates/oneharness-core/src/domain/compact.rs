@@ -157,11 +157,20 @@ pub enum CodexCompaction {
     Failed { error: String },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Phase {
-    Initialize,
-    Fork,
-    Compact,
+/// Where the dialogue is, carrying exactly what that point has learned.
+#[derive(Debug, Clone)]
+enum State {
+    /// `initialize` sent; awaiting its result.
+    Initializing,
+    /// `thread/fork` sent; awaiting the new thread.
+    Forking,
+    /// `thread/compact/start` sent on `fork`; `turn` is the compaction turn
+    /// once the fork's `turn/started` names it, and `before` the fork's token
+    /// total at that point.
+    Compacting {
+        fork: String,
+        turn: Option<(String, Option<Usage>)>,
+    },
 }
 
 /// The codex app-server conversation: `initialize`, `thread/fork` of the
@@ -175,13 +184,8 @@ enum Phase {
 pub struct CodexDialogue {
     thread: String,
     model: Option<String>,
-    phase: Phase,
-    fork: Option<String>,
-    /// The compaction turn's id, once the fork's `turn/started` names it.
-    turn: Option<String>,
-    /// The fork's last token total before the compaction turn, and the last
-    /// within it: their difference is the compaction's own usage.
-    before: Option<Usage>,
+    state: State,
+    /// The fork's latest token total, whatever turn it was reported for.
     latest: Option<Usage>,
 }
 
@@ -210,10 +214,7 @@ impl CodexDialogue {
         Self {
             thread: thread.to_string(),
             model: model.map(str::to_string),
-            phase: Phase::Initialize,
-            fork: None,
-            turn: None,
-            before: None,
+            state: State::Initializing,
             latest: None,
         }
     }
@@ -237,19 +238,6 @@ impl CodexDialogue {
         CodexStep::Done(CodexCompaction::Failed { error })
     }
 
-    /// Whether a notification is about the fork (and, once known, its
-    /// compaction turn) rather than any other thread the server reports on.
-    fn about_fork(&self, value: &Value) -> bool {
-        let thread = value.pointer("/params/threadId").and_then(Value::as_str);
-        let turn = value
-            .pointer("/params/turnId")
-            .or_else(|| value.pointer("/params/turn/id"))
-            .and_then(Value::as_str);
-        self.fork.is_some()
-            && thread == self.fork.as_deref()
-            && (self.turn.is_none() || turn.is_none() || turn == self.turn.as_deref())
-    }
-
     /// React to one line the server wrote.
     pub fn on_line(&mut self, line: &str) -> CodexStep {
         let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
@@ -257,86 +245,102 @@ impl CodexDialogue {
         };
         let (fork_method, compact_method) = codex_methods();
         let id = value.get("id").and_then(Value::as_u64);
-        if let Some(error) = value.get("error") {
-            if matches!(id, Some(FORK_ID | COMPACT_ID | INITIALIZE_ID)) {
+        if matches!(id, Some(INITIALIZE_ID | FORK_ID | COMPACT_ID)) {
+            // A response to one of ours: an `error`, or anything but a
+            // `result`, ends the compaction rather than advancing it.
+            let Some(result) = value.get("result") else {
                 return Self::failed(format!(
                     "codex refused the compaction: {}",
-                    error
-                        .get("message")
+                    value
+                        .pointer("/error/message")
                         .and_then(Value::as_str)
-                        .unwrap_or("no message")
+                        .unwrap_or("a response without a result")
                 ));
-            }
-        }
-        match (self.phase, id) {
-            (Phase::Initialize, Some(INITIALIZE_ID)) => {
-                self.phase = Phase::Fork;
-                let mut params = json!({"threadId": self.thread});
-                if let Some(model) = &self.model {
-                    params["model"] = json!(model);
+            };
+            return match (&self.state, id) {
+                (State::Initializing, Some(INITIALIZE_ID)) => {
+                    self.state = State::Forking;
+                    let mut params = json!({"threadId": self.thread});
+                    if let Some(model) = &self.model {
+                        params["model"] = json!(model);
+                    }
+                    CodexStep::Send(vec![
+                        frame(json!({"jsonrpc": "2.0", "method": "initialized", "params": {}})),
+                        frame(json!({
+                            "jsonrpc": "2.0",
+                            "id": FORK_ID,
+                            "method": fork_method,
+                            "params": params,
+                        })),
+                    ])
                 }
-                return CodexStep::Send(vec![
-                    frame(json!({"jsonrpc": "2.0", "method": "initialized", "params": {}})),
-                    frame(json!({
+                (State::Forking, Some(FORK_ID)) => {
+                    // The untouched-original guarantee rests on compacting a
+                    // DIFFERENT thread, so a fork codex did not name, or named
+                    // as the original, is refused before anything is compacted.
+                    let fork = result
+                        .pointer("/thread/id")
+                        .and_then(Value::as_str)
+                        .filter(|fork| !fork.is_empty() && *fork != self.thread)
+                        .map(str::to_string);
+                    let Some(fork) = fork else {
+                        return Self::failed(format!(
+                            "codex's {fork_method} named no new thread, so nothing was compacted"
+                        ));
+                    };
+                    self.latest = None;
+                    self.state = State::Compacting {
+                        fork: fork.clone(),
+                        turn: None,
+                    };
+                    CodexStep::Send(vec![frame(json!({
                         "jsonrpc": "2.0",
-                        "id": FORK_ID,
-                        "method": fork_method,
-                        "params": params,
-                    })),
-                ]);
-            }
-            (Phase::Fork, Some(FORK_ID)) => {
-                // The untouched-original guarantee rests on compacting a
-                // DIFFERENT thread, so a fork codex did not name, or named as
-                // the original, is refused before anything is compacted.
-                let fork = value
-                    .pointer("/result/thread/id")
-                    .and_then(Value::as_str)
-                    .filter(|fork| !fork.is_empty() && *fork != self.thread)
-                    .map(str::to_string);
-                let Some(fork) = fork else {
-                    return Self::failed(format!(
-                        "codex's {fork_method} named no new thread, so nothing was compacted"
-                    ));
-                };
-                self.phase = Phase::Compact;
-                self.fork = Some(fork.clone());
-                return CodexStep::Send(vec![frame(json!({
-                    "jsonrpc": "2.0",
-                    "id": COMPACT_ID,
-                    "method": compact_method,
-                    "params": {"threadId": fork},
-                }))]);
-            }
-            _ => {}
+                        "id": COMPACT_ID,
+                        "method": compact_method,
+                        "params": {"threadId": fork},
+                    }))])
+                }
+                _ => CodexStep::Wait,
+            };
         }
-        if self.phase != Phase::Compact || !self.about_fork(&value) {
+        let State::Compacting { fork, turn } = &mut self.state else {
+            return CodexStep::Wait;
+        };
+        if value.pointer("/params/threadId").and_then(Value::as_str) != Some(fork.as_str()) {
             return CodexStep::Wait;
         }
-        match value.get("method").and_then(Value::as_str) {
-            Some("thread/tokenUsage/updated") => {
-                if let Some(total) = value.pointer("/params/tokenUsage/total") {
+        let named_turn = value
+            .pointer("/params/turnId")
+            .or_else(|| value.pointer("/params/turn/id"))
+            .and_then(Value::as_str);
+        let method = value.get("method").and_then(Value::as_str);
+        match (turn.as_ref(), method) {
+            (_, Some("thread/tokenUsage/updated")) => {
+                // Before the compaction turn any of the fork's totals is its
+                // baseline; after it, only the compaction turn's own counts.
+                let ours = turn
+                    .as_ref()
+                    .is_none_or(|(id, _)| named_turn == Some(id.as_str()));
+                if let (true, Some(total)) = (ours, value.pointer("/params/tokenUsage/total")) {
                     self.latest = Some(codex_usage(total));
                 }
                 CodexStep::Wait
             }
-            Some("turn/started") if self.turn.is_none() => {
-                self.turn = value
-                    .pointer("/params/turn/id")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-                self.before = self.latest.clone();
+            (None, Some("turn/started")) => {
+                if let Some(id) = named_turn {
+                    *turn = Some((id.to_string(), self.latest.clone()));
+                }
                 CodexStep::Wait
             }
-            Some("turn/completed") if self.turn.is_some() => {
+            (Some((id, before)), Some("turn/completed")) if named_turn == Some(id.as_str()) => {
                 let status = value
                     .pointer("/params/turn/status")
                     .and_then(Value::as_str)
                     .unwrap_or("");
                 if status == "completed" {
                     CodexStep::Done(CodexCompaction::Completed {
-                        fork: self.fork.clone().unwrap_or_default(),
-                        usage: usage_delta(self.before.as_ref(), self.latest.as_ref()),
+                        fork: fork.clone(),
+                        usage: usage_delta(before.as_ref(), self.latest.as_ref()),
                     })
                 } else {
                     Self::failed(
@@ -472,6 +476,13 @@ mod tests {
         };
         assert!(error.contains("thread not found"));
 
+        // A response with no result advances nothing.
+        let mut d = CodexDialogue::new("t", None);
+        assert!(matches!(
+            d.on_line(r#"{"id":1}"#),
+            CodexStep::Done(CodexCompaction::Failed { .. })
+        ));
+
         // A fork that is the original thread is no fork.
         let mut d = CodexDialogue::new("t", None);
         d.on_line(r#"{"id":1,"result":{}}"#);
@@ -496,6 +507,11 @@ mod tests {
             d.on_line(r#"{"method":"turn/completed","params":{"threadId":"f","turn":{"id":"z","status":"completed"}}}"#),
             CodexStep::Wait,
             "a different turn of the fork is not the compaction"
+        );
+        assert_eq!(
+            d.on_line(r#"{"method":"turn/completed","params":{"threadId":"f","turn":{"status":"completed"}}}"#),
+            CodexStep::Wait,
+            "a completion naming no turn is not the compaction's"
         );
         let CodexStep::Done(CodexCompaction::Failed { error }) = d.on_line(
             r#"{"method":"turn/completed","params":{"threadId":"f","turn":{"id":"c","status":"failed","error":{"message":"context too small"}}}}"#,

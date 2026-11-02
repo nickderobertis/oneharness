@@ -39,7 +39,7 @@ pub struct CompactRequest {
     /// The harness identity (`base` or `base:variant`) expected to hold the
     /// session. `None` takes the identity the store bound it to; a different
     /// one is refused as `run --session` refuses it.
-    pub harness: Option<String>,
+    pub harness: Option<HarnessIdentity>,
     /// The caller-owned session name (`run --session <name>`).
     pub session: String,
     /// Where the session store lives (`--session-dir`).
@@ -109,20 +109,15 @@ pub fn compact_session(
         });
     };
     let identity: HarnessIdentity = match &request.harness {
-        Some(id) => {
-            let identity: HarnessIdentity =
-                id.parse().map_err(|_| OneharnessError::UnknownHarness {
-                    id: id.clone(),
-                    valid: harness::valid_ids(),
-                })?;
-            if let Some(was) = session::harness_conflict(Some(&record), &identity) {
+        Some(identity) => {
+            if let Some(was) = session::harness_conflict(Some(&record), identity) {
                 return Err(OneharnessError::SessionHarnessConflict {
                     name: request.session.clone(),
                     was: was.to_string(),
                     now: identity.to_string(),
                 });
             }
-            identity
+            identity.clone()
         }
         None => record.harness.clone(),
     };

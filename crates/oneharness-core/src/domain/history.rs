@@ -41,7 +41,11 @@ use crate::domain::usage::UtcInstant;
 /// newer reader. That is what lets an additive field ship without rewriting the
 /// shape of every record — and what makes each version constant below the exact
 /// gate for the one field it introduced.
-pub const SCHEMA_VERSION: &str = "1.11";
+pub const SCHEMA_VERSION: &str = "1.12";
+/// v1.12 introduced the `unsupported_input` failure kind: a harness refused
+/// for a run whose input (an image) it cannot take. A v1.11 reader's
+/// `failure_kind` enum has no such value.
+pub const FIRST_UNSUPPORTED_INPUT_SCHEMA_VERSION: &str = "1.12";
 /// First history schema carrying an opening run line.
 pub const FIRST_RUN_STARTED_SCHEMA_VERSION: &str = "1.11";
 /// Opening lines advance independently: existing event lines stay readable by
@@ -94,7 +98,7 @@ pub(crate) const FIRST_EVENT_SCHEMA_VERSION: &str = "1.0";
 /// Every event-sourced history version this build reads, oldest first. Order is
 /// the contract: a field introduced in version N is legible to N and everything
 /// after it, which is what [`version_at_least`] answers.
-pub(crate) const READABLE_SCHEMA_VERSIONS: [&str; 12] = [
+pub(crate) const READABLE_SCHEMA_VERSIONS: [&str; 13] = [
     FIRST_EVENT_SCHEMA_VERSION,
     PREVIOUS_CURRENT_SCHEMA_VERSION,
     OBSERVED_TIMING_SCHEMA_VERSION,
@@ -107,6 +111,7 @@ pub(crate) const READABLE_SCHEMA_VERSIONS: [&str; 12] = [
     FIRST_SERVER_OVERLOADED_SCHEMA_VERSION,
     FIRST_APP_SERVER_LOST_SCHEMA_VERSION,
     FIRST_RUN_STARTED_SCHEMA_VERSION,
+    FIRST_UNSUPPORTED_INPUT_SCHEMA_VERSION,
 ];
 
 fn version_rank(version: &str) -> Option<usize> {
@@ -2001,7 +2006,8 @@ fn status_version_valid(schema_version: &str, status: Status) -> bool {
 /// kinds are gated — [`FailureKind::SessionNotFound`] at v1.5, the two
 /// precondition refusals at v1.6, [`FailureKind::ModelMismatch`] at v1.8,
 /// [`FailureKind::ServerOverloaded`] at v1.9, and
-/// [`FailureKind::AppServerLost`] at v1.10;
+/// [`FailureKind::AppServerLost`] at v1.10, and
+/// [`FailureKind::UnsupportedInput`] at v1.12;
 /// every other kind predates the oldest readable version. Stated here because the generated SDK schemas gate the same values
 /// the same way — one rule, two validators.
 fn failure_kind_version_valid(schema_version: &str, failure_kind: Option<FailureKind>) -> bool {
@@ -2014,7 +2020,8 @@ fn failure_kind_version_valid(schema_version: &str, failure_kind: Option<Failure
 /// The version a gated `failure_kind` arrived in, or `None` for a kind every
 /// readable version already had. Six gates: `session_not_found` at v1.5, the
 /// two precondition refusals at v1.6, `model_mismatch` at v1.8,
-/// `server_overloaded` at v1.9, and `app_server_lost` at v1.10. One table so the runtime reader and the
+/// `server_overloaded` at v1.9, `app_server_lost` at v1.10, and
+/// `unsupported_input` at v1.12. One table so the runtime reader and the
 /// generated SDK schemas ([`crate::sdk_schema`]) enumerate the same gates —
 /// a second list is how the two validators drift apart. Crate-visible, since
 /// both of those readers are in this crate: a consumer reads the gate from the
@@ -2031,6 +2038,7 @@ pub(crate) fn gated_failure_kind_version(
         FailureKind::ModelMismatch => Some(FIRST_MODEL_OBSERVATION_SCHEMA_VERSION),
         FailureKind::ServerOverloaded => Some(FIRST_SERVER_OVERLOADED_SCHEMA_VERSION),
         FailureKind::AppServerLost => Some(FIRST_APP_SERVER_LOST_SCHEMA_VERSION),
+        FailureKind::UnsupportedInput => Some(FIRST_UNSUPPORTED_INPUT_SCHEMA_VERSION),
         FailureKind::Auth
         | FailureKind::RateLimit
         | FailureKind::ModelNotFound
@@ -2916,6 +2924,8 @@ mod tests {
             text_source: Some("json:result".to_string()),
             usage: Usage::default(),
             usage_source: None,
+            calls: None,
+            diagnostics: Vec::new(),
             session_id: Some("abc-123".to_string()),
             events: None,
             events_source: None,

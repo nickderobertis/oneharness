@@ -18,6 +18,7 @@ use crate::domain::fallback::RunMode;
 use crate::domain::harness::{self, SyncSpec};
 use crate::domain::history::{self, HistoryLabels};
 use crate::domain::hooks::HookSpec;
+use crate::domain::lean::ToolClass;
 use crate::domain::mode::PermissionMode;
 use crate::domain::report::OutputFormat;
 
@@ -165,6 +166,19 @@ pub struct FileConfig {
     pub mode: Option<PermissionMode>,
     /// Per-harness timeout in seconds (like `--timeout`); omitted or zero means no timeout.
     pub timeout: Option<u64>,
+    /// The conversation size, in tokens, at which each harness compacts a
+    /// session's context (like `--auto-compact-tokens`). A positive integer;
+    /// unset changes nothing. Translated per harness by
+    /// [`crate::domain::lean`]; a harness without a knob is reported.
+    pub auto_compact_tokens: Option<NonZeroU64>,
+    /// The built-in tool classes a turn loads (like `--tool-set`): `shell`,
+    /// `read`. Every other built-in tool is not loaded; unset loads what the
+    /// harness loads today.
+    pub tool_set: Option<Vec<ToolClass>>,
+    /// `false` loads no skills list (like `--no-skills`).
+    pub load_skills: Option<bool>,
+    /// `false` loads no MCP server or MCP tool (like `--no-mcp`).
+    pub load_mcp: Option<bool>,
     /// Output format override (like `--output-format`).
     pub output_format: Option<OutputFormat>,
     /// Publish normalized events to stdout as they occur (like `--stream`; off
@@ -799,6 +813,18 @@ pub fn from_env(get: impl Fn(&str) -> Option<String>) -> Result<Option<FileConfi
         bypass: env_bool(&read, "ONEHARNESS_BYPASS")?,
         mode: env_mode(&read)?,
         timeout: env_num(&read, "ONEHARNESS_TIMEOUT", "a non-negative integer")?,
+        auto_compact_tokens: env_num(
+            &read,
+            "ONEHARNESS_AUTO_COMPACT_TOKENS",
+            "a positive integer",
+        )?,
+        tool_set: read("ONEHARNESS_TOOL_SET")
+            .map(|value| {
+                ToolClass::parse_list(&value).map_err(|e| format!("`ONEHARNESS_TOOL_SET`: {e}"))
+            })
+            .transpose()?,
+        load_skills: env_bool(&read, "ONEHARNESS_LOAD_SKILLS")?,
+        load_mcp: env_bool(&read, "ONEHARNESS_LOAD_MCP")?,
         output_format: env_output_format(&read)?,
         stream: env_bool(&read, "ONEHARNESS_STREAM")?,
         schema_file: read("ONEHARNESS_SCHEMA_FILE"),
@@ -983,6 +1009,10 @@ pub fn merge(base: FileConfig, over: FileConfig) -> FileConfig {
         bypass: over.bypass.or(base.bypass),
         mode: over.mode.or(base.mode),
         timeout: over.timeout.or(base.timeout),
+        auto_compact_tokens: over.auto_compact_tokens.or(base.auto_compact_tokens),
+        tool_set: over.tool_set.or(base.tool_set),
+        load_skills: over.load_skills.or(base.load_skills),
+        load_mcp: over.load_mcp.or(base.load_mcp),
         output_format: over.output_format.or(base.output_format),
         stream: over.stream.or(base.stream),
         schema_file: over.schema_file.or(base.schema_file),
@@ -1345,6 +1375,14 @@ pub struct ConfigReport {
     /// (or neither) is set — the effective mode then derives from `bypass`.
     pub mode: Field<PermissionMode>,
     pub timeout: Field<u64>,
+    /// The layered `auto_compact_tokens`, if any.
+    pub auto_compact_tokens: Field<u64>,
+    /// The layered `tool_set`, if any (unset loads the harness's own tools).
+    pub tool_set: Field<Vec<ToolClass>>,
+    /// The layered `load_skills`, if any.
+    pub load_skills: Field<bool>,
+    /// The layered `load_mcp`, if any.
+    pub load_mcp: Field<bool>,
     pub output_format: Field<OutputFormat>,
     /// Whether config asks every `run` to stream (`--stream` / ONEHARNESS_STREAM);
     /// defaults to false, the built-in buffered report.
@@ -1677,6 +1715,10 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
         bypass: pick(layers, |c| c.bypass).or_default(false),
         mode: pick(layers, |c| c.mode),
         timeout: pick(layers, |c| c.timeout),
+        auto_compact_tokens: pick(layers, |c| c.auto_compact_tokens.map(NonZeroU64::get)),
+        tool_set: pick(layers, |c| c.tool_set.clone()),
+        load_skills: pick(layers, |c| c.load_skills),
+        load_mcp: pick(layers, |c| c.load_mcp),
         output_format: pick(layers, |c| c.output_format),
         stream: pick(layers, |c| c.stream).or_default(false),
         schema_file: pick(layers, |c| c.schema_file.clone()),

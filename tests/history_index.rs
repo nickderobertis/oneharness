@@ -196,6 +196,8 @@ fn finished_result(prompt_text: &str) -> report::RunResult {
         text_source: Some("raw".to_string()),
         usage: oneharness_core::domain::signals::Usage::default(),
         usage_source: None,
+        calls: None,
+        diagnostics: Vec::new(),
         session_id: None,
         events: None,
         events_source: None,

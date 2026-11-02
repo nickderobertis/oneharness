@@ -13,6 +13,7 @@ use crate::domain::batch::BatchStrategy;
 use crate::domain::control::ControlReport;
 use crate::domain::events::ActionEvent;
 use crate::domain::fallback::{FallThroughReason, RunWork};
+use crate::domain::lean::Diagnostic;
 use crate::domain::mode::PermissionMode;
 use crate::domain::session::SessionPhase;
 use crate::domain::signals::{FailureKind, Usage};
@@ -50,6 +51,15 @@ use crate::domain::usage::UtcInstant;
 /// bump matters, since a consumer that exhaustively matches `failure_kind` learns
 /// from the version that two more now exist.
 ///
+/// `0.13` adds [`FailureKind::UnsupportedInput`] and its `"unsupported-input"`
+/// fallback reason (a harness refused because the run carries images it cannot
+/// take), and, additively, each result's `calls` (per-call usage) and
+/// `diagnostics` (settings its harness could not apply). The `config` report
+/// gains `auto_compact_tokens`, `tool_set`, `load_skills` and `load_mcp`; the
+/// `list` report gains each harness's `supports_auto_compact`,
+/// `supports_compact_now`, `supports_tool_set`, `supports_skills_off`,
+/// `supports_mcp_off`, `supports_images` and `supports_call_usage`.
+///
 /// `0.12` adds [`FailureKind::AppServerLost`] and its `"app-server-lost"`
 /// fallback reason: a pooled Codex dispatch whose shared app-server went away
 /// under its live turn. A new enum value, so exhaustive consumers learn of it
@@ -85,7 +95,7 @@ use crate::domain::usage::UtcInstant;
 ///
 /// `0.4` added the `config` report's `stream` field (the layered `--stream`
 /// value, with its provenance).
-pub const SCHEMA_VERSION: &str = "0.12";
+pub const SCHEMA_VERSION: &str = "0.13";
 
 /// How a harness emits its result, which decides how `text` is extracted.
 ///
@@ -510,6 +520,19 @@ pub struct RunResult {
     pub usage: Usage,
     /// How `usage` was read (e.g. `json`); `null` when nothing was found.
     pub usage_source: Option<String>,
+    /// One usage per model call the turn made, in order, read from the
+    /// harness's own stream or session record (see
+    /// [`crate::domain::lean::Setting::Calls`]). Absent where the harness
+    /// exposes no per-call figures, and then `diagnostics` says why. The
+    /// run's `usage` total is unchanged by it. Added in report schema `0.13`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calls: Option<Vec<Usage>>,
+    /// Each setting this run's harness could not apply, or applied in part
+    /// (`auto_compact_tokens`, `tool_set`, `load_skills`, `load_mcp`, `calls`):
+    /// the run proceeded, and this says what it did instead. Absent when
+    /// empty. Added in report schema `0.13`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub diagnostics: Vec<Diagnostic>,
     /// Best-effort harness session id for continuation; `null` when none is
     /// exposed. Surfaced for a consumer to thread into `--resume`, and consumed
     /// by oneharness itself when `--session` is in play (it is captured into the
@@ -1282,6 +1305,8 @@ mod tests {
             text_source: None,
             usage: Usage::default(),
             usage_source: None,
+            calls: None,
+            diagnostics: Vec::new(),
             session_id: None,
             events: None,
             events_source: None,

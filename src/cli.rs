@@ -7,6 +7,7 @@ use clap::{Args, Parser, Subcommand};
 
 use oneharness_core::domain::batch::BatchStrategy;
 use oneharness_core::domain::fallback::RunMode;
+use oneharness_core::domain::lean::ToolClass;
 use oneharness_core::domain::mode::PermissionMode;
 use oneharness_core::domain::report::OutputFormat;
 use oneharness_core::domain::sdk::NonEmptyString;
@@ -26,6 +27,15 @@ fn output_format_parser() -> impl TypedValueParser<Value = OutputFormat> {
 /// Parse `--mode` into the core [`PermissionMode`], keeping the possible-value
 /// list (and its `--help` listing + validation error) in the binary so
 /// `oneharness-core` need not depend on `clap`.
+/// `--tool-set`'s value: one comma-separated list, parsed whole so an empty
+/// value is the empty set rather than a missing one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolSetArg(pub Vec<ToolClass>);
+
+fn tool_set_parser(value: &str) -> Result<ToolSetArg, String> {
+    ToolClass::parse_list(value).map(ToolSetArg)
+}
+
 fn mode_parser() -> impl TypedValueParser<Value = PermissionMode> {
     PossibleValuesParser::new(PermissionMode::ALL.map(|m| m.as_str()))
         .map(|s| PermissionMode::parse(&s).expect("clap restricts to valid mode tokens"))
@@ -1013,6 +1023,36 @@ pub struct RunArgs {
     /// deadline unless a timeout, including 0, is explicitly selected.
     #[arg(long, value_name = "SECS")]
     pub timeout: Option<u64>,
+
+    /// Compact a session's context once it reaches N tokens (a positive
+    /// integer). Claude Code: CLAUDE_CODE_AUTO_COMPACT_WINDOW (N + 33000);
+    /// Codex: model_auto_compact_token_limit. A harness without a knob runs
+    /// anyway and its result carries a diagnostic.
+    #[arg(long, value_name = "N")]
+    pub auto_compact_tokens: Option<std::num::NonZeroU64>,
+
+    /// Load only these built-in tool classes, comma-separated: shell, read.
+    /// Every other built-in tool is not loaded (Claude Code: --tools Bash
+    /// Read; Codex: every tool its config can remove). Empty loads none.
+    #[arg(long, value_name = "CLASSES", value_parser = tool_set_parser)]
+    pub tool_set: Option<ToolSetArg>,
+
+    /// Load no skills list (Claude Code: --disable-slash-commands; Codex:
+    /// skills.include_instructions=false).
+    #[arg(long)]
+    pub no_skills: bool,
+
+    /// Load no MCP server or MCP tool (Claude Code: --strict-mcp-config;
+    /// Codex: each configured server disabled, apps off).
+    #[arg(long)]
+    pub no_mcp: bool,
+
+    /// Attach an image file to the prompt as an image the model sees
+    /// (repeatable). A missing or unreadable file is refused before any
+    /// harness starts; a harness without image input is refused for the run
+    /// (`unsupported_input`), so a fallback chain moves on.
+    #[arg(long = "image", value_name = "PATH")]
+    pub image: Vec<PathBuf>,
 
     /// Working directory each harness process runs in.
     #[arg(long, value_name = "DIR")]

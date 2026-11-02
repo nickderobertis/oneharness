@@ -241,6 +241,18 @@ pub enum OneharnessError {
     #[error("cannot resolve a session store directory (no --session-dir and no platform state dir): set --session-dir <DIR>")]
     SessionNoStore,
 
+    #[error("image `{path}` cannot be attached: {reason}; nothing was run")]
+    ImageUnreadable { path: String, reason: String },
+
+    #[error("--image cannot be combined with {conflict}: {reason}")]
+    ImagesConflict {
+        conflict: &'static str,
+        reason: String,
+    },
+
+    #[error("session `{name}` is not in the session store (`{path}`), so there is nothing to compact; a session is created by `oneharness run --session {name}`")]
+    CompactSessionUnknown { name: String, path: String },
+
     #[error("harness `{id}` does not support `--mode {mode}`. supported modes: {supported}")]
     ModeUnsupported {
         id: String,

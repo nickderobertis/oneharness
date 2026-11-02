@@ -202,6 +202,7 @@ fn describe(spec: &'static harness::HarnessSpec, cfg: &FileConfig) -> HarnessInf
         apps: cfg.apps_for(spec.id),
         analytics: cfg.analytics_for(spec.id),
         model_catalog: None,
+        tools: None,
     };
     let sync = spec.sync.as_ref();
     HarnessInfo {

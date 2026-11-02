@@ -177,6 +177,8 @@ pub enum FallThroughReason {
     ServerOverloaded,
     /// The shared Codex app-server went away under the candidate's live turn.
     AppServerLost,
+    /// The harness cannot take an input the request carried (an image).
+    UnsupportedInput,
 }
 
 impl FallThroughReason {
@@ -197,6 +199,7 @@ impl FallThroughReason {
             FallThroughReason::RateLimit => "rate-limit",
             FallThroughReason::ServerOverloaded => "server-overloaded",
             FallThroughReason::AppServerLost => "app-server-lost",
+            FallThroughReason::UnsupportedInput => "unsupported-input",
         }
     }
 }
@@ -333,6 +336,10 @@ pub fn startup_failure_reason(
         // and always reports the lost turn as one.
         (Status::Nonzero, Some(FailureKind::AppServerLost)) => {
             Some(FallThroughReason::AppServerLost)
+        }
+        // Refused before spawning: the harness has no way to take the input.
+        (Status::Skipped, Some(FailureKind::UnsupportedInput)) => {
+            Some(FallThroughReason::UnsupportedInput)
         }
         (Status::Nonzero, Some(FailureKind::SessionNotFound)) => {
             Some(FallThroughReason::SessionNotFound)
@@ -953,6 +960,8 @@ mod tests {
                 cost_usd: Some(0.0),
             },
             usage_source: Some("json".to_string()),
+            calls: None,
+            diagnostics: Vec::new(),
             session_id: None,
             events: None,
             events_source: None,

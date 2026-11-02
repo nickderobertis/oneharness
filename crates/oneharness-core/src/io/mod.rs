@@ -17,6 +17,7 @@ pub mod hooks;
 pub mod identity;
 // The starter-config scaffold `oneharness init` writes.
 pub mod init;
+pub mod lean;
 // The raw HTTP client is an implementation detail of the controlled-turn
 // driver, not a surface a consumer of this crate should depend on: it exists
 // only because these two control servers speak HTTP.

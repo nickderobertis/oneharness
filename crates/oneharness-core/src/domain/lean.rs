@@ -935,6 +935,19 @@ pub fn image_media_type(bytes: &[u8]) -> Option<&'static str> {
     }
 }
 
+/// Whether harness `id` takes images inside its stdin frame (claude-code),
+/// rather than as file paths on the argv.
+#[must_use]
+pub fn images_ride_stdin_frame(id: &str) -> bool {
+    matches!(
+        translation(id, Setting::Images)
+            .knobs
+            .first()
+            .map(|k| k.knob),
+        Some(Knob::StdinFrame(_))
+    )
+}
+
 /// The argv a path-taking harness adds for `images` (codex, opencode,
 /// copilot); empty for claude-code, whose images ride its stdin frame.
 #[must_use]

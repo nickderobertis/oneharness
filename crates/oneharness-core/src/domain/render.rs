@@ -999,6 +999,8 @@ mod tests {
             text_source: None,
             usage: Usage::default(),
             usage_source: None,
+            calls: None,
+            diagnostics: Vec::new(),
             session_id: None,
             events: None,
             events_source: None,

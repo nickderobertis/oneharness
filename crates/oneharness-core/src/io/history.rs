@@ -2733,6 +2733,8 @@ mod tests {
             text_source: Some("raw".to_string()),
             usage: Usage::default(),
             usage_source: None,
+            calls: None,
+            diagnostics: Vec::new(),
             session_id: None,
             events: None,
             events_source: None,

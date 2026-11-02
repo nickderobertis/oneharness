@@ -2358,3 +2358,110 @@ fn a_codex_tool_set_keeps_the_shell_for_read_and_drops_it_only_when_empty() {
         "{result}"
     );
 }
+
+/// A relative `--image` is the caller's path: resolved against the directory
+/// oneharness was started in, not the `--cwd` the harness runs in.
+#[test]
+fn a_relative_image_is_resolved_where_the_caller_named_it() {
+    let scratch = ScratchDir::new("lean-image-relative").unwrap();
+    let caller = scratch.join("caller");
+    let elsewhere = scratch.join("elsewhere");
+    std::fs::create_dir_all(&caller).unwrap();
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let image = png(&caller, "frame.png");
+    let input = scratch.join("input.json");
+    let profiles = ProfileScratch::new();
+    let out = Command::new(workspace_bin("oneharness"))
+        .current_dir(&caller)
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .args([
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "hi",
+            "--mode",
+            "bypass",
+            "--format",
+            "json",
+        ])
+        .args(["--bin", &bin("codex"), "--image", "frame.png"])
+        .args(["--cwd", &elsewhere.display().to_string()])
+        .args(["--env", &format!("MOCK_INPUT_FILE={}", input.display())])
+        .args(["--env", profiles.as_str()])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let (argv, _) = recorded(&input);
+    let passed = argv
+        .iter()
+        .find_map(|a| a.strip_prefix("--image="))
+        .expect("an image flag");
+    assert_eq!(
+        std::fs::canonicalize(passed).unwrap(),
+        std::fs::canonicalize(&image).unwrap(),
+        "the caller's file, not one under --cwd"
+    );
+}
+
+/// A variant's own `CODEX_HOME` is where its rollouts are read from, and a
+/// resumed turn there still reports only its own calls.
+#[test]
+fn per_call_usage_is_read_from_a_variants_own_codex_home() {
+    let s = Sessions::new("variant-home");
+    let variant_home = s.dir.join("work-home");
+    std::fs::create_dir_all(&variant_home).unwrap();
+    let proj = s.dir.join("proj");
+    std::fs::write(
+        proj.join("oneharness.toml"),
+        format!(
+            "[harness.codex.variant.work.env]\nCODEX_HOME = {:?}\nMOCK_CODEX_SESSIONS = \"1\"\n",
+            variant_home.display().to_string()
+        ),
+    )
+    .unwrap();
+    let user = s.dir.join("user.toml");
+    std::fs::write(&user, "").unwrap();
+    let (proj_s, store, b) = (s.path("proj"), s.path("store"), bin("codex"));
+    let turn = |prompt: &str| {
+        let out = oh(
+            &[
+                "run",
+                "--harness",
+                "codex:work",
+                "--session",
+                "watch",
+                "--session-dir",
+                &store,
+                "--cwd",
+                &proj_s,
+                "--bin",
+                &b,
+                "--mode",
+                "bypass",
+                "--prompt",
+                prompt,
+            ],
+            &[],
+            Some(&user),
+        );
+        assert!(out.status.success(), "{out:?}");
+        json(&out)["results"][0].clone()
+    };
+    for prompt in ["alpha", "beta"] {
+        let result = turn(prompt);
+        assert_eq!(
+            result["calls"].as_array().map_or(0, Vec::len),
+            3,
+            "{prompt}: {result}"
+        );
+    }
+    assert!(
+        variant_home.join("sessions").is_dir(),
+        "the variant's home holds the rollout"
+    );
+    assert!(
+        !s.dir.join("home").join("sessions").exists(),
+        "the base home does not"
+    );
+}

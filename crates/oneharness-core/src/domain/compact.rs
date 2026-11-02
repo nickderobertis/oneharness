@@ -110,22 +110,43 @@ fn claude_compaction_usage(result: &Value) -> Usage {
     else {
         return usage;
     };
-    let add = |total: &mut Option<u64>, value: Option<u64>| {
-        if let Some(value) = value {
-            *total = Some(total.unwrap_or(0) + value);
+    // A total that cannot be represented is unavailable, never wrapped or
+    // infinite: one field poisoned stays `None` whatever the other models say.
+    let mut overflowed = [false; 5];
+    let add = |total: &mut Option<u64>, poisoned: &mut bool, value: Option<u64>| {
+        if let (Some(value), false) = (value, *poisoned) {
+            match total.unwrap_or(0).checked_add(value) {
+                Some(sum) => *total = Some(sum),
+                None => {
+                    *total = None;
+                    *poisoned = true;
+                }
+            }
         }
     };
     for model in models.values() {
         let field = |name: &str| model.get(name).and_then(Value::as_u64);
-        add(&mut usage.input_tokens, field("inputTokens"));
-        add(&mut usage.output_tokens, field("outputTokens"));
-        add(&mut usage.cache_read_tokens, field("cacheReadInputTokens"));
+        let [input, output, read, write, cost] = &mut overflowed;
+        add(&mut usage.input_tokens, input, field("inputTokens"));
+        add(&mut usage.output_tokens, output, field("outputTokens"));
+        add(
+            &mut usage.cache_read_tokens,
+            read,
+            field("cacheReadInputTokens"),
+        );
         add(
             &mut usage.cache_write_tokens,
+            write,
             field("cacheCreationInputTokens"),
         );
-        if let Some(cost) = model.get("costUSD").and_then(Value::as_f64) {
-            usage.cost_usd = Some(usage.cost_usd.unwrap_or(0.0) + cost);
+        if let (Some(value), false) = (model.get("costUSD").and_then(Value::as_f64), *cost) {
+            let sum = usage.cost_usd.unwrap_or(0.0) + value;
+            if sum.is_finite() && value.is_finite() {
+                usage.cost_usd = Some(sum);
+            } else {
+                usage.cost_usd = None;
+                *cost = true;
+            }
         }
     }
     usage
@@ -472,6 +493,24 @@ mod tests {
         assert_eq!(
             refused.result,
             ClaudeResult::Failed(Some("Not enough messages to compact.".to_string()))
+        );
+    }
+
+    #[test]
+    fn a_compaction_total_that_cannot_be_represented_is_unavailable() {
+        let result = json!({"type": "result", "model_usage_since_last_result": {
+            "a": {"inputTokens": u64::MAX, "outputTokens": 3, "costUSD": f64::MAX},
+            "b": {"inputTokens": 2, "outputTokens": 4, "costUSD": f64::MAX},
+        }});
+        let usage = claude_compaction_usage(&result);
+        assert_eq!(
+            usage.input_tokens, None,
+            "an overflowing count is unavailable"
+        );
+        assert_eq!(usage.output_tokens, Some(7));
+        assert_eq!(
+            usage.cost_usd, None,
+            "a cost summing past f64 is unavailable"
         );
     }
 

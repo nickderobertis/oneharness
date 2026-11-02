@@ -31,6 +31,8 @@
 //!                   by another thread's turn and another turn of the fork.
 //!   MOCK_COMPACT_USAGE    with MOCK_CODEX_SESSIONS, the fork's token totals grow
 //!                   by 60 input and 9 output tokens over the compaction.
+//!   MOCK_COMPACT_OVERFLOW with MOCK_CLAUDE_SESSIONS, the compaction's result
+//!                   reports per-model input counts whose sum overflows a u64.
 //!   MOCK_COMPACT_DELAY_MS with either, a compaction pauses this long midway
 //!                   and then completes.
 //!   MOCK_COMPACT_BEGUN    with either, a compaction writes part of the fork,
@@ -198,9 +200,22 @@ fn claude(argv: &[String]) -> ! {
             &to,
             &[serde_json::json!({"type":"user","message":{"role":"user","content":summary},"session_id":fork}).to_string()],
         );
+        let overflow = std::env::var_os("MOCK_COMPACT_OVERFLOW").is_some();
         let lines: Vec<String> = CLAUDE_COMPACT
             .lines()
             .map(|l| l.replace(CLAUDE_COMPACT_ID, &fork))
+            .map(|l| {
+                let mut value: serde_json::Value = serde_json::from_str(&l).expect("captured JSON");
+                if overflow && value["type"] == "result" {
+                    // Two models whose input counts cannot be summed in a u64.
+                    value["model_usage_since_last_result"] = serde_json::json!({
+                        "a": {"inputTokens": u64::MAX, "outputTokens": 3},
+                        "b": {"inputTokens": 2, "outputTokens": 4},
+                    });
+                    return value.to_string();
+                }
+                l
+            })
             .collect();
         say(&lines);
     }

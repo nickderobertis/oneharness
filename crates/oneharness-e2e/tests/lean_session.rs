@@ -2707,3 +2707,73 @@ fn an_unreadable_codex_record_is_a_diagnostic_not_a_failed_run() {
     assert!(said.contains("t-locked"), "{said}");
     assert!(said.to_lowercase().contains("permission denied"), "{said}");
 }
+
+/// A compaction whose reported per-model counts cannot be summed reports
+/// that field as unavailable rather than wrapping or failing.
+#[test]
+fn a_compaction_total_that_overflows_is_reported_unavailable() {
+    let s = Sessions::new("overflow");
+    s.turn("claude-code", "alpha");
+    let outcome = json(&s.compact("claude-code", &["--env", "MOCK_COMPACT_OVERFLOW=1"]));
+    assert_eq!(outcome["status"], "completed", "{outcome}");
+    assert!(outcome["usage"]["input_tokens"].is_null(), "{outcome}");
+    assert_eq!(outcome["usage"]["output_tokens"], 7, "{outcome}");
+}
+
+/// An explicit `--model` beats the configured one, and an out-of-range
+/// `--timeout` is refused before anything spawns.
+#[test]
+fn compact_takes_an_explicit_model_over_config_and_refuses_an_unrepresentable_timeout() {
+    let s = Sessions::new("explicit-model");
+    std::fs::write(
+        s.dir.join("proj").join("oneharness.toml"),
+        "[harness.claude-code]\nmodel = \"claude-configured\"\n",
+    )
+    .unwrap();
+    let user = s.dir.join("user.toml");
+    std::fs::write(&user, "").unwrap();
+    s.turn("claude-code", "alpha");
+    let (proj, store, b) = (s.path("proj"), s.path("store"), bin("claude-code"));
+    let argv_file = s.dir.join("argv");
+    let argv_env = format!("MOCK_ARGV_FILE={}", argv_file.display());
+    let env = s.env("claude-code");
+    let compact = |extra: &[&str]| {
+        let mut args = vec![
+            "compact",
+            "--session",
+            "watch",
+            "--session-dir",
+            &store,
+            "--cwd",
+            &proj,
+            "--bin",
+            &b,
+            "--env",
+            &argv_env,
+        ];
+        args.extend_from_slice(extra);
+        for e in &env {
+            args.extend(["--env", e.as_str()]);
+        }
+        oh(&args, &[], Some(&user))
+    };
+    let out = compact(&["--model", "claude-explicit"]);
+    assert_eq!(json(&out)["status"], "completed", "{out:?}");
+    let argv: Vec<String> = std::fs::read_to_string(&argv_file)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    assert!(has_seq(&argv, &["--model", "claude-explicit"]), "{argv:?}");
+    assert!(!argv.iter().any(|a| a == "claude-configured"), "{argv:?}");
+
+    std::fs::remove_file(&argv_file).unwrap();
+    let out = compact(&["--timeout", "18446744073709551615"]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(
+        stderr(&out).contains("18446744073709551615"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(!argv_file.exists(), "nothing was spawned");
+}

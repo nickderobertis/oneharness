@@ -2795,3 +2795,48 @@ fn compact_takes_an_explicit_model_over_config_and_refuses_an_unrepresentable_ti
     );
     assert!(!argv_file.exists(), "nothing was spawned");
 }
+
+/// A fallback chain whose session resumes on a later candidate reports that
+/// candidate's own calls, not the turns the thread already held.
+#[test]
+fn a_fallback_candidate_resuming_the_session_reports_only_its_own_calls() {
+    let s = Sessions::new("fallback-calls");
+    s.turn("codex", "alpha");
+    let (proj, store) = (s.path("proj"), s.path("store"));
+    let missing = format!("claude-code={}", s.dir.join("no-claude").display());
+    let codex = bin("codex");
+    let env = s.env("codex");
+    let mut args = vec![
+        "run",
+        "--harness",
+        "claude-code,codex",
+        "--session",
+        "watch",
+        "--session-dir",
+        &store,
+        "--cwd",
+        &proj,
+        "--bin",
+        &missing,
+        "--bin",
+        &codex,
+        "--mode",
+        "bypass",
+        "--prompt",
+        "beta",
+    ];
+    for e in &env {
+        args.extend(["--env", e.as_str()]);
+    }
+    let report = json(&oh(&args, &[], None));
+    assert_eq!(report["fallback"]["ran"], "codex", "{report}");
+    assert_eq!(report["session"]["phase"], "continue", "{report}");
+    let ran = report["results"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    assert_eq!(ran["text"], "context: [alpha, beta]");
+    assert_eq!(ran["calls"].as_array().unwrap().len(), 3, "{ran}");
+}

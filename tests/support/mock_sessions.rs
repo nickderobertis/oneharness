@@ -215,7 +215,6 @@ fn claude(argv: &[String]) -> ! {
             .map(|l| {
                 let mut value: serde_json::Value = serde_json::from_str(&l).expect("captured JSON");
                 if overflow && value["type"] == "result" {
-                    // Two models whose input counts cannot be summed in a u64.
                     // Two models whose input counts cannot be summed in a
                     // u64, and whose costs sum past an f64.
                     value["model_usage_since_last_result"] = serde_json::json!({

@@ -31262,6 +31262,81 @@ fn a_controlled_codex_turn_opens_under_the_candidates_own_model() {
 /// turn against an app-server whose open response carries no `model`, with
 /// nothing to say the model was wrong.
 #[cfg(unix)]
+/// The lean settings reach a controlled codex turn's own app-server child
+/// (`app_server = "per-dispatch"`): `--no-mcp` disables each server the codex
+/// home declares and `--no-skills` drops the skills list.
+#[cfg(unix)]
+#[test]
+fn a_controlled_per_dispatch_codex_turn_loads_no_mcp_and_no_skills() {
+    let mock = mock_bin().display().to_string();
+    let store = control_store_dir("lean-per-dispatch");
+    let store_arg = store.display().to_string();
+    let log_arg = store.join("app-server.log").display().to_string();
+    let argv_file = store.join("argv");
+    let argv_arg = argv_file.display().to_string();
+    let home = store.join("codex-home");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("config.toml"),
+        "[mcp_servers.docs]\ncommand = \"d\"\n",
+    )
+    .unwrap();
+    let home_arg = home.display().to_string();
+    let project = format!(
+        r#"
+        [harness.codex]
+        bin = '{mock}'
+        env = {{ MOCK_CODEX_APP_SERVER_LOG = '{log_arg}', MOCK_CODEX_COMPLETE_TURN = "1", MOCK_ARGV_FILE = '{argv_arg}', CODEX_HOME = '{home_arg}' }}
+    "#
+    );
+    let fx = ConfigFixture::per_dispatch("control-lean", &project, "");
+    let cwd_arg = fx.cwd();
+    let output = run_with_config(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--control",
+            "--session",
+            "lean",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "bypass",
+            "--prompt",
+            "keep working",
+            "--no-mcp",
+            "--no-skills",
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let argv: Vec<String> = std::fs::read_to_string(&argv_file)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    assert_eq!(
+        argv.first().map(String::as_str),
+        Some("app-server"),
+        "{argv:?}"
+    );
+    let pair = |value: &str| argv.windows(2).any(|w| w[0] == "-c" && w[1] == value);
+    assert!(
+        pair("mcp_servers.docs={command=\"true\",enabled=false}"),
+        "{argv:?}"
+    );
+    assert!(pair("skills.include_instructions=false"), "{argv:?}");
+}
+
 #[test]
 fn a_controlled_codex_turn_proceeds_when_the_server_names_no_model() {
     let mock = mock_bin().display().to_string();

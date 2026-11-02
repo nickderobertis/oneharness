@@ -6508,3 +6508,34 @@ fn a_timed_out_controlled_turn_keeps_its_usage_as_work_evidence() {
     assert_eq!(ran["telemetry"]["source"], "provider_measured", "{ran}");
 }
 // llmlint: ignore-end[e2e_not_mocked]
+
+/// The lean settings reach the shared app-server a controlled codex turn runs
+/// on: the pooled server is launched with `--no-mcp`'s disabled stub for each
+/// server the codex home declares and `--no-skills`'s override.
+#[test]
+fn a_controlled_codex_turn_on_the_shared_server_loads_no_mcp_and_no_skills() {
+    let pool = Pool::new("pool-lean");
+    let home = pool.path("codex-home");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("config.toml"),
+        "[mcp_servers.docs]\ncommand = \"d\"\n",
+    )
+    .unwrap();
+    let (out, report) = pool.run(pool.command("lean", &["--no-mcp", "--no-skills"], &[]));
+    succeeded(&out, &report);
+    let servers = pool.mock_servers();
+    let argv: Vec<&str> = servers[0]["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a.as_str().unwrap())
+        .collect();
+    let pair = |value: &str| argv.windows(2).any(|w| w == ["-c", value]);
+    assert!(
+        pair("mcp_servers.docs={command=\"true\",enabled=false}"),
+        "{argv:?}"
+    );
+    assert!(pair("features.apps=false"), "{argv:?}");
+    assert!(pair("skills.include_instructions=false"), "{argv:?}");
+}

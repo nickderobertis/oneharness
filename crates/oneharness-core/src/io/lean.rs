@@ -35,24 +35,16 @@ pub fn read_images(paths: &[PathBuf]) -> Result<Vec<ImageInput>, OneharnessError
         .collect()
 }
 
-/// The codex home a launch with `env` uses: its `CODEX_HOME`, else this
-/// process's, else `~/.codex`.
+/// The codex home a launch with `env`, `env_remove` and `cwd` uses — the
+/// same resolution the model catalog reads (`model_catalog`): its
+/// `CODEX_HOME` unless removed, else `HOME` (or `USERPROFILE`)`/.codex`.
 #[must_use]
-pub fn codex_home(env: &[(String, String)]) -> Option<PathBuf> {
-    env.iter()
-        .rev()
-        .find(|(key, value)| key == "CODEX_HOME" && !value.is_empty())
-        .map(|(_, value)| PathBuf::from(value))
-        .or_else(|| {
-            std::env::var_os("CODEX_HOME")
-                .filter(|v| !v.is_empty())
-                .map(PathBuf::from)
-        })
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .filter(|v| !v.is_empty())
-                .map(|home| PathBuf::from(home).join(".codex"))
-        })
+pub fn codex_home(
+    env: &[(String, String)],
+    env_remove: &[String],
+    cwd: Option<&Path>,
+) -> Option<PathBuf> {
+    crate::io::model_catalog::resolve_codex_home(env, env_remove, cwd)
 }
 
 /// The MCP server names codex would load for a launch in `cwd` with `home`:

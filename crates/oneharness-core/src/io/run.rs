@@ -1073,8 +1073,12 @@ pub fn run_supervised(
         let codex_mcp = if spec.id == "codex" && lean_settings.load_mcp == Some(false) {
             let mut env = variant_environment(cfg, selected_id, &project_start).unwrap_or_default();
             env.extend(cli_env.iter().cloned());
+            let env_remove = cfg
+                .variant_for(selected_id)
+                .map_or_else(Vec::new, |variant| variant.unset_env.clone());
             let cwd = args.cwd.clone().unwrap_or_else(|| project_start.clone());
-            lean_io::codex_mcp_servers(lean_io::codex_home(&env).as_deref(), &cwd)
+            let home = lean_io::codex_home(&env, &env_remove, Some(&cwd));
+            lean_io::codex_mcp_servers(home.as_deref(), &cwd)
         } else {
             Vec::new()
         };
@@ -1305,7 +1309,9 @@ pub fn run_supervised(
             codex_resumed_from: None,
         };
         if spec.id == "codex" && jobs.len() > jobs_before {
-            calls_plan.codex_home = jobs.last().and_then(|job| lean_io::codex_home(&job.env));
+            calls_plan.codex_home = jobs
+                .last()
+                .and_then(|job| lean_io::codex_home(&job.env, &job.env_remove, job.cwd.as_deref()));
             if let Some(thread) = job_plans.last().and_then(|plan| plan.resume.clone()) {
                 calls_plan.note_codex_resume(&thread);
             }

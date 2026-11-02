@@ -144,6 +144,10 @@ pub fn compact_session(
         None => record.harness.clone(),
     };
     let spec = identity.spec();
+    // The caller's own inputs are checked before any answer is given, so a
+    // malformed `env` or `bin` is a usage error whatever the harness can do.
+    let cli_env = crate::io::run::parse_env(&request.env)?;
+    let bin_overrides = BinOverrides::parse(&request.bin)?;
     let outcome = |status: CompactStatus, error: Option<String>| CompactOutcome {
         schema_version: SCHEMA_VERSION.to_string(),
         status,
@@ -171,7 +175,7 @@ pub fn compact_session(
         .map(|bin| (identity.as_str().to_string(), bin.to_string()))
         .into_iter()
         .collect();
-    let overrides = BinOverrides::parse(&request.bin)?.with_config_bins(config_bins);
+    let overrides = bin_overrides.with_config_bins(config_bins);
     let resolved = detect::resolve_named(spec, identity.as_str(), &overrides);
     if !resolved.available {
         return Ok(outcome(
@@ -188,7 +192,7 @@ pub fn compact_session(
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
     env.extend(variant_environment(cfg, identity.as_str(), &project)?);
-    env.extend(crate::io::run::parse_env(&request.env)?);
+    env.extend(cli_env);
     let env_remove = cfg
         .variant_for(identity.as_str())
         .map_or_else(Vec::new, |variant| variant.unset_env.clone());

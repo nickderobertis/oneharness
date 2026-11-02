@@ -2465,3 +2465,177 @@ fn per_call_usage_is_read_from_a_variants_own_codex_home() {
         "the base home does not"
     );
 }
+
+/// A malformed `--env` or `--bin` is a usage error even when the answer would
+/// otherwise be `unsupported` or a missing binary.
+#[test]
+fn compact_refuses_malformed_env_or_bin_before_any_answer() {
+    let o = Sessions::new("malformed-unsupported");
+    let (proj, store, b) = (o.path("proj"), o.path("store"), bin("opencode"));
+    let created = oh(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--session",
+            "watch",
+            "--session-dir",
+            &store,
+            "--cwd",
+            &proj,
+            "--bin",
+            &b,
+            "--mode",
+            "bypass",
+            "--prompt",
+            "hi",
+        ],
+        &[(
+            "MOCK_STDOUT",
+            r#"{"type":"text","sessionID":"ses_1","part":{"type":"text","text":"ok"}}"#,
+        )],
+        None,
+    );
+    assert!(created.status.success(), "{created:?}");
+    for bad in [["--env", "NO_EQUALS"], ["--bin", "no-equals"]] {
+        let mut args = vec![
+            "compact",
+            "--session",
+            "watch",
+            "--session-dir",
+            &store,
+            "--cwd",
+            &proj,
+            "--bin",
+            &b,
+        ];
+        args.extend_from_slice(&bad);
+        let out = oh(&args, &[], None);
+        assert_eq!(out.status.code(), Some(2), "unsupported + {bad:?}: {out:?}");
+    }
+
+    let c = Sessions::new("malformed-missing");
+    c.turn("claude-code", "alpha");
+    let (proj, store) = (c.path("proj"), c.path("store"));
+    let missing = format!("claude-code={}", c.dir.join("absent").display());
+    let out = oh(
+        &[
+            "compact",
+            "--session",
+            "watch",
+            "--session-dir",
+            &store,
+            "--cwd",
+            &proj,
+            "--bin",
+            &missing,
+            "--env",
+            "NO_EQUALS",
+        ],
+        &[],
+        None,
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "missing binary + bad env: {out:?}"
+    );
+}
+
+/// codex's home is wherever the launch's codex would look: `HOME/.codex`
+/// when no `CODEX_HOME` reaches it, including when a variant removes the one
+/// oneharness inherited. Per-call usage and MCP discovery both read it.
+#[test]
+fn codex_home_follows_home_and_a_variants_removed_codex_home() {
+    let scratch = ScratchDir::new("lean-codex-home").unwrap();
+    let declare = |home: &Path, server: &str| {
+        std::fs::create_dir_all(home).unwrap();
+        std::fs::write(
+            home.join("config.toml"),
+            format!("[mcp_servers.{server}]\ncommand = \"x\"\n"),
+        )
+        .unwrap();
+    };
+    let inherited = scratch.join("inherited");
+    let user_home = scratch.join("user");
+    declare(&inherited, "inherited_server");
+    declare(&user_home.join(".codex"), "home_server");
+    let project = scratch.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let input = scratch.join("input.json");
+    let profiles = ProfileScratch::new();
+    let run = |extra: &[&str], inherit_codex_home: bool| {
+        let mut cmd = Command::new(workspace_bin("oneharness"));
+        cmd.env("ONEHARNESS_CONFIG", scratch.join("user.toml"));
+        for (var, _) in
+            std::env::vars().filter(|(v, _)| v.starts_with("ONEHARNESS_") || v == "CODEX_HOME")
+        {
+            cmd.env_remove(var);
+        }
+        if inherit_codex_home {
+            cmd.env("CODEX_HOME", &inherited);
+        }
+        cmd.args([
+            "run", "--prompt", "hi", "--mode", "bypass", "--no-mcp", "--format", "json",
+        ])
+        .args([
+            "--bin",
+            &bin("codex"),
+            "--cwd",
+            &project.display().to_string(),
+        ])
+        .args([
+            "--env",
+            &format!("MOCK_INPUT_FILE={}", input.display()),
+            "--env",
+            profiles.as_str(),
+        ])
+        .args(extra);
+        let out = cmd.output().unwrap();
+        assert!(out.status.success(), "{out:?}");
+        let (argv, _) = recorded(&input);
+        (json(&out)["results"][0].clone(), argv.join(" "))
+    };
+    std::fs::write(scratch.join("user.toml"), "").unwrap();
+
+    // No CODEX_HOME at all: HOME/.codex, as codex itself falls back.
+    let home_env = format!("HOME={}", user_home.display());
+    let (result, argv) = run(
+        &[
+            "--harness",
+            "codex",
+            "--env",
+            &home_env,
+            "--env",
+            "MOCK_CODEX_SESSIONS=1",
+        ],
+        false,
+    );
+    assert_eq!(
+        result["calls"].as_array().map_or(0, Vec::len),
+        3,
+        "{result}"
+    );
+    assert!(argv.contains("mcp_servers.home_server="), "{argv}");
+
+    // A variant that removes the inherited CODEX_HOME reads HOME/.codex too.
+    std::fs::write(
+        scratch.join("user.toml"),
+        format!(
+            "[harness.codex.variant.home]\nunset_env = [\"CODEX_HOME\"]\n[harness.codex.variant.home.env]\nHOME = {:?}\nMOCK_CODEX_SESSIONS = \"1\"\n",
+            user_home.display().to_string()
+        ),
+    )
+    .unwrap();
+    let (result, argv) = run(&["--harness", "codex:home"], true);
+    assert_eq!(
+        result["calls"].as_array().map_or(0, Vec::len),
+        3,
+        "{result}"
+    );
+    assert!(argv.contains("mcp_servers.home_server="), "{argv}");
+    assert!(
+        !argv.contains("inherited_server"),
+        "the removed home is not read: {argv}"
+    );
+}

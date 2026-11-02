@@ -268,13 +268,9 @@ pub struct RunOptions {
     /// not loaded. At least one: each class is sent as its own `--tool-set`,
     /// so an empty array would send nothing at all and is refused rather than
     /// silently loading the harness's own tools.
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "non_empty_tool_set"
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Vec<ToolClass>", length(min = 1))]
-    pub tool_set: Option<Vec<ToolClass>>,
+    pub tool_set: Option<NonEmptyToolSet>,
     /// Load no skills list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "bool")]
@@ -841,18 +837,40 @@ pub struct InterruptOptions {
     pub cwd: Option<String>,
 }
 
-/// `RunOptions::tool_set`, refused when present but empty — the rule its
-/// schema's `minItems` states for the SDK validators.
-fn non_empty_tool_set<'de, D: Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<Vec<ToolClass>>, D::Error> {
-    let classes = Option::<Vec<ToolClass>>::deserialize(deserializer)?;
-    if classes.as_ref().is_some_and(Vec::is_empty) {
-        return Err(serde::de::Error::custom(
-            "`toolSet` names at least one class; leave it out to load the harness's own tools",
-        ));
+/// `RunOptions::tool_set`: at least one class, so the state its schema's
+/// `minItems` refuses cannot be built in Rust either.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct NonEmptyToolSet(Vec<ToolClass>);
+
+/// An empty `toolSet`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("`toolSet` names at least one class; leave it out to load the harness's own tools")]
+pub struct EmptyToolSetError;
+
+impl NonEmptyToolSet {
+    /// The classes, refused when there are none.
+    ///
+    /// # Errors
+    ///
+    /// [`EmptyToolSetError`] for an empty list.
+    pub fn new(classes: Vec<ToolClass>) -> Result<Self, EmptyToolSetError> {
+        if classes.is_empty() {
+            return Err(EmptyToolSetError);
+        }
+        Ok(Self(classes))
     }
-    Ok(classes)
+
+    #[must_use]
+    pub fn classes(&self) -> &[ToolClass] {
+        &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for NonEmptyToolSet {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Self::new(Vec::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
 }
 
 /// Options accepted by the language SDKs' `compact()`: compact a named

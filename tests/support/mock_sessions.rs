@@ -11,7 +11,8 @@
 //!                   prompts the conversation it was handed carries (a
 //!                   compacted one starts from its summary).
 //!   MOCK_CODEX_SESSIONS   the same for codex under
-//!                   `$CODEX_HOME/sessions/2026/11/02/rollout-…-<id>.jsonl`:
+//!                   `$CODEX_HOME` (else `$HOME/.codex`)
+//!                   `/sessions/2026/11/02/rollout-…-<id>.jsonl`:
 //!                   `exec [resume <id>] … <prompt>` appends the turn and the
 //!                   captured per-call `token_count` events
 //!                   (`tests/fixtures/codex-rollout-token-counts.jsonl`), and a
@@ -231,8 +232,18 @@ fn claude(argv: &[String]) -> ! {
     say(&[result.to_string()]);
 }
 
+/// Where codex keeps its sessions: `CODEX_HOME`, else `$HOME/.codex`.
 fn codex_store() -> PathBuf {
-    PathBuf::from(std::env::var("CODEX_HOME").expect("MOCK_CODEX_SESSIONS needs CODEX_HOME"))
+    std::env::var("CODEX_HOME")
+        .ok()
+        .filter(|home| !home.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|home| PathBuf::from(home).join(".codex"))
+        })
+        .expect("MOCK_CODEX_SESSIONS needs CODEX_HOME or HOME")
         .join("sessions")
         .join("2026")
         .join("11")

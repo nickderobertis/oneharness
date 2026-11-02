@@ -433,13 +433,21 @@ fn probe_version(launch: &CatalogLaunch<'_>) -> Option<String> {
 /// reads it; the result is canonicalized when it exists, so two spellings of
 /// one home share a catalog.
 fn codex_home(launch: &CatalogLaunch<'_>) -> Option<PathBuf> {
+    resolve_codex_home(launch.env, launch.env_remove, launch.cwd)
+}
+
+/// [`codex_home`] for any Codex launch: the one resolution the model
+/// catalog, the lean settings' MCP discovery and per-call usage all read.
+pub(crate) fn resolve_codex_home(
+    env: &[(String, String)],
+    env_remove: &[String],
+    cwd: Option<&Path>,
+) -> Option<PathBuf> {
     let var = |name: &str| -> Option<String> {
-        if launch.env_remove.iter().any(|key| key == name) {
+        if env_remove.iter().any(|key| key == name) {
             return None;
         }
-        launch
-            .env
-            .iter()
+        env.iter()
             .rev()
             .find(|(key, _)| key == name)
             .map(|(_, value)| value.clone())
@@ -451,8 +459,7 @@ fn codex_home(launch: &CatalogLaunch<'_>) -> Option<PathBuf> {
         var(user).map(|home| PathBuf::from(home).join(".codex"))
     })?;
     let home = if home.is_relative() {
-        let start = launch
-            .cwd
+        let start = cwd
             .map(Path::to_path_buf)
             .or_else(|| std::env::current_dir().ok())?;
         start.join(home)

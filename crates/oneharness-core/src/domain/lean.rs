@@ -1087,21 +1087,36 @@ pub fn claude_image_frame(prompt: &str, images: &[ImageInput]) -> String {
 /// emitted once per block). `None` when the stream carries no assistant usage.
 #[must_use]
 pub fn claude_stream_calls(stdout: &str) -> Option<Vec<Usage>> {
+    // The table's selector, `<event type>.<message field>.<usage field>`.
+    let selector = match translation(CLAUDE, Setting::Calls)
+        .knobs
+        .first()
+        .map(|k| k.knob)
+    {
+        Some(Knob::StreamField(selector)) => selector,
+        _ => "assistant.message.usage",
+    };
+    let mut parts = selector.split('.');
+    let (Some(event), Some(message_field), Some(usage_field)) =
+        (parts.next(), parts.next(), parts.next())
+    else {
+        return None;
+    };
     let mut order: Vec<String> = Vec::new();
     let mut by_id: std::collections::HashMap<String, Usage> = std::collections::HashMap::new();
     for line in stdout.lines() {
         let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
             continue;
         };
-        if value.get("type").and_then(Value::as_str) != Some("assistant") {
+        if value.get("type").and_then(Value::as_str) != Some(event) {
             continue;
         }
-        let Some(message) = value.get("message") else {
+        let Some(message) = value.get(message_field) else {
             continue;
         };
         let (Some(id), Some(usage)) = (
             message.get("id").and_then(Value::as_str),
-            message.get("usage").and_then(Value::as_object),
+            message.get(usage_field).and_then(Value::as_object),
         ) else {
             continue;
         };
@@ -1130,26 +1145,39 @@ pub fn claude_stream_calls(stdout: &str) -> Option<Vec<Usage>> {
 /// reports its final attempt's calls, the attempt its `usage` describes.
 #[must_use]
 pub fn codex_rollout_calls(rollout: &str) -> Vec<Usage> {
+    // The table's selector, `<record type> <payload type> <payload path>`.
+    let selector = match translation(CODEX, Setting::Calls)
+        .knobs
+        .first()
+        .map(|k| k.knob)
+    {
+        Some(Knob::SessionRecord(selector)) => selector,
+        _ => "event_msg token_count info.last_token_usage",
+    };
+    let mut parts = selector.split_whitespace();
+    let (Some(record), Some(kind), Some(path)) = (parts.next(), parts.next(), parts.next()) else {
+        return Vec::new();
+    };
+    let pointer = format!("/payload/{}", path.replace('.', "/"));
     let events: Vec<Value> = rollout
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line.trim()).ok())
         .collect();
-    fn event_type(value: &Value) -> Option<&str> {
-        (value.get("type").and_then(Value::as_str) == Some("event_msg"))
+    let event_type = |value: &Value| -> Option<String> {
+        (value.get("type").and_then(Value::as_str) == Some(record))
             .then(|| value.pointer("/payload/type").and_then(Value::as_str))
             .flatten()
-    }
+            .map(str::to_string)
+    };
     let last_turn = events
         .iter()
-        .rposition(|value| event_type(value) == Some("task_started"))
+        .rposition(|value| event_type(value).as_deref() == Some("task_started"))
         .map_or(0, |at| at + 1);
     events[last_turn..]
         .iter()
-        .filter(|value| event_type(value) == Some("token_count"))
+        .filter(|value| event_type(value).as_deref() == Some(kind))
         .filter_map(|value| {
-            let last = value
-                .pointer("/payload/info/last_token_usage")?
-                .as_object()?;
+            let last = value.pointer(&pointer)?.as_object()?;
             Some(Usage {
                 input_tokens: last.get("input_tokens").and_then(Value::as_u64),
                 output_tokens: last.get("output_tokens").and_then(Value::as_u64),
@@ -1334,6 +1362,50 @@ mod tests {
             "read needs codex's shell"
         );
         assert!(read_only.diagnostics[0].message.contains("reads files"));
+    }
+
+    #[test]
+    fn claude_code_s_adapter_emits_the_tabled_compaction_and_image_spellings() {
+        let spec = harness::by_id(CLAUDE).unwrap();
+        let ctx = |fork: bool, delivery: harness::PromptDelivery| harness::BuildCtx {
+            bin: "claude",
+            prompt: "/compact",
+            model: None,
+            system: None,
+            resume: Some("sid"),
+            fork,
+            mode: PermissionMode::Default,
+            output_format: crate::domain::report::OutputFormat::StreamJson,
+            schema: None,
+            system_file: None,
+            delivery,
+            plugins: false,
+            apps: false,
+            analytics: false,
+            model_catalog: None,
+            tools: None,
+        };
+        let forked = (spec.build_argv)(&ctx(true, harness::PromptDelivery::Argv));
+        for k in translation(CLAUDE, Setting::CompactNow).knobs {
+            let spelled = match k.knob {
+                Knob::Flag(flag) | Knob::PromptCommand(flag) => flag,
+                _ => continue,
+            };
+            assert!(forked.iter().any(|a| a == spelled), "{spelled}: {forked:?}");
+        }
+        let framed = (spec.build_argv)(&ctx(false, harness::PromptDelivery::MessageFrame));
+        let Some(Knob::StdinFrame(spelling)) = translation(CLAUDE, Setting::Images)
+            .knobs
+            .first()
+            .map(|k| k.knob)
+        else {
+            panic!("claude-code's images ride a stdin frame")
+        };
+        let words: Vec<&str> = spelling.split(' ').collect();
+        assert!(
+            framed.windows(words.len()).any(|w| w == words.as_slice()),
+            "{framed:?}"
+        );
     }
 
     #[test]

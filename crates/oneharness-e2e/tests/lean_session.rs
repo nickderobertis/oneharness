@@ -1093,6 +1093,16 @@ fn compact_hands_the_next_turn_the_compacted_context_on_claude_and_codex() {
                 );
                 assert_eq!(outcome["context_tokens_before"], 6_809);
                 assert_eq!(outcome["context_tokens_after"], 7_405);
+                // The compaction's own figures (`model_usage_since_last_result`),
+                // not the zeroed top-level usage or the session's running cost.
+                assert_eq!(
+                    outcome["usage"],
+                    serde_json::json!({
+                        "input_tokens": 58_305, "output_tokens": 1_538,
+                        "cache_read_tokens": 0, "cache_write_tokens": 13_711,
+                        "cost_usd": 0.008_313_375,
+                    })
+                );
             }
             _ => assert_eq!(
                 argv.first().map(String::as_str),

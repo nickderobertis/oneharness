@@ -22,7 +22,7 @@ use crate::domain::mode::PermissionMode;
 use crate::domain::report::{OutputFormat, SCHEMA_VERSION};
 use crate::domain::sdk::NonEmptyString;
 use crate::domain::session;
-use crate::domain::signals::{self, Usage};
+use crate::domain::signals::Usage;
 use crate::errors::OneharnessError;
 use crate::io::cancel::{self, CancelToken};
 use crate::io::config as config_io;
@@ -334,7 +334,7 @@ fn claude(
     let mut out = blank();
     out.context_tokens_before = read.before;
     out.context_tokens_after = read.after;
-    out.usage = signals::extract_usage(&driven.stdout).map_or_else(Usage::default, |r| r.usage);
+    out.usage = read.usage.clone();
     let status = match driven.end {
         End::Cancelled => CompactStatus::Cancelled,
         End::Exited(Some(0)) if read.result == compact::ClaudeResult::Succeeded => {

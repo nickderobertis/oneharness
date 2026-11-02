@@ -93,6 +93,42 @@ pub struct ClaudeCompaction {
     pub after: Option<u64>,
     /// The session id the compacted conversation lives under (the fork's).
     pub session_id: Option<String>,
+    /// The compaction's own usage: the result's `model_usage_since_last_result`
+    /// summed across models. Its top-level `usage` is all zeros for a
+    /// `/compact` turn and its `total_cost_usd` is the session's running
+    /// total, so neither is the compaction's.
+    pub usage: Usage,
+}
+
+/// The compaction's own usage from a `/compact` result line's
+/// `model_usage_since_last_result`; every field `None` when it is absent.
+fn claude_compaction_usage(result: &Value) -> Usage {
+    let mut usage = Usage::default();
+    let Some(models) = result
+        .get("model_usage_since_last_result")
+        .and_then(Value::as_object)
+    else {
+        return usage;
+    };
+    let add = |total: &mut Option<u64>, value: Option<u64>| {
+        if let Some(value) = value {
+            *total = Some(total.unwrap_or(0) + value);
+        }
+    };
+    for model in models.values() {
+        let field = |name: &str| model.get(name).and_then(Value::as_u64);
+        add(&mut usage.input_tokens, field("inputTokens"));
+        add(&mut usage.output_tokens, field("outputTokens"));
+        add(&mut usage.cache_read_tokens, field("cacheReadInputTokens"));
+        add(
+            &mut usage.cache_write_tokens,
+            field("cacheCreationInputTokens"),
+        );
+        if let Some(cost) = model.get("costUSD").and_then(Value::as_f64) {
+            usage.cost_usd = Some(usage.cost_usd.unwrap_or(0.0) + cost);
+        }
+    }
+    usage
 }
 
 /// Read claude-code's `/compact` stream (see
@@ -104,6 +140,7 @@ pub fn read_claude(stdout: &str) -> ClaudeCompaction {
         before: None,
         after: None,
         session_id: None,
+        usage: Usage::default(),
     };
     for value in stdout
         .lines()
@@ -127,6 +164,9 @@ pub fn read_claude(stdout: &str) -> ClaudeCompaction {
                         .map(str::to_string),
                 )
             };
+        }
+        if value.get("type").and_then(Value::as_str) == Some("result") {
+            out.usage = claude_compaction_usage(&value);
         }
         if let Some(meta) = value.get("compact_metadata") {
             out.before = meta.get("pre_tokens").and_then(Value::as_u64);
@@ -411,6 +451,17 @@ mod tests {
         let read = read_claude(&fixture("claude-compact-fork.jsonl"));
         assert_eq!(read.result, ClaudeResult::Succeeded);
         assert_eq!((read.before, read.after), (Some(6_809), Some(7_405)));
+        assert_eq!(
+            read.usage,
+            Usage {
+                input_tokens: Some(58_305),
+                output_tokens: Some(1_538),
+                cache_read_tokens: Some(0),
+                cache_write_tokens: Some(13_711),
+                cost_usd: Some(0.008_313_375),
+            },
+            "the compaction's own figures, not the session's running total"
+        );
         assert_eq!(
             read.session_id.as_deref(),
             Some("9e02ec47-3a9e-4737-a89a-ce9ed05abf43")

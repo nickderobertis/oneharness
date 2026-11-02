@@ -216,10 +216,14 @@ fn compact_session_completes_on_claude_and_codex() {
         assert_ne!(outcome.token.as_deref(), Some(original.as_str()));
         if id == "claude-code" {
             assert_eq!(outcome.context_tokens_before, Some(6_809));
-            assert!(
-                outcome.usage.cost_usd.is_some(),
+            assert_eq!(
+                outcome.usage.input_tokens,
+                Some(58_305),
                 "the compaction's own usage"
             );
+            assert_eq!(outcome.usage.output_tokens, Some(1_538));
+            assert_eq!(outcome.usage.cache_write_tokens, Some(13_711));
+            assert_eq!(outcome.usage.cost_usd, Some(0.008_313_375));
         }
         let (text, token) = kept.turn("gamma");
         assert_eq!(text, "context: [summary of: alpha, beta, gamma]", "{id}");

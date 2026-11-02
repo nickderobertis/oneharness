@@ -100,7 +100,7 @@ pub struct BuildCtx<'a> {
     /// the harness's own set. Only claude-code reads it: its one `--tools`
     /// list also carries read-only's narrowing, and a second `--tools` would
     /// widen the first (Claude Code unions them), so the two are resolved
-    /// together in [`argv_claude_code`]. Other harnesses receive their tool
+    /// together in the claude-code adapter. Other harnesses receive their tool
     /// set as args from [`crate::domain::lean::deliver`].
     pub tools: Option<&'a [ToolClass]>,
 }

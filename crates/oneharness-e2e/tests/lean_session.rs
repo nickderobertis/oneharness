@@ -2639,3 +2639,61 @@ fn codex_home_follows_home_and_a_variants_removed_codex_home() {
         "the removed home is not read: {argv}"
     );
 }
+
+/// Per-call usage that cannot be read leaves the run as it was and says why:
+/// when no codex home can be resolved, and when the rollout exists but
+/// cannot be read.
+#[cfg(unix)]
+#[test]
+fn an_unreadable_codex_record_is_a_diagnostic_not_a_failed_run() {
+    use std::os::unix::fs::PermissionsExt;
+    let scratch = ScratchDir::new("lean-unreadable-rollout").unwrap();
+    let profiles = ProfileScratch::new();
+    let named = "{\"type\":\"thread.started\",\"thread_id\":\"t-locked\"}\n{\"type\":\"item.completed\",\"item\":{\"id\":\"i\",\"type\":\"agent_message\",\"text\":\"ok\"}}";
+    let run = |env: &[(&str, &str)], remove_homes: bool, extra: &[&str]| {
+        let mut cmd = Command::new(workspace_bin("oneharness"));
+        cmd.env("ONEHARNESS_NO_CONFIG", "1");
+        if remove_homes {
+            cmd.env_remove("HOME").env_remove("CODEX_HOME");
+        }
+        cmd.args([
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "hi",
+            "--mode",
+            "bypass",
+            "--format",
+            "json",
+        ])
+        .args(["--bin", &bin("codex"), "--env", profiles.as_str()])
+        .args(extra);
+        for (key, value) in env {
+            cmd.env(key, value);
+        }
+        let out = cmd.output().unwrap();
+        assert!(out.status.success(), "{out:?}");
+        let result = json(&out)["results"][0].clone();
+        assert_eq!(result["status"], "ok", "{result}");
+        assert!(result.get("calls").is_none(), "{result}");
+        diagnostics_for(&result, "calls")[0]["message"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+
+    assert!(run(&[("MOCK_STDOUT", named)], true, &[]).contains("no codex home"));
+
+    let home = scratch.join("home");
+    let day = home.join("sessions").join("2026").join("11").join("02");
+    std::fs::create_dir_all(&day).unwrap();
+    let rollout = day.join("rollout-2026-11-02T00-00-00-t-locked.jsonl");
+    std::fs::write(&rollout, "{}\n").unwrap();
+    std::fs::set_permissions(&rollout, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let home_env = format!("CODEX_HOME={}", home.display());
+    let said = run(&[("MOCK_STDOUT", named)], false, &["--env", &home_env]);
+    std::fs::set_permissions(&rollout, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(said.contains("t-locked"), "{said}");
+    assert!(said.to_lowercase().contains("permission denied"), "{said}");
+}

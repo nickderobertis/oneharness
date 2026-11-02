@@ -47,6 +47,10 @@ const report = await new OneHarness().runMock(
 | `MOCK_INPUT_FILE` | Write `{"argv":[…],"stdin":"…"}` here, byte-exact, before answering. |
 | `MOCK_ECHO_PWD` | Emit `PWD=<inherited PWD>` and exit. |
 | `MOCK_ECHO_ENV` | Emit the named environment variable and value, then exit. |
+| `MOCK_ENV_FILE` | Write the whole inherited environment here as one JSON object, before answering. |
+| `MOCK_CLAUDE_SESSIONS` | Act like Claude Code keeping transcripts under `$CLAUDE_CONFIG_DIR/projects/oneharness-mock/`: `-p` starts or `--resume`s one and answers `context: [...]` (the prompts the conversation carries); `-p /compact --resume ID --fork-session` writes a compacted fork and replays the captured compaction (without `--fork-session`, it compacts in place). |
+| `MOCK_CODEX_SESSIONS` | The same for codex under `$CODEX_HOME/sessions/`: `exec [resume ID]` appends the turn and the captured per-call `token_count` events; a stdio `app-server` answers `thread/fork` and `thread/compact/start`. |
+| `MOCK_COMPACT_BEGUN` | With either, a compaction writes part of its rewrite, writes its pid to this path, then holds until killed — the compaction a caller cancels mid-rewrite. |
 | `MOCK_CAT_FILE` | Emit the current contents of this file and exit. |
 | `MOCK_CAT_ARG_AFTER` | Find this argv flag, emit the file named by its next argument, and exit. |
 | `MOCK_ECHO_STDIN` | Copy stdin verbatim to stdout and exit. |

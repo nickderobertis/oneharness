@@ -350,8 +350,15 @@ fn claude(
             }
         }
         end => {
-            out.error = Some(match read.result {
-                compact::ClaudeResult::Failed(Some(said)) => said,
+            out.error = Some(match (read.result, read.answer) {
+                (compact::ClaudeResult::Failed(Some(said)), _) => said,
+                // A `/compact` the model answered as a prompt: what it said
+                // is the only evidence of why no compaction ran.
+                (compact::ClaudeResult::Unreported, Some(answer)) => format!(
+                    "{}; it answered the turn instead of compacting: {}",
+                    end.describe(&driven.stderr),
+                    clip(&answer)
+                ),
                 _ => end.describe(&driven.stderr),
             });
             CompactStatus::Failed
@@ -359,6 +366,17 @@ fn claude(
     };
     (status, out)
 }
+
+/// At most [`ANSWER_CLIP`] characters of `text`, marked when cut.
+fn clip(text: &str) -> String {
+    match text.char_indices().nth(ANSWER_CLIP) {
+        Some((at, _)) => format!("{}…", &text[..at]),
+        None => text.to_string(),
+    }
+}
+
+/// How much of a model's answer a failed compaction's error quotes.
+const ANSWER_CLIP: usize = 300;
 
 /// `codex app-server` with the launch settings every Codex start carries, then
 /// the fork-then-compact dialogue.

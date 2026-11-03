@@ -98,6 +98,9 @@ pub struct ClaudeCompaction {
     /// `/compact` turn and its `total_cost_usd` is the session's running
     /// total, so neither is the compaction's.
     pub usage: Usage,
+    /// The result line's non-blank `result` text: empty for a `/compact`
+    /// turn, so present only when the model answered the turn instead.
+    pub answer: Option<String>,
 }
 
 /// The compaction's own usage from a `/compact` result line's
@@ -163,6 +166,7 @@ pub fn read_claude(stdout: &str) -> ClaudeCompaction {
         after: None,
         session_id: None,
         usage: Usage::default(),
+        answer: None,
     };
     for value in stdout
         .lines()
@@ -189,6 +193,12 @@ pub fn read_claude(stdout: &str) -> ClaudeCompaction {
         }
         if value.get("type").and_then(Value::as_str) == Some("result") {
             out.usage = claude_compaction_usage(&value);
+            out.answer = value
+                .get("result")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .map(str::to_string);
         }
         if let Some(meta) = value.get("compact_metadata") {
             out.before = meta.get("pre_tokens").and_then(Value::as_u64);
@@ -494,6 +504,15 @@ mod tests {
         assert_eq!(
             refused.result,
             ClaudeResult::Failed(Some("Not enough messages to compact.".to_string()))
+        );
+        assert_eq!(read.answer, None, "a /compact turn's result text is empty");
+        let answered = read_claude(
+            "{\"type\":\"result\",\"result\":\"  I don't have a /compact command.\\n\"}",
+        );
+        assert_eq!(answered.result, ClaudeResult::Unreported);
+        assert_eq!(
+            answered.answer.as_deref(),
+            Some("I don't have a /compact command.")
         );
     }
 

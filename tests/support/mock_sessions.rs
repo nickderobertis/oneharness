@@ -24,7 +24,10 @@
 //!                   does: `refuse` (claude's `compact_result: failed`, codex's
 //!                   error answer), `exit` (the process dies), `nofork` (claude
 //!                   names no forked session), `nosuccess` (claude writes the
-//!                   fork and exits 0 without `compact_result: success`), or
+//!                   fork and exits 0 without `compact_result: success`),
+//!                   `answered` (claude answers `/compact` as a prompt: no
+//!                   compaction lines, and the result carries the model's
+//!                   reply, MOCK_COMPACT_ANSWER or a short default), or
 //!                   for codex `fail-turn` (the turn ends `failed`), `noresult`
 //!                   (`thread/fork` answers no result), `samefork` (it names the
 //!                   original thread), `exit-after` (it completes, then exits
@@ -101,7 +104,7 @@ fn append(path: &Path, lines: &[String]) {
 }
 
 /// How a scripted compaction fails (`MOCK_COMPACT_FAIL`): `refuse`, `exit`,
-/// and per harness `nofork`/`nosuccess` (claude-code) or `fail-turn`,
+/// and per harness `nofork`/`nosuccess`/`answered` (claude-code) or `fail-turn`,
 /// `exit-after`, `hang-after` (codex).
 fn compact_fault() -> Option<String> {
     std::env::var("MOCK_COMPACT_FAIL").ok()
@@ -219,9 +222,13 @@ fn claude(argv: &[String]) -> ! {
         // `nosuccess`: the captured stream without its `compact_result`, as a
         // claude that wrote the fork but never reported it finished.
         let unreported = compact_fault().as_deref() == Some("nosuccess");
+        // `answered`: an ordinary turn's stream, the model replying to the
+        // `/compact` text — no compaction status, boundary or replay lines.
+        let answered = compact_fault().as_deref() == Some("answered");
         let lines: Vec<String> = CLAUDE_COMPACT
             .lines()
             .filter(|l| !(unreported && l.contains("\"compact_result\"")))
+            .filter(|l| !answered || l.contains("\"type\":\"result\""))
             .map(|l| l.replace(CLAUDE_COMPACT_ID, &fork))
             .map(|l| {
                 let mut value: serde_json::Value = serde_json::from_str(&l).expect("captured JSON");
@@ -232,6 +239,13 @@ fn claude(argv: &[String]) -> ! {
                         "a": {"inputTokens": u64::MAX, "outputTokens": 3, "costUSD": f64::MAX},
                         "b": {"inputTokens": 2, "outputTokens": 4, "costUSD": f64::MAX},
                     });
+                    return value.to_string();
+                }
+                if answered && value["type"] == "result" {
+                    value["result"] = serde_json::Value::String(
+                        std::env::var("MOCK_COMPACT_ANSWER")
+                            .unwrap_or_else(|_| "I don't have a /compact command.".into()),
+                    );
                     return value.to_string();
                 }
                 if negative && value["type"] == "result" {

@@ -1389,6 +1389,11 @@ fn a_failed_compaction_answers_failed_and_leaves_the_session_as_it_was() {
             "nosuccess",
             "exited with code 0 before the compaction completed",
         ),
+        (
+            "claude-code",
+            "answered",
+            "exited with code 0 before the compaction completed; it answered the turn instead of compacting: I don't have a /compact command.",
+        ),
         ("codex", "refuse", "compaction unavailable"),
         ("codex", "fail-turn", "the compaction request failed"),
         ("codex", "exit", "before the compaction completed"),
@@ -1429,6 +1434,32 @@ fn a_failed_compaction_answers_failed_and_leaves_the_session_as_it_was() {
             "{id} {fault}"
         );
     }
+}
+// llmlint: ignore-end[e2e_not_mocked]
+
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its translation run; only the harness process (claude-code) is the mock harness, held to its real CLI by the capture it cites and `live-claude` (module doc).
+/// A claude that answers `/compact` as a prompt fails the compaction quoting
+/// at most 300 characters of what the model said, marked where it was cut.
+#[test]
+fn a_compact_answered_as_a_prompt_quotes_a_clipped_answer() {
+    let s = Sessions::new("answered-long");
+    s.turn("claude-code", "alpha");
+    let answer = format!("{}{}", "é".repeat(300), "TAIL");
+    let answer_env = format!("MOCK_COMPACT_ANSWER={answer}");
+    let out = s.compact(
+        "claude-code",
+        &["--env", "MOCK_COMPACT_FAIL=answered", "--env", &answer_env],
+    );
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let outcome = json(&out);
+    assert_eq!(outcome["status"], "failed", "{outcome}");
+    let error = outcome["error"].as_str().unwrap();
+    let quoted = format!(
+        "it answered the turn instead of compacting: {}…",
+        "é".repeat(300)
+    );
+    assert!(error.ends_with(&quoted), "{error}");
+    assert!(!error.contains("TAIL"), "{error}");
 }
 // llmlint: ignore-end[e2e_not_mocked]
 

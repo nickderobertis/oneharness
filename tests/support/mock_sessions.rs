@@ -37,6 +37,8 @@
 //!   MOCK_COMPACT_OVERFLOW with MOCK_CLAUDE_SESSIONS, the compaction's result
 //!                   reports per-model input counts whose sum overflows a u64
 //!                   and costs whose sum overflows an f64.
+//!   MOCK_COMPACT_NEGATIVE with MOCK_CLAUDE_SESSIONS, the compaction's result
+//!                   reports two models, one of them at a negative cost.
 //!   MOCK_COMPACT_ORPHAN   with MOCK_CLAUDE_SESSIONS, the compaction leaves a
 //!                   descendant holding its stdout open for 30s, and exits.
 //!   MOCK_COMPACT_DELAY_MS with either, a compaction pauses this long midway
@@ -208,6 +210,7 @@ fn claude(argv: &[String]) -> ! {
             &[serde_json::json!({"type":"user","message":{"role":"user","content":summary},"session_id":fork}).to_string()],
         );
         let overflow = std::env::var_os("MOCK_COMPACT_OVERFLOW").is_some();
+        let negative = std::env::var_os("MOCK_COMPACT_NEGATIVE").is_some();
         if std::env::var_os("MOCK_COMPACT_ORPHAN").is_some() {
             // A descendant that keeps this process's stdout open long after
             // it exits, as an npm launcher's native child can.
@@ -228,6 +231,14 @@ fn claude(argv: &[String]) -> ! {
                     value["model_usage_since_last_result"] = serde_json::json!({
                         "a": {"inputTokens": u64::MAX, "outputTokens": 3, "costUSD": f64::MAX},
                         "b": {"inputTokens": 2, "outputTokens": 4, "costUSD": f64::MAX},
+                    });
+                    return value.to_string();
+                }
+                if negative && value["type"] == "result" {
+                    // Summable counts, but one model's cost below zero.
+                    value["model_usage_since_last_result"] = serde_json::json!({
+                        "a": {"inputTokens": 1, "outputTokens": 3, "costUSD": 0.5},
+                        "b": {"inputTokens": 2, "outputTokens": 4, "costUSD": -0.25},
                     });
                     return value.to_string();
                 }

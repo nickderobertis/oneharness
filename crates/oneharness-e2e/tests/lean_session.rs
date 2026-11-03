@@ -1031,6 +1031,28 @@ fn calls_list_one_usage_per_model_call_where_the_harness_records_them() {
         .as_str()
         .unwrap()
         .contains("step_finish"));
+
+    // A step reporting a negative cost keeps its token figures; its cost is
+    // unavailable rather than reported.
+    let out = oh(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--prompt",
+            "hi",
+            "--bin",
+            &b,
+        ],
+        &[(
+            "MOCK_STDOUT",
+            r#"{"type":"step_finish","sessionID":"ses_1","part":{"type":"step-finish","tokens":{"input":5,"output":2},"cost":-0.01}}"#,
+        )],
+        None,
+    );
+    let result = json(&out)["results"][0].clone();
+    assert_eq!(result["calls"][0]["output_tokens"], 2, "{result}");
+    assert!(result["calls"][0]["cost_usd"].is_null(), "{result}");
 }
 // llmlint: ignore-end[e2e_not_mocked]
 
@@ -2847,6 +2869,19 @@ fn a_compaction_total_that_overflows_is_reported_unavailable() {
     assert_eq!(outcome["status"], "completed", "{outcome}");
     assert!(outcome["usage"]["input_tokens"].is_null(), "{outcome}");
     assert!(outcome["usage"]["cost_usd"].is_null(), "{outcome}");
+    assert_eq!(outcome["usage"]["output_tokens"], 7, "{outcome}");
+}
+
+/// A compaction whose result reports a negative per-model cost reports its
+/// cost as unavailable, while the counts beside it still sum.
+#[test]
+fn a_compaction_with_a_negative_cost_reports_its_cost_unavailable() {
+    let s = Sessions::new("negative-cost");
+    s.turn("claude-code", "alpha");
+    let outcome = json(&s.compact("claude-code", &["--env", "MOCK_COMPACT_NEGATIVE=1"]));
+    assert_eq!(outcome["status"], "completed", "{outcome}");
+    assert!(outcome["usage"]["cost_usd"].is_null(), "{outcome}");
+    assert_eq!(outcome["usage"]["input_tokens"], 3, "{outcome}");
     assert_eq!(outcome["usage"]["output_tokens"], 7, "{outcome}");
 }
 

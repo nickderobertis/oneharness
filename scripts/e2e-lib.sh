@@ -4872,7 +4872,6 @@ _oh_lean_session() {
   [ "$id" = claude-code ] && events=(--events)
   local table="the $id row of domain::lean's translation table (crates/oneharness-core/src/domain/lean.rs)"
 
-  # 1. The lean turn: what loads, the image, per-call usage.
   oh_run "$id" "Remember the code word ${word}. Then name the single colour that fills the attached image, as one lowercase word." \
     "${at[@]}" --tool-set shell,read --no-skills --no-mcp --image "$image" "${events[@]+"${events[@]}"}"
   status="$(oh_field '.results[0].status')"
@@ -4948,7 +4947,6 @@ _oh_lean_session() {
       ;;
   esac
 
-  # 3. Compaction on demand.
   bin="$(oh_bin)"
   _oh_phase
   _oh_expect "$id" app-server
@@ -4964,7 +4962,6 @@ _oh_lean_session() {
   fi
   rm -f "$errf" || note "  could not remove the scratch file $errf — delete it by hand"
 
-  # 4. The compacted session still carries turn 1.
   oh_run "$id" "What code word did I ask you to remember? Reply with only the code word." "${at[@]}"
   _oh_lean_turn_ok "$id" recall
   case "$(oh_field '(.results[0].text // "") + (.results[0].stdout // "")')" in *"$word"*) ;; *)

@@ -61,6 +61,13 @@ fn bin(id: &str) -> String {
 fn oh(args: &[&str], envs: &[(&str, &str)], config: Option<&Path>) -> Output {
     let profiles = ProfileScratch::new();
     let mut cmd = Command::new(workspace_bin("oneharness"));
+    // Every ambient `ONEHARNESS_*` override first, so the machine's own
+    // settings never reshape an assertion; a journey that wants one passes it
+    // in `envs`. Stripped before the config selection below, or an ambient
+    // `ONEHARNESS_CONFIG`/`ONEHARNESS_NO_CONFIG` would remove the helper's own.
+    for (var, _) in std::env::vars().filter(|(var, _)| var.starts_with("ONEHARNESS_")) {
+        cmd.env_remove(var);
+    }
     match config {
         Some(user) => {
             cmd.env("ONEHARNESS_CONFIG", user);
@@ -68,11 +75,6 @@ fn oh(args: &[&str], envs: &[(&str, &str)], config: Option<&Path>) -> Output {
         None => {
             cmd.env("ONEHARNESS_NO_CONFIG", "1");
         }
-    }
-    // Every ambient `ONEHARNESS_*` override, so the machine's own settings
-    // never reshape an assertion; a journey that wants one passes it in `envs`.
-    for (var, _) in std::env::vars().filter(|(var, _)| var.starts_with("ONEHARNESS_")) {
-        cmd.env_remove(var);
     }
     let mut argv: Vec<&str> = args.to_vec();
     if matches!(args.first(), Some(&"run") | Some(&"compact")) {
@@ -2897,4 +2899,90 @@ fn a_fallback_candidate_resuming_the_session_reports_only_its_own_calls() {
         .clone();
     assert_eq!(ran["text"], "context: [alpha, beta]");
     assert_eq!(ran["calls"].as_array().unwrap().len(), 3, "{ran}");
+}
+
+/// A scratch cwd (no project config) beside a user config setting a value no
+/// other layer sets, for the two selection journeys below.
+fn selection_scratch(tag: &str) -> (ScratchDir, PathBuf, String) {
+    let dir = ScratchDir::new(tag).unwrap();
+    let user = dir.join("user.toml");
+    std::fs::write(&user, "auto_compact_tokens = 7777\n").unwrap();
+    let cwd = dir.display().to_string();
+    (dir, user, cwd)
+}
+
+/// Re-run by [`ambient_config_selection_never_displaces_the_helpers_own`]
+/// under ambient overrides: the helper's explicit config is the one read.
+#[test]
+fn an_explicit_config_is_the_one_the_cli_reads() {
+    let (_dir, user, cwd) = selection_scratch("lean-explicit");
+    let explicit = json(&oh(&["config", "--cwd", &cwd], &[], Some(&user)));
+    assert_eq!(explicit["auto_compact_tokens"]["value"], 7777, "{explicit}");
+    assert_eq!(
+        explicit["config_files"].as_array().map(Vec::len),
+        Some(1),
+        "only the explicit user config is read: {explicit}"
+    );
+}
+
+/// Re-run likewise: a hermetic invocation reads no config file at all.
+#[test]
+fn a_hermetic_invocation_reads_no_config() {
+    let (_dir, _user, cwd) = selection_scratch("lean-hermetic");
+    let hermetic = json(&oh(&["config", "--cwd", &cwd], &[], None));
+    assert_eq!(
+        hermetic["config_files"],
+        serde_json::json!([]),
+        "{hermetic}"
+    );
+    assert_eq!(
+        hermetic["auto_compact_tokens"]["value"],
+        Value::Null,
+        "{hermetic}"
+    );
+}
+
+/// Re-runs real journeys of this suite in a child test process whose ambient
+/// environment carries `ONEHARNESS_CONFIG` and `ONEHARNESS_NO_CONFIG`, with
+/// the platform config directory holding a distorting `config.toml`. If the
+/// helper's own selection were removed with the ambient overrides, the CLI
+/// would read that file and the journeys would see its value.
+#[test]
+fn ambient_config_selection_never_displaces_the_helpers_own() {
+    let dir = ScratchDir::new("lean-ambient").unwrap();
+    let ambient = dir.join("ambient.toml");
+    std::fs::write(&ambient, "auto_compact_tokens = 5555\n").unwrap();
+    let platform = dir.join("platform");
+    std::fs::create_dir_all(platform.join("oneharness")).unwrap();
+    std::fs::write(
+        platform.join("oneharness").join("config.toml"),
+        "auto_compact_tokens = 4444\ntool_set = [\"read\"]\n",
+    )
+    .unwrap();
+
+    let journeys = [
+        "an_explicit_config_is_the_one_the_cli_reads",
+        "a_hermetic_invocation_reads_no_config",
+        "each_setting_layers_like_timeout_through_extends_env_and_flag",
+        "each_setting_reaches_only_its_own_harness_and_nothing_is_added_when_absent",
+    ];
+    let out = Command::new(std::env::current_exe().expect("test executable path"))
+        .args(["--exact", "--test-threads", "1"])
+        .args(journeys)
+        .env("ONEHARNESS_CONFIG", &ambient)
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("XDG_CONFIG_HOME", &platform)
+        .env("APPDATA", &platform)
+        .output()
+        .expect("re-run this suite's journeys");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "journeys failed under ambient ONEHARNESS_CONFIG/ONEHARNESS_NO_CONFIG:\n{stdout}\n--- stderr ---\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains(&format!("{} passed", journeys.len())),
+        "every named journey ran: {stdout}"
+    );
 }

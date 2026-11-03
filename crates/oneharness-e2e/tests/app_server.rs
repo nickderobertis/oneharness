@@ -5202,8 +5202,12 @@ fn the_reuse_workload_names_each_process_listing_failure() {
                 let path = if body.is_empty() {
                     // PATH lookup skips an entry it cannot run, so no `ps`
                     // anywhere on it: only the tools the run itself calls.
+                    // `rustc` among them: a `cargo` resolved straight from the
+                    // toolchain, not through rustup's proxy, finds it (and a
+                    // coverage wrapper's `rustc -vV`) only on PATH.
                     for tool in [
-                        "bash", "sh", "cargo", "node", "mktemp", "rm", "dirname", "cp", "sleep",
+                        "bash", "sh", "cargo", "rustc", "node", "mktemp", "rm", "dirname", "cp",
+                        "sleep",
                     ] {
                         let found = Command::new("sh")
                             .args(["-c", &format!("command -v {tool}")])

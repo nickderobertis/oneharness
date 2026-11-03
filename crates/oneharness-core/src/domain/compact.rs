@@ -45,7 +45,7 @@ impl CompactStatus {
     }
 }
 
-// llmlint: ignore-block[invalid_states_unrepresentable] The flat `status` + `context_tokens_before`/`context_tokens_after` + `usage` shape is the contract agreed with this report's consumer, and `error` with the `failed` status was added by explicit manager ruling as an additive optional beside it; a status-tagged union would change that wire shape. `compact_session` is its one producer and sets `token` and `error` per status in one place.
+// llmlint: ignore-block[invalid_states_unrepresentable] The flat `status` + `context_tokens_before`/`context_tokens_after` + `usage` (+ optional `token`/`error`) shape is the published wire contract consumers parse; a status-tagged union would change that wire shape. `compact_session` is its one producer and sets `token` and `error` per status in one place.
 /// The `oneharness compact` report.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct CompactOutcome {

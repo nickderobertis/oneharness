@@ -813,13 +813,7 @@ pub fn run_supervised(
         load_mcp: args.load_mcp.or(cfg.load_mcp),
     };
     let images = lean_io::read_images(&args.images)?;
-    validate_images(
-        &images,
-        &specs,
-        control_shape.is_some(),
-        explicit_format,
-        schema.is_some(),
-    )?;
+    validate_images(&images, &specs, explicit_format, schema.is_some())?;
     if !args.permit_prompts {
         for id in hang_prone_ids {
             let protection = if requested_timeout == Some(0) {
@@ -3353,6 +3347,15 @@ fn validate_control(
     if schema {
         return Err(OneharnessError::ControlSchema);
     }
+    // An image is a fact about the request too, so it is refused here, ahead
+    // of the platform check below, and reads the same on every machine.
+    if !args.images.is_empty() {
+        return Err(OneharnessError::ImagesConflict {
+            conflict: "--control",
+            reason: "a controlled turn's prompt is a protocol message that carries no image"
+                .to_string(),
+        });
+    }
     // Parallel selection starts every harness together, while fallback starts
     // candidates one at a time. Control needs the former to name one harness;
     // the latter is already one live turn, and the channel binds to whichever
@@ -4603,19 +4606,11 @@ fn unsupported_input_result(
 fn validate_images(
     images: &[lean::ImageInput],
     specs: &[&'static HarnessSpec],
-    control: bool,
     explicit_format: Option<OutputFormat>,
     schema: bool,
 ) -> Result<(), OneharnessError> {
     if images.is_empty() {
         return Ok(());
-    }
-    if control {
-        return Err(OneharnessError::ImagesConflict {
-            conflict: "--control",
-            reason: "a controlled turn's prompt is a protocol message that carries no image"
-                .to_string(),
-        });
     }
     for spec in specs.iter().filter(|s| lean::images_ride_stdin_frame(s.id)) {
         if let Some(format) = explicit_format.filter(|f| *f != OutputFormat::StreamJson) {
@@ -6204,6 +6199,40 @@ mod tests {
             prompt: vec!["hi".to_string()],
             ..RunRequest::default()
         }
+    }
+
+    #[test]
+    fn a_controlled_run_with_an_image_is_refused_as_a_request_fact_on_every_platform() {
+        // Decided inside `validate_control`, ahead of its platform check, so a
+        // platform without unix sockets names `--image` rather than the socket.
+        let args = RunRequest {
+            control: true,
+            session: Some("s".to_string()),
+            images: vec![PathBuf::from("frame.png")],
+            ..run_args()
+        };
+        let specs = [harness::by_id("claude-code").unwrap()];
+        let refused = validate_control(
+            &args,
+            &specs,
+            None,
+            false,
+            false,
+            false,
+            RunMode::Parallel,
+            false,
+            PermissionMode::Default,
+        );
+        assert!(
+            matches!(
+                refused,
+                Err(OneharnessError::ImagesConflict {
+                    conflict: "--control",
+                    ..
+                })
+            ),
+            "{refused:?}"
+        );
     }
 
     fn cfg_with(

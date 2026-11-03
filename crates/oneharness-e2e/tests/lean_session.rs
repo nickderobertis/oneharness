@@ -52,6 +52,7 @@ fn mock() -> String {
 fn bin(id: &str) -> String {
     format!("{id}={}", mock())
 }
+// llmlint: ignore-end[e2e_not_mocked]
 
 /// One invocation of the binary. `config` pins the user config (and lets
 /// project discovery run); `None` is hermetic (`ONEHARNESS_NO_CONFIG=1`).
@@ -2991,4 +2992,3 @@ fn ambient_config_selection_never_displaces_the_helpers_own() {
         "every named journey ran: {stdout}"
     );
 }
-// llmlint: ignore-end[e2e_not_mocked]

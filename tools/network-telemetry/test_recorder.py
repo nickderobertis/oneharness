@@ -62,6 +62,27 @@ def frame_sums(frames: list[Frame], direction: str, low: int, high: int) -> int:
 
 
 class MeasuredLaunch(unittest.TestCase):
+    def test_a_started_namespace_preserves_early_and_late_harness_stderr(self) -> None:
+        need_recorder(self)
+        tmp = scratch(self)
+        real = tmp / "stderr-double"
+        real.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "printf 'early harness diagnostic\\n' >&2\n"
+            "sleep 0.1\n"
+            "printf 'late harness diagnostic\\n' >&2\n"
+            "exit 7\n"
+        )
+        real.chmod(0o755)
+        run = run_shim(tmp, [str(real)], ["exec", "probe"])
+        self.assertEqual(run.returncode, 7, run.stderr)
+        self.assertEqual(run.stderr, b"early harness diagnostic\nlate harness diagnostic\n")
+        records = lines(tmp / "codex.jsonl")
+        (start,) = starts(records)
+        (line,) = measurements(records, start["launch_id"])
+        self.assertEqual((line["method"], line["exit"]), ("netns-pasta", 7))
+
     def test_counts_exactly_what_crossed_the_namespace_boundary_against_an_independent_capture(
         self,
     ) -> None:

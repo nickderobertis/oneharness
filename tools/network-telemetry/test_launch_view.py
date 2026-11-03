@@ -72,7 +72,9 @@ def oneharness(args: list[str], env: dict[str, str]) -> subprocess.CompletedProc
     )
 
 
-@unittest.skipIf(WINDOWS, "the Windows leg is played on unix by its `uname`; live-claude runs the real one")
+@unittest.skipIf(
+    WINDOWS, "the Windows leg is played on unix by its `uname`; live-claude runs the real one"
+)
 class WindowsLeg(unittest.TestCase):
     """On a Windows leg the shim launches the harness from Git Bash, whose MSYS
     runtime rewrites any argument that looks like a POSIX path when it hands
@@ -126,12 +128,22 @@ class WindowsLeg(unittest.TestCase):
         env = {"PATH": f"{host}{os.pathsep}{os.environ['PATH']}", "TMPDIR": str(tmp)}
         for prompt in ("alpha", "beta"):
             turn = oneharness(
-                ["run", "--harness", "claude-code", "--mode", "bypass", "--prompt", prompt, *common],
+                [
+                    "run",
+                    "--harness",
+                    "claude-code",
+                    "--mode",
+                    "bypass",
+                    "--prompt",
+                    prompt,
+                    *common,
+                ],
                 env,
             )
             self.assertEqual(turn.returncode, 0, turn.stdout + turn.stderr)
 
         compact = oneharness(["compact", "--harness", "claude-code", *common], env)
+        self.assertEqual(compact.returncode, 0, compact.stdout + compact.stderr)
         outcome = json.loads(compact.stdout)
         self.assertEqual(outcome["status"], "completed", compact.stdout + compact.stderr)
         handed = [json.loads(line) for line in argv_log.read_text().splitlines()]
@@ -143,7 +155,9 @@ class WindowsLeg(unittest.TestCase):
             self.assertIn("this leg is MINGW64_NT", line["reason"])
 
 
-@unittest.skipUnless(sys.platform.startswith("linux"), "the recorder tries a namespace on Linux only")
+@unittest.skipUnless(
+    sys.platform.startswith("linux"), "the recorder tries a namespace on Linux only"
+)
 class RefusedNamespace(unittest.TestCase):
     """Where AppArmor refuses pasta its user namespace (ubuntu-24.04 without
     the sysctl the codex leg sets), the recorder runs the harness directly and
@@ -157,8 +171,8 @@ class RefusedNamespace(unittest.TestCase):
         # The words the qwen leg's pasta printed before the run went on unmeasured.
         (refused / "pasta").write_text(
             "#!/usr/bin/env bash\n"
-            "echo \"Couldn't write to /proc/self/uid_map: Operation not permitted\" >&2\n"
-            "echo \"Couldn't configure user mappings\" >&2\n"
+            'echo "Couldn\'t write to /proc/self/uid_map: Operation not permitted" >&2\n'
+            'echo "Couldn\'t configure user mappings" >&2\n'
             "echo 'clone: Operation not permitted' >&2\n"
             "exit 1\n"
         )
@@ -177,7 +191,7 @@ class RefusedNamespace(unittest.TestCase):
                         "--prompt",
                         "echo the marker",
                         "--env",
-                        "MOCK_STDOUT=I'm ready to assist you!",
+                        "MOCK_STDOUT=ONEHARNESS-LIVE-12345",
                         "--env",
                         f"MOCK_STDERR={stderr}",
                         "--env",
@@ -187,6 +201,13 @@ class RefusedNamespace(unittest.TestCase):
                 )
                 (result,) = json.loads(run.stdout)["results"]
                 self.assertEqual(result["stderr"].strip(), stderr, result)
+                self.assertEqual(result["exit_code"], int(exit_code), result)
+                self.assertEqual(result["status"], "ok" if exit_code == "0" else "nonzero", result)
+                if exit_code == "0":
+                    self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+                    self.assertIn("ONEHARNESS-LIVE-12345", result["text"], result)
+                else:
+                    self.assertNotEqual(run.returncode, 0, run.stdout + run.stderr)
         records = lines(tmp / "qwen.jsonl")
         for start in starts(records):
             (line,) = measurements(records, start["launch_id"])

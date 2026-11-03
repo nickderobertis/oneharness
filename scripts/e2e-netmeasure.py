@@ -565,7 +565,7 @@ def supervise(args: argparse.Namespace, pasta: str, scratch: Path, life: int) ->
                     held += chunk
             else:
                 watched.remove(stream)
-    if held and (scratch / "launched").exists():
+    if held is not None and (scratch / "launched").exists():
         os.write(2, held)
     pasta_code = pasta_run.wait()
     result_path = scratch / "result.json"

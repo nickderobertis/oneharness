@@ -142,13 +142,15 @@ if [ "$(uname -s)" = Linux ] && command -v python3 >/dev/null 2>&1; then
   mkdir -p "$tmp/refused" || fail "could not create $tmp/refused; check that $tmp is writable"
   cat >"$tmp/refused/pasta" <<'PASTA' || fail "could not write the refused pasta double; check that $tmp/refused is writable"
 #!/usr/bin/env bash
+set -euo pipefail
 echo "Couldn't write to /proc/self/uid_map: Operation not permitted" >&2
 echo "Couldn't configure user mappings" >&2
 echo 'clone: Operation not permitted' >&2
 exit 1
 PASTA
   chmod +x "$tmp/refused/pasta" || fail "could not make the refused pasta double executable"
-  probe ECHO_DOUBLE_OMIT=1 ECHO_PROBE_RECORDED=1 OH_E2E_TELEMETRY_DIR="$tmp/telemetry"     PATH="$tmp/bin:$tmp/refused:$PATH"
+  probe ECHO_DOUBLE_OMIT=1 ECHO_PROBE_RECORDED=1 OH_E2E_TELEMETRY_DIR="$tmp/telemetry" \
+    PATH="$tmp/bin:$tmp/refused:$PATH"
   [ "$rc" -ne 0 ] || fail "a reply without the marker passed the recorded probe: $out"
   case "$out" in
     *"FAIL: qwen ran but the unique marker never surfaced"*) ;;

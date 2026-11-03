@@ -6564,3 +6564,39 @@ fn a_controlled_codex_turn_on_the_shared_server_loads_no_mcp_and_no_skills() {
     assert!(pair("skills.include_instructions=false"), "{argv:?}");
 }
 // llmlint: ignore-end[e2e_not_mocked]
+
+// llmlint: ignore-block[e2e_not_mocked] The real built `oneharness` drives the controlled turns; only codex's shared app-server is the repository's mock harness, because the paid, authenticated CLI cannot run in the deterministic gate. It records the per-call `token_count` events captured from real codex (tests/fixtures/codex-rollout-token-counts.jsonl) in the thread's rollout, and `live-codex` holds the same path to the real harness.
+/// A controlled codex turn on the shared app-server reports one usage per
+/// model call, in order, from the rollout the server records; the turn that
+/// resumes the session reports only the calls it made, not the ones the
+/// thread already held.
+#[test]
+fn a_controlled_codex_turn_on_the_shared_server_reports_only_its_own_calls() {
+    let pool = Pool::new("pool-calls");
+    let knob = [("MOCK_CODEX_ROLLOUT_CALLS", "1")];
+    let inputs = |report: &Value| -> Vec<u64> {
+        result(report)["calls"]
+            .as_array()
+            .unwrap_or_else(|| panic!("no calls: {}", result(report)))
+            .iter()
+            .map(|call| call["input_tokens"].as_u64().unwrap())
+            .collect()
+    };
+    let (out, first) = pool.run(pool.command("watch", &[], &knob));
+    succeeded(&out, &first);
+    assert_eq!(inputs(&first), vec![13_006, 13_101, 13_180], "{first}");
+    assert_eq!(result(&first)["calls"][2]["output_tokens"], 5, "{first}");
+    let (out, second) = pool.run(pool.command("watch", &[], &knob));
+    succeeded(&out, &second);
+    assert_eq!(
+        result(&second)["session_id"],
+        result(&first)["session_id"],
+        "the second turn continues the thread"
+    );
+    assert_eq!(
+        inputs(&second),
+        vec![13_006, 13_101, 13_180],
+        "only the resumed turn's own calls: {second}"
+    );
+}
+// llmlint: ignore-end[e2e_not_mocked]

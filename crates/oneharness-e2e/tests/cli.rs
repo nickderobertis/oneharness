@@ -31332,6 +31332,86 @@ fn a_controlled_per_dispatch_codex_turn_loads_no_mcp_and_no_skills() {
 }
 // llmlint: ignore-end[e2e_not_mocked]
 
+// llmlint: ignore-block[e2e_not_mocked] The real built `oneharness` drives the controlled turn; only codex's app-server child is the repository's mock harness, at the `--bin` seam, because the paid, authenticated CLI cannot run in the deterministic gate. It records the per-call `token_count` events captured from real codex (tests/fixtures/codex-rollout-token-counts.jsonl) in the thread's rollout, and `live-codex` holds the same path to the real harness.
+/// A controlled codex turn on its own app-server child (`app_server =
+/// "per-dispatch"`) reports one usage per model call, in order, from the
+/// rollout the server records; the turn that resumes the session reports only
+/// the calls it made, not the ones the thread already held.
+#[cfg(unix)]
+#[test]
+fn a_controlled_per_dispatch_codex_turn_reports_only_its_own_calls() {
+    let mock = mock_bin().display().to_string();
+    let store = control_store_dir("calls-per-dispatch");
+    let store_arg = store.display().to_string();
+    let log_arg = store.join("app-server.log").display().to_string();
+    let home = store.join("codex-home");
+    std::fs::create_dir_all(&home).unwrap();
+    let home_arg = home.display().to_string();
+    let project = format!(
+        r#"
+        [harness.codex]
+        bin = '{mock}'
+        env = {{ MOCK_CODEX_APP_SERVER_LOG = '{log_arg}', MOCK_CODEX_COMPLETE_TURN = "1", MOCK_CODEX_ROLLOUT_CALLS = "1", CODEX_HOME = '{home_arg}' }}
+    "#
+    );
+    let fx = ConfigFixture::per_dispatch("control-calls", &project, "");
+    let cwd_arg = fx.cwd();
+    let turn = || {
+        let output = run_with_config(
+            &[
+                "run",
+                "--harness",
+                "codex",
+                "--control",
+                "--session",
+                "watch",
+                "--session-dir",
+                &store_arg,
+                "--cwd",
+                &cwd_arg,
+                "--mode",
+                "bypass",
+                "--prompt",
+                "check the print",
+                "--compact",
+            ],
+            &[],
+            &fx.user_config(),
+        );
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        report["results"][0].clone()
+    };
+    let inputs = |result: &Value| -> Vec<u64> {
+        result["calls"]
+            .as_array()
+            .unwrap_or_else(|| panic!("no calls: {result}"))
+            .iter()
+            .map(|call| call["input_tokens"].as_u64().unwrap())
+            .collect()
+    };
+    let first = turn();
+    assert_eq!(inputs(&first), vec![13_006, 13_101, 13_180], "{first}");
+    assert_eq!(first["calls"][2]["output_tokens"], 5, "{first}");
+    assert_eq!(first["calls"][1]["cache_read_tokens"], 12_928, "{first}");
+    let second = turn();
+    assert_eq!(
+        app_server_frames(&store.join("app-server.log"), "thread/resume").len(),
+        1,
+        "the second turn resumes the thread"
+    );
+    assert_eq!(
+        inputs(&second),
+        vec![13_006, 13_101, 13_180],
+        "only the resumed turn's own calls: {second}"
+    );
+}
+// llmlint: ignore-end[e2e_not_mocked]
+
 /// An open response that names NO model is no claim at all, so the turn
 /// proceeds under the requested model exactly as before the check existed:
 /// `turn/start` goes out naming it and the report's `observed_model` is `null`

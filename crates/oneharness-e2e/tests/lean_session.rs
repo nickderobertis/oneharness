@@ -14,10 +14,14 @@
 //! Claude Code: `tests/fixtures/claude-stream-json-turn.jsonl` and
 //! `claude-compact-fork.jsonl`; codex 0.159.2: `codex-app-server-fork-compact.jsonl`
 //! and `codex-rollout-token-counts.jsonl`; OpenCode: `opencode_run.jsonl`; the
-//! rest: the documentation their table rows cite — and each harness's `live-*`
-//! suite drives the real CLI through the same `run` path. No live suite checks
-//! these settings, so a harness release that changes a knob is caught only
-//! when its capture or cited documentation is refreshed.
+//! rest: the documentation their table rows cite. The drift gate against the
+//! real harnesses is `oh_lean_session_enforce` in `scripts/e2e-lib.sh`, run by
+//! `just live-claude` and `just live-codex`: it drives these settings through
+//! the real CLIs and fails when a release stops honouring a knob (the tools,
+//! skills and MCP servers Claude Code reports loading, the image the model
+//! sees, per-call usage, a compaction starting below `auto_compact_tokens`,
+//! and `oneharness compact`). The other harnesses' rows are checked only
+//! against the documentation they cite.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};

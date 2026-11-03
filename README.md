@@ -2509,6 +2509,17 @@ releases:
 - The lean-tool, skills, MCP and image rows were confirmed by capturing each
   harness's outbound API request at a local stub endpoint (no model call), and
   `codex debug prompt-input` for codex's skills block.
+- **The Claude Code and Codex rows are drift-alarmed live** by
+  `oh_lean_session_enforce` (`just live-claude`, `just live-codex`). On one
+  real session it checks that a lean turn's own `system/init` line loads
+  exactly `Bash` and `Read`, with no skill, slash command or MCP server (Claude
+  Code), or that the run reports `tool_set` alone as applied in part (Codex).
+  It also checks that the model names the attached image's colour, that
+  `calls` is filled, that a turn under a small `auto_compact_tokens` starts
+  the harness's own compaction (Claude Code's `compacting` status, a
+  `compacted` record in Codex's rollout), that `oneharness compact` answers
+  `completed`, and that the next turn still recalls the first. The other rows
+  are checked only against the documentation they cite.
 
 ### Large prompts (off-argv delivery)
 

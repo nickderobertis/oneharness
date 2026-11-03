@@ -4836,10 +4836,15 @@ _oh_codex_rollout() {
 
 # How many `compacted` records codex's rollout file $1 holds.
 _oh_codex_compactions() {
-  local records
-  records="$(jq -c 'select(.type == "compacted")' "$1")" ||
+  jq -s '[.[] | select(.type == "compacted")] | length' "$1" ||
     fail "codex: cannot read the rollout $1 (jq's error above) — check that the file is readable JSONL"
-  printf '%s' "$records" | grep -c . || true
+}
+
+# `true` when the stored claude-code report's stream-json stdout carries a
+# `compacting` status line, else `false`; fails when the stdout is not JSON.
+_oh_claude_compacting() {
+  oh_field '.results[0].stdout // ""' | jq -s 'any(.[]; .status? == "compacting")' ||
+    fail "claude-code: its stdout is not stream-json (jq's error above) — check that --events still selects --output-format stream-json"
 }
 
 # A turn that did not end `ok` fails the phase, with the report shown.
@@ -4912,23 +4917,23 @@ _oh_lean_session() {
   local early="compacted during the first turn already, so a compaction cannot be attributed to the threshold — rerun the phase; if it recurs, the harness's default threshold fell below this tiny session"
   case "$id" in
     claude-code)
-      if oh_field '.results[0].stdout // ""' | jq -e -s 'any(.[]; .status? == "compacting")' >/dev/null; then
-        fail "claude-code $early"
-      fi
+      compacts="$(_oh_claude_compacting)" || exit 1
+      [ "$compacts" = false ] || fail "claude-code $early"
       oh_run "$id" "Reply with: ok." "${at[@]}" --auto-compact-tokens 1000 --events
       _oh_lean_turn_ok "$id" auto-compact
-      oh_field '.results[0].stdout // ""' | jq -e -s 'any(.[]; .status? == "compacting")' >/dev/null || {
+      compacts="$(_oh_claude_compacting)" || exit 1
+      [ "$compacts" = true ] || {
         oh_dump
         fail "claude-code did not start compacting below the requested size — check the auto_compact_tokens entry (CLAUDE_CODE_AUTO_COMPACT_WINDOW) in $table"
       }
       ;;
     codex)
-      rollout="$(_oh_codex_rollout "$(oh_field '.results[0].session_id // ""')")"
-      before="$(_oh_codex_compactions "$rollout")"
+      rollout="$(_oh_codex_rollout "$(oh_field '.results[0].session_id // ""')")" || exit 1
+      before="$(_oh_codex_compactions "$rollout")" || exit 1
       [ "$before" -eq 0 ] || fail "codex $early"
       oh_run "$id" "Reply with: ok." "${at[@]}" --auto-compact-tokens 1000
       _oh_lean_turn_ok "$id" auto-compact
-      compacts="$(_oh_codex_compactions "$rollout")"
+      compacts="$(_oh_codex_compactions "$rollout")" || exit 1
       [ "$compacts" -ge 1 ] || {
         oh_dump
         fail "codex wrote no compacted record below the requested size — check the auto_compact_tokens entry (model_auto_compact_token_limit) in $table"
@@ -4947,7 +4952,7 @@ _oh_lean_session() {
     --format json "${model_args[@]+"${model_args[@]}"}" 2>"$errf")" && rc=0 || rc=$?
   if [ "$(printf '%s' "$report" | jq -r '.status // ""' 2>/dev/null)" != completed ]; then
     note "  compact exited $rc: ${report:-<no stdout>}"
-    sed 's/^/    /' "$errf" >&2 || note "  (could not read its stderr from $errf)"
+    sed 's/^/    /' "$errf" >&2 || note "  could not read its stderr from $errf — check its permissions with ls -la"
     fail "$id: oneharness compact did not complete — read its outcome and stderr above, then check the compact-now entry in $table"
   fi
   rm -f "$errf" || note "  could not remove the scratch file $errf — delete it by hand"

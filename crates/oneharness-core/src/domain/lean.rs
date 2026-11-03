@@ -1258,7 +1258,7 @@ pub fn opencode_step_calls(stdout: &str) -> Option<Vec<Usage>> {
                 cost_usd: part
                     .get("cost")
                     .and_then(Value::as_f64)
-                    .filter(|c| c.is_finite()),
+                    .filter(|c| c.is_finite() && *c >= 0.0),
             })
         })
         .collect();
@@ -1643,6 +1643,12 @@ mod tests {
             opencode_step_calls(r#"{"type":"step_finish","part":{"cost":0.01}}"#).is_none(),
             "a step without token figures is no call reading"
         );
+        let negative = opencode_step_calls(
+            r#"{"type":"step_finish","part":{"tokens":{"input":1,"output":2},"cost":-0.01}}"#,
+        )
+        .unwrap();
+        assert_eq!(negative[0].cost_usd, None, "a negative cost is no cost");
+        assert_eq!(negative[0].output_tokens, Some(2));
         let started = "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}";
         let counts = fixture("codex-rollout-token-counts.jsonl");
         let two_turns = format!(

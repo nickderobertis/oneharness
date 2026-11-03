@@ -111,7 +111,8 @@ fn claude_compaction_usage(result: &Value) -> Usage {
         return usage;
     };
     // A total that cannot be represented is unavailable, never wrapped or
-    // infinite: one field poisoned stays `None` whatever the other models say.
+    // infinite, and so is one built on a negative cost: one field poisoned
+    // stays `None` whatever the other models say.
     let mut overflowed = [false; 5];
     let add = |total: &mut Option<u64>, poisoned: &mut bool, value: Option<u64>| {
         if let (Some(value), false) = (value, *poisoned) {
@@ -141,7 +142,7 @@ fn claude_compaction_usage(result: &Value) -> Usage {
         );
         if let (Some(value), false) = (model.get("costUSD").and_then(Value::as_f64), *cost) {
             let sum = usage.cost_usd.unwrap_or(0.0) + value;
-            if sum.is_finite() && value.is_finite() {
+            if sum.is_finite() && value.is_finite() && value >= 0.0 {
                 usage.cost_usd = Some(sum);
             } else {
                 usage.cost_usd = None;
@@ -512,6 +513,17 @@ mod tests {
             usage.cost_usd, None,
             "a cost summing past f64 is unavailable"
         );
+    }
+
+    #[test]
+    fn a_negative_compaction_cost_makes_the_total_unavailable() {
+        let result = json!({"type": "result", "model_usage_since_last_result": {
+            "a": {"inputTokens": 1, "outputTokens": 3, "costUSD": 0.5},
+            "b": {"inputTokens": 2, "outputTokens": 4, "costUSD": -0.25},
+        }});
+        let usage = claude_compaction_usage(&result);
+        assert_eq!(usage.input_tokens, Some(3));
+        assert_eq!(usage.cost_usd, None, "a negative cost is no cost");
     }
 
     #[test]

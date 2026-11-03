@@ -4952,7 +4952,8 @@ _oh_lean_session() {
   _oh_expect "$id" app-server
   local model_args=()
   [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
-  errf="$(mktemp)" || fail "could not create a scratch file for oneharness's stderr — check that the host temp dir is writable"
+  # Inside the sandbox the caller removes, so a failed compaction leaves nothing.
+  errf="$dir/compact.stderr"
   report="$(ONEHARNESS_NO_CONFIG=1 "$bin" compact --harness "$id" "${at[@]}" --timeout "${OH_TIMEOUT:-120}" \
     --format json "${model_args[@]+"${model_args[@]}"}" 2>"$errf")" && rc=0 || rc=$?
   if [ "$(printf '%s' "$report" | jq -r '.status // ""' 2>/dev/null)" != completed ]; then
@@ -4960,7 +4961,6 @@ _oh_lean_session() {
     sed 's/^/    /' "$errf" >&2 || note "  could not read its stderr from $errf — check its permissions with ls -la"
     fail "$id: oneharness compact did not complete — read its outcome and stderr above, then check the compact-now entry in $table"
   fi
-  rm -f "$errf" || note "  could not remove the scratch file $errf — delete it by hand"
 
   oh_run "$id" "What code word did I ask you to remember? Reply with only the code word." "${at[@]}"
   _oh_lean_turn_ok "$id" recall

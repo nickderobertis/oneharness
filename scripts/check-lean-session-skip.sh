@@ -8,7 +8,9 @@
 # wrapper rewrites only the `--harness` the phase passes, to a codex binary
 # that does not exist (not installed) or to qwen driven by the mock harness
 # (qwen has no image input, so oneharness refuses the run before it starts).
-# Every other argument the phase builds reaches the real binary unchanged.
+# Every other argument the phase builds reaches the real binary unchanged. A
+# third case drives the phase through a stand-in oneharness whose compaction
+# fails, and holds the phase to leaving no scratch space outside its sandbox.
 # llmlint: ignore-file[e2e_not_mocked] This drives the live suite's own phase and the real built oneharness CLI; only which harness that CLI is pointed at is rewritten, because what is under test is how the phase classifies oneharness's real refusal and not-installed reports, and no installed harness can be made to refuse its image on demand. scripts/e2e-claude.sh and scripts/e2e-codex.sh run the same phase against the real harnesses.
 set -euo pipefail
 
@@ -59,17 +61,53 @@ exec "$LEAN_TEST_ONEHARNESS" "${args[@]}"
 WRAPPER
 chmod +x "$tmp/bin/oneharness" || fail "could not make $tmp/bin/oneharness executable"
 
-# Runs the phase for codex against one rewritten harness; sets `out` to its
-# stderr and `rc` to its exit status.
-#   $1 the harness the wrapper points oneharness at, $2 that harness's binary
+# A stand-in oneharness for the failed-compaction case, which no real harness
+# can be made to produce on demand: both lean turns answer `ok` with a claude
+# stream that loads only Bash and Read (the second one compacting), and
+# `compact` answers `failed` with the harness's error on stderr, exit 1.
+cat >"$tmp/bin/oneharness-failing-compact" <<'STUB' || fail "could not write the failing-compact stub under $tmp/bin; check that it is writable"
+#!/usr/bin/env bash
+set -euo pipefail
+case "$1" in
+  run)
+    stream='{"type":"system","subtype":"init","tools":["Bash","Read"],"mcp_servers":[],"skills":[],"slash_commands":[]}'
+    for a in "$@"; do
+      [ "$a" = --auto-compact-tokens ] && stream="$stream"$'\n''{"type":"system","status":"compacting"}'
+    done
+    jq -nc --arg stdout "$stream" '{results: [{harness: "claude-code", available: true, status: "ok",
+      text: "red", calls: [{input_tokens: 1, output_tokens: 1}], stdout: $stdout, diagnostics: []}]}'
+    ;;
+  compact)
+    echo "claude-code compaction failed: harness exited 1" >&2
+    printf '%s\n' '{"harness":"claude-code","status":"failed","error":"harness exited 1"}'
+    exit 1
+    ;;
+esac
+STUB
+chmod +x "$tmp/bin/oneharness-failing-compact" || fail "could not make $tmp/bin/oneharness-failing-compact executable"
+
+# Runs the phase against one rewritten harness; sets `out` to its stderr and
+# `rc` to its exit status.
+#   $1 the harness the wrapper points oneharness at, $2 that harness's binary,
+#   $3 the phase's harness id (default codex), $4 the oneharness the phase
+#   drives (default the --harness-rewriting wrapper)
 run_phase() {
   rc=0
   out="$(
     env -u OH_E2E_NO_SKIP -u OH_E2E_TELEMETRY_FILE \
-      TMPDIR="$tmp/sandboxes" ONEHARNESS_BIN="$tmp/bin/oneharness" \
+      TMPDIR="$tmp/sandboxes" ONEHARNESS_BIN="${4:-$tmp/bin/oneharness}" \
       LEAN_TEST_ONEHARNESS="$oh" LEAN_TEST_HARNESS="$1" LEAN_TEST_HARNESS_BIN="$2" \
-      bash -c "set -euo pipefail; source '$root/scripts/e2e-lib.sh'; oh_lean_session_enforce codex" 2>&1 >/dev/null
+      bash -c "set -euo pipefail; source '$root/scripts/e2e-lib.sh'; oh_lean_session_enforce ${3:-codex}" 2>&1 >/dev/null
   )" || rc=$?
+}
+
+# No scratch file or directory the phase made under TMPDIR survives it.
+#   $1 what the phase just did, for the failure message
+assert_no_leftovers() {
+  local leftover
+  leftover="$(find "$tmp/sandboxes" -mindepth 1 -maxdepth 1)" ||
+    fail "could not list $tmp/sandboxes to check the phase removed its scratch space"
+  [ -z "$leftover" ] || fail "the phase left scratch space behind after $1: $leftover"
 }
 
 # A harness that is not installed: the phase skips, naming the cause.
@@ -101,6 +139,21 @@ case "$out" in
   *) fail "the failure must print the report, whose error says the harness has no image input; the phase printed:
 $out" ;;
 esac
-leftover="$(find "$tmp/sandboxes" -mindepth 1 -maxdepth 1)" ||
-  fail "could not list $tmp/sandboxes to check the phase removed its scratch directories"
-[ -z "$leftover" ] || fail "the phase left scratch directories behind: $leftover"
+assert_no_leftovers "a skipped and a refused turn"
+
+# A compaction that fails: the phase fails, prints oneharness's own stderr and
+# outcome, and leaves no scratch file outside the sandbox it removes.
+run_phase claude-code "$mock" claude-code "$tmp/bin/oneharness-failing-compact"
+[ "$rc" -eq 1 ] || fail "a failed compaction must fail the phase (exit 1), got exit $rc. Its output:
+$out"
+case "$out" in
+  *"FAIL: claude-code: oneharness compact did not complete"*) ;;
+  *) fail "a failed compaction must fail naming oneharness compact; the phase printed:
+$out" ;;
+esac
+case "$out" in
+  *"claude-code compaction failed: harness exited 1"*) ;;
+  *) fail "the failure must replay oneharness compact's own stderr; the phase printed:
+$out" ;;
+esac
+assert_no_leftovers "a failed compaction"

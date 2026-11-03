@@ -874,6 +874,11 @@ fn calls_list_one_usage_per_model_call_where_the_harness_records_them() {
             .join("../../tests/fixtures/claude-stream-json-turn.jsonl"),
     )
     .unwrap();
+    let opencode_steps = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/opencode-run-tool-steps.jsonl"),
+    )
+    .unwrap();
     let listed = list();
     for id in ALL_IDS {
         let b = bin(id);
@@ -901,6 +906,7 @@ fn calls_list_one_usage_per_model_call_where_the_harness_records_them() {
             "codex" => {
                 args.extend(["--env", "MOCK_CODEX_SESSIONS=1"]);
             }
+            "opencode" => envs.push(("MOCK_STDOUT", &opencode_steps)),
             _ => {}
         }
         let out = oh(&args, &envs, None);
@@ -935,6 +941,20 @@ fn calls_list_one_usage_per_model_call_where_the_harness_records_them() {
                 );
                 assert_eq!(calls[2]["output_tokens"], 5);
             }
+            "opencode" => {
+                assert_eq!(
+                    inputs,
+                    vec![8_107, 104, 37, 98, 31, 92],
+                    "six calls, in order"
+                );
+                assert_eq!(calls[1]["cache_read_tokens"], 8_064);
+                assert_eq!(calls[5]["output_tokens"], 17);
+                assert_eq!(
+                    result["usage"]["input_tokens"],
+                    inputs.iter().sum::<u64>(),
+                    "the calls sum to the run's unchanged usage total"
+                );
+            }
             other => panic!("{other} is listed as carrying calls but has no replay here"),
         }
         assert!(diagnostics_for(&result, "calls").is_empty());
@@ -961,6 +981,31 @@ fn calls_list_one_usage_per_model_call_where_the_harness_records_them() {
         .as_str()
         .unwrap()
         .contains("stream-json"));
+
+    // An opencode turn whose steps carry no token figures says so.
+    let b = bin("opencode");
+    let out = oh(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--prompt",
+            "hi",
+            "--bin",
+            &b,
+        ],
+        &[(
+            "MOCK_STDOUT",
+            r#"{"type":"step_finish","sessionID":"ses_1","part":{"type":"step-finish","cost":0}}"#,
+        )],
+        None,
+    );
+    let result = json(&out)["results"][0].clone();
+    assert!(result.get("calls").is_none(), "{result}");
+    assert!(diagnostics_for(&result, "calls")[0]["message"]
+        .as_str()
+        .unwrap()
+        .contains("step_finish"));
 }
 
 struct Sessions {
@@ -1226,6 +1271,10 @@ fn list_reports_every_new_capability_for_every_adapter() {
     );
     assert!(supports(&listed, "codex", "supports_compact_now"));
     assert!(!supports(&listed, "goose", "supports_images"));
+    assert!(
+        supports(&listed, "opencode", "supports_call_usage"),
+        "opencode's step_finish events carry per-call figures"
+    );
 }
 
 /// Every way a compaction can fail leaves the session as it was: the outcome

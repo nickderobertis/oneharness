@@ -9,6 +9,11 @@ UTC instants `scripts/e2e-lib.sh` and `UtcInstant` must agree on
 - **A capture comes from a real run, never from imagination.** Record it from the
   CLI itself (the `explore-*` probes dump live output for exactly this) and keep
   it byte for byte; a hand-written shape proves only what its author believed.
+  `opencode-run-tool-steps.jsonl` is the one re-emitted capture: a real opencode
+  1.18.5 run's parts, each kept as its session store recorded it, wrapped in the
+  `{type, timestamp, sessionID, part}` envelope `opencode_run.jsonl` shows
+  `run --format json` streaming (user-prompt and `patch` parts omitted, as that
+  stream omits them).
 - **Read a capture through a graph edge, never an input.** This is a contract
   project (`type:contract`): a project whose code or tests read a file here
   declares `harness-captures` in its `implicitDependencies`, so a changed capture

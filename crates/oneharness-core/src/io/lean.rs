@@ -144,6 +144,12 @@ pub fn attach(result: &mut RunResult, plan: &CallsPlan) {
             result.output_format.as_str()
         )),
         "codex" => codex_calls(result, plan),
+        "opencode" => lean::opencode_step_calls(&result.stdout).ok_or_else(|| {
+            format!(
+                "the `{}` output carried no `step_finish` token figures to read per call",
+                result.output_format.as_str()
+            )
+        }),
         _ => Err(format!(
             "{id} exposes no per-call usage ({})",
             lean::translation(&id, Setting::Calls).source

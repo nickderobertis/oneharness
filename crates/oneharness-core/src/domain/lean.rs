@@ -324,6 +324,20 @@ const fn none(
 /// of the lean settings.
 macro_rules! no_lean_knobs {
     ($harness:expr, $version:expr, $help:expr, $images:expr) => {
+        no_lean_knobs!(
+            $harness,
+            $version,
+            $help,
+            $images,
+            none(
+                $harness,
+                $version,
+                Setting::Calls,
+                "its output carries one run-level usage at most, with no per-call figures",
+            )
+        )
+    };
+    ($harness:expr, $version:expr, $help:expr, $images:expr, $calls:expr) => {
         [
             none($harness, $version, Setting::AutoCompactTokens, $help),
             none($harness, $version, Setting::CompactNow, $help),
@@ -331,12 +345,7 @@ macro_rules! no_lean_knobs {
             none($harness, $version, Setting::LoadSkills, $help),
             none($harness, $version, Setting::LoadMcp, $help),
             $images,
-            none(
-                $harness,
-                $version,
-                Setting::Calls,
-                "its output carries one run-level usage at most, with no per-call figures",
-            ),
+            $calls,
         ]
     };
 }
@@ -567,18 +576,40 @@ const CODEX_TABLE: [Translation; 7] = [
     },
 ];
 
+const OPENCODE: &str = "opencode";
+const OPENCODE_VERSION: &str = "1.18.5";
+
 const OPENCODE_TABLE: [Translation; 7] = no_lean_knobs!(
-    "opencode",
-    "1.18.5",
+    OPENCODE,
+    OPENCODE_VERSION,
     "`opencode run --help` (1.18.5) names no flag for it",
     Translation {
-        harness: "opencode",
-        version: "1.18.5",
+        harness: OPENCODE,
+        version: OPENCODE_VERSION,
         setting: Setting::Images,
         knobs: &[knob(Knob::Flag("-f"), Unit::FilePath)],
         mapping: "`-f <path>` per file",
         residual: None,
         source: "`opencode run --help` (1.18.5): \"-f, --file  file(s) to attach to message\"",
+    },
+    Translation {
+        harness: OPENCODE,
+        version: OPENCODE_VERSION,
+        setting: Setting::Calls,
+        knobs: &[knob(
+            Knob::StreamField("step_finish.part.tokens"),
+            Unit::UsageRecord,
+        )],
+        mapping: "one usage per `step_finish` event of the `--format json` stream, in order: \
+                  each reports only its own model call under `part.tokens` (`input`, \
+                  `output`, `cache.read`, `cache.write`) and `part.cost`; the run's `usage` is \
+                  their sum",
+        residual: None,
+        source: "tests/fixtures/opencode-run-tool-steps.jsonl, an opencode 1.18.5 run's own \
+                 session record of six model calls (five bash calls, then the answer): one \
+                 `step_start`/`step_finish` pair per call, each `step_finish` carrying that \
+                 call's `tokens` and `cost`, in the event shape tests/fixtures/opencode_run.jsonl \
+                 captured from `opencode run --format json`",
     }
 );
 
@@ -1189,6 +1220,52 @@ pub fn codex_rollout_calls(rollout: &str) -> Vec<Usage> {
         .collect()
 }
 
+/// Per-call usage from opencode's `--format json` stdout: one entry per
+/// `step_finish` event carrying `part.tokens`, in order. Each event reports
+/// only its own model call, so the entries sum to the run's `usage`. `None`
+/// when no step carried token figures (a text-format run, or a turn that
+/// failed before its first call finished).
+#[must_use]
+pub fn opencode_step_calls(stdout: &str) -> Option<Vec<Usage>> {
+    // The table's selector, `<event type>.<part field>.<tokens field>`.
+    let selector = match translation(OPENCODE, Setting::Calls)
+        .knobs
+        .first()
+        .map(|k| k.knob)
+    {
+        Some(Knob::StreamField(selector)) => selector,
+        _ => "step_finish.part.tokens",
+    };
+    let mut parts = selector.split('.');
+    let (Some(event), Some(part_field), Some(tokens_field)) =
+        (parts.next(), parts.next(), parts.next())
+    else {
+        return None;
+    };
+    let calls: Vec<Usage> = stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line.trim()).ok())
+        .filter(|value| value.get("type").and_then(Value::as_str) == Some(event))
+        .filter_map(|value| {
+            let part = value.get(part_field)?.as_object()?;
+            let tokens = part.get(tokens_field)?.as_object()?;
+            let cache = tokens.get("cache").and_then(Value::as_object);
+            let cached = |key: &str| cache.and_then(|c| c.get(key)).and_then(Value::as_u64);
+            Some(Usage {
+                input_tokens: tokens.get("input").and_then(Value::as_u64),
+                output_tokens: tokens.get("output").and_then(Value::as_u64),
+                cache_read_tokens: cached("read"),
+                cache_write_tokens: cached("write"),
+                cost_usd: part
+                    .get("cost")
+                    .and_then(Value::as_f64)
+                    .filter(|c| c.is_finite()),
+            })
+        })
+        .collect();
+    (!calls.is_empty()).then_some(calls)
+}
+
 /// The diagnostic a run carries when its harness exposes no per-call figures
 /// in what it produced.
 #[must_use]
@@ -1460,6 +1537,25 @@ mod tests {
             "the per-call figures sum to the turn total codex reported"
         );
         assert!(claude_stream_calls("{\"type\":\"result\"}").is_none());
+        let opencode = opencode_step_calls(&fixture("opencode-run-tool-steps.jsonl")).unwrap();
+        assert_eq!(
+            opencode
+                .iter()
+                .map(|u| u.input_tokens.unwrap())
+                .collect::<Vec<_>>(),
+            vec![8_107, 104, 37, 98, 31, 92],
+            "one usage per step_finish, in order"
+        );
+        assert_eq!(opencode[1].cache_read_tokens, Some(8_064));
+        assert_eq!(opencode[5].output_tokens, Some(17));
+        assert_eq!(opencode[0].cost_usd, Some(0.0));
+        let single = opencode_step_calls(&fixture("opencode_run.jsonl")).unwrap();
+        assert_eq!(single.len(), 1);
+        assert_eq!(single[0].cache_write_tokens, Some(8_176));
+        assert!(
+            opencode_step_calls(r#"{"type":"step_finish","part":{"cost":0.01}}"#).is_none(),
+            "a step without token figures is no call reading"
+        );
         let started = "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}";
         let counts = fixture("codex-rollout-token-counts.jsonl");
         let two_turns = format!(

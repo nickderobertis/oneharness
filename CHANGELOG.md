@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.27.0](https://github.com/nickderobertis/oneharness/compare/v0.26.1...v0.27.0) - 2026-11-03
+
+### Added
+
+- *(run)* [**breaking**] lean, compactable sessions with images and per-call usage ([#1550](https://github.com/nickderobertis/oneharness/pull/1550))
+
 ## [0.26.1](https://github.com/nickderobertis/oneharness/compare/v0.26.0...v0.26.1) - 2026-10-23
 
 ### Fixed

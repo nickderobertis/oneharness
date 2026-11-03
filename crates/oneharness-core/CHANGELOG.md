@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.30.0](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.29.1...oneharness-core-v0.30.0) - 2026-11-03
+
+### Added
+
+- *(run)* [**breaking**] lean, compactable sessions with images and per-call usage ([#1550](https://github.com/nickderobertis/oneharness/pull/1550))
+
 ## [0.29.1](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.29.0...oneharness-core-v0.29.1) - 2026-10-23
 
 ### Fixed

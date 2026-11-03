@@ -302,7 +302,6 @@ fn claude(
     launch: &Launch<'_>,
 ) -> (CompactStatus, CompactOutcome) {
     let spec = harness::by_id("claude-code").expect("registered");
-    // The command is the translation table's, like every other knob.
     let command = lean::translation(spec.id, Setting::CompactNow)
         .knobs
         .iter()

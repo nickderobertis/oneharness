@@ -1293,6 +1293,79 @@ mod tests {
         );
     }
 
+    /// README.md's translation matrix is held to this table: each row's
+    /// release, whether each cell claims a knob (`—`/`refused` for none,
+    /// `partial:` for a residual), and that every knob the table names appears
+    /// in its cell. Every registered harness is in exactly one row.
+    #[test]
+    fn the_readme_translation_matrix_matches_the_table() {
+        let readme = include_str!("../../../../README.md").replace("\r\n", "\n");
+        let header = "| Harness (release) | `auto_compact_tokens` |";
+        let start = readme.find(header).expect("README carries the matrix");
+        let rows: Vec<&str> = readme[start..]
+            .lines()
+            .skip(2)
+            .take_while(|l| l.starts_with('|'))
+            .collect();
+        let named = |name: &str| match name {
+            "Claude Code" => "claude-code",
+            "Codex" => "codex",
+            "OpenCode" => "opencode",
+            "Copilot" => "copilot",
+            "Goose" => "goose",
+            "Qwen" => "qwen",
+            "Crush" => "crush",
+            "Cursor" => "cursor",
+            other => panic!("README matrix names an unknown harness {other:?}"),
+        };
+        let mut seen: Vec<&str> = Vec::new();
+        for row in rows {
+            let cells: Vec<&str> = row.trim_matches('|').split(" | ").map(str::trim).collect();
+            assert_eq!(cells.len(), 1 + Setting::ALL.len(), "{row}");
+            let (names, release) = match cells[0].split_once(" (") {
+                Some((names, rest)) => (names, Some(rest.trim_end_matches(')'))),
+                None => (cells[0], None),
+            };
+            for name in names.split(", ") {
+                let id = named(name);
+                seen.push(id);
+                for (setting, cell) in Setting::ALL.into_iter().zip(&cells[1..]) {
+                    let t = translation(id, setting);
+                    if let Some(release) = release {
+                        assert_eq!(release, t.version, "{id} {setting:?}");
+                    }
+                    let none = *cell == "—" || *cell == "refused";
+                    assert_eq!(none, t.knobs.is_empty(), "{id} {setting:?}: {cell}");
+                    assert_eq!(
+                        cell.starts_with("partial:"),
+                        t.residual.is_some(),
+                        "{id} {setting:?}: {cell}"
+                    );
+                    for k in t.knobs {
+                        let name = match k.knob {
+                            Knob::Env(n)
+                            | Knob::Flag(n)
+                            | Knob::ConfigOverride(n)
+                            | Knob::StdinFrame(n)
+                            | Knob::PromptCommand(n)
+                            | Knob::ProtocolMethod(n)
+                            | Knob::StreamField(n)
+                            | Knob::SessionRecord(n) => n,
+                        };
+                        assert!(
+                            cell.contains(name),
+                            "{id} {setting:?}: {name:?} not in {cell:?}"
+                        );
+                    }
+                }
+            }
+        }
+        seen.sort_unstable();
+        let mut ids: Vec<&str> = harness::all().iter().map(|s| s.id).collect();
+        ids.sort_unstable();
+        assert_eq!(seen, ids);
+    }
+
     #[test]
     fn an_unregistered_id_supports_nothing() {
         for setting in Setting::ALL {

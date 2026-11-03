@@ -39,8 +39,6 @@ fn a_run_request_delivers_every_lean_setting_and_image_to_claude_code() {
     png(&image);
     let input_env = format!("{}", input.display());
     let env_env = format!("{}", env_file.display());
-    // Built as a Rust dependent builds it: a struct literal naming the image
-    // by path, with the agreed `images: Vec<PathBuf>`.
     let req = RunRequest {
         harness: vec!["claude-code".to_string()],
         prompt: vec!["hi".to_string()],

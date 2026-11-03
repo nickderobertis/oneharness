@@ -1615,6 +1615,8 @@ fn sigterm_cancels_a_compaction_from_the_cli_and_leaves_the_session_as_it_was() 
     let out = child.wait_with_output().unwrap();
     let outcome = json(&out);
     assert_eq!(outcome["status"], "cancelled", "{outcome}");
+    // A compaction that did not complete exits 1, so a caller's shell sees it.
+    assert_eq!(out.status.code(), Some(1), "{outcome}");
     assert_eq!(outcome["token"], original.as_str());
     assert!(!alive(harness.trim()), "the harness {harness} was ended");
     for (path, bytes) in &stored {

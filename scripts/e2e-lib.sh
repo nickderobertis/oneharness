@@ -4793,17 +4793,26 @@ OH_RED_PNG_BASE64='iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAJ0lEQVR42u3Ns
 #      `compacted` record in the thread's rollout), where turn 1 had none.
 #   3. `oneharness compact`: answers `completed`.
 #   4. a resumed turn still recalls the code word planted in turn 1.
-# Quiet on success apart from oh_run's per-turn lines and one PASS line.
+# Quiet on success: the turns' own lines (oh_run's `driving:` among them) are
+# buffered and replayed only when the phase does not end in its PASS line, so
+# a pass prints that line alone and a failure or skip prints everything.
 #   $1 harness id (claude-code or codex)
 oh_lean_session_enforce() {
   _oh_phase
-  local id="$1" sandbox status=0 phase
+  local id="$1" sandbox status=0 phase log last
   sandbox="$(oh_socket_sandbox)" || fail "could not create a scratch directory — check that the host temp dir is writable"
+  log="$sandbox/phase.log"
   (
     _oh_lean_session "$id" "$sandbox"
-  ) </dev/null &
+  ) </dev/null 2>"$log" &
   phase=$!
   wait "$phase" || status=$?
+  last="$(tail -n 1 "$log")" || last=""
+  if [ "$status" -eq 0 ] && [ "${last#PASS: }" != "$last" ]; then
+    note "$last"
+  else
+    cat "$log" >&2 || note "  could not replay the phase's output from $log"
+  fi
   rm -rf "$sandbox" || note "  could not remove the scratch directory $sandbox — delete it by hand"
   [ "$status" -eq 0 ] || exit "$status"
 }

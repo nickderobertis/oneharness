@@ -148,21 +148,21 @@ echo "Couldn't configure user mappings" >&2
 echo 'clone: Operation not permitted' >&2
 exit 1
 PASTA
-  chmod +x "$tmp/refused/pasta" || fail "could not make the refused pasta double executable"
+  chmod +x "$tmp/refused/pasta" || fail "could not make the refused pasta double executable; check permissions on $tmp/refused/pasta and rerun this check"
   probe ECHO_DOUBLE_OMIT=1 ECHO_PROBE_RECORDED=1 OH_E2E_TELEMETRY_DIR="$tmp/telemetry" \
     PATH="$tmp/bin:$tmp/refused:$PATH"
-  [ "$rc" -ne 0 ] || fail "a reply without the marker passed the recorded probe: $out"
+  [ "$rc" -ne 0 ] || fail "a reply without the marker passed the recorded probe; fix oh_assert_echoed to reject a missing marker, then rerun this check: $out"
   case "$out" in
     *"FAIL: qwen ran but the unique marker never surfaced"*) ;;
-    *) fail "a recorded reply without the marker failed for another reason: $out" ;;
+    *) fail "a recorded reply without the marker failed for another reason; inspect the captured failure and fix the probe setup before rerunning this check: $out" ;;
   esac
   case "$out" in
     *"the run reported"* | *"uid_map"* | *"clone: Operation not permitted"*)
-      fail "the refused recorder's own words reached the run's stderr as the harness's: $out"
+      fail "the refused recorder's own words reached the run's stderr as the harness's; fix pre-launch stderr isolation in e2e-netmeasure.py, then rerun this check: $out"
       ;;
   esac
   grep -q "Couldn't write to /proc/self/uid_map" "$tmp/telemetry/qwen.jsonl" ||
-    fail "the recorder did not record why the launch went unmeasured: $(cat "$tmp/telemetry/qwen.jsonl")"
+    fail "the recorder did not record why the launch went unmeasured; fix the unavailable measurement reason in e2e-netmeasure.py, then rerun this check: $(cat "$tmp/telemetry/qwen.jsonl")"
 fi
 
 echo "check-echo-probe: ok"

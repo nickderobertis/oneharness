@@ -67,7 +67,6 @@ oh_stream_assert claude-code --events
 # only Bash and Read with no skills or MCP, sees an attached image, reports
 # per-call usage, starts compacting below --auto-compact-tokens, compacts on
 # `oneharness compact`, and still recalls its first turn afterwards.
-note "» lean session: tool set, skills, MCP, image, calls, auto-compact and compact"
 oh_lean_session_enforce claude-code
 
 # Same-prefix batch mode (fork-based min-tokens): the batch warms prompt[0] as a

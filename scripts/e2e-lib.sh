@@ -4793,6 +4793,7 @@ OH_RED_PNG_BASE64='iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAJ0lEQVR42u3Ns
 #      `compacted` record in the thread's rollout), where turn 1 had none.
 #   3. `oneharness compact`: answers `completed`.
 #   4. a resumed turn still recalls the code word planted in turn 1.
+# Quiet on success apart from oh_run's per-turn lines and one PASS line.
 #   $1 harness id (claude-code or codex)
 oh_lean_session_enforce() {
   _oh_phase
@@ -4807,19 +4808,39 @@ oh_lean_session_enforce() {
   [ "$status" -eq 0 ] || exit "$status"
 }
 
-# The rollout file of codex thread $1, under the Codex home the harness uses.
+# The rollout file of codex thread $1 under the Codex home the harness uses;
+# fails, naming the directory, when the search errors or finds none.
 _oh_codex_rollout() {
-  find "${CODEX_HOME:-$HOME/.codex}/sessions" -type f -name "rollout-*-$1.jsonl" 2>/dev/null | head -1
+  local home="${CODEX_HOME:-$HOME/.codex}" found
+  found="$(find "$home/sessions" -type f -name "rollout-*-$1.jsonl")" ||
+    fail "codex: cannot search $home/sessions for thread '$1' (find's error above) — check that CODEX_HOME points at the Codex home the harness used"
+  found="${found%%$'\n'*}"
+  [ -n "$found" ] ||
+    fail "codex: no rollout file for thread '$1' under $home/sessions — check that CODEX_HOME points at the Codex home the harness used"
+  printf '%s\n' "$found"
 }
 
 # How many `compacted` records codex's rollout file $1 holds.
 _oh_codex_compactions() {
-  jq -c 'select(.type == "compacted")' "$1" | wc -l | tr -d ' '
+  local records
+  records="$(jq -c 'select(.type == "compacted")' "$1")" ||
+    fail "codex: cannot read the rollout $1 (jq's error above) — check that the file is readable JSONL"
+  printf '%s' "$records" | grep -c . || true
+}
+
+# A turn that did not end `ok` fails the phase, with the report shown.
+#   $1 harness id, $2 what the turn was for
+_oh_lean_turn_ok() {
+  local status
+  status="$(oh_field '.results[0].status')"
+  [ "$status" = ok ] && return
+  oh_dump
+  fail "$1: the $2 turn did not complete (status=$status) — read the harness stderr above, then rerun this phase"
 }
 
 #   $1 harness id, $2 scratch directory (removed by the caller)
 _oh_lean_session() {
-  local id="$1" dir="$2" native word session store image bin text sid rollout before compacts report errf rc
+  local id="$1" dir="$2" native word session store image bin text rollout before compacts report errf rc init
   native="$(oh_native_path "$dir")" || fail "could not convert $dir to a native path — check that cygpath works on this host"
   word="$(oh_marker)"
   session="ohlean${RANDOM}"
@@ -4830,83 +4851,78 @@ _oh_lean_session() {
   local at=(--session "$session" --session-dir "$store" --cwd "$native")
   local events=()
   [ "$id" = claude-code ] && events=(--events)
+  local table="the $id row of domain::lean's translation table (crates/oneharness-core/src/domain/lean.rs)"
 
-  note "  lean: --tool-set shell,read --no-skills --no-mcp --image must load only those and show the image"
+  # 1. The lean turn: what loads, the image, per-call usage.
   oh_run "$id" "Remember the code word ${word}. Then name the single colour that fills the attached image, as one lowercase word." \
     "${at[@]}" --tool-set shell,read --no-skills --no-mcp --image "$image" "${events[@]+"${events[@]}"}"
   status="$(oh_field '.results[0].status')"
   if [ "$status" = "skipped" ] || [ "$(oh_field '.results[0].available')" != "true" ]; then
     skip "$id is not installed (oneharness reported status=$status); nothing to verify"
   fi
-  [ "$status" = ok ] || {
-    oh_dump
-    fail "$id: the lean turn did not complete (status=$status)"
-  }
+  _oh_lean_turn_ok "$id" lean
   text="$(oh_field '.results[0].text // ""' | tr '[:upper:]' '[:lower:]')"
   case "$text" in *red*) ;; *)
     oh_dump
-    fail "$id: the model did not see the attached image as an image (answered '$text', want red) — check the --image translation in domain::lean"
+    fail "$id did not see the attached image as an image (answered '$text', want red) — check the images entry in $table"
     ;;
   esac
   [ "$(oh_field '(.results[0].calls // []) | length')" -ge 1 ] || {
     oh_dump
-    fail "$id: the report carries no per-call usage (calls) for a completed turn — the per-call reader drifted from the live stream"
+    fail "$id: a completed turn reported no per-call usage (calls) — compare the harness stdout above with the calls entry in $table"
   }
   case "$id" in
     claude-code)
-      local init
-      init="$(oh_field '.results[0].stdout // ""' | jq -c 'select(.type == "system" and .subtype == "init")' 2>/dev/null | head -1)"
+      init="$(oh_field '.results[0].stdout // ""' | jq -c 'select(.type == "system" and .subtype == "init")' | head -1)" ||
+        fail "claude-code: its stdout is not stream-json (jq's error above) — check that --events still selects --output-format stream-json"
       [ -n "$init" ] || {
         oh_dump
-        fail "claude-code: no system/init line on its stream-json stdout to read the loaded tools from"
+        fail "claude-code printed no system/init line to read the loaded tools from — check that --events still selects --output-format stream-json --verbose"
       }
       printf '%s' "$init" | jq -e '(.tools | sort) == ["Bash", "Read"] and (.mcp_servers // []) == []
           and (.skills // []) == [] and (.slash_commands // []) == []' >/dev/null || {
         note "  init: $(printf '%s' "$init" | jq -c '{tools, mcp_servers, skills, slash_commands}')"
-        fail "claude-code loaded more than the lean set asks for — check the tool_set/load_skills/load_mcp translations in domain::lean"
+        fail "claude-code loaded more than the lean set asks for — check the tool_set, load_skills and load_mcp entries in $table"
       }
       ;;
     codex)
       printf '%s' "$OH_REPORT" | jq -e '[.results[0].diagnostics // [] | .[].setting] == ["tool_set"]' >/dev/null || {
         note "  diagnostics: $(oh_field '.results[0].diagnostics' | jq -c .)"
-        fail "codex: the lean turn must report tool_set as applied in part and no other setting as unapplied"
+        fail "codex: the lean turn must report tool_set alone as applied in part — check the tool_set, load_skills and load_mcp entries in $table"
       }
       ;;
   esac
-  note "  ok: $id saw the image and loaded the lean set"
 
-  note "  auto-compact: a threshold below the session's size must start the harness's own compaction"
+  # 2. A threshold below the session's size starts the harness's compaction;
+  # turn 1 (no threshold) must not have, so the compaction is the threshold's.
+  local early="compacted during the first turn already, so a compaction cannot be attributed to the threshold — rerun the phase; if it recurs, the harness's default threshold fell below this tiny session"
   case "$id" in
     claude-code)
-      oh_field '.results[0].stdout // ""' | jq -e -s 'any(.[]; .status? == "compacting")' >/dev/null 2>&1 &&
-        fail "claude-code compacted during the first turn already, so this phase cannot attribute a compaction to the threshold"
+      if oh_field '.results[0].stdout // ""' | jq -e -s 'any(.[]; .status? == "compacting")' >/dev/null; then
+        fail "claude-code $early"
+      fi
       oh_run "$id" "Reply with: ok." "${at[@]}" --auto-compact-tokens 1000 --events
+      _oh_lean_turn_ok "$id" auto-compact
       oh_field '.results[0].stdout // ""' | jq -e -s 'any(.[]; .status? == "compacting")' >/dev/null || {
         oh_dump
-        fail "claude-code did not start compacting below the requested size — check the CLAUDE_CODE_AUTO_COMPACT_WINDOW translation in domain::lean"
+        fail "claude-code did not start compacting below the requested size — check the auto_compact_tokens entry (CLAUDE_CODE_AUTO_COMPACT_WINDOW) in $table"
       }
       ;;
     codex)
-      sid="$(oh_field '.results[0].session_id // ""')"
-      rollout="$(_oh_codex_rollout "$sid")"
-      [ -n "$rollout" ] || fail "codex: no rollout file for thread '$sid' under ${CODEX_HOME:-$HOME/.codex}/sessions"
+      rollout="$(_oh_codex_rollout "$(oh_field '.results[0].session_id // ""')")"
       before="$(_oh_codex_compactions "$rollout")"
-      [ "$before" -eq 0 ] || fail "codex compacted during the first turn already, so this phase cannot attribute a compaction to the threshold"
+      [ "$before" -eq 0 ] || fail "codex $early"
       oh_run "$id" "Reply with: ok." "${at[@]}" --auto-compact-tokens 1000
+      _oh_lean_turn_ok "$id" auto-compact
       compacts="$(_oh_codex_compactions "$rollout")"
       [ "$compacts" -ge 1 ] || {
         oh_dump
-        fail "codex did not compact below the requested size — check the model_auto_compact_token_limit translation in domain::lean"
+        fail "codex wrote no compacted record below the requested size — check the auto_compact_tokens entry (model_auto_compact_token_limit) in $table"
       }
       ;;
   esac
-  [ "$(oh_field '.results[0].status')" = ok ] || {
-    oh_dump
-    fail "$id: the auto-compact turn did not complete"
-  }
-  note "  ok: $id began compacting at the requested size"
 
-  note "  compact: oneharness compact must compact the session through the harness"
+  # 3. Compaction on demand.
   bin="$(oh_bin)"
   _oh_phase
   _oh_expect "$id" app-server
@@ -4917,13 +4933,18 @@ _oh_lean_session() {
     --format json "${model_args[@]+"${model_args[@]}"}" 2>"$errf")" && rc=0 || rc=$?
   if [ "$(printf '%s' "$report" | jq -r '.status // ""' 2>/dev/null)" != completed ]; then
     note "  compact exited $rc: ${report:-<no stdout>}"
-    sed 's/^/    /' "$errf" >&2 || true
-    rm -f "$errf"
-    fail "$id: oneharness compact did not complete — check the compaction mapping in domain::lean"
+    sed 's/^/    /' "$errf" >&2 || note "  (could not read its stderr from $errf)"
+    fail "$id: oneharness compact did not complete — read its outcome and stderr above, then check the compact-now entry in $table"
   fi
-  rm -f "$errf"
+  rm -f "$errf" || note "  could not remove the scratch file $errf — delete it by hand"
 
+  # 4. The compacted session still carries turn 1.
   oh_run "$id" "What code word did I ask you to remember? Reply with only the code word." "${at[@]}"
-  oh_assert_echoed "$id" "$word"
+  _oh_lean_turn_ok "$id" recall
+  case "$(oh_field '(.results[0].text // "") + (.results[0].stdout // "")')" in *"$word"*) ;; *)
+    oh_dump
+    fail "$id: after compaction the session no longer recalls the code word ${word} — check the compact-now entry in $table"
+    ;;
+  esac
   note "PASS: $id lean session (tool set, skills, MCP, image, calls, auto-compact, compact)"
 }

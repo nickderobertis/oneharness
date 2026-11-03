@@ -138,8 +138,6 @@ oh_codex_rules_match
 # attached image, reports per-call usage, compacts below
 # --auto-compact-tokens, compacts on `oneharness compact` (one stdio
 # app-server launch), and still recalls its first turn afterwards.
-# llmlint: ignore[tool_output_is_signal] Every phase in this script announces itself on one line before it runs, and that header is what attributes a later failure (or a hang) to a phase in the CI log; dropping it here alone would make this one phase the unlabelled one.
-note "» lean session: tool set, skills, MCP, image, calls, auto-compact and compact"
 oh_lean_session_enforce codex
 
 # Large prompt + system (issue #1115): oneharness pipes a >128 KiB prompt to

@@ -209,6 +209,39 @@ grep -q "^home=$tmp/live/" "$record" ||
   fail "the context-free turn ran under the machine's HOME: $(cat "$record")"
 [ -z "$(ls -A "$tmp/live")" ] || fail "the context-free turn left its sandbox behind: $(ls -A "$tmp/live")"
 
+# 2a. The live journey's own synced-settings turn, run verbatim from
+#     scripts/e2e-qwen.sh (its lines from the sandbox's mktemp to its PASS
+#     note) under the machine's HOME. Its folder must be the turn's own,
+#     holding only the settings synced from the journey's config: a turn run
+#     in the folder that also holds oneharness.toml, under the machine's HOME,
+#     is the one gpt-4o-mini read as a cue to run the project.
+journey_turn="$(awk '/^sandbox="\$\(mktemp -d\)"$/ { on = 1 } on { print } on && /^note "PASS: qwen accepts the synced settings file/ { exit }' "$root/scripts/e2e-qwen.sh")" ||
+  fail "could not read scripts/e2e-qwen.sh; check that it is readable"
+case "$journey_turn" in
+  *'note "PASS: qwen accepts the synced settings file'*) ;;
+  *) fail "scripts/e2e-qwen.sh no longer has its synced-settings turn between 'sandbox=\"\$(mktemp -d)\"' and its PASS note; point this case at where the turn now lives" ;;
+esac
+# shellcheck disable=SC2016 # expanded by the driven shell, which has the helpers
+drive "$root" 'eval "$JOURNEY_TURN"' JOURNEY_TURN="$journey_turn"
+[ -f "$record" ] || fail "the qwen double never ran for the journey's synced-settings turn: $out"
+[ "$(grep '^entry=' "$record")" = "entry=.qwen" ] ||
+  fail "the journey's synced-settings turn ran in a folder that is not its own: it held $(grep '^entry=' "$record" | tr '\n' ' ')(only .qwen belongs there): $(grep '^cwd=' "$record")"
+grep -q "^cwd=$tmp/live/[^/]*/work$" "$record" ||
+  fail "the journey's synced-settings turn did not run in the context-free sandbox's work folder: $(grep '^cwd=' "$record")"
+grep -q '^settings=.*run_shell_command(ls).*run_shell_command(rm)' "$record" ||
+  fail "the journey's synced-settings turn ran without the journey config's rules synced into its folder: $(cat "$record")"
+grep -q "^home=$tmp/live/" "$record" ||
+  fail "the journey's synced-settings turn ran under the machine's HOME: $(grep '^home=' "$record")"
+if grep -q '^loaded=' "$record"; then
+  fail "the journey's synced-settings turn loaded context files: $(grep '^loaded=' "$record")"
+fi
+[ "$rc" -eq 0 ] || fail "the journey's synced-settings turn failed: $out"
+case "$out" in
+  *"PASS: qwen accepts the synced settings file"*) ;;
+  *) fail "the journey's synced-settings turn did not reach its PASS note: $out" ;;
+esac
+[ -z "$(ls -A "$tmp/live")" ] || fail "the journey's synced-settings turn left its sandbox behind: $(ls -A "$tmp/live")"
+
 # 2b. The synced-settings turn: the config's rules are synced into the turn's
 #     own empty folder, which then holds qwen's settings file and nothing else,
 #     and the turn loads no context and passes on the marker alone.

@@ -4876,8 +4876,15 @@ _oh_lean_session() {
   oh_run "$id" "Remember the code word ${word}. Then name the single colour that fills the attached image, as one lowercase word." \
     "${at[@]}" --tool-set shell,read --no-skills --no-mcp --image "$image" "${events[@]+"${events[@]}"}"
   status="$(oh_field '.results[0].status')"
-  if [ "$status" = "skipped" ] || [ "$(oh_field '.results[0].available')" != "true" ]; then
-    skip "$id is not installed (oneharness reported status=$status); nothing to verify"
+  # Only a missing binary is a skip; any other skipped result is oneharness
+  # refusing the lean turn (an `unsupported_input` refusal of the image, say),
+  # which is the regression this phase exists to catch.
+  if [ "$(oh_field '.results[0].available')" != "true" ]; then
+    skip "$id is not installed (oneharness reported available=false, status=$status); nothing to verify"
+  fi
+  if [ "$status" = "skipped" ]; then
+    oh_dump
+    fail "$id: oneharness refused the lean turn (failure_kind=$(oh_field '.results[0].failure_kind // "none"')) — read its diagnostics above, then check the images, tool_set, load_skills and load_mcp entries in $table"
   fi
   _oh_lean_turn_ok "$id" lean
   text="$(oh_field '.results[0].text // ""' | tr '[:upper:]' '[:lower:]')"

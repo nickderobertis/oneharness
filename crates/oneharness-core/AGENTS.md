@@ -504,6 +504,15 @@ shape. When you add one:
   `allow_path`/`deny_path`. A target whose rules are not JSON declares it by
   its file name (`SyncSpec::format`: Codex's `*.rules`), is owned whole, and
   translates each rule or reports it in `unmapped_rules` — never widened.
+- Add its seven rows to `domain::lean::TRANSLATIONS` (compaction at a size,
+  compact now, tool set, skills off, MCP off, images, per-call usage), each
+  with the release it was confirmed against and the evidence it rests on; an
+  empty `knobs` is a reported gap, and a `residual` is a partial one. The
+  adapters, `list`'s `supports_*` and the tests all read that table, so a
+  knob is wired by adding its row and its `lean::deliver` arm. Confirm a
+  tool/skills/MCP/image knob by capturing the harness's outbound API request
+  at a local stub endpoint (`ANTHROPIC_BASE_URL`, or a codex
+  `model_providers` entry): no model call, and the request is the evidence.
 - Declare `supports_resume` / `supports_fork` and map them in `build_argv`,
   sourced from that CLI's headless docs (never guessed). *Resume* is the
   continuation flag (`--resume`, `--session`, or a subcommand like Codex's `exec

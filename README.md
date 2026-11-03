@@ -443,6 +443,11 @@ Useful `run` flags:
   the harness and enforced deadline, not a provider failure. oneharness owns the launcher's whole
   process tree, terminates descendants too, and bounds final pipe draining, so a
   native child cannot survive an npm/Node wrapper or hold the report open.
+- `--auto-compact-tokens <N>`, `--tool-set <shell,read>`, `--no-skills`,
+  `--no-mcp`, `--image <path>` (repeatable) — keep a long continued session
+  cheap: compact at a size, load only the shell and file reading, no skills
+  list, no MCP, and hand the model its picture up front. See
+  [Long sessions](#long-sessions-compaction-a-lean-tool-set-images-and-per-call-usage).
 - `--cwd <dir>` / `--env KEY=VALUE` — run each harness in a directory / with extra
   env (useful for sandboxed e2e).
 - `--max-parallel <n>` — cap concurrency (default: all selected at once).
@@ -679,6 +684,10 @@ system = "Be terse."            # --system
 bypass = true                   # legacy --bypass toggle (opt-in; default false)
 mode = "default"                # --mode; beats `bypass` (default: "default")
 # timeout = 300                # --timeout, in seconds; omitted or 0 means none
+# auto_compact_tokens = 120000 # --auto-compact-tokens: compact at this many tokens
+# tool_set = ["shell", "read"] # --tool-set: load only these built-in tool classes
+# load_skills = false          # --no-skills: load no skills list
+# load_mcp = false             # --no-mcp: load no MCP server or MCP tool
 output_format = "json"          # --output-format
 stream = false                  # --stream / --no-stream (incremental events)
 schema_file = "person.json"     # --schema (structured output; relative to project)
@@ -2090,6 +2099,7 @@ chain, so a long, genuine run can never be mistaken for "try the next one".
 | Ran, exited zero or non-zero, classified `rate_limit`, no work done | ✅ fall through — `rate-limit` |
 | Codex reported `server_overloaded`, no work done, and same-identity retries were exhausted | ✅ fall through — `server-overloaded` |
 | A pooled Codex dispatch's shared app-server went away under its live turn, classified `app_server_lost`, no work done | ✅ fall through — `app-server-lost` |
+| The run attaches images and this harness has no image input, classified `unsupported_input` before it starts | ✅ fall through — `unsupported-input` |
 | Refused a resume it cannot resolve, classified `session_not_found`, no work done | ✅ fall through — `session-not-found` |
 | Refused the directory it was pointed at, classified `untrusted_directory`, no work done | ✅ fall through — `untrusted-directory` |
 | Refused the input as too large, classified `input_too_large`, no work done | ✅ fall through — `input-too-large` |
@@ -2408,6 +2418,108 @@ on hit, a minimum prefix length, a byte-identical prefix), so the reuse only lan
 when the warmed session's prefix clears the minimum and the fan-out runs within
 its TTL. Use `speed` when you want N strictly-independent answers with no shared
 context.
+
+### Long sessions: compaction, a lean tool set, images and per-call usage
+
+A caller that keeps one session across many turns — a supervisor checking a
+print every two minutes for hours — pays at every model call for everything
+the session has loaded. Five settings, stated once and translated for
+whichever harness runs, keep that cost bounded:
+
+| Setting | Config / env / flag | What it does |
+|---|---|---|
+| `auto_compact_tokens` | `auto_compact_tokens = N` / `ONEHARNESS_AUTO_COMPACT_TOKENS` / `--auto-compact-tokens N` | The harness compacts the session's context once it reaches N tokens (a positive integer). |
+| `tool_set` | `tool_set = ["shell", "read"]` / `ONEHARNESS_TOOL_SET=shell,read` / `--tool-set shell,read` | A turn loads only these built-in tool classes (`shell` runs commands, `read` reads files); every other built-in tool is not loaded. |
+| `load_skills` | `load_skills = false` / `ONEHARNESS_LOAD_SKILLS` / `--no-skills` | `false` loads no skills list. |
+| `load_mcp` | `load_mcp = false` / `ONEHARNESS_LOAD_MCP` / `--no-mcp` | `false` loads no MCP server or MCP tool. |
+| `images` | `--image PATH` (repeatable; `RunRequest::images`) | Each file reaches the model as an image, not as a path it must open. |
+
+Each layers exactly like `timeout` (user config under project config, each
+under its `extends` parents, under `ONEHARNESS_*`, under the flag) and sits on
+the library's `RunRequest`. Absent, nothing changes. Out of range is a usage
+error naming the setting: zero, negative or not an integer for
+`auto_compact_tokens`, an unknown class for `tool_set`, not a boolean for the
+other two. They are not `allowed_tools`/`denied_tools`: those are permission
+rules `sync` writes, deciding what may *run*; these decide what is *loaded*,
+and reach a `--no-config` run too.
+
+**Reporting, never silence.** A harness that cannot apply
+`auto_compact_tokens`, `tool_set`, `load_skills` or `load_mcp` still runs, and
+its result's `diagnostics` names the harness and the setting. A harness with no
+image input is refused for an image run (`status: skipped`, `failure_kind:
+"unsupported_input"`, an `error` naming `images`), so a fallback chain moves on
+(`"unsupported-input"`) rather than answering without the picture. A missing or
+unreadable image file is refused before any harness starts. `oneharness list`
+reports per adapter `supports_auto_compact`, `supports_compact_now`,
+`supports_tool_set`, `supports_skills_off`, `supports_mcp_off`,
+`supports_images` and `supports_call_usage`.
+
+**Per-call usage.** Each result's `calls` lists one usage per model call the
+turn made, in order (input, output, cache reads and writes), read from the
+harness's own stream or session record; the run's `usage` total is unchanged.
+Where the harness exposes no per-call figures it is absent and `diagnostics`
+says why.
+
+**`oneharness compact --session NAME [--session-dir DIR] [--harness ID]`**
+compacts a named session now (library: `oneharness_core::io::compact::
+compact_session`). It compacts a **fork** of the session and rebinds the name
+to the fork only once the harness reports the compaction complete, so a
+cancelled one (SIGINT/SIGTERM, or `RunControls::cancel`) ends the harness
+process and answers `cancelled` with the session's stored files exactly as they
+were, and the next `run --session NAME` continues it uncompacted. `status` is
+`completed` (exit 0), `cancelled`, `failed` (a harness refusal, non-zero exit or
+timeout; `error` says which) or `unsupported` (exit 1), with
+`context_tokens_before`/`context_tokens_after` where the harness reports them
+and the compaction's own `usage`. A session unknown to the store, or bound to
+another identity than `--harness`, is refused (exit 2) as `run` refuses it.
+
+The translation, from one table in the source (`domain::lean::TRANSLATIONS`,
+which also cites the evidence for each entry):
+
+| Harness (release) | `auto_compact_tokens` | compact now | `tool_set` | `load_skills = false` | `load_mcp = false` | `images` | `calls` |
+|---|---|---|---|---|---|---|---|
+| Claude Code (2.1.316) | `CLAUDE_CODE_AUTO_COMPACT_WINDOW` = N + 33000; below 67000, the 100000 window floor plus `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` = N / 80000 × 100 | `-p /compact --resume ID --fork-session` | `--tools Bash Read` (intersected with read-only's set under `--mode read-only`) | `--disable-slash-commands` | `--strict-mcp-config` | base64 `image` blocks in one stream-json user frame (`--input-format stream-json`) | one `assistant.message.usage` per `message.id` under `--output-format stream-json` |
+| Codex (0.159.2) | `-c model_auto_compact_token_limit=N` | app-server `thread/fork` + `thread/compact/start` | partial: `features.goals`, `features.view_image`, `features.sleep_tool` off, `web_search="disabled"`, and `features.shell_tool` off only for a set naming neither `shell` nor `read` (codex's shell also reads files); `apply_patch`, `request_user_input`, the multi-agent `collaboration` tools and `clock__curr_time` stay loaded (no setting removes them) and the run says so | `-c skills.include_instructions=false` | each configured server overridden `-c mcp_servers.<name>={command="true",enabled=false}`, plus `features.apps=false` | `--image=PATH` | the rollout record's `event_msg token_count info.last_token_usage`, one per event |
+| OpenCode (1.18.5) | — | — | — | — | — | `-f PATH` | one per `step_finish` event (`step_finish.part.tokens`, `part.cost`) of `--format json` |
+| Copilot (1.0.78) | — | — | — | — | — | `--attachment PATH` | — |
+| Goose, Qwen, Crush, Cursor | — | — | — | — | — | refused | — |
+
+How the Claude Code and Codex rows were settled, against the installed
+releases:
+
+- **`CLAUDE_CODE_AUTO_COMPACT_WINDOW` is the knob, because it is in tokens.**
+  Claude Code 2.1.316's bundled source clamps it to 100000–1000000, takes
+  `effectiveWindow = window − min(maxOutputTokens, 20000)`, and compacts at
+  `effectiveWindow − 13000`; so a window of N + 33000 compacts at N.
+  `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` is a percentage of that effective window
+  (capped at the same threshold), so it is used only below the floor, where the
+  window is pinned at 100000.
+- **`CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS` and `CLAUDE_CODE_SLEEP_COMPACT` do not
+  compact on demand.** The first is the minimum context size for Claude Code's
+  *idle* compaction (it compacts while a session waits, before the prompt cache
+  expires; floored at 60000); the second turns on a host-side sleep compactor
+  that fires at 90% of the cache lifetime between turns of a long-lived
+  process. Both are timed by Claude Code itself and neither is a request, so
+  `compact` uses `/compact` instead.
+- **Compaction runs on a fork on both harnesses.** Claude Code appends its
+  compaction to the session's transcript; codex 0.159.2 also indexes each
+  thread's turns by byte offset in shared SQLite stores, which restoring one
+  file could not undo. A captured fork compaction on each left the original
+  session byte for byte unchanged.
+- The lean-tool, skills, MCP and image rows were confirmed by capturing each
+  harness's outbound API request at a local stub endpoint (no model call), and
+  `codex debug prompt-input` for codex's skills block.
+- **The Claude Code and Codex rows are drift-alarmed live** by
+  `oh_lean_session_enforce` (`just live-claude`, `just live-codex`). On one
+  real session it checks that a lean turn's own `system/init` line loads
+  exactly `Bash` and `Read`, with no skill, slash command or MCP server (Claude
+  Code), or that the run reports `tool_set` alone as applied in part (Codex).
+  It also checks that the model names the attached image's colour, that
+  `calls` is filled, that a turn under a small `auto_compact_tokens` starts
+  the harness's own compaction (Claude Code's `compacting` status, a
+  `compacted` record in Codex's rollout), that `oneharness compact` answers
+  `completed`, and that the next turn still recalls the first. The other rows
+  are checked only against the documentation they cite.
 
 ### Large prompts (off-argv delivery)
 

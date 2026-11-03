@@ -18,6 +18,7 @@ use std::io::{BufRead, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use oneharness_core::io::marked_processes::{find_marked, ProcessMarker};
@@ -2566,8 +2567,7 @@ fn without_a_hosted_sweeper_a_lingering_server_is_reclaimed_by_the_next_pool_ope
     use oneharness_core::io::server_pool;
     let pool = Pool::new("pool-unhosted");
     let linger = Duration::from_millis(300);
-    // Each nextest test is its own process, so this environment is this
-    // journey's alone.
+    let _environment = library_caller_environment();
     std::env::set_var("XDG_STATE_HOME", pool.path("state"));
     std::env::set_var("CODEX_HOME", pool.path("codex-home"));
     std::env::set_var("CODEX_MOCK_DIR", pool.path("mock"));
@@ -2614,11 +2614,27 @@ fn without_a_hosted_sweeper_a_lingering_server_is_reclaimed_by_the_next_pool_ope
     assert!(!entry.join("server.json").exists());
 }
 
+/// Held for its whole life by every journey that drives the pool as a library
+/// caller, because those journeys set what `PooledSession` reads — its pool
+/// root, Codex home, mock records and linger — in this process's own
+/// environment. Under nextest each test is its own process and the lock is
+/// never contended; `cargo test` runs a binary's tests as threads of one
+/// process, where an unlocked neighbour's `XDG_STATE_HOME` became this
+/// journey's pool root mid-run and its final sweep reclaimed the neighbour's
+/// pool, leaving its own server running. A journey that failed while holding
+/// it still hands it on: the environment it set is overwritten by the next.
+fn library_caller_environment() -> MutexGuard<'static, ()> {
+    static ENVIRONMENT: Mutex<()> = Mutex::new(());
+    ENVIRONMENT.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// This journey's process as a library caller of the shared pool: its pool
 /// root, Codex home, mock records and linger, set in the environment that
-/// `PooledSession` reads (each nextest test is its own process, so it is this
-/// journey's alone), and the mock's `app-server` launch.
-fn as_library_caller(pool: &Pool) -> Vec<String> {
+/// `PooledSession` reads, under [`library_caller_environment`]'s guard (held
+/// while the journey runs, so the environment is its alone), and the mock's
+/// `app-server` launch.
+fn as_library_caller(pool: &Pool) -> (MutexGuard<'static, ()>, Vec<String>) {
+    let guard = library_caller_environment();
     std::env::set_var("XDG_STATE_HOME", pool.path("state"));
     std::env::set_var("CODEX_HOME", pool.path("codex-home"));
     std::env::set_var("CODEX_MOCK_DIR", pool.path("mock"));
@@ -2626,7 +2642,10 @@ fn as_library_caller(pool: &Pool) -> Vec<String> {
         "ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS",
         LINGER_MS.to_string(),
     );
-    vec![mock_bin().display().to_string(), "app-server".to_string()]
+    (
+        guard,
+        vec![mock_bin().display().to_string(), "app-server".to_string()],
+    )
 }
 
 /// Stop the servers a library caller's released sessions left lingering: it
@@ -2650,7 +2669,7 @@ fn a_library_pooled_session_runs_a_thread_through_its_whole_life() {
     use oneharness_core::io::app_server::{PooledDispatch, PooledSession};
     use oneharness_core::io::server_pool::ThreadId;
     let pool = Pool::new("pool-session-life");
-    let argv = as_library_caller(&pool);
+    let (_environment, argv) = as_library_caller(&pool);
     let cwd = pool.worktree("work");
     // Pages of one: the listing pages through every loaded thread.
     let env = [("CODEX_MOCK_LOADED_PAGE".to_string(), "1".to_string())];
@@ -2727,7 +2746,7 @@ fn a_library_pooled_session_runs_a_thread_through_its_whole_life() {
 fn a_library_pooled_session_names_each_way_the_server_fails_it() {
     use oneharness_core::io::app_server::{PooledDispatch, PooledSession};
     let pool = Pool::new("pool-session-faults");
-    let argv = as_library_caller(&pool);
+    let (_environment, argv) = as_library_caller(&pool);
     let cwd = pool.worktree("work");
     let session = move |fault: &str, listing: Duration| -> Option<String> {
         let env = [("CODEX_MOCK_FAULT".to_string(), fault.to_string())];
@@ -2854,7 +2873,7 @@ fn exited_unreaped(pid: u32) -> bool {
 fn a_library_pooled_session_s_commands_are_stopped_when_its_server_is_found_dead() {
     use oneharness_core::io::app_server::{PooledDispatch, PooledSession};
     let pool = Pool::new("pool-session-dead-server");
-    let argv = as_library_caller(&pool);
+    let (_environment, argv) = as_library_caller(&pool);
     let cwd = pool.worktree("work");
     let plan =
         |env: &[(String, String)]| PooledDispatch::plan(&argv, env, &[], &cwd, false).unwrap();
@@ -5202,8 +5221,12 @@ fn the_reuse_workload_names_each_process_listing_failure() {
                 let path = if body.is_empty() {
                     // PATH lookup skips an entry it cannot run, so no `ps`
                     // anywhere on it: only the tools the run itself calls.
+                    // `rustc` among them: a `cargo` resolved straight from the
+                    // toolchain, not through rustup's proxy, finds it (and a
+                    // coverage wrapper's `rustc -vV`) only on PATH.
                     for tool in [
-                        "bash", "sh", "cargo", "node", "mktemp", "rm", "dirname", "cp", "sleep",
+                        "bash", "sh", "cargo", "rustc", "node", "mktemp", "rm", "dirname", "cp",
+                        "sleep",
                     ] {
                         let found = Command::new("sh")
                             .args(["-c", &format!("command -v {tool}")])
@@ -6506,5 +6529,74 @@ fn a_timed_out_controlled_turn_keeps_its_usage_as_work_evidence() {
     assert_eq!(call["status"], "failed", "{call}");
     assert!(call["duration_ms"].is_number(), "{call}");
     assert_eq!(ran["telemetry"]["source"], "provider_measured", "{ran}");
+}
+// llmlint: ignore-end[e2e_not_mocked]
+
+// llmlint: ignore-block[e2e_not_mocked] These journeys must drive the real built `oneharness` against the repository's mock harness standing in for each harness's process: that is this change's stated acceptance bar, since the paid, authenticated CLIs cannot run in the deterministic gate. Only the harness subprocess is replaced, at the existing `--bin` seam, and it replays output captured from the real CLIs (tests/fixtures); the live suites hold the same paths to the real harnesses.
+/// The lean settings reach the shared app-server a controlled codex turn runs
+/// on: the pooled server is launched with `--no-mcp`'s disabled stub for each
+/// server the codex home declares and `--no-skills`'s override.
+#[test]
+fn a_controlled_codex_turn_on_the_shared_server_loads_no_mcp_and_no_skills() {
+    let pool = Pool::new("pool-lean");
+    let home = pool.path("codex-home");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("config.toml"),
+        "[mcp_servers.docs]\ncommand = \"d\"\n",
+    )
+    .unwrap();
+    let (out, report) = pool.run(pool.command("lean", &["--no-mcp", "--no-skills"], &[]));
+    succeeded(&out, &report);
+    let servers = pool.mock_servers();
+    let argv: Vec<&str> = servers[0]["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a.as_str().unwrap())
+        .collect();
+    let pair = |value: &str| argv.windows(2).any(|w| w == ["-c", value]);
+    assert!(
+        pair("mcp_servers.docs={command=\"true\",enabled=false}"),
+        "{argv:?}"
+    );
+    assert!(pair("features.apps=false"), "{argv:?}");
+    assert!(pair("skills.include_instructions=false"), "{argv:?}");
+}
+// llmlint: ignore-end[e2e_not_mocked]
+
+// llmlint: ignore-block[e2e_not_mocked] The real built `oneharness` drives the controlled turns; only codex's shared app-server is the repository's mock harness, because the paid, authenticated CLI cannot run in the deterministic gate. It records the per-call `token_count` events captured from real codex (tests/fixtures/codex-rollout-token-counts.jsonl) in the thread's rollout, and `live-codex` holds the same path to the real harness.
+/// A controlled codex turn on the shared app-server reports one usage per
+/// model call, in order, from the rollout the server records; the turn that
+/// resumes the session reports only the calls it made, not the ones the
+/// thread already held.
+#[test]
+fn a_controlled_codex_turn_on_the_shared_server_reports_only_its_own_calls() {
+    let pool = Pool::new("pool-calls");
+    let knob = [("MOCK_CODEX_ROLLOUT_CALLS", "1")];
+    let inputs = |report: &Value| -> Vec<u64> {
+        result(report)["calls"]
+            .as_array()
+            .unwrap_or_else(|| panic!("no calls: {}", result(report)))
+            .iter()
+            .map(|call| call["input_tokens"].as_u64().unwrap())
+            .collect()
+    };
+    let (out, first) = pool.run(pool.command("watch", &[], &knob));
+    succeeded(&out, &first);
+    assert_eq!(inputs(&first), vec![13_006, 13_101, 13_180], "{first}");
+    assert_eq!(result(&first)["calls"][2]["output_tokens"], 5, "{first}");
+    let (out, second) = pool.run(pool.command("watch", &[], &knob));
+    succeeded(&out, &second);
+    assert_eq!(
+        result(&second)["session_id"],
+        result(&first)["session_id"],
+        "the second turn continues the thread"
+    );
+    assert_eq!(
+        inputs(&second),
+        vec![13_006, 13_101, 13_180],
+        "only the resumed turn's own calls: {second}"
+    );
 }
 // llmlint: ignore-end[e2e_not_mocked]

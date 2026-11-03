@@ -7,6 +7,7 @@ use clap::{Args, Parser, Subcommand};
 
 use oneharness_core::domain::batch::BatchStrategy;
 use oneharness_core::domain::fallback::RunMode;
+use oneharness_core::domain::lean::ToolClass;
 use oneharness_core::domain::mode::PermissionMode;
 use oneharness_core::domain::report::OutputFormat;
 use oneharness_core::domain::sdk::NonEmptyString;
@@ -21,6 +22,15 @@ fn output_format_parser() -> impl TypedValueParser<Value = OutputFormat> {
         "json" => OutputFormat::Json,
         _ => OutputFormat::StreamJson,
     })
+}
+
+/// One `--tool-set` occurrence: a comma-separated list, parsed whole so an
+/// empty value is the empty set rather than a missing one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolSetArg(pub Vec<ToolClass>);
+
+fn tool_set_parser(value: &str) -> Result<ToolSetArg, String> {
+    ToolClass::parse_list(value).map(ToolSetArg)
 }
 
 /// Parse `--mode` into the core [`PermissionMode`], keeping the possible-value
@@ -174,6 +184,12 @@ fn format_parser() -> impl TypedValueParser<Value = Format> {
         "text" => Format::Text,
         _ => Format::Json,
     })
+}
+
+/// A required name, refused when empty (`invalid value '' for '--session
+/// <NAME>': must be a non-empty string`), as the SDKs' contract refuses it.
+fn non_empty_parser() -> impl TypedValueParser<Value = NonEmptyString> {
+    StringValueParser::new().try_map(NonEmptyString::try_from)
 }
 
 /// A `FILE` operand that must name a file, held to the same boundary the SDKs'
@@ -344,6 +360,71 @@ pub enum Command {
     /// refused (with `reason`: `unsupported`, `not_running`, or
     /// `no_active_turn`).
     Interrupt(InterruptArgs),
+    /// Compact a named session's context now, through the harness's own
+    /// compaction: Claude Code's `/compact` on a fork of the session
+    /// (`--resume <id> --fork-session`), Codex's `thread/fork` then
+    /// `thread/compact/start` over its app-server.
+    ///
+    /// The session name is rebound to the compacted fork only once the
+    /// compaction completes, so a cancelled (SIGINT/SIGTERM) or failed one
+    /// leaves the session exactly as it was and the next `run --session`
+    /// continues it uncompacted. Prints the outcome (`--format json` for the
+    /// JSON document): `status` is `completed` (exit 0), or `cancelled`,
+    /// `failed` or `unsupported` (exit 1), with `context_tokens_before`/
+    /// `context_tokens_after` where the harness reports them and the
+    /// compaction's own `usage`. A session unknown to the store, or bound to
+    /// another harness than `--harness`, is refused (exit 2).
+    Compact(CompactArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct CompactArgs {
+    /// The caller-owned session name (`run --session <NAME>`); not empty.
+    #[arg(long, value_name = "NAME", value_parser = non_empty_parser())]
+    pub session: NonEmptyString,
+
+    /// Directory the session store lives in; must match the run's.
+    /// Default: <platform state dir>/oneharness/sessions.
+    #[arg(long, value_name = "DIR")]
+    pub session_dir: Option<PathBuf>,
+
+    /// The harness identity the session is expected to be bound to
+    /// (`<id>` or `<id>:<variant>`); default: the one the store recorded.
+    #[arg(long, value_name = "ID")]
+    pub harness: Option<String>,
+
+    /// The project the session belongs to, and where the harness runs.
+    #[arg(long, value_name = "DIR")]
+    pub cwd: Option<PathBuf>,
+
+    /// The model the compaction runs under (default: config).
+    #[arg(long, value_name = "MODEL")]
+    pub model: Option<String>,
+
+    /// Extra environment variable KEY=VALUE for the harness (repeatable).
+    #[arg(long = "env", value_name = "KEY=VALUE")]
+    pub env: Vec<String>,
+
+    /// Override a harness binary, `ID=PATH` (repeatable).
+    #[arg(long, value_name = "ID=PATH")]
+    pub bin: Vec<String>,
+
+    /// Seconds before the compaction is abandoned as `failed` (default:
+    /// config `timeout`; none when unset or 0).
+    #[arg(long, value_name = "SECS")]
+    pub timeout: Option<u64>,
+
+    /// Load configuration from exactly this file (repeatable).
+    #[arg(long, value_name = "FILE")]
+    pub config: Vec<PathBuf>,
+
+    /// Ignore every configuration file and ONEHARNESS_* override.
+    #[arg(long)]
+    pub no_config: bool,
+
+    /// `--format <text|json>` and `--compact`: how the report reaches stdout.
+    #[command(flatten)]
+    pub stdout: StdoutFormat,
 }
 
 #[derive(Args, Debug)]
@@ -1013,6 +1094,37 @@ pub struct RunArgs {
     /// deadline unless a timeout, including 0, is explicitly selected.
     #[arg(long, value_name = "SECS")]
     pub timeout: Option<u64>,
+
+    /// Compact a session's context once it reaches N tokens (a positive
+    /// integer). Claude Code: CLAUDE_CODE_AUTO_COMPACT_WINDOW (N + 33000);
+    /// Codex: model_auto_compact_token_limit. A harness without a knob runs
+    /// anyway and its result carries a diagnostic.
+    #[arg(long, value_name = "N")]
+    pub auto_compact_tokens: Option<std::num::NonZeroU64>,
+
+    /// Load only these built-in tool classes: shell, read (comma-separated,
+    /// or repeat the flag; the occurrences are joined). Every other built-in
+    /// tool is not loaded (Claude Code: --tools Bash Read; Codex: every tool
+    /// its config can remove). `--tool-set ""` loads none.
+    #[arg(long, value_name = "CLASSES", value_parser = tool_set_parser)]
+    pub tool_set: Vec<ToolSetArg>,
+
+    /// Load no skills list (Claude Code: --disable-slash-commands; Codex:
+    /// skills.include_instructions=false).
+    #[arg(long)]
+    pub no_skills: bool,
+
+    /// Load no MCP server or MCP tool (Claude Code: --strict-mcp-config;
+    /// Codex: each configured server disabled, apps off).
+    #[arg(long)]
+    pub no_mcp: bool,
+
+    /// Attach an image file to the prompt as an image the model sees
+    /// (repeatable). A missing or unreadable file is refused before any
+    /// harness starts; a harness without image input is refused for the run
+    /// (`unsupported_input`), so a fallback chain moves on.
+    #[arg(long = "image", value_name = "PATH")]
+    pub image: Vec<PathBuf>,
 
     /// Working directory each harness process runs in.
     #[arg(long, value_name = "DIR")]

@@ -12,6 +12,7 @@ use crate::domain::control::{ControlShape, ServerSpec, ServerTransport};
 use crate::domain::events::TelemetryTrace;
 use crate::domain::gate::DenyShape;
 use crate::domain::hooks::HookShape;
+use crate::domain::lean::{self, ToolClass};
 use crate::domain::mock::{MockDelivery, RewriteShape};
 use crate::domain::mode::{ApprovalPosture, ModeHeadless, PermissionMode};
 use crate::domain::report::OutputFormat;
@@ -95,6 +96,13 @@ pub struct BuildCtx<'a> {
     /// adds `-c model_catalog_json=<path>` beside the plugins flag, ahead of the
     /// caller's args; `None` adds nothing and Codex fetches its catalog itself.
     pub model_catalog: Option<&'a Path>,
+    /// The built-in tool classes the turn loads (`tool_set`), or `None` for
+    /// the harness's own set. Only claude-code reads it: its one `--tools`
+    /// list also carries read-only's narrowing, and a second `--tools` would
+    /// widen the first (Claude Code unions them), so the two are resolved
+    /// together in the claude-code adapter. Other harnesses receive their tool
+    /// set as args from [`crate::domain::lean::deliver`].
+    pub tools: Option<&'a [ToolClass]>,
 }
 
 /// How the user prompt reaches the harness.
@@ -119,6 +127,10 @@ pub enum PromptDelivery {
     /// out-of-band interrupt reaches the live turn. Only ever selected for a
     /// harness whose [`HarnessSpec::control`] rides its own stdin.
     ControlStream,
+    /// Written to stdin as ONE stream-json user message, then stdin closes:
+    /// how claude-code receives image content blocks beside the prompt
+    /// (`images`). The adapter selects `--input-format stream-json`.
+    MessageFrame,
 }
 
 impl PromptDelivery {
@@ -138,6 +150,12 @@ impl PromptDelivery {
     #[must_use]
     pub fn is_control_stream(self) -> bool {
         matches!(self, PromptDelivery::ControlStream)
+    }
+
+    /// Whether the prompt is one closed stream-json frame (an image run).
+    #[must_use]
+    pub fn is_message_frame(self) -> bool {
+        matches!(self, PromptDelivery::MessageFrame)
     }
 }
 
@@ -1764,7 +1782,7 @@ fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
     // the positional and add `--input-format text` — claude then reads the prompt from stdin,
     // off the argv (no `E2BIG`). Sourced from `claude --help` (2.1.207).
     let mut a = vec![c.bin.into(), "-p".into()];
-    if c.delivery.is_control_stream() {
+    if c.delivery.is_control_stream() || c.delivery.is_message_frame() {
         // A control-enabled run reads a *stream* of JSON messages from stdin
         // rather than one blob, which is what lets the handle stay open past the
         // prompt for an out-of-band `control_request`. The prompt is the first
@@ -1779,12 +1797,25 @@ fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
     }
     a.push("--permission-mode".into());
     a.push(claude_permission_mode(c.mode).into());
-    // read-only: narrow the built-in set to the tools that only read.
-    if c.mode == PermissionMode::ReadOnly {
-        a.push("--tools".into());
-        for tool in CLAUDE_READ_ONLY_TOOLS {
-            a.push((*tool).into());
+    // read-only: narrow the built-in set to the tools that only read. A lean
+    // `tool_set` is the same one list (intersected with read-only's under that
+    // mode), because a second `--tools` would widen the first.
+    match c.tools {
+        Some(classes) => {
+            let names = lean::claude_tool_names(classes, c.mode, CLAUDE_READ_ONLY_TOOLS);
+            a.push(lean::claude_tools_flag().into());
+            if names.is_empty() {
+                a.push(String::new());
+            }
+            a.extend(names.into_iter().map(String::from));
         }
+        None if c.mode == PermissionMode::ReadOnly => {
+            a.push(lean::claude_tools_flag().into());
+            for tool in CLAUDE_READ_ONLY_TOOLS {
+                a.push((*tool).into());
+            }
+        }
+        None => {}
     }
     if let Some(m) = c.model {
         a.push("--model".into());
@@ -2444,6 +2475,7 @@ mod tests {
             apps: false,
             analytics: false,
             model_catalog: None,
+            tools: None,
         }
     }
 
@@ -2993,6 +3025,7 @@ mod tests {
             apps: false,
             analytics: false,
             model_catalog: None,
+            tools: None,
         };
         let argv = (spec.build_argv)(&ctx);
         assert!(
@@ -3077,6 +3110,7 @@ mod tests {
             apps: false,
             analytics: false,
             model_catalog: None,
+            tools: None,
         }
     }
 

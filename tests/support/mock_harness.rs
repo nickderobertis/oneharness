@@ -24,6 +24,11 @@
 //!                   holding a newline stays one element), before answering
 //!   MOCK_ECHO_PWD   if set, write `PWD=<the inherited $PWD>` to stdout and exit
 //!                   (used to assert that --cwd keeps $PWD consistent)
+//!   MOCK_ENV_FILE   if set, the whole inherited environment is written here
+//!                   as one JSON object before answering
+//!   MOCK_CLAUDE_SESSIONS / MOCK_CODEX_SESSIONS / MOCK_COMPACT_BEGUN  act like
+//!                   a harness keeping its own session store (see
+//!                   `mock_sessions.rs`)
 //!   MOCK_ECHO_ENV   if set to a variable NAME, write `NAME=<inherited value>`
 //!                   to stdout and exit (used to assert per-harness env injection)
 //!   MOCK_CAT_FILE   if set to a path, write that file's current contents to
@@ -254,6 +259,14 @@
 //!   MOCK_CODEX_COMPLETE_TURN   with MOCK_CODEX_APP_SERVER_LOG, end the turn on
 //!                              its own (`turn/completed`) instead of holding it
 //!                              open until an interrupt arrives.
+//!   MOCK_CODEX_ROLLOUT_CALLS   with MOCK_CODEX_APP_SERVER_LOG (or a per-thread
+//!                              knob of the shared server), a turn that
+//!                              completes first appends the captured per-call
+//!                              `token_count` events
+//!                              (`tests/fixtures/codex-rollout-token-counts.jsonl`)
+//!                              to its thread's rollout under
+//!                              `$CODEX_HOME/sessions`, as Codex records each
+//!                              model call of a turn before ending it.
 //!   MOCK_CODEX_OVERLOAD_ATTEMPTS with MOCK_CODEX_APP_SERVER_LOG and
 //!                              MOCK_ATTEMPT_FILE, fail this many app-server
 //!                              invocations with Codex's terminal
@@ -373,6 +386,9 @@
 //!                   releases fails its own assertion rather than hanging.
 
 use std::io::Write;
+
+#[path = "mock_sessions.rs"]
+mod sessions;
 
 /// How long the request reader keeps listening for a line the caller should not
 /// have sent, when a request log is being written and no reply delay sets its
@@ -1863,6 +1879,9 @@ fn run_codex_app_server(log_path: &str) -> ! {
                 // the run's own turn is held: a later one — the turn a
                 // redirection opens — ends as soon as it has its message.
                 if mock_var_os("MOCK_CODEX_COMPLETE_TURN").is_some() || turns_started > 1 {
+                    if mock_var_os("MOCK_CODEX_ROLLOUT_CALLS").is_some() {
+                        append_rollout_calls(std::env::var_os("CODEX_HOME"), &thread);
+                    }
                     send(&json!({
                         "jsonrpc": "2.0",
                         "method": "turn/completed",
@@ -2396,9 +2415,20 @@ pub fn run() -> ! {
         let _ = std::fs::write(path, input.to_string());
     }
 
+    if let Ok(path) = std::env::var("MOCK_ENV_FILE") {
+        // Every inherited variable, as one JSON object: what a journey asserts
+        // a setting delivered by environment (and nothing else) reached.
+        let env: serde_json::Map<String, serde_json::Value> = std::env::vars()
+            .map(|(key, value)| (key, serde_json::Value::String(value)))
+            .collect();
+        let _ = std::fs::write(path, serde_json::Value::Object(env).to_string());
+    }
+
     if let Ok(path) = mock_var("MOCK_CODEX_PLUGINS_LOG") {
         record_codex_plugins(&path, &argv);
     }
+
+    sessions::run_if_requested(&argv);
 
     if let Ok(path) = mock_var("MOCK_CODEX_CATALOG_LOG") {
         codex_model_catalog(&path, &argv);
@@ -2877,6 +2907,25 @@ fn codex_exec_threads(dir: &std::path::Path, argv: &[String]) {
 // llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 
 /// [`mock_var`] for a presence knob.
+/// Append the captured per-call `token_count` events to `thread`'s rollout
+/// under `home`'s `sessions`, as Codex records each model call of a turn.
+fn append_rollout_calls(home: Option<std::ffi::OsString>, thread: &str) {
+    let Some(home) = home.filter(|home| !home.is_empty()) else {
+        return;
+    };
+    let dir = std::path::Path::new(&home).join("sessions");
+    let _ = std::fs::create_dir_all(&dir);
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join(format!("rollout-{thread}.jsonl")))
+    {
+        for line in include_str!("../fixtures/codex-rollout-token-counts.jsonl").lines() {
+            let _ = writeln!(file, "{line}");
+        }
+    }
+}
+
 fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
     std::env::var_os(name).or_else(|| {
         name.strip_prefix("MOCK_CODEX_")
@@ -2989,7 +3038,9 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 ///                         network tests' loopback server once at startup.
 ///
 /// Per-thread knobs: MOCK_CODEX_APP_SERVER_LOG (raw frames this connection
-/// sent), MOCK_CODEX_COMPLETE_TURN, MOCK_CODEX_HOLD_UNTIL (end the turn once
+/// sent), MOCK_CODEX_COMPLETE_TURN, MOCK_CODEX_ROLLOUT_CALLS (a completed turn
+/// first records the captured per-call `token_count` events in its thread's
+/// rollout), MOCK_CODEX_HOLD_UNTIL (end the turn once
 /// this file exists, so a test holds two turns live at once),
 /// MOCK_CODEX_HOLD_OPEN_UNTIL (answer `thread/start` once this file exists),
 /// MOCK_CODEX_TICK_MS (with MOCK_CODEX_HOLD_UNTIL, an agent message this often
@@ -3511,6 +3562,9 @@ mod listen_server {
             let Some(turn) = thread.active_turn.take() else {
                 return;
             };
+            if status == "completed" && thread.knob("MOCK_CODEX_ROLLOUT_CALLS").is_some() {
+                super::append_rollout_calls(std::env::var_os("CODEX_HOME"), thread_id);
+            }
             if let Some(record) = self
                 .turns
                 .iter_mut()

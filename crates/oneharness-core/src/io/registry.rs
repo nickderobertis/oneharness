@@ -19,6 +19,7 @@ use serde::Serialize;
 use crate::domain::config::FileConfig;
 use crate::domain::control::ControlShape;
 use crate::domain::harness::{self, BuildCtx, SyncSpec};
+use crate::domain::lean::{self, Setting};
 use crate::domain::mode::{ModeHeadless, PermissionMode};
 use crate::domain::report::{OutputFormat, SCHEMA_VERSION};
 use crate::errors::OneharnessError;
@@ -122,6 +123,24 @@ pub struct HarnessInfo {
     /// large system is unhandled — for a harness whose system rides the prompt it
     /// travels on stdin with the prompt; see the README large-prompt matrix.
     pub supports_system_file: bool,
+    /// Whether `auto_compact_tokens` reaches this harness's own compaction
+    /// knob. Every `supports_*` flag below is read from the translation table
+    /// ([`crate::domain::lean::TRANSLATIONS`]): `false` means a run asking for
+    /// the setting carries a diagnostic (or, for images, refuses the harness).
+    pub supports_auto_compact: bool,
+    /// Whether `oneharness compact` can compact this harness's sessions.
+    pub supports_compact_now: bool,
+    /// Whether `tool_set` loads exactly the named classes (`false` for codex,
+    /// which applies it in part and says so).
+    pub supports_tool_set: bool,
+    /// Whether `load_skills = false` loads no skills list.
+    pub supports_skills_off: bool,
+    /// Whether `load_mcp = false` loads no MCP server.
+    pub supports_mcp_off: bool,
+    /// Whether `images` reach the model as images.
+    pub supports_images: bool,
+    /// Whether a result's `calls` can carry per-call usage.
+    pub supports_call_usage: bool,
     /// The argv oneharness would build, with placeholders, so the adapter's
     /// shape is visible without running anything.
     pub example_command: Vec<String>,
@@ -202,6 +221,7 @@ fn describe(spec: &'static harness::HarnessSpec, cfg: &FileConfig) -> HarnessInf
         apps: cfg.apps_for(spec.id),
         analytics: cfg.analytics_for(spec.id),
         model_catalog: None,
+        tools: None,
     };
     let sync = spec.sync.as_ref();
     HarnessInfo {
@@ -233,6 +253,13 @@ fn describe(spec: &'static harness::HarnessSpec, cfg: &FileConfig) -> HarnessInf
         mock_rewrite: spec.mock_rewrite.map(|s| s.as_str()),
         supports_prompt_stdin: spec.large_input.prompt_stdin,
         supports_system_file: spec.large_input.system_file_flag.is_some(),
+        supports_auto_compact: lean::supports(spec.id, Setting::AutoCompactTokens),
+        supports_compact_now: lean::supports(spec.id, Setting::CompactNow),
+        supports_tool_set: lean::supports(spec.id, Setting::ToolSet),
+        supports_skills_off: lean::supports(spec.id, Setting::LoadSkills),
+        supports_mcp_off: lean::supports(spec.id, Setting::LoadMcp),
+        supports_images: lean::supports(spec.id, Setting::Images),
+        supports_call_usage: lean::supports(spec.id, Setting::Calls),
         example_command: (spec.build_argv)(&ctx),
         variants: cfg
             .harness

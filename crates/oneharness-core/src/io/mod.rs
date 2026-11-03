@@ -5,6 +5,7 @@
 // The shared Codex app-server: its pool lease, sweeper, and pooled turns.
 pub mod app_server;
 pub mod cancel;
+pub mod compact;
 pub mod config;
 pub mod control;
 pub mod detect;
@@ -17,6 +18,7 @@ pub mod hooks;
 pub mod identity;
 // The starter-config scaffold `oneharness init` writes.
 pub mod init;
+pub mod lean;
 // The raw HTTP client is an implementation detail of the controlled-turn
 // driver, not a surface a consumer of this crate should depend on: it exists
 // only because these two control servers speak HTTP.

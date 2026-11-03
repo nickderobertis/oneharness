@@ -1546,6 +1546,7 @@ mod control_mode_parity {
             apps: false,
             analytics: false,
             model_catalog: None,
+            tools: None,
         })
     }
 

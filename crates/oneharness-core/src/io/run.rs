@@ -43,6 +43,7 @@ use crate::domain::events::ActionEvent;
 use crate::domain::fallback::{self, RunMode};
 use crate::domain::harness::{self, BuildCtx, HarnessIdentity, HarnessSpec, PromptDelivery};
 use crate::domain::http::{self, HttpShape};
+use crate::domain::lean;
 use crate::domain::mock::{self, MockDelivery};
 use crate::domain::mode::{ApprovalPosture, ModeHeadless, PermissionMode};
 use crate::domain::report::{
@@ -65,6 +66,7 @@ use crate::io::http_turn;
 use crate::io::identity::{
     variant_environment, variant_unprovisioned_identity, UnprovisionedIdentity,
 };
+use crate::io::lean as lean_io;
 use crate::io::model_catalog;
 use crate::io::runner::{self, Job, NextRun, Outcome, ProcessSupervisor, SpawnControls};
 use crate::io::server_pool;
@@ -287,6 +289,23 @@ pub struct RunRequest {
     pub output_dir: Option<PathBuf>,
     /// Per-harness timeout in seconds; omitted or zero means no timeout.
     pub timeout: Option<u64>,
+    /// Compact a session's context once it reaches this many tokens. `None`
+    /// defers to config `auto_compact_tokens` / `ONEHARNESS_AUTO_COMPACT_TOKENS`;
+    /// unset everywhere changes nothing. See [`crate::domain::lean`].
+    pub auto_compact_tokens: Option<std::num::NonZeroU64>,
+    /// The built-in tool classes a turn loads; every other built-in tool is
+    /// not loaded. `None` defers to config `tool_set`; unset everywhere loads
+    /// what each harness loads today.
+    pub tool_set: Option<Vec<crate::domain::lean::ToolClass>>,
+    /// `Some(false)` loads no skills list. `None` defers to config.
+    pub load_skills: Option<bool>,
+    /// `Some(false)` loads no MCP server or MCP tool. `None` defers to config.
+    pub load_mcp: Option<bool>,
+    /// Image files attached to the prompt as images the model sees. A missing
+    /// or unreadable file is refused before any harness starts; a harness
+    /// without image input is refused for this run as
+    /// [`crate::domain::signals::FailureKind::UnsupportedInput`].
+    pub images: Vec<PathBuf>,
     /// Working directory each harness process runs in; also where project
     /// config discovery starts.
     pub cwd: Option<PathBuf>,
@@ -436,7 +455,7 @@ fn plan_large_input(
         // A control-enabled run already owns stdin as a message stream; a large
         // prompt rides that stream's first frame, so the blob route never
         // displaces it.
-        if !plan.delivery.is_control_stream() {
+        if plan.delivery == PromptDelivery::Argv {
             plan.delivery = PromptDelivery::Stdin;
         }
     }
@@ -787,6 +806,14 @@ pub fn run_supervised(
     // for it is refused here (no way to deliver it) — a loud usage error rather
     // than a silent drop, mirroring an unsupported mode.
     validate_reasoning(args, cfg, &specs)?;
+    let lean_settings = lean::LeanSettings {
+        auto_compact_tokens: args.auto_compact_tokens.or(cfg.auto_compact_tokens),
+        tool_set: args.tool_set.clone().or_else(|| cfg.tool_set.clone()),
+        load_skills: args.load_skills.or(cfg.load_skills),
+        load_mcp: args.load_mcp.or(cfg.load_mcp),
+    };
+    let images = lean_io::read_images(&args.images)?;
+    validate_images(&images, &specs, explicit_format, schema.is_some())?;
     if !args.permit_prompts {
         for id in hang_prone_ids {
             let protection = if requested_timeout == Some(0) {
@@ -955,9 +982,11 @@ pub fn run_supervised(
     // Temp files backing off-argv system prompts, cleaned up on drop (covers every
     // return path below). Never populated under --print-command (nothing spawns).
     let mut temp_files = TempPromptFiles::default();
+    let mut unit_calls: Vec<lean_io::CallsPlan> = Vec::with_capacity(units.len());
 
     for (spec, selected_id, unit_model, unit_prompt) in &units {
         let spec = *spec;
+        let jobs_before = jobs.len();
         // THIS candidate's control mechanism, not the run's: every one of them
         // can serve the turn, so each is planned for the delivery and output
         // format its own mechanism needs. `validate_control` already refused a
@@ -1008,8 +1037,12 @@ pub fn run_supervised(
         // format so the conforming value lands where we read it (Claude Code's
         // `structured_output`, which needs `--output-format json`).
         let native = schema.is_some() && spec.native_schema.is_some();
+        let image_frame = !images.is_empty() && lean::images_ride_stdin_frame(spec.id);
         let output_format = if native {
             OutputFormat::Json
+        } else if image_frame {
+            // A stream-json input frame is read only beside stream-json output.
+            OutputFormat::StreamJson
         } else {
             chosen_format
         };
@@ -1031,7 +1064,23 @@ pub fn run_supervised(
         // instead decorates the resolved model, so it needs one. A harness with no
         // reasoning surface was already refused by `validate_reasoning`, so
         // `spec.reasoning` is `Some` whenever a value is.
-        let mut extra: Vec<String> = Vec::new();
+        let codex_mcp = if spec.id == "codex" && lean_settings.load_mcp == Some(false) {
+            let mut env = variant_environment(cfg, selected_id, &project_start).unwrap_or_default();
+            env.extend(cli_env.iter().cloned());
+            let env_remove = cfg
+                .variant_for(selected_id)
+                .map_or_else(Vec::new, |variant| variant.unset_env.clone());
+            let cwd = args.cwd.clone().unwrap_or_else(|| project_start.clone());
+            let home = lean_io::codex_home(&env, &env_remove, Some(&cwd));
+            lean_io::codex_mcp_servers(home.as_deref(), &cwd)
+        } else {
+            Vec::new()
+        };
+        let lean_delivery = lean::deliver(spec.id, &lean_settings, &codex_mcp, mode);
+        // Ahead of every caller-supplied arg, so a caller's own later override
+        // of the same key still wins.
+        let mut extra: Vec<String> = lean_delivery.args.clone();
+        extra.extend(lean::image_args(spec.id, &images));
         let mut plan_model = unit_model.clone();
         if let Some(value) = args
             .reasoning
@@ -1100,8 +1149,16 @@ pub fn run_supervised(
             // `--control` could not be interrupted at all if it served.
             delivery: if unit_control.is_some() {
                 PromptDelivery::ControlStream
+            } else if image_frame {
+                PromptDelivery::MessageFrame
             } else {
                 PromptDelivery::Argv
+            },
+            tools: lean_settings.tool_set.clone(),
+            images: if image_frame {
+                images.clone()
+            } else {
+                Vec::new()
             },
             plugins: cfg.plugins_for(selected_id),
             apps: cfg.apps_for(selected_id),
@@ -1154,6 +1211,15 @@ pub fn run_supervised(
                 result_prompt,
                 unit_model.clone(),
             ))));
+        } else if !images.is_empty() && !lean::supports(spec.id, lean::Setting::Images) {
+            plan.push(Plan::Ready(Box::new(unsupported_input_result(
+                spec,
+                &resolved.bin,
+                harness_plan.build(schema.as_ref(), None).argv,
+                output_format,
+                result_prompt,
+                unit_model.clone(),
+            ))));
         } else if let Some(identity) = variant_unprovisioned_identity(cfg, selected_id) {
             // The identity this variant selects has no home directory on disk, so
             // it holds no credentials: an `auth` failure a chain falls through,
@@ -1190,6 +1256,7 @@ pub fn run_supervised(
             if let Some(ms) = spec.mode(mode) {
                 job_env.extend(ms.env.iter().map(|(k, v)| (k.to_string(), v.to_string())));
             }
+            job_env.extend(lean_delivery.env.iter().cloned());
             job_env.extend(variant_environment(cfg, selected_id, &project_start)?);
             job_env.extend(cli_env.iter().cloned());
             let env_remove = cfg
@@ -1230,6 +1297,20 @@ pub fn run_supervised(
             });
             job_plans.push(harness_plan);
         }
+        let mut calls_plan = lean_io::CallsPlan {
+            diagnostics: lean_delivery.diagnostics,
+            codex_home: None,
+            codex_resumed_from: None,
+        };
+        if spec.id == "codex" && jobs.len() > jobs_before {
+            calls_plan.codex_home = jobs
+                .last()
+                .and_then(|job| lean_io::codex_home(&job.env, &job.env_remove, job.cwd.as_deref()));
+            if let Some(thread) = job_plans.last().and_then(|plan| plan.resume.clone()) {
+                calls_plan.note_codex_resume(&thread);
+            }
+        }
+        unit_calls.push(calls_plan);
         control_prompts.push(unit_control_prompt);
         control_app_servers.push(unit_app_server);
     }
@@ -1625,8 +1706,11 @@ pub fn run_supervised(
             .collect();
         (results, None, begun)
     };
-    for (result, (_, selected_id, _, _)) in results.iter_mut().zip(&units) {
+    for ((result, (_, selected_id, _, _)), calls_plan) in
+        results.iter_mut().zip(&units).zip(&unit_calls)
+    {
         apply_result_identity(result, selected_id);
+        lean_io::attach(result, calls_plan);
     }
     if let Some(report) = fallback_report.as_mut() {
         for (fallthrough, result) in report.fell_through.iter_mut().zip(&results) {
@@ -3263,6 +3347,15 @@ fn validate_control(
     if schema {
         return Err(OneharnessError::ControlSchema);
     }
+    // An image is a fact about the request too, so it is refused here, ahead
+    // of the platform check below, and reads the same on every machine.
+    if !args.images.is_empty() {
+        return Err(OneharnessError::ImagesConflict {
+            conflict: "--control",
+            reason: "a controlled turn's prompt is a protocol message that carries no image"
+                .to_string(),
+        });
+    }
     // Parallel selection starts every harness together, while fallback starts
     // candidates one at a time. Control needs the former to name one harness;
     // the latter is already one live turn, and the channel binds to whichever
@@ -4375,6 +4468,8 @@ fn planned_result(
         text_source: None,
         usage: Usage::default(),
         usage_source: None,
+        calls: None,
+        diagnostics: Vec::new(),
         session_id: None,
         events: None,
         events_source: None,
@@ -4419,6 +4514,8 @@ fn skipped_result(
         text_source: None,
         usage: Usage::default(),
         usage_source: None,
+        calls: None,
+        diagnostics: Vec::new(),
         session_id: None,
         events: None,
         events_source: None,
@@ -4475,6 +4572,70 @@ fn unprovisioned_result(
         ..skipped_result(spec, bin, command, output_format, prompt, model)
     }
     .with_work_evidence()
+}
+
+/// A candidate refused because the run attaches images and it has no image
+/// input: classified `unsupported_input` and not run, so a fallback chain
+/// moves on rather than answering without the picture.
+fn unsupported_input_result(
+    spec: &HarnessSpec,
+    bin: &str,
+    command: Vec<String>,
+    output_format: OutputFormat,
+    prompt: Option<String>,
+    model: Option<String>,
+) -> RunResult {
+    let t = lean::translation(spec.id, lean::Setting::Images);
+    RunResult {
+        available: true,
+        status: Status::Skipped,
+        failure_kind: Some(signals::FailureKind::UnsupportedInput),
+        // llmlint: ignore[invalid_states_unrepresentable] `failure_kind_source` is an open serialized string by contract (see its field doc); this is the images refusal's one producer, pinned by the e2e journey that reads it.
+        failure_kind_source: Some("request:images".to_string()),
+        error: Some(format!(
+            "`{}` {} has no image input, so a run with `images` was not sent to it ({}); \
+             harness not run.",
+            spec.id, t.version, t.source
+        )),
+        ..skipped_result(spec, bin, command, output_format, prompt, model)
+    }
+    .with_work_evidence()
+}
+
+/// Refuse the request shapes an image cannot ride, before anything spawns.
+fn validate_images(
+    images: &[lean::ImageInput],
+    specs: &[&'static HarnessSpec],
+    explicit_format: Option<OutputFormat>,
+    schema: bool,
+) -> Result<(), OneharnessError> {
+    if images.is_empty() {
+        return Ok(());
+    }
+    for spec in specs.iter().filter(|s| lean::images_ride_stdin_frame(s.id)) {
+        if let Some(format) = explicit_format.filter(|f| *f != OutputFormat::StreamJson) {
+            return Err(OneharnessError::ImagesConflict {
+                conflict: "--output-format",
+                reason: format!(
+                    "`{}` reads images from a stream-json input frame, which it accepts only \
+                     beside `--output-format stream-json`, not `{}`",
+                    spec.id,
+                    format.as_str()
+                ),
+            });
+        }
+        if schema && spec.native_schema.is_some() {
+            return Err(OneharnessError::ImagesConflict {
+                conflict: "--schema",
+                reason: format!(
+                    "`{}` takes a schema natively under `--output-format json`, and images \
+                     only under stream-json",
+                    spec.id
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn failure_dialect(spec: &HarnessSpec) -> signals::FailureDialect {
@@ -4714,6 +4875,8 @@ fn executed_result(
         text_source,
         usage,
         usage_source,
+        calls: None,
+        diagnostics: Vec::new(),
         session_id,
         events: normalized_events,
         events_source,
@@ -4799,6 +4962,11 @@ struct HarnessPlan {
     /// The shared model catalog this launch reads
     /// ([`model_catalog::resolve`]), or `None` for Codex's own fetch.
     model_catalog: Option<PathBuf>,
+    /// The lean `tool_set`, carried to [`BuildCtx::tools`].
+    tools: Option<Vec<lean::ToolClass>>,
+    /// The images a [`PromptDelivery::MessageFrame`] carries (claude-code);
+    /// empty otherwise — a path-taking harness has them in `extra`.
+    images: Vec<lean::ImageInput>,
 }
 
 /// The result of building one attempt: the argv to spawn and, when the prompt is
@@ -4857,7 +5025,9 @@ impl HarnessPlan {
         // have inlined: for a harness whose system rides the prompt, prepend the
         // system (mirroring `prompt_with_system`); otherwise the system is carried
         // separately (Claude's file flag, Goose's inline `--system`).
-        let stdin = if self.delivery.is_stdin_blob() {
+        let stdin = if self.delivery.is_message_frame() {
+            Some(lean::claude_image_frame(&prompt, &self.images))
+        } else if self.delivery.is_stdin_blob() {
             Some(if self.spec.large_input.system_rides_prompt {
                 harness::prompt_with_system_text(self.system.as_deref(), &prompt)
             } else {
@@ -4886,6 +5056,7 @@ impl HarnessPlan {
             apps: self.apps,
             analytics: self.analytics,
             model_catalog: self.model_catalog.as_deref(),
+            tools: self.tools.as_deref(),
         };
         let argv = harness::argv_with_caller_args(self.spec, &ctx, &self.extra);
         let prompt =
@@ -5383,7 +5554,7 @@ fn effective_timeout(
     Ok(timeout)
 }
 
-fn parse_env(values: &[String]) -> Result<Vec<(String, String)>, OneharnessError> {
+pub(crate) fn parse_env(values: &[String]) -> Result<Vec<(String, String)>, OneharnessError> {
     values
         .iter()
         .map(|v| {
@@ -5419,6 +5590,8 @@ mod tests {
             text_source: None,
             usage: Usage::default(),
             usage_source: None,
+            calls: None,
+            diagnostics: Vec::new(),
             session_id: None,
             events: None,
             events_source: None,
@@ -5563,6 +5736,8 @@ mod tests {
             apps: false,
             analytics: false,
             model_catalog: None,
+            tools: None,
+            images: Vec::new(),
         }
     }
 
@@ -6024,6 +6199,40 @@ mod tests {
             prompt: vec!["hi".to_string()],
             ..RunRequest::default()
         }
+    }
+
+    #[test]
+    fn a_controlled_run_with_an_image_is_refused_as_a_request_fact_on_every_platform() {
+        // Decided inside `validate_control`, ahead of its platform check, so a
+        // platform without unix sockets names `--image` rather than the socket.
+        let args = RunRequest {
+            control: true,
+            session: Some("s".to_string()),
+            images: vec![PathBuf::from("frame.png")],
+            ..run_args()
+        };
+        let specs = [harness::by_id("claude-code").unwrap()];
+        let refused = validate_control(
+            &args,
+            &specs,
+            None,
+            false,
+            false,
+            false,
+            RunMode::Parallel,
+            false,
+            PermissionMode::Default,
+        );
+        assert!(
+            matches!(
+                refused,
+                Err(OneharnessError::ImagesConflict {
+                    conflict: "--control",
+                    ..
+                })
+            ),
+            "{refused:?}"
+        );
     }
 
     fn cfg_with(

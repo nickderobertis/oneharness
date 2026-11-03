@@ -109,7 +109,13 @@ export type FallThroughReason =
   | "model-not-found"
   | "rate-limit"
   | "server-overloaded"
-  | "app-server-lost";
+  | "app-server-lost"
+  | "unsupported-input";
+/**
+ * One of the settings this module translates.
+ */
+export type Setting =
+  "auto_compact_tokens" | "compact_now" | "tool_set" | "load_skills" | "load_mcp" | "images" | "calls";
 /**
  * The normalized, closed set of failure reasons oneharness can classify from a
  * harness's output. It is the single source for the `failure_kind` contract
@@ -132,7 +138,8 @@ export type FailureKind =
   | "input_too_large"
   | "model_mismatch"
   | "server_overloaded"
-  | "app_server_lost";
+  | "app_server_lost"
+  | "unsupported_input";
 /**
  * How a harness emits its result, which decides how `text` is extracted.
  *
@@ -539,9 +546,25 @@ export interface RunResult {
    */
   bin: string;
   /**
+   * One usage per model call the turn made, in order, read from the
+   * harness's own stream or session record (see
+   * [`crate::domain::lean::Setting::Calls`]). Like `usage`, it covers the
+   * run's final attempt when a retry ran it again. Absent where the harness
+   * exposes no per-call figures, and then `diagnostics` says why. The
+   * run's `usage` total is unchanged by it. Added in report schema `0.13`.
+   */
+  calls?: Usage[] | null | undefined;
+  /**
    * The exact argv oneharness built; its first element is the binary.
    */
   command: string[];
+  /**
+   * Each setting this run's harness could not apply, or applied in part
+   * (`auto_compact_tokens`, `tool_set`, `load_skills`, `load_mcp`, `calls`):
+   * the run proceeded, and this says what it did instead. Absent when
+   * empty. Added in report schema `0.13`.
+   */
+  diagnostics?: Diagnostic[] | undefined;
   /**
    * Wall-clock duration of the run; `null` when not executed.
    */
@@ -682,7 +705,7 @@ export interface RunResult {
    * How `text` was extracted (e.g. `json:result`, `raw`); `null` when absent.
    */
   text_source: string | null;
-  usage: Usage;
+  usage: Usage1;
   /**
    * How `usage` was read (e.g. `json`); `null` when nothing was found.
    */
@@ -710,10 +733,58 @@ export interface RunResult {
   [k: string]: unknown;
 }
 /**
- * Best-effort token/cost accounting; every field is `null` when the harness
- * does not report it. Always present so consumers can read a stable shape.
+ * Normalized token/cost accounting. Every field is best-effort and independently
+ * nullable: a harness may report tokens but not dollar cost (cost is commonly
+ * absent on subscription auth), or report nothing at all (plain-text harnesses).
  */
 export interface Usage {
+  /**
+   * Prompt tokens served from the provider's prompt cache (a cheap read of a
+   * previously-written prefix), when the harness reports them. `None` when the
+   * harness does not surface cache counts — never `0` as a guess.
+   */
+  cache_read_tokens: number | null;
+  /**
+   * Prompt tokens written to the provider's prompt cache (a.k.a. cache
+   * creation), when the harness reports them. `None` when not surfaced.
+   */
+  cache_write_tokens: number | null;
+  /**
+   * Total cost in USD, when the harness reports it (often absent on
+   * subscription auth, where there is no per-call dollar figure).
+   */
+  cost_usd: number | null;
+  /**
+   * Prompt/input tokens billed, when the harness reports them.
+   */
+  input_tokens: number | null;
+  /**
+   * Completion/output tokens billed, when the harness reports them.
+   */
+  output_tokens: number | null;
+  [k: string]: unknown;
+}
+/**
+ * A setting a harness could not apply, named in the run's report.
+ */
+export interface Diagnostic {
+  /**
+   * The harness id the run used.
+   */
+  harness: string;
+  /**
+   * What happened instead.
+   */
+  message: string;
+  setting: Setting;
+  [k: string]: unknown;
+}
+/**
+ * Normalized token/cost accounting. Every field is best-effort and independently
+ * nullable: a harness may report tokens but not dollar cost (cost is commonly
+ * absent on subscription auth), or report nothing at all (plain-text harnesses).
+ */
+export interface Usage1 {
   /**
    * Prompt tokens served from the provider's prompt cache (a cheap read of a
    * previously-written prefix), when the harness reports them. `None` when the

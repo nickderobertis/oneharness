@@ -238,6 +238,20 @@ impl From<&RunArgs> for RunRequest {
             server_overloaded_max_retries: args.server_overloaded_max_retries,
             output_dir: args.output_dir.clone(),
             timeout: args.timeout,
+            auto_compact_tokens: args.auto_compact_tokens,
+            // Every occurrence's classes, joined; no occurrence defers to config.
+            tool_set: (!args.tool_set.is_empty()).then(|| {
+                let mut classes = Vec::new();
+                for class in args.tool_set.iter().flat_map(|set| &set.0) {
+                    if !classes.contains(class) {
+                        classes.push(*class);
+                    }
+                }
+                classes
+            }),
+            load_skills: args.no_skills.then_some(false),
+            load_mcp: args.no_mcp.then_some(false),
+            images: args.image.clone(),
             cwd: args.cwd.clone(),
             env: args.env.clone(),
             // `--bypass` / `--no-bypass` are shorthands for a mode, and clap
@@ -325,6 +339,18 @@ mod tests {
             "/tmp/out",
             "--timeout",
             "7",
+            "--auto-compact-tokens",
+            "90000",
+            "--tool-set",
+            "shell",
+            "--tool-set",
+            "read,shell",
+            "--no-skills",
+            "--no-mcp",
+            "--image",
+            "a.png",
+            "--image",
+            "b.png",
             "--cwd",
             "/tmp/work",
             "--env",
@@ -397,6 +423,23 @@ mod tests {
             Some(std::path::Path::new("/tmp/out"))
         );
         assert_eq!(request.timeout, Some(7));
+        assert_eq!(request.auto_compact_tokens.map(|n| n.get()), Some(90_000));
+        assert_eq!(
+            request.tool_set,
+            Some(vec![
+                oneharness_core::domain::lean::ToolClass::Shell,
+                oneharness_core::domain::lean::ToolClass::Read
+            ])
+        );
+        assert_eq!(request.load_skills, Some(false));
+        assert_eq!(request.load_mcp, Some(false));
+        assert_eq!(
+            request.images,
+            [
+                std::path::PathBuf::from("a.png"),
+                std::path::PathBuf::from("b.png")
+            ]
+        );
         assert_eq!(
             request.cwd.as_deref(),
             Some(std::path::Path::new("/tmp/work"))

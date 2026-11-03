@@ -153,6 +153,11 @@ pub enum FailureKind {
     /// never a turn failure, and a fallback chain moves on to its next
     /// candidate (`"app-server-lost"`).
     AppServerLost,
+    /// The request carried an input this harness cannot take — today an
+    /// image (`images`) on a harness with no image input — so the harness was
+    /// refused for the run before it started, and a fallback chain moves on
+    /// (`"unsupported-input"`). Its `error` names the input.
+    UnsupportedInput,
 }
 
 impl FailureKind {
@@ -161,7 +166,7 @@ impl FailureKind {
     /// against the enum's own generated schema (`sdk_schema`), so a kind added
     /// without being listed here fails the gate rather than shipping an SDK that
     /// accepts it at a version whose reader refuses it.
-    pub const ALL: [FailureKind; 11] = [
+    pub const ALL: [FailureKind; 12] = [
         FailureKind::Auth,
         FailureKind::RateLimit,
         FailureKind::ModelNotFound,
@@ -173,6 +178,7 @@ impl FailureKind {
         FailureKind::ModelMismatch,
         FailureKind::ServerOverloaded,
         FailureKind::AppServerLost,
+        FailureKind::UnsupportedInput,
     ];
 
     /// Whether this kind asserts the harness or its provider **refused to run
@@ -207,7 +213,8 @@ impl FailureKind {
             | FailureKind::UntrustedDirectory
             | FailureKind::InputTooLarge
             | FailureKind::ModelMismatch
-            | FailureKind::ServerOverloaded => true,
+            | FailureKind::ServerOverloaded
+            | FailureKind::UnsupportedInput => true,
             FailureKind::ToolDeferred | FailureKind::AppServerLost => false,
         }
     }
@@ -227,6 +234,7 @@ impl FailureKind {
             FailureKind::ModelMismatch => "model_mismatch",
             FailureKind::ServerOverloaded => "server_overloaded",
             FailureKind::AppServerLost => "app_server_lost",
+            FailureKind::UnsupportedInput => "unsupported_input",
         }
     }
 }

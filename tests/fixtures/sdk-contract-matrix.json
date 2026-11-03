@@ -777,6 +777,30 @@
       "value": { "prompt": "hi", "historyPointerFile": "" }
     },
     {
+      "name": "run lean options",
+      "root": "run_options",
+      "accepted": true,
+      "value": { "prompt": "p", "autoCompactTokens": 120000, "toolSet": ["shell", "read"], "noSkills": true, "noMcp": true, "images": ["/tmp/frame.png"] }
+    },
+    {
+      "name": "run tool set must name a class",
+      "root": "run_options",
+      "accepted": false,
+      "value": { "prompt": "p", "toolSet": [] }
+    },
+    {
+      "name": "run tool set refuses an unknown class",
+      "root": "run_options",
+      "accepted": false,
+      "value": { "prompt": "p", "toolSet": ["edit"] }
+    },
+    {
+      "name": "run auto compact tokens must be positive",
+      "root": "run_options",
+      "accepted": false,
+      "value": { "prompt": "p", "autoCompactTokens": 0 }
+    },
+    {
       "name": "run empty prompt",
       "root": "run_options",
       "accepted": false,
@@ -1250,6 +1274,34 @@
         "finished_at": null, "text": null, "text_source": null,
         "usage": {"input_tokens": null, "output_tokens": null, "cache_read_tokens": null, "cache_write_tokens": null, "cost_usd": null},
         "session_id": "mock-codex-thread", "events": null, "failure_kind": "app_server_lost", "error": "the shared codex app-server went away while the turn was running"
+      }
+    },
+    {
+      "name": "history record v1.12 accepts unsupported_input",
+      "root": "history_record",
+      "accepted": true,
+      "value": {
+        "schema_version": "1.12", "history_id": "0198f0d0-7b31-7000-8000-0000000000f1",
+        "session": "session", "name": "name", "labels": {}, "project": "/tmp/project",
+        "timestamp": "2026-11-02T00:00:01Z", "harness": "goose", "harness_id": "goose", "model": null, "prompt": "describe",
+        "permission_mode": "bypass", "status": "skipped", "exit_code": null, "duration_ms": null,
+        "finished_at": null, "text": null, "text_source": null,
+        "usage": {"input_tokens": null, "output_tokens": null, "cache_read_tokens": null, "cache_write_tokens": null, "cost_usd": null},
+        "session_id": null, "events": null, "failure_kind": "unsupported_input", "error": "`goose` has no image input, so a run with `images` was not sent to it"
+      }
+    },
+    {
+      "name": "history record v1.11 rejects unsupported_input",
+      "root": "history_record",
+      "accepted": false,
+      "value": {
+        "schema_version": "1.11", "history_id": "0198f0d0-7b31-7000-8000-0000000000f2",
+        "session": "session", "name": "name", "labels": {}, "project": "/tmp/project",
+        "timestamp": "2026-11-02T00:00:01Z", "harness": "goose", "harness_id": "goose", "model": null, "prompt": "describe",
+        "permission_mode": "bypass", "status": "skipped", "exit_code": null, "duration_ms": null,
+        "finished_at": null, "text": null, "text_source": null,
+        "usage": {"input_tokens": null, "output_tokens": null, "cache_read_tokens": null, "cache_write_tokens": null, "cost_usd": null},
+        "session_id": null, "events": null, "failure_kind": "unsupported_input", "error": "`goose` has no image input, so a run with `images` was not sent to it"
       }
     },
     {

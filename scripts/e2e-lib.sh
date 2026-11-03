@@ -652,6 +652,14 @@ oh_controlled_turn() {
   [ "$status" -eq 0 ] || exit "$status"
 }
 
+# The stored run's own account of what went wrong: its `error`, else the last
+# non-blank line of the harness's stderr; empty when it reported neither.
+_oh_run_said() {
+  printf '%s' "$OH_REPORT" | jq -r '.results[0] | if (.error // "") != "" then .error
+    else ((.stderr // "") | split("\n") | map(select(test("\\S"))) | last // "") end' 2>/dev/null |
+    tr -d '\r' || true
+}
+
 # Read a field from the stored report.
 oh_field() { printf '%s' "$OH_REPORT" | jq -r "$1"; }
 
@@ -679,7 +687,7 @@ oh_dump() {
 # it for a harness whose extraction we guarantee (e.g. opencode → json:opencode-parts).
 oh_assert_echoed() {
   local id="$1" marker="$2" expected_source="${3:-}"
-  local status available exit_code source
+  local status available exit_code source said
 
   status="$(oh_field '.results[0].status')"
   available="$(oh_field '.results[0].available')"
@@ -702,7 +710,8 @@ oh_assert_echoed() {
       not_run "$id: its own provider refused the turn, so nothing was exercised: $refusal"
     fi
     oh_dump
-    fail "$id did not run cleanly: status=$status, exit_code=$exit_code"
+    said="$(_oh_run_said)"
+    fail "$id did not run cleanly: status=$status, exit_code=$exit_code${said:+ — the run reported: $said} — read the harness stderr above, fix what it names (credentials, install, sandbox), then rerun this suite"
   fi
   note "  ok: $id ran and exited cleanly (status=ok, exit_code=0, duration=$(oh_field '.results[0].duration_ms')ms)"
 
@@ -718,7 +727,8 @@ oh_assert_echoed() {
     fi
   else
     oh_dump
-    fail "$id ran but the unique marker never surfaced — the model did not echo it back"
+    said="$(_oh_run_said)"
+    fail "$id ran but the unique marker never surfaced — the model did not echo it back${said:+; the run reported: $said} — read the harness stdout above for what the model did instead; if it acted on its context rather than echoing, run the turn context-free (oh_echo_without_context)"
   fi
 
   # When the caller guarantees a normalized-text method for this harness, hold
@@ -752,10 +762,19 @@ oh_assert_echoed() {
 # itself. A `.git` above the sandbox would make that the project root and widen
 # the search, so the helper refuses to launch. The marker assertion is
 # oh_assert_echoed's, unchanged. oh_context_free_enforce holds real qwen to this.
-#   $1 harness id, then any further oh_run arguments
+# `--sync <toml>` first syncs that config's rules into `work/` (project scope),
+# for a turn proving the real CLI accepts the synced file; the toml stays
+# outside `work/`, so the turn's folder holds only the harness's own settings.
+#   $1 harness id, then optionally `--sync <toml>`, then any further oh_run
+#   arguments
 oh_echo_without_context() {
-  local id="$1" dir up marker turn status=0
+  local id="$1" dir up marker turn status=0 sync=""
   shift
+  if [ "${1:-}" = --sync ]; then
+    [ -n "${2:-}" ] || fail "oh_echo_without_context: --sync needs the oneharness.toml to sync from"
+    sync="$2"
+    shift 2
+  fi
   local context_env=()
   case "$id" in
     qwen) ;;
@@ -785,6 +804,11 @@ oh_echo_without_context() {
     oh_drop_sandbox "$dir"
     fail "$id: could not create $dir/work and $dir/home in the context-free sandbox; check that ${TMPDIR:-/tmp} is writable and has free space"
   }
+  if [ -n "$sync" ] && ! ONEHARNESS_NO_CONFIG='' "$(oh_bin)" sync --harness "$id" --cwd "$(oh_native_path "$dir/work")" \
+    --config "$(oh_native_path "$sync")" --compact >/dev/null; then
+    oh_drop_sandbox "$dir"
+    fail "$id: oneharness sync of $sync into the context-free sandbox failed (its error above) — check that config's [harness.$id] rules"
+  fi
   context_env=(
     --env "HOME=$(oh_native_path "$dir/home")"
     --env "XDG_CONFIG_HOME=$(oh_native_path "$dir/home/.config")"
@@ -4775,4 +4799,199 @@ oh_reasoning_enforce() {
   fi
 
   note "PASS: $id reasoning enforcement"
+}
+
+# A 32x32 PNG filled with pure red, the image the lean-session phase attaches,
+# as bash printf escapes (no decoder whose flags differ between platforms).
+OH_RED_PNG_ESCAPED='\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52\x00\x00\x00\x20\x00\x00\x00\x20\x08\x02\x00\x00\x00\xfc\x18\xed\xa3\x00\x00\x00\x27\x49\x44\x41\x54\x78\xda\xed\xcd\xb1\x09\x00\x00\x08\xc0\xb0\xfe\xff\xb4\x5e\xe1\x20\x04\xb2\xa7\xa9\x53\x09\x04\x02\x81\x40\x20\x10\x08\x04\x82\x2f\xc1\x02\x32\xc3\xfc\x2e\x70\xfd\x23\x3d\x00\x00\x00\x00\x49\x45\x4e\x44\xae\x42\x60\x82'
+
+# The live drift alarm for the long-session settings (`domain::lean`'s
+# translation table): the deterministic suite replays recorded captures, so
+# only this phase notices a harness release that renames a knob. One session,
+# four turns, each asserting what the real harness did:
+#   1. --tool-set shell,read --no-skills --no-mcp --image: the model names the
+#      image's colour. claude-code: its own `system/init` line loads exactly
+#      Bash and Read, no MCP server, no skill and no slash command. codex: the
+#      report names `tool_set` as applied in part and no other setting.
+#   2. --auto-compact-tokens below the session's size: the harness begins its
+#      own compaction (claude-code: a `compacting` status line; codex: a
+#      `compacted` record in the thread's rollout), where turn 1 had none.
+#   3. `oneharness compact`: answers `completed`.
+#   4. a resumed turn still recalls the code word planted in turn 1.
+# Quiet on success: the turns' own lines (oh_run's `driving:` among them) are
+# buffered and replayed only when the phase does not end in its PASS line, so
+# a pass prints that line alone and a failure or skip prints everything.
+#   $1 harness id (claude-code or codex)
+oh_lean_session_enforce() {
+  _oh_phase
+  local id="$1" sandbox status=0 phase log last
+  sandbox="$(oh_socket_sandbox)" || fail "could not create a scratch directory — check that the host temp dir is writable"
+  log="$sandbox/phase.log"
+  (
+    _oh_lean_session "$id" "$sandbox"
+  ) </dev/null 2>"$log" &
+  phase=$!
+  wait "$phase" || status=$?
+  # A log that cannot be read stops here, before the sandbox goes, so it can
+  # still be inspected.
+  last="$(tail -n 1 "$log")" ||
+    fail "could not read the phase's output from $log (tail's error above) — check its permissions with ls -la; $sandbox is kept for inspection"
+  if [ "$status" -eq 0 ] && [ "${last#PASS: }" != "$last" ]; then
+    note "$last"
+  else
+    cat "$log" >&2 ||
+      fail "could not replay the phase's output from $log (cat's error above) — check its permissions with ls -la; $sandbox is kept for inspection"
+  fi
+  rm -rf "$sandbox" || note "  could not remove the scratch directory $sandbox — delete it by hand"
+  [ "$status" -eq 0 ] || exit "$status"
+}
+
+# The rollout file of codex thread $1 under the Codex home the harness uses;
+# fails, naming the directory, when the search errors or finds none.
+_oh_codex_rollout() {
+  local home="${CODEX_HOME:-$HOME/.codex}" found
+  found="$(find "$home/sessions" -type f -name "rollout-*-$1.jsonl")" ||
+    fail "codex: cannot search $home/sessions for thread '$1' (find's error above) — check that CODEX_HOME points at the Codex home the harness used"
+  found="${found%%$'\n'*}"
+  [ -n "$found" ] ||
+    fail "codex: no rollout file for thread '$1' under $home/sessions — check that CODEX_HOME points at the Codex home the harness used"
+  printf '%s\n' "$found"
+}
+
+# How many `compacted` records codex's rollout file $1 holds.
+_oh_codex_compactions() {
+  jq -s '[.[] | select(.type == "compacted")] | length' "$1" ||
+    fail "codex: cannot read the rollout $1 (jq's error above) — check that the file is readable JSONL"
+}
+
+# `true` when the stored claude-code report's stream-json stdout carries a
+# `compacting` status line, else `false`; fails when the stdout is not JSON.
+_oh_claude_compacting() {
+  oh_field '.results[0].stdout // ""' | jq -s 'any(.[]; .status? == "compacting")' ||
+    fail "claude-code: its stdout is not stream-json (jq's error above) — check that --events still selects --output-format stream-json"
+}
+
+# A turn that did not end `ok` fails the phase, with the report shown.
+#   $1 harness id, $2 what the turn was for
+_oh_lean_turn_ok() {
+  local status
+  status="$(oh_field '.results[0].status')"
+  [ "$status" = ok ] && return
+  oh_dump
+  fail "$1: the $2 turn did not complete (status=$status) — read the harness stderr above, then rerun this phase"
+}
+
+#   $1 harness id, $2 scratch directory (removed by the caller)
+_oh_lean_session() {
+  local id="$1" dir="$2" native word session store image bin text rollout before compacts report errf rc init
+  native="$(oh_native_path "$dir")" || fail "could not convert $dir to a native path — check that cygpath works on this host"
+  word="$(oh_marker)"
+  session="ohlean${RANDOM}"
+  store="$native/s"
+  image="$native/red.png"
+  printf '%b' "$OH_RED_PNG_ESCAPED" >"$dir/red.png" ||
+    fail "could not write the test image into $dir — check that the host temp dir is writable"
+  local at=(--session "$session" --session-dir "$store" --cwd "$native")
+  local events=()
+  [ "$id" = claude-code ] && events=(--events)
+  local table="the $id row of domain::lean's translation table (crates/oneharness-core/src/domain/lean.rs)"
+
+  oh_run "$id" "Remember the code word ${word}. Then name the single colour that fills the attached image, as one lowercase word." \
+    "${at[@]}" --tool-set shell,read --no-skills --no-mcp --image "$image" "${events[@]+"${events[@]}"}"
+  status="$(oh_field '.results[0].status')"
+  # Only a missing binary is a skip; any other skipped result is oneharness
+  # refusing the lean turn (an `unsupported_input` refusal of the image, say),
+  # which is the regression this phase exists to catch.
+  if [ "$(oh_field '.results[0].available')" != "true" ]; then
+    skip "$id is not installed (oneharness reported available=false, status=$status); nothing to verify"
+  fi
+  if [ "$status" = "skipped" ]; then
+    oh_dump
+    fail "$id: oneharness refused the lean turn (failure_kind=$(oh_field '.results[0].failure_kind // "none"')) — read its diagnostics above, then check the images, tool_set, load_skills and load_mcp entries in $table"
+  fi
+  _oh_lean_turn_ok "$id" lean
+  text="$(oh_field '.results[0].text // ""' | tr '[:upper:]' '[:lower:]')"
+  case "$text" in *red*) ;; *)
+    oh_dump
+    fail "$id did not see the attached image as an image (answered '$text', want red) — check the images entry in $table"
+    ;;
+  esac
+  [ "$(oh_field '(.results[0].calls // []) | length')" -ge 1 ] || {
+    oh_dump
+    fail "$id: a completed turn reported no per-call usage (calls) — compare the harness stdout above with the calls entry in $table"
+  }
+  case "$id" in
+    claude-code)
+      init="$(oh_field '.results[0].stdout // ""' | jq -c 'select(.type == "system" and .subtype == "init")' | head -1)" ||
+        fail "claude-code: its stdout is not stream-json (jq's error above) — check that --events still selects --output-format stream-json"
+      [ -n "$init" ] || {
+        oh_dump
+        fail "claude-code printed no system/init line to read the loaded tools from — check that --events still selects --output-format stream-json --verbose"
+      }
+      printf '%s' "$init" | jq -e '(.tools | sort) == ["Bash", "Read"] and (.mcp_servers // []) == []
+          and (.skills // []) == [] and (.slash_commands // []) == []' >/dev/null || {
+        note "  init: $(printf '%s' "$init" | jq -c '{tools, mcp_servers, skills, slash_commands}')"
+        fail "claude-code loaded more than the lean set asks for — check the tool_set, load_skills and load_mcp entries in $table"
+      }
+      ;;
+    codex)
+      printf '%s' "$OH_REPORT" | jq -e '[.results[0].diagnostics // [] | .[].setting] == ["tool_set"]' >/dev/null || {
+        note "  diagnostics: $(oh_field '.results[0].diagnostics' | jq -c .)"
+        fail "codex: the lean turn must report tool_set alone as applied in part — check the tool_set, load_skills and load_mcp entries in $table"
+      }
+      ;;
+  esac
+
+  # 2. A threshold below the session's size starts the harness's compaction;
+  # turn 1 (no threshold) must not have, so the compaction is the threshold's.
+  local early="compacted during the first turn already, so a compaction cannot be attributed to the threshold — rerun the phase; if it recurs, the harness's default threshold fell below this tiny session"
+  case "$id" in
+    claude-code)
+      compacts="$(_oh_claude_compacting)" || exit 1
+      [ "$compacts" = false ] || fail "claude-code $early"
+      oh_run "$id" "Reply with: ok." "${at[@]}" --auto-compact-tokens 1000 --events
+      _oh_lean_turn_ok "$id" auto-compact
+      compacts="$(_oh_claude_compacting)" || exit 1
+      [ "$compacts" = true ] || {
+        oh_dump
+        fail "claude-code did not start compacting below the requested size — check the auto_compact_tokens entry (CLAUDE_CODE_AUTO_COMPACT_WINDOW) in $table"
+      }
+      ;;
+    codex)
+      rollout="$(_oh_codex_rollout "$(oh_field '.results[0].session_id // ""')")" || exit 1
+      before="$(_oh_codex_compactions "$rollout")" || exit 1
+      [ "$before" -eq 0 ] || fail "codex $early"
+      oh_run "$id" "Reply with: ok." "${at[@]}" --auto-compact-tokens 1000
+      _oh_lean_turn_ok "$id" auto-compact
+      compacts="$(_oh_codex_compactions "$rollout")" || exit 1
+      [ "$compacts" -ge 1 ] || {
+        oh_dump
+        fail "codex wrote no compacted record below the requested size — check the auto_compact_tokens entry (model_auto_compact_token_limit) in $table"
+      }
+      ;;
+  esac
+
+  bin="$(oh_bin)"
+  _oh_phase
+  _oh_expect "$id" app-server
+  local model_args=()
+  [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
+  # Inside the sandbox the caller removes, so a failed compaction leaves nothing.
+  errf="$dir/compact.stderr"
+  report="$(ONEHARNESS_NO_CONFIG=1 "$bin" compact --harness "$id" "${at[@]}" --timeout "${OH_TIMEOUT:-120}" \
+    --format json "${model_args[@]+"${model_args[@]}"}" 2>"$errf")" && rc=0 || rc=$?
+  if [ "$(printf '%s' "$report" | jq -r '.status // ""' 2>/dev/null)" != completed ]; then
+    note "  compact exited $rc: ${report:-<no stdout>}"
+    sed 's/^/    /' "$errf" >&2 || note "  could not read its stderr from $errf — check its permissions with ls -la"
+    fail "$id: oneharness compact did not complete — read its outcome and stderr above, then check the compact-now entry in $table"
+  fi
+
+  oh_run "$id" "What code word did I ask you to remember? Reply with only the code word." "${at[@]}"
+  _oh_lean_turn_ok "$id" recall
+  case "$(oh_field '(.results[0].text // "") + (.results[0].stdout // "")')" in *"$word"*) ;; *)
+    oh_dump
+    fail "$id: after compaction the session no longer recalls the code word ${word} — check the compact-now entry in $table"
+    ;;
+  esac
+  note "PASS: $id lean session (tool set, skills, MCP, image, calls, auto-compact, compact)"
 }

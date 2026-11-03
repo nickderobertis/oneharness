@@ -63,6 +63,12 @@ oh_events_assert claude-code "stream-json:content-blocks" --events
 note "» stream: events must arrive incrementally, then a terminal result line"
 oh_stream_assert claude-code --events
 
+# Long-session settings (domain::lean's translation table): one session loads
+# only Bash and Read with no skills or MCP, sees an attached image, reports
+# per-call usage, starts compacting below --auto-compact-tokens, compacts on
+# `oneharness compact`, and still recalls its first turn afterwards.
+oh_lean_session_enforce claude-code
+
 # Same-prefix batch mode (fork-based min-tokens): the batch warms prompt[0] as a
 # session carrying the large shared --system, then FORKS it for the fan-out, so
 # each fanned-out call reuses the warmed cached prefix and writes less than the

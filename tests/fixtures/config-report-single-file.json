@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.12",
+  "schema_version": "0.13",
   "config_files": [
     "<dir>/base.toml",
     "<dir>/single.toml",
@@ -46,6 +46,22 @@
   "timeout": {
     "value": 30,
     "source": "<dir>/base.toml"
+  },
+  "auto_compact_tokens": {
+    "value": null,
+    "source": null
+  },
+  "tool_set": {
+    "value": null,
+    "source": null
+  },
+  "load_skills": {
+    "value": null,
+    "source": null
+  },
+  "load_mcp": {
+    "value": null,
+    "source": null
   },
   "output_format": {
     "value": null,

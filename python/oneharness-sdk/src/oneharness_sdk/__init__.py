@@ -3,6 +3,8 @@
 from ._client import MockHarnessScript, OneHarness
 from ._errors import ContractError, HistoryNotFoundError, OneHarnessProcessError
 from ._generated_types import (
+    CompactOptions,
+    CompactOutcome,
     ConfigOptions,
     ConfigReport,
     Detection,
@@ -39,6 +41,8 @@ from ._generated_types import (
 from ._version import __version__
 
 __all__ = [
+    "CompactOptions",
+    "CompactOutcome",
     "ConfigOptions",
     "ConfigReport",
     "ContractError",

@@ -8,7 +8,7 @@ export type HistoryLine =
       harness_id: string;
       history_id: string;
       prompt: string;
-      schema_version: "1.11";
+      schema_version: "1.11" | "1.12";
       started: UtcInstant;
       type: "run-started";
       [k: string]: unknown;
@@ -19,7 +19,7 @@ export type HistoryLine =
           harness: string;
           harness_id?: string | null | undefined;
           run_id: string;
-          schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | "1.10" | "1.11";
+          schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | "1.10" | "1.11" | "1.12";
           /**
            * The name of the session this line belongs to — the `name` its run's
            * closing `run` line will carry — so a run still in progress (events but
@@ -61,7 +61,7 @@ export type HistoryLine =
         }
       | ({
           error: string;
-          schema_version?: "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | "1.10" | "1.11" | undefined;
+          schema_version?: "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | "1.10" | "1.11" | "1.12" | undefined;
           [k: string]: unknown;
         } & (
           | {
@@ -80,7 +80,7 @@ export type HistoryLine =
             [k: string]: unknown;
           }
         | {
-            schema_version?: "1.7" | "1.8" | "1.9" | "1.10" | "1.11" | undefined;
+            schema_version?: "1.7" | "1.8" | "1.9" | "1.10" | "1.11" | "1.12" | undefined;
             status?: "nonzero" | "timeout" | "cancelled" | undefined;
             work: "done" | "none";
             [k: string]: unknown;
@@ -93,7 +93,7 @@ export type HistoryLine =
           }
         | {
             observed_model: string;
-            schema_version?: "1.8" | "1.9" | "1.10" | "1.11" | undefined;
+            schema_version?: "1.8" | "1.9" | "1.10" | "1.11" | "1.12" | undefined;
             [k: string]: unknown;
           }
       ) &
@@ -103,7 +103,7 @@ export type HistoryLine =
             [k: string]: unknown;
           }
         | {
-            schema_version?: "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | "1.10" | "1.11" | undefined;
+            schema_version?: "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | "1.10" | "1.11" | "1.12" | undefined;
             [k: string]: unknown;
           }
       ) &
@@ -120,11 +120,12 @@ export type HistoryLine =
               | "model_mismatch"
               | "server_overloaded"
               | "app_server_lost"
+              | "unsupported_input"
               | null;
             [k: string]: unknown;
           }
         | {
-            schema_version?: "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | "1.10" | "1.11" | undefined;
+            schema_version?: "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | "1.10" | "1.11" | "1.12" | undefined;
             [k: string]: unknown;
           }
       ) &
@@ -140,11 +141,12 @@ export type HistoryLine =
                 | "model_mismatch"
                 | "server_overloaded"
                 | "app_server_lost"
+                | "unsupported_input"
                 | null;
               [k: string]: unknown;
             }
           | {
-              schema_version?: "1.6" | "1.7" | "1.8" | "1.9" | "1.10" | "1.11" | undefined;
+              schema_version?: "1.6" | "1.7" | "1.8" | "1.9" | "1.10" | "1.11" | "1.12" | undefined;
               [k: string]: unknown;
             }
         ) &
@@ -161,11 +163,12 @@ export type HistoryLine =
                 | "input_too_large"
                 | "server_overloaded"
                 | "app_server_lost"
+                | "unsupported_input"
                 | null;
               [k: string]: unknown;
             }
           | {
-              schema_version?: "1.8" | "1.9" | "1.10" | "1.11" | undefined;
+              schema_version?: "1.8" | "1.9" | "1.10" | "1.11" | "1.12" | undefined;
               [k: string]: unknown;
             }
         ) &
@@ -182,11 +185,12 @@ export type HistoryLine =
                 | "input_too_large"
                 | "model_mismatch"
                 | "app_server_lost"
+                | "unsupported_input"
                 | null;
               [k: string]: unknown;
             }
           | {
-              schema_version?: "1.9" | "1.10" | "1.11" | undefined;
+              schema_version?: "1.9" | "1.10" | "1.11" | "1.12" | undefined;
               [k: string]: unknown;
             }
         ) &
@@ -203,11 +207,34 @@ export type HistoryLine =
                 | "input_too_large"
                 | "model_mismatch"
                 | "server_overloaded"
+                | "unsupported_input"
                 | null;
               [k: string]: unknown;
             }
           | {
-              schema_version?: "1.10" | "1.11" | undefined;
+              schema_version?: "1.10" | "1.11" | "1.12" | undefined;
+              [k: string]: unknown;
+            }
+        ) &
+        (
+          | {
+              failure_kind?:
+                | "auth"
+                | "rate_limit"
+                | "model_not_found"
+                | "quota"
+                | "session_not_found"
+                | "tool_deferred"
+                | "untrusted_directory"
+                | "input_too_large"
+                | "model_mismatch"
+                | "server_overloaded"
+                | "app_server_lost"
+                | null;
+              [k: string]: unknown;
+            }
+          | {
+              schema_version?: "1.12" | undefined;
               [k: string]: unknown;
             }
         )) &
@@ -239,7 +266,7 @@ export type HistoryLine =
             project: string;
             prompt: string;
             schema_version:
-              "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | "1.10" | "1.11";
+              "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | "1.10" | "1.11" | "1.12";
             session: string;
             session_id: string | null;
             started_at: string;
@@ -286,7 +313,7 @@ export type HistoryLine =
             project: string;
             prompt: string;
             schema_version:
-              "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | "1.10" | "1.11";
+              "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | "1.10" | "1.11" | "1.12";
             session: string;
             session_id: string | null;
             started_at: string;
@@ -332,7 +359,7 @@ export type HistoryLine =
             permission_mode: PermissionMode;
             project: string;
             prompt: string;
-            schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | "1.10" | "1.11";
+            schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | "1.10" | "1.11" | "1.12";
             session: string;
             session_id: string | null;
             started_at?: never | undefined;
@@ -379,7 +406,7 @@ export type HistoryLine =
             project: string;
             prompt: string;
             schema_version:
-              "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | "1.10" | "1.11";
+              "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | "1.10" | "1.11" | "1.12";
             session: string;
             session_id: string | null;
             started_at?: never | undefined;
@@ -425,7 +452,7 @@ export type HistoryLine =
             permission_mode: PermissionMode;
             project: string;
             prompt: string;
-            schema_version: "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | "1.10" | "1.11";
+            schema_version: "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | "1.10" | "1.11" | "1.12";
             session: string;
             session_id: string | null;
             started_at: string;
@@ -472,7 +499,7 @@ export type HistoryLine =
             project: string;
             prompt: string;
             schema_version:
-              "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | "1.10" | "1.11";
+              "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | "1.10" | "1.11" | "1.12";
             session: string;
             session_id: string | null;
             started_at?: never | undefined;
@@ -524,7 +551,8 @@ export type FailureKind =
   | "input_too_large"
   | "model_mismatch"
   | "server_overloaded"
-  | "app_server_lost";
+  | "app_server_lost"
+  | "unsupported_input";
 /**
  * The unified approval mode, from least to most autonomy. A harness may not
  * support every value (see [`crate::domain::harness::HarnessSpec::mode`]); the

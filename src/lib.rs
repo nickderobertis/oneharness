@@ -32,6 +32,7 @@ pub fn dispatch(cli: Cli) -> i32 {
         Command::History(args) => commands::history::run(&args),
         Command::Usage(args) => commands::usage::run(&args),
         Command::Interrupt(args) => commands::interrupt::run(&args),
+        Command::Compact(args) => commands::compact::run(&args),
     };
     match result {
         Ok(code) => code,

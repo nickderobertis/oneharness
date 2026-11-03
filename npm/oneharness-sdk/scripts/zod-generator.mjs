@@ -101,6 +101,16 @@ export const SDK_SCHEMA_ROOTS = Object.freeze([
 		module: "interrupt-response",
 	},
 	{
+		key: "compact_options",
+		type: "CompactOptions",
+		module: "compact-options",
+	},
+	{
+		key: "compact_outcome",
+		type: "CompactOutcome",
+		module: "compact-outcome",
+	},
+	{
 		key: "history_clear_options",
 		type: "HistoryClearOptions",
 		module: "history-clear-options",

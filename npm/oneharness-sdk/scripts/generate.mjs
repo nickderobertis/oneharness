@@ -173,6 +173,17 @@ const CONTRACT_MODULES = Object.freeze([
 		title: true,
 	},
 	{
+		module: "compact-options",
+		key: "compact_options",
+		type: "CompactOptions",
+	},
+	{
+		module: "compact-outcome",
+		key: "compact_outcome",
+		type: "CompactOutcome",
+		output: true,
+	},
+	{
 		module: "history-clear-options",
 		key: "history_clear_options",
 		type: "HistoryClearOptions",

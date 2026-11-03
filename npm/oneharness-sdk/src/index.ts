@@ -8,6 +8,8 @@ import {
 	type CapabilityMethod,
 	type OptionBinding,
 } from "./generated/capabilities.js";
+import type { CompactOptions } from "./generated/compact-options.js";
+import type { CompactOutcome } from "./generated/compact-outcome.js";
 import type { ConfigOptions } from "./generated/config-options.js";
 import type { ConfigReport } from "./generated/config-report.js";
 import type { RunReport } from "./generated/contracts.js";
@@ -48,6 +50,8 @@ import type { SyncReport } from "./generated/sync-report.js";
 import type { UsageOptions } from "./generated/usage-options.js";
 import type { UsageReport } from "./generated/usage-report.js";
 import {
+	CompactOptionsSchema,
+	CompactOutcomeSchema,
 	ConfigOptionsSchema,
 	ConfigReportSchema,
 	DetectOptionsSchema,
@@ -91,6 +95,8 @@ export type {
 	UnlessResolution,
 } from "./generated/capabilities.js";
 export { CAPABILITIES } from "./generated/capabilities.js";
+export type { CompactOptions } from "./generated/compact-options.js";
+export type { CompactOutcome } from "./generated/compact-outcome.js";
 export type { ConfigOptions } from "./generated/config-options.js";
 export type { ConfigReport } from "./generated/config-report.js";
 export type {
@@ -817,6 +823,24 @@ export class OneHarness {
 			input.event,
 		);
 		return verdict.trim() === "" ? null : verdict;
+	}
+
+	/**
+	 * Compact a named session now, through its harness's own compaction of a
+	 * fork; the name continues the fork only once that completes.
+	 *
+	 * Every outcome is an answer, not a throw: `cancelled`, `failed` and
+	 * `unsupported` leave the session exactly as it was, and a non-zero exit
+	 * still yields the outcome.
+	 */
+	async compact(options: CompactOptions): Promise<CompactOutcome> {
+		return await this.call(
+			"compact",
+			options,
+			CompactOptionsSchema,
+			CompactOutcomeSchema,
+			{ acceptJsonOnNonzero: true },
+		);
 	}
 
 	/**

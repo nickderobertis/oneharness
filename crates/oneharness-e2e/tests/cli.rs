@@ -266,6 +266,10 @@ const ENV_OVERRIDE_VARS: &[&str] = &[
     "ONEHARNESS_MODE",
     "ONEHARNESS_BYPASS",
     "ONEHARNESS_TIMEOUT",
+    "ONEHARNESS_AUTO_COMPACT_TOKENS",
+    "ONEHARNESS_TOOL_SET",
+    "ONEHARNESS_LOAD_SKILLS",
+    "ONEHARNESS_LOAD_MCP",
     "ONEHARNESS_OUTPUT_FORMAT",
     "ONEHARNESS_SCHEMA_FILE",
     "ONEHARNESS_SCHEMA_MAX_RETRIES",
@@ -603,7 +607,7 @@ fn every_report_carries_the_shared_schema_version() {
     // so a consumer reads any of them with one number — and a bump must move
     // every surface at once. Pinned literally on purpose: asserting against the
     // constant would pass through a bump nobody intended.
-    let version = "0.12";
+    let version = "0.13";
     let printed = run(
         &[
             "run",
@@ -688,7 +692,7 @@ fn list_describes_every_harness() {
     let output = run(&["list"], &[]);
     assert!(output.status.success());
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.12");
+    assert_eq!(value["schema_version"], "0.13");
     let ids: Vec<&str> = value["harnesses"]
         .as_array()
         .unwrap()
@@ -7891,7 +7895,7 @@ fn a_host_signal_cancels_the_run_and_terminates_a_silent_harness() {
     // The report is still the contract: a cancelled run is a value a consumer
     // reads, not a process that vanished.
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.12");
+    assert_eq!(value["schema_version"], "0.13");
     let result = &value["results"][0];
     assert_eq!(result["status"], "cancelled");
     // A cancellation classifies as nothing either, so the report carries the
@@ -11029,7 +11033,7 @@ fn config_command_shows_values_with_sources() {
         String::from_utf8_lossy(&output.stderr)
     );
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.12");
+    assert_eq!(value["schema_version"], "0.13");
     assert_eq!(value["config_files"].as_array().unwrap().len(), 2);
 
     // The project file wins for model and is named as the source...
@@ -28424,7 +28428,7 @@ fn control_interrupt_aborts_a_live_turn_from_a_separate_process() {
     let output = child.wait_with_output().expect("run did not finish");
     assert!(output.status.success(), "{output:?}");
     let report: Value = serde_json::from_slice(&output.stdout).expect("run report was not JSON");
-    assert_eq!(report["schema_version"], "0.12");
+    assert_eq!(report["schema_version"], "0.13");
     assert_eq!(report["control"]["mechanism"], "claude-control-request");
     assert_eq!(report["control"]["socket"], socket.display().to_string());
     let interrupts = report["control"]["interrupts"].as_array().unwrap();
@@ -31250,6 +31254,163 @@ fn a_controlled_codex_turn_opens_under_the_candidates_own_model() {
         assert_eq!(app_server_frames(&log, "turn/start").len(), 2, "{tag}");
     }
 }
+
+// llmlint: ignore-block[e2e_not_mocked] These journeys must drive the real built `oneharness` against the repository's mock harness standing in for each harness's process: that is this change's stated acceptance bar, since the paid, authenticated CLIs cannot run in the deterministic gate. Only the harness subprocess is replaced, at the existing `--bin` seam, and it replays output captured from the real CLIs (tests/fixtures); the live suites hold the same paths to the real harnesses.
+/// The lean settings reach a controlled codex turn's own app-server child
+/// (`app_server = "per-dispatch"`): `--no-mcp` disables each server the codex
+/// home declares and `--no-skills` drops the skills list.
+#[cfg(unix)]
+#[test]
+fn a_controlled_per_dispatch_codex_turn_loads_no_mcp_and_no_skills() {
+    let mock = mock_bin().display().to_string();
+    let store = control_store_dir("lean-per-dispatch");
+    let store_arg = store.display().to_string();
+    let log_arg = store.join("app-server.log").display().to_string();
+    let argv_file = store.join("argv");
+    let argv_arg = argv_file.display().to_string();
+    let home = store.join("codex-home");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("config.toml"),
+        "[mcp_servers.docs]\ncommand = \"d\"\n",
+    )
+    .unwrap();
+    let home_arg = home.display().to_string();
+    let project = format!(
+        r#"
+        [harness.codex]
+        bin = '{mock}'
+        env = {{ MOCK_CODEX_APP_SERVER_LOG = '{log_arg}', MOCK_CODEX_COMPLETE_TURN = "1", MOCK_ARGV_FILE = '{argv_arg}', CODEX_HOME = '{home_arg}' }}
+    "#
+    );
+    let fx = ConfigFixture::per_dispatch("control-lean", &project, "");
+    let cwd_arg = fx.cwd();
+    let output = run_with_config(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--control",
+            "--session",
+            "lean",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "bypass",
+            "--prompt",
+            "keep working",
+            "--no-mcp",
+            "--no-skills",
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let argv: Vec<String> = std::fs::read_to_string(&argv_file)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    assert_eq!(
+        argv.first().map(String::as_str),
+        Some("app-server"),
+        "{argv:?}"
+    );
+    let pair = |value: &str| argv.windows(2).any(|w| w[0] == "-c" && w[1] == value);
+    assert!(
+        pair("mcp_servers.docs={command=\"true\",enabled=false}"),
+        "{argv:?}"
+    );
+    assert!(pair("skills.include_instructions=false"), "{argv:?}");
+}
+// llmlint: ignore-end[e2e_not_mocked]
+
+// llmlint: ignore-block[e2e_not_mocked] The real built `oneharness` drives the controlled turn; only codex's app-server child is the repository's mock harness, at the `--bin` seam, because the paid, authenticated CLI cannot run in the deterministic gate. It records the per-call `token_count` events captured from real codex (tests/fixtures/codex-rollout-token-counts.jsonl) in the thread's rollout, and `live-codex` holds the same path to the real harness.
+/// A controlled codex turn on its own app-server child (`app_server =
+/// "per-dispatch"`) reports one usage per model call, in order, from the
+/// rollout the server records; the turn that resumes the session reports only
+/// the calls it made, not the ones the thread already held.
+#[cfg(unix)]
+#[test]
+fn a_controlled_per_dispatch_codex_turn_reports_only_its_own_calls() {
+    let mock = mock_bin().display().to_string();
+    let store = control_store_dir("calls-per-dispatch");
+    let store_arg = store.display().to_string();
+    let log_arg = store.join("app-server.log").display().to_string();
+    let home = store.join("codex-home");
+    std::fs::create_dir_all(&home).unwrap();
+    let home_arg = home.display().to_string();
+    let project = format!(
+        r#"
+        [harness.codex]
+        bin = '{mock}'
+        env = {{ MOCK_CODEX_APP_SERVER_LOG = '{log_arg}', MOCK_CODEX_COMPLETE_TURN = "1", MOCK_CODEX_ROLLOUT_CALLS = "1", CODEX_HOME = '{home_arg}' }}
+    "#
+    );
+    let fx = ConfigFixture::per_dispatch("control-calls", &project, "");
+    let cwd_arg = fx.cwd();
+    let turn = || {
+        let output = run_with_config(
+            &[
+                "run",
+                "--harness",
+                "codex",
+                "--control",
+                "--session",
+                "watch",
+                "--session-dir",
+                &store_arg,
+                "--cwd",
+                &cwd_arg,
+                "--mode",
+                "bypass",
+                "--prompt",
+                "check the print",
+                "--compact",
+            ],
+            &[],
+            &fx.user_config(),
+        );
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        report["results"][0].clone()
+    };
+    let inputs = |result: &Value| -> Vec<u64> {
+        result["calls"]
+            .as_array()
+            .unwrap_or_else(|| panic!("no calls: {result}"))
+            .iter()
+            .map(|call| call["input_tokens"].as_u64().unwrap())
+            .collect()
+    };
+    let first = turn();
+    assert_eq!(inputs(&first), vec![13_006, 13_101, 13_180], "{first}");
+    assert_eq!(first["calls"][2]["output_tokens"], 5, "{first}");
+    assert_eq!(first["calls"][1]["cache_read_tokens"], 12_928, "{first}");
+    let second = turn();
+    assert_eq!(
+        app_server_frames(&store.join("app-server.log"), "thread/resume").len(),
+        1,
+        "the second turn resumes the thread"
+    );
+    assert_eq!(
+        inputs(&second),
+        vec![13_006, 13_101, 13_180],
+        "only the resumed turn's own calls: {second}"
+    );
+}
+// llmlint: ignore-end[e2e_not_mocked]
 
 /// An open response that names NO model is no claim at all, so the turn
 /// proceeds under the requested model exactly as before the check existed:
@@ -36614,6 +36775,43 @@ fn json_document_verbs(history_dir: &str) -> Vec<Vec<String>> {
             ["sync"] => vec!["--check"],
             ["usage"] => vec!["--harness", "cursor", "--bin", &cursor],
             ["interrupt"] => vec!["--session", "ghost", "--session-dir", history_dir],
+            // A session `run` binds to a harness with no compaction (opencode),
+            // so `compact` answers a whole `unsupported` outcome.
+            ["compact"] => {
+                let opencode = bin_override("opencode"); // llmlint: ignore[e2e_not_mocked] The real `oneharness run` creates the session `compact` is then driven against; only the opencode subprocess is replaced, at the existing `--bin` seam, because the paid CLI cannot run in the deterministic gate.
+                let created = run(
+                    &[
+                        "run",
+                        "--harness",
+                        "opencode",
+                        "--session",
+                        "nocompact",
+                        "--session-dir",
+                        history_dir,
+                        "--cwd",
+                        history_dir,
+                        "--bin",
+                        &opencode,
+                        "--mode",
+                        "bypass",
+                        "--prompt",
+                        "hi",
+                    ],
+                    &[(
+                        "MOCK_STDOUT",
+                        r#"{"type":"text","sessionID":"ses_probe","part":{"type":"text","text":"ok"}}"#,
+                    )],
+                );
+                assert!(created.status.success(), "{created:?}");
+                vec![
+                    "--session",
+                    "nocompact",
+                    "--session-dir",
+                    history_dir,
+                    "--cwd",
+                    history_dir,
+                ]
+            }
             ["history", "list" | "clear" | "migrate" | "reindex"] => {
                 vec!["--history-dir", history_dir]
             }
@@ -36658,6 +36856,7 @@ fn every_json_verb_documents_the_format_flag_with_text_as_its_default() {
             "history pointers",
             "usage",
             "interrupt",
+            "compact",
         ],
         "the JSON-document verbs read off the clap tree"
     );

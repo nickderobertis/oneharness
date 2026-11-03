@@ -65,6 +65,16 @@ fn render_text(report: &ListReport) -> String {
             deny_mock = yes_no(h.supports_mock_deny),
             rewrite = h.mock_rewrite.unwrap_or("none"),
         ));
+        out.push_str(&format!(
+            "  auto_compact {compact} · compact_now {now} · tool_set {tools} · skills_off {skills} · mcp_off {mcp} · images {images} · call_usage {calls}\n",
+            compact = yes_no(h.supports_auto_compact),
+            now = yes_no(h.supports_compact_now),
+            tools = yes_no(h.supports_tool_set),
+            skills = yes_no(h.supports_skills_off),
+            mcp = yes_no(h.supports_mcp_off),
+            images = yes_no(h.supports_images),
+            calls = yes_no(h.supports_call_usage),
+        ));
         for v in &h.variants {
             out.push_str(&format!(
                 "  variant {name} → {selector}{model}{bin}\n",

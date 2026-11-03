@@ -47,6 +47,8 @@ fi
   echo "qwen double: could not append to its record $ECHO_DOUBLE_RECORD; check that its directory is writable" >&2
   exit 1
 }
+[ -n "${ECHO_DOUBLE_STDERR:-}" ] && printf '%s\n\n' "$ECHO_DOUBLE_STDERR" >&2
+[ -n "${ECHO_DOUBLE_EXIT:-}" ] && exit "$ECHO_DOUBLE_EXIT"
 if [ -n "${ECHO_DOUBLE_OMIT:-}" ]; then
   echo "I'm ready to assist you! If there's something specific you need help with, please let me know."
   exit 0
@@ -108,5 +110,27 @@ case "$out" in
   *) fail "a reply without the marker failed for another reason: $out" ;;
 esac
 [ "$launches" = 1 ] || fail "a failing probe launched the harness $launches times, not once: $out"
+case "$out" in
+  *"never surfaced — the model did not echo it back; the run reported"*)
+    fail "a reply without the marker and with nothing on stderr reported an error it does not have: $out"
+    ;;
+esac
+
+# 3. A reply without the marker from a run whose harness reported an error
+#    names that error in the failure, not only that the marker is missing.
+probe ECHO_DOUBLE_OMIT=1 ECHO_DOUBLE_STDERR="clone: Operation not permitted"
+[ "$rc" -ne 0 ] || fail "a reply without the marker passed the probe: $out"
+case "$out" in
+  *"FAIL: qwen ran but the unique marker never surfaced — the model did not echo it back; the run reported: clone: Operation not permitted"*) ;;
+  *) fail "a reply without the marker did not name the run's own error in its failure: $out" ;;
+esac
+
+# 4. A run that fails names its own error beside its status.
+probe ECHO_DOUBLE_EXIT=3 ECHO_DOUBLE_STDERR="provider: 401 invalid api key"
+[ "$rc" -ne 0 ] || fail "a run that exited 3 passed the probe: $out"
+case "$out" in
+  *"FAIL: qwen did not run cleanly: status=nonzero, exit_code=3 — the run reported: "*) ;;
+  *) fail "a failed run did not name its own error in its failure: $out" ;;
+esac
 
 echo "check-echo-probe: ok"

@@ -8,6 +8,7 @@ from typing import Any, TypedDict
 
 class _RunOptionsOptional(TypedDict, total=False):
     all: bool
+    auto_compact_tokens: int
     batch_prompts: Sequence[str]
     batch_strategy: str
     bins: dict[str, str]
@@ -24,6 +25,7 @@ class _RunOptionsOptional(TypedDict, total=False):
     history_labels: dict[str, str]
     history_name: str
     history_pointer_file: str
+    images: Sequence[str]
     max_parallel: int
     mock_harnesses: Sequence[str]
     mock_rules: str
@@ -31,6 +33,8 @@ class _RunOptionsOptional(TypedDict, total=False):
     models: Sequence[str]
     no_config: bool
     no_history: bool
+    no_mcp: bool
+    no_skills: bool
     output_dir: str
     output_format: str
     passthrough: Sequence[str]
@@ -50,6 +54,7 @@ class _RunOptionsOptional(TypedDict, total=False):
     system: str
     system_file: str
     timeout_seconds: int
+    tool_set: Sequence[str]
 
 
 class RunOptions(_RunOptionsOptional):
@@ -180,6 +185,22 @@ class InterruptOptions(_InterruptOptionsOptional):
     session: str
 
 
+class _CompactOptionsOptional(TypedDict, total=False):
+    bins: dict[str, str]
+    config: Sequence[str]
+    cwd: str
+    env: dict[str, str]
+    harness: str
+    model: str
+    no_config: bool
+    session_dir: str
+    timeout_seconds: int
+
+
+class CompactOptions(_CompactOptionsOptional):
+    session: str
+
+
 class _HistoryClearOptionsOptional(TypedDict, total=False):
     all_projects: bool
     config: Sequence[str]
@@ -235,6 +256,7 @@ ConfigReport = dict[str, Any]
 SyncReport = dict[str, Any]
 UsageReport = dict[str, Any]
 InterruptResponse = dict[str, Any]
+CompactOutcome = dict[str, Any]
 HistoryClearReport = dict[str, Any]
 HistoryMigrateReport = dict[str, Any]
 HistoryPointers = dict[str, Any]

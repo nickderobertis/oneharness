@@ -133,6 +133,13 @@ oh_codex_rules_enforce
 note "» synced rules: codex's own execpolicy must match them against the POSIX and Windows argv"
 oh_codex_rules_match
 
+# Long-session settings (domain::lean's translation table): one session takes
+# every tool restriction codex has (reporting `tool_set` as partial), sees an
+# attached image, reports per-call usage, compacts below
+# --auto-compact-tokens, compacts on `oneharness compact` (one stdio
+# app-server launch), and still recalls its first turn afterwards.
+oh_lean_session_enforce codex
+
 # Large prompt + system (issue #1115): oneharness pipes a >128 KiB prompt to
 # `codex exec -` (stdin sentinel), with the system prepended into that stream —
 # so it never trips the argv ceiling. The marker must still round-trip.

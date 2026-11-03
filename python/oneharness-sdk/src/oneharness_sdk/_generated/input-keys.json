@@ -1,4 +1,16 @@
 {
+  "compact_options": {
+    "bins": "bins",
+    "config": "config",
+    "cwd": "cwd",
+    "env": "env",
+    "harness": "harness",
+    "model": "model",
+    "no_config": "noConfig",
+    "session": "session",
+    "session_dir": "sessionDir",
+    "timeout_seconds": "timeoutSeconds"
+  },
   "config_options": {
     "config": "config",
     "cwd": "cwd",
@@ -100,6 +112,7 @@
   },
   "run_options": {
     "all": "all",
+    "auto_compact_tokens": "autoCompactTokens",
     "batch_prompts": "batchPrompts",
     "batch_strategy": "batchStrategy",
     "bins": "bins",
@@ -116,6 +129,7 @@
     "history_labels": "historyLabels",
     "history_name": "historyName",
     "history_pointer_file": "historyPointerFile",
+    "images": "images",
     "max_parallel": "maxParallel",
     "mock_harnesses": "mockHarnesses",
     "mock_rules": "mockRules",
@@ -123,6 +137,8 @@
     "models": "models",
     "no_config": "noConfig",
     "no_history": "noHistory",
+    "no_mcp": "noMcp",
+    "no_skills": "noSkills",
     "output_dir": "outputDir",
     "output_format": "outputFormat",
     "passthrough": "passthrough",
@@ -142,7 +158,8 @@
     "spy_file": "spyFile",
     "system": "system",
     "system_file": "systemFile",
-    "timeout_seconds": "timeoutSeconds"
+    "timeout_seconds": "timeoutSeconds",
+    "tool_set": "toolSet"
   },
   "sync_options": {
     "check": "check",

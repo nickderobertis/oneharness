@@ -2748,11 +2748,13 @@ fn compact_refuses_malformed_env_or_bin_before_any_answer() {
 // llmlint: ignore-end[e2e_not_mocked]
 
 // llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its translation run; only the harness process (codex) is the mock harness, held to its real CLI by the capture it cites and `live-codex` (module doc).
-/// codex's home is wherever the launch's codex would look: `HOME/.codex`
-/// when no `CODEX_HOME` reaches it, including when a variant removes the one
+/// codex's home is wherever the launch's codex would look: `.codex` in the
+/// user's home (`USERPROFILE` on Windows, `HOME` elsewhere) when no
+/// `CODEX_HOME` reaches it, including when a variant removes the one
 /// oneharness inherited. Per-call usage and MCP discovery both read it.
 #[test]
 fn codex_home_follows_home_and_a_variants_removed_codex_home() {
+    let user_var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
     let scratch = ScratchDir::new("lean-codex-home").unwrap();
     let declare = |home: &Path, server: &str| {
         std::fs::create_dir_all(home).unwrap();
@@ -2804,8 +2806,8 @@ fn codex_home_follows_home_and_a_variants_removed_codex_home() {
     };
     std::fs::write(scratch.join("user.toml"), "").unwrap();
 
-    // No CODEX_HOME at all: HOME/.codex, as codex itself falls back.
-    let home_env = format!("HOME={}", user_home.display());
+    // No CODEX_HOME at all: the user's home's .codex, as codex itself falls back.
+    let home_env = format!("{user_var}={}", user_home.display());
     let (result, argv) = run(
         &[
             "--harness",
@@ -2824,11 +2826,11 @@ fn codex_home_follows_home_and_a_variants_removed_codex_home() {
     );
     assert!(argv.contains("mcp_servers.home_server="), "{argv}");
 
-    // A variant that removes the inherited CODEX_HOME reads HOME/.codex too.
+    // A variant that removes the inherited CODEX_HOME reads the user's home too.
     std::fs::write(
         scratch.join("user.toml"),
         format!(
-            "[harness.codex.variant.home]\nunset_env = [\"CODEX_HOME\"]\n[harness.codex.variant.home.env]\nHOME = {:?}\nMOCK_CODEX_SESSIONS = \"1\"\n",
+            "[harness.codex.variant.home]\nunset_env = [\"CODEX_HOME\"]\n[harness.codex.variant.home.env]\n{user_var} = {:?}\nMOCK_CODEX_SESSIONS = \"1\"\n",
             user_home.display().to_string()
         ),
     )

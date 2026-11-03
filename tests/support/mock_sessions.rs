@@ -275,18 +275,20 @@ fn claude(argv: &[String]) -> ! {
     say(&[result.to_string()]);
 }
 
-/// Where codex keeps its sessions: `CODEX_HOME`, else `$HOME/.codex`.
+/// Where codex keeps its sessions: `CODEX_HOME`, else `.codex` in the user's
+/// home — `%USERPROFILE%` on Windows, `$HOME` elsewhere, as codex resolves it.
 fn codex_store() -> PathBuf {
+    let user = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
     std::env::var("CODEX_HOME")
         .ok()
         .filter(|home| !home.is_empty())
         .map(PathBuf::from)
         .or_else(|| {
-            std::env::var("HOME")
+            std::env::var(user)
                 .ok()
                 .map(|home| PathBuf::from(home).join(".codex"))
         })
-        .expect("MOCK_CODEX_SESSIONS needs CODEX_HOME or HOME")
+        .expect("MOCK_CODEX_SESSIONS needs CODEX_HOME or a home directory for ~/.codex")
         .join("sessions")
         .join("2026")
         .join("11")

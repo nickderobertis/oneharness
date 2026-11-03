@@ -1053,6 +1053,46 @@ fn calls_list_one_usage_per_model_call_where_the_harness_records_them() {
     let result = json(&out)["results"][0].clone();
     assert_eq!(result["calls"][0]["output_tokens"], 2, "{result}");
     assert!(result["calls"][0]["cost_usd"].is_null(), "{result}");
+
+    // A turn of several steps lists one usage per step, in order. These events
+    // are composed here, in the captured event's shape, to give a multi-call
+    // turn: no real multi-call OpenCode capture is in the repository yet.
+    let steps = [(11, 3, 0.01), (13, 5, 0.02), (17, 7, 0.03)]
+        .iter()
+        .map(|(input, output, cost)| {
+            format!(
+                r#"{{"type":"step_finish","sessionID":"ses_1","part":{{"type":"step-finish","tokens":{{"input":{input},"output":{output}}},"cost":{cost}}}}}"#
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let out = oh(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--prompt",
+            "hi",
+            "--bin",
+            &b,
+        ],
+        &[("MOCK_STDOUT", &steps)],
+        None,
+    );
+    let result = json(&out)["results"][0].clone();
+    let calls = result["calls"].as_array().expect("one usage per step");
+    let read: Vec<_> = calls
+        .iter()
+        .map(|c| (c["input_tokens"].clone(), c["output_tokens"].clone()))
+        .collect();
+    assert_eq!(
+        read,
+        [(11, 3), (13, 5), (17, 7)]
+            .iter()
+            .map(|(i, o)| (serde_json::json!(i), serde_json::json!(o)))
+            .collect::<Vec<_>>(),
+        "{result}"
+    );
 }
 // llmlint: ignore-end[e2e_not_mocked]
 

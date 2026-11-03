@@ -5,6 +5,8 @@
 //! for each harness's process.
 
 use std::path::{Path, PathBuf};
+use std::process::{Child, Command};
+use std::sync::Mutex;
 #[cfg(unix)]
 use std::time::{Duration, Instant};
 
@@ -14,6 +16,7 @@ use oneharness_core::domain::lean::{Setting, ToolClass};
 use oneharness_core::io::cancel::CancelToken;
 use oneharness_core::io::compact::{compact_session, CompactRequest};
 use oneharness_core::io::run::{run, RunControls, RunRequest};
+use oneharness_core::io::runner::ProcessSupervisor;
 use oneharness_core::io::scratch::ScratchDir;
 use serde_json::Value;
 
@@ -259,6 +262,116 @@ fn compact_session_completes_on_claude_and_codex() {
         assert_eq!(text, "context: [summary of: alpha, beta, gamma]", "{id}");
         assert_eq!(Some(token), outcome.token);
     }
+}
+
+/// Records what a caller's supervisor is handed: the command about to spawn
+/// and the live child's pid.
+#[derive(Default)]
+struct Watcher {
+    commands: Mutex<Vec<(String, Vec<String>)>>,
+    pids: Mutex<Vec<u32>>,
+}
+
+impl ProcessSupervisor for Watcher {
+    fn spawning(&self, command: &mut Command) {
+        let program = command.get_program().to_string_lossy().into_owned();
+        let args = command
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        self.commands.lock().unwrap().push((program, args));
+    }
+
+    fn spawned(&self, child: &Child) {
+        self.pids.lock().unwrap().push(child.id());
+    }
+}
+
+#[test]
+fn a_callers_supervisor_is_handed_the_compaction_process() {
+    for id in ["claude-code", "codex"] {
+        let kept = Kept::new(id, &format!("supervised-{id}"));
+        kept.turn("alpha");
+        let profiles = ProfileScratch::new();
+        let watcher = Watcher::default();
+        let outcome = compact_session(
+            &kept.request(&profiles, &[]),
+            RunControls::default(),
+            Some(&watcher),
+        )
+        .expect("a valid compaction");
+        assert_eq!(
+            outcome.status,
+            CompactStatus::Completed,
+            "{id}: {outcome:?}"
+        );
+        let commands = watcher.commands.lock().unwrap();
+        assert_eq!(
+            commands.len(),
+            1,
+            "{id}: one compaction process {commands:?}"
+        );
+        assert_eq!(Path::new(&commands[0].0), fixture::mock_bin(), "{id}");
+        assert!(!commands[0].1.is_empty(), "{id}: the harness's own argv");
+        let pids = watcher.pids.lock().unwrap();
+        assert_eq!(pids.len(), 1, "{id}: the live child handed over");
+        assert_ne!(pids[0], std::process::id(), "{id}");
+    }
+}
+
+#[test]
+fn compact_session_takes_its_binary_from_config_and_an_explicit_bin_over_it() {
+    let kept = Kept::new("claude-code", "config-bin");
+    kept.turn("alpha");
+    let profiles = ProfileScratch::new();
+    let write_config = |bin: &Path| {
+        let path = kept.dir.join("oneharness.toml");
+        let bin = bin.display().to_string().replace('\\', "/");
+        std::fs::write(&path, format!("[harness.claude-code]\nbin = \"{bin}\"\n")).unwrap();
+        path
+    };
+    let configured = |config: PathBuf, bin: Vec<String>| CompactRequest {
+        config: vec![config],
+        no_config: false,
+        bin,
+        ..kept.request(&profiles, &[])
+    };
+
+    // A configured binary that does not exist is the one tried.
+    let missing = kept.dir.join("no-such-claude");
+    let outcome = compact_session(
+        &configured(write_config(&missing), Vec::new()),
+        RunControls::default(),
+        None,
+    )
+    .expect("a valid compaction");
+    assert_eq!(outcome.status, CompactStatus::Failed, "{outcome:?}");
+    assert!(
+        outcome
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("no-such-claude"),
+        "{outcome:?}"
+    );
+
+    // An explicit `bin` beats it.
+    let outcome = compact_session(
+        &configured(write_config(&missing), vec![bin_override("claude-code")]),
+        RunControls::default(),
+        None,
+    )
+    .expect("a valid compaction");
+    assert_eq!(outcome.status, CompactStatus::Completed, "{outcome:?}");
+
+    // A configured binary that exists runs the compaction.
+    let outcome = compact_session(
+        &configured(write_config(&fixture::mock_bin()), Vec::new()),
+        RunControls::default(),
+        None,
+    )
+    .expect("a valid compaction");
+    assert_eq!(outcome.status, CompactStatus::Completed, "{outcome:?}");
 }
 
 #[cfg(unix)]

@@ -81,7 +81,7 @@ OUTPUT_ALIASES = (
     "SyncReport",
     "UsageReport",
     "InterruptResponse",
-    # llmlint: ignore[modern_domain_modeling] Every output contract in this tuple is deliberately a validated mapping, not a typed model (the comment above says why: an additive field a newer CLI emits must reach the caller); the generated JSON Schema checks CompactOutcome's fields and `status` values on every call.
+    # llmlint: ignore[modern_domain_modeling] CompactOutcome's `status` values are checked by its generated JSON Schema on every call, as for every mapping in this tuple.
     "CompactOutcome",
     "HistoryClearReport",
     "HistoryMigrateReport",

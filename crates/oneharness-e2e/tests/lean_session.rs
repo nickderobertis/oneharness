@@ -5,6 +5,18 @@
 //! Each drives the real `oneharness` binary with the mock harness standing in
 //! for the harness process, and asserts what that process received (its argv,
 //! environment and stdin, recorded by the mock) or what the report says.
+//!
+//! Why the harness process is the mock, stated once for every journey's
+//! `e2e_not_mocked` suppression below: the deterministic gate cannot run the
+//! paid, authenticated CLIs, so only that process is replaced, at the existing
+//! `--bin` seam. What holds each double to its real harness is the capture
+//! `domain::lean`'s translation table cites, which the session double replays —
+//! Claude Code: `tests/fixtures/claude-stream-json-turn.jsonl` and
+//! `claude-compact-fork.jsonl`; codex 0.159.2: `codex-app-server-fork-compact.jsonl`
+//! and `codex-rollout-token-counts.jsonl`; OpenCode: `opencode_run.jsonl`; the
+//! rest: the documentation their table rows cite — and each harness's `live-*`
+//! suite drives the real CLI through the same `run` path. No live suite checks
+//! these settings yet; the task places that comparison after this change.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -206,7 +218,7 @@ fn printed(p: &Project, id: &str, flags: &[&str], envs: &[(&str, &str)]) -> Vec<
     strings(&json(&out)["results"][0]["command"])
 }
 
-// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness` binary and its translation of the setting under test; only the harness process is the published mock harness, passed at the existing `--bin` seam, because the deterministic gate cannot run the paid, authenticated CLIs. Claude Code's translation rests on captures of the real CLI that `domain::lean`'s table cites and the session double replays (tests/fixtures/claude-stream-json-turn.jsonl, claude-compact-fork.jsonl) and `live-claude` drives the real CLI through the same `run` path; codex's rests on captures of codex 0.159.2 that the table cites and the session double replays (tests/fixtures/codex-app-server-fork-compact.jsonl, codex-rollout-token-counts.jsonl) and `live-codex` drives the real CLI through the same `run` path (none of the live suites checks these settings yet; the task places that comparison after this change).
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its translation run; only the harness process (claude-code, codex) is the mock harness, held to its real CLI by the capture it cites and `live-claude`, `live-codex` (module doc).
 #[test]
 fn each_setting_layers_like_timeout_through_extends_env_and_flag() {
     // auto_compact_tokens, read off codex's own override.
@@ -411,7 +423,7 @@ fn an_out_of_range_setting_is_refused_naming_it() {
     }
 }
 
-// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness` binary and its translation of the setting under test; only the harness process is the published mock harness, passed at the existing `--bin` seam, because the deterministic gate cannot run the paid, authenticated CLIs. Claude Code's translation rests on captures of the real CLI that `domain::lean`'s table cites and the session double replays (tests/fixtures/claude-stream-json-turn.jsonl, claude-compact-fork.jsonl) and `live-claude` drives the real CLI through the same `run` path; codex's rests on captures of codex 0.159.2 that the table cites and the session double replays (tests/fixtures/codex-app-server-fork-compact.jsonl, codex-rollout-token-counts.jsonl) and `live-codex` drives the real CLI through the same `run` path; OpenCode's rests on its real capture, which the double replays (tests/fixtures/opencode_run.jsonl) and `live-opencode` drives the real CLI through the same `run` path; every other harness's row rests on the documentation its entry in `domain::lean`'s translation table cites, and its own `live-*` suite drives the real CLI through the same `run` path (none of the live suites checks these settings yet; the task places that comparison after this change).
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its translation run; only the harness process (claude-code, codex, opencode, the other adapters) is the mock harness, held to its real CLI by the capture it cites and `live-claude`, `live-codex`, `live-opencode`, their `live-*` suites (module doc).
 /// Every lean setting on, against each harness in turn: what its process
 /// receives, and the diagnostic for each it cannot apply.
 #[test]
@@ -537,7 +549,7 @@ fn each_harness_receives_its_own_translation_of_the_lean_settings() {
 }
 // llmlint: ignore-end[e2e_not_mocked]
 
-// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness` binary and its translation of the setting under test; only the harness process is the published mock harness, passed at the existing `--bin` seam, because the deterministic gate cannot run the paid, authenticated CLIs. Claude Code's translation rests on captures of the real CLI that `domain::lean`'s table cites and the session double replays (tests/fixtures/claude-stream-json-turn.jsonl, claude-compact-fork.jsonl) and `live-claude` drives the real CLI through the same `run` path; codex's rests on captures of codex 0.159.2 that the table cites and the session double replays (tests/fixtures/codex-app-server-fork-compact.jsonl, codex-rollout-token-counts.jsonl) and `live-codex` drives the real CLI through the same `run` path (none of the live suites checks these settings yet; the task places that comparison after this change).
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its translation run; only the harness process (claude-code, codex) is the mock harness, held to its real CLI by the capture it cites and `live-claude`, `live-codex` (module doc).
 #[test]
 fn each_setting_reaches_only_its_own_harness_and_nothing_is_added_when_absent() {
     let scratch = ScratchDir::new("lean-only-own").unwrap();
@@ -628,7 +640,7 @@ fn each_setting_reaches_only_its_own_harness_and_nothing_is_added_when_absent() 
 }
 // llmlint: ignore-end[e2e_not_mocked]
 
-// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness` binary and its translation of the setting under test; only the harness process is the published mock harness, passed at the existing `--bin` seam, because the deterministic gate cannot run the paid, authenticated CLIs. Claude Code's translation rests on captures of the real CLI that `domain::lean`'s table cites and the session double replays (tests/fixtures/claude-stream-json-turn.jsonl, claude-compact-fork.jsonl) and `live-claude` drives the real CLI through the same `run` path (none of the live suites checks these settings yet; the task places that comparison after this change).
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its translation run; only the harness process (claude-code) is the mock harness, held to its real CLI by the capture it cites and `live-claude` (module doc).
 #[test]
 fn a_small_auto_compact_on_claude_rides_the_window_floor_and_a_percentage() {
     let scratch = ScratchDir::new("lean-pct").unwrap();
@@ -717,7 +729,7 @@ fn png(dir: &Path, name: &str) -> PathBuf {
     path
 }
 
-// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness` binary and its translation of the setting under test; only the harness process is the published mock harness, passed at the existing `--bin` seam, because the deterministic gate cannot run the paid, authenticated CLIs. Codex's rests on captures of codex 0.159.2 that the table cites and the session double replays (tests/fixtures/codex-app-server-fork-compact.jsonl, codex-rollout-token-counts.jsonl) and `live-codex` drives the real CLI through the same `run` path (none of the live suites checks these settings yet; the task places that comparison after this change).
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its translation run; only the harness process (codex) is the mock harness, held to its real CLI by the capture it cites and `live-codex` (module doc).
 #[test]
 fn a_missing_or_unreadable_image_is_refused_before_any_harness_starts() {
     let scratch = ScratchDir::new("lean-image-missing").unwrap();
@@ -753,7 +765,7 @@ fn a_missing_or_unreadable_image_is_refused_before_any_harness_starts() {
 }
 // llmlint: ignore-end[e2e_not_mocked]
 
-// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness` binary and its translation of the setting under test; only the harness process is the published mock harness, passed at the existing `--bin` seam, because the deterministic gate cannot run the paid, authenticated CLIs. Claude Code's translation rests on captures of the real CLI that `domain::lean`'s table cites and the session double replays (tests/fixtures/claude-stream-json-turn.jsonl, claude-compact-fork.jsonl) and `live-claude` drives the real CLI through the same `run` path; codex's rests on captures of codex 0.159.2 that the table cites and the session double replays (tests/fixtures/codex-app-server-fork-compact.jsonl, codex-rollout-token-counts.jsonl) and `live-codex` drives the real CLI through the same `run` path; OpenCode's rests on its real capture, which the double replays (tests/fixtures/opencode_run.jsonl) and `live-opencode` drives the real CLI through the same `run` path; every other harness's row rests on the documentation its entry in `domain::lean`'s translation table cites, and its own `live-*` suite drives the real CLI through the same `run` path (none of the live suites checks these settings yet; the task places that comparison after this change).
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its translation run; only the harness process (claude-code, codex, opencode, the other adapters) is the mock harness, held to its real CLI by the capture it cites and `live-claude`, `live-codex`, `live-opencode`, their `live-*` suites (module doc).
 #[test]
 fn images_reach_each_harness_as_its_own_image_input() {
     let scratch = ScratchDir::new("lean-images").unwrap();
@@ -846,7 +858,7 @@ fn images_reach_each_harness_as_its_own_image_input() {
 }
 // llmlint: ignore-end[e2e_not_mocked]
 
-// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness` binary and its translation of the setting under test; only the harness process is the published mock harness, passed at the existing `--bin` seam, because the deterministic gate cannot run the paid, authenticated CLIs. Codex's rests on captures of codex 0.159.2 that the table cites and the session double replays (tests/fixtures/codex-app-server-fork-compact.jsonl, codex-rollout-token-counts.jsonl) and `live-codex` drives the real CLI through the same `run` path; every other harness's row rests on the documentation its entry in `domain::lean`'s translation table cites, and its own `live-*` suite drives the real CLI through the same `run` path (none of the live suites checks these settings yet; the task places that comparison after this change).
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its translation run; only the harness process (codex, the other adapters) is the mock harness, held to its real CLI by the capture it cites and `live-codex`, their `live-*` suites (module doc).
 #[test]
 fn a_fallback_chain_moves_past_a_harness_without_image_input() {
     let scratch = ScratchDir::new("lean-image-chain").unwrap();
@@ -882,7 +894,7 @@ fn a_fallback_chain_moves_past_a_harness_without_image_input() {
 }
 // llmlint: ignore-end[e2e_not_mocked]
 
-// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness` binary and its translation of the setting under test; only the harness process is the published mock harness, passed at the existing `--bin` seam, because the deterministic gate cannot run the paid, authenticated CLIs. Claude Code's translation rests on captures of the real CLI that `domain::lean`'s table cites and the session double replays (tests/fixtures/claude-stream-json-turn.jsonl, claude-compact-fork.jsonl) and `live-claude` drives the real CLI through the same `run` path; codex's rests on captures of codex 0.159.2 that the table cites and the session double replays (tests/fixtures/codex-app-server-fork-compact.jsonl, codex-rollout-token-counts.jsonl) and `live-codex` drives the real CLI through the same `run` path; OpenCode's rests on its real capture, which the double replays (tests/fixtures/opencode_run.jsonl) and `live-opencode` drives the real CLI through the same `run` path; every other harness's row rests on the documentation its entry in `domain::lean`'s translation table cites, and its own `live-*` suite drives the real CLI through the same `run` path (none of the live suites checks these settings yet; the task places that comparison after this change).
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its translation run; only the harness process (claude-code, codex, opencode, the other adapters) is the mock harness, held to its real CLI by the capture it cites and `live-claude`, `live-codex`, `live-opencode`, their `live-*` suites (module doc).
 #[test]
 fn calls_list_one_usage_per_model_call_where_the_harness_records_them() {
     let scratch = ScratchDir::new("lean-calls").unwrap();
@@ -1124,7 +1136,7 @@ impl Sessions {
     }
 }
 
-// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness` binary and its translation of the setting under test; only the harness process is the published mock harness, passed at the existing `--bin` seam, because the deterministic gate cannot run the paid, authenticated CLIs. Claude Code's translation rests on captures of the real CLI that `domain::lean`'s table cites and the session double replays (tests/fixtures/claude-stream-json-turn.jsonl, claude-compact-fork.jsonl) and `live-claude` drives the real CLI through the same `run` path; codex's rests on captures of codex 0.159.2 that the table cites and the session double replays (tests/fixtures/codex-app-server-fork-compact.jsonl, codex-rollout-token-counts.jsonl) and `live-codex` drives the real CLI through the same `run` path (none of the live suites checks these settings yet; the task places that comparison after this change).
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its translation run; only the harness process (claude-code, codex) is the mock harness, held to its real CLI by the capture it cites and `live-claude`, `live-codex` (module doc).
 #[test]
 fn compact_hands_the_next_turn_the_compacted_context_on_claude_and_codex() {
     for id in ["claude-code", "codex"] {
@@ -1196,7 +1208,7 @@ fn compact_hands_the_next_turn_the_compacted_context_on_claude_and_codex() {
 }
 // llmlint: ignore-end[e2e_not_mocked]
 
-// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness` binary and its translation of the setting under test; only the harness process is the published mock harness, passed at the existing `--bin` seam, because the deterministic gate cannot run the paid, authenticated CLIs. Claude Code's translation rests on captures of the real CLI that `domain::lean`'s table cites and the session double replays (tests/fixtures/claude-stream-json-turn.jsonl, claude-compact-fork.jsonl) and `live-claude` drives the real CLI through the same `run` path; codex's rests on captures of codex 0.159.2 that the table cites and the session double replays (tests/fixtures/codex-app-server-fork-compact.jsonl, codex-rollout-token-counts.jsonl) and `live-codex` drives the real CLI through the same `run` path; OpenCode's rests on its real capture, which the double replays (tests/fixtures/opencode_run.jsonl) and `live-opencode` drives the real CLI through the same `run` path (none of the live suites checks these settings yet; the task places that comparison after this change).
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its translation run; only the harness process (claude-code, codex, opencode) is the mock harness, held to its real CLI by the capture it cites and `live-claude`, `live-codex`, `live-opencode` (module doc).
 #[test]
 fn compact_refuses_an_unknown_or_rebound_session_and_reports_a_harness_without_compaction() {
     let s = Sessions::new("refusals");
@@ -1295,7 +1307,7 @@ fn list_reports_every_new_capability_for_every_adapter() {
     );
 }
 
-// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness` binary and its translation of the setting under test; only the harness process is the published mock harness, passed at the existing `--bin` seam, because the deterministic gate cannot run the paid, authenticated CLIs. Claude Code's translation rests on captures of the real CLI that `domain::lean`'s table cites and the session double replays (tests/fixtures/claude-stream-json-turn.jsonl, claude-compact-fork.jsonl) and `live-claude` drives the real CLI through the same `run` path; codex's rests on captures of codex 0.159.2 that the table cites and the session double replays (tests/fixtures/codex-app-server-fork-compact.jsonl, codex-rollout-token-counts.jsonl) and `live-codex` drives the real CLI through the same `run` path (none of the live suites checks these settings yet; the task places that comparison after this change).
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its translation run; only the harness process (claude-code, codex) is the mock harness, held to its real CLI by the capture it cites and `live-claude`, `live-codex` (module doc).
 /// Every way a compaction can fail leaves the session as it was: the outcome
 /// says `failed` and why, the name still continues the original, and the
 /// harness's own stored files are byte for byte unchanged.
@@ -1353,7 +1365,7 @@ fn a_failed_compaction_answers_failed_and_leaves_the_session_as_it_was() {
 }
 // llmlint: ignore-end[e2e_not_mocked]
 
-// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness` binary and its translation of the setting under test; only the harness process is the published mock harness, passed at the existing `--bin` seam, because the deterministic gate cannot run the paid, authenticated CLIs. Claude Code's translation rests on captures of the real CLI that `domain::lean`'s table cites and the session double replays (tests/fixtures/claude-stream-json-turn.jsonl, claude-compact-fork.jsonl) and `live-claude` drives the real CLI through the same `run` path (none of the live suites checks these settings yet; the task places that comparison after this change).
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its translation run; only the harness process (claude-code) is the mock harness, held to its real CLI by the capture it cites and `live-claude` (module doc).
 #[test]
 fn a_compaction_that_cannot_start_answers_failed() {
     let s = Sessions::new("cannot-start");
@@ -1472,7 +1484,7 @@ fn await_file(path: &Path) -> String {
     }
 }
 
-// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness` binary and its translation of the setting under test; only the harness process is the published mock harness, passed at the existing `--bin` seam, because the deterministic gate cannot run the paid, authenticated CLIs. Codex's rests on captures of codex 0.159.2 that the table cites and the session double replays (tests/fixtures/codex-app-server-fork-compact.jsonl, codex-rollout-token-counts.jsonl) and `live-codex` drives the real CLI through the same `run` path (none of the live suites checks these settings yet; the task places that comparison after this change).
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its translation run; only the harness process (codex) is the mock harness, held to its real CLI by the capture it cites and `live-codex` (module doc).
 #[cfg(unix)]
 #[test]
 fn a_timed_out_compaction_ends_the_harness_and_the_next_turn_continues_uncompacted() {
@@ -1495,7 +1507,7 @@ fn a_timed_out_compaction_ends_the_harness_and_the_next_turn_continues_uncompact
 }
 // llmlint: ignore-end[e2e_not_mocked]
 
-// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness` binary and its translation of the setting under test; only the harness process is the published mock harness, passed at the existing `--bin` seam, because the deterministic gate cannot run the paid, authenticated CLIs. Claude Code's translation rests on captures of the real CLI that `domain::lean`'s table cites and the session double replays (tests/fixtures/claude-stream-json-turn.jsonl, claude-compact-fork.jsonl) and `live-claude` drives the real CLI through the same `run` path (none of the live suites checks these settings yet; the task places that comparison after this change).
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its translation run; only the harness process (claude-code) is the mock harness, held to its real CLI by the capture it cites and `live-claude` (module doc).
 #[cfg(unix)]
 #[test]
 fn sigterm_cancels_a_compaction_from_the_cli_and_leaves_the_session_as_it_was() {
@@ -1641,7 +1653,7 @@ fn an_empty_tool_set_loads_no_built_in_tool_and_a_huge_threshold_is_clamped_and_
 }
 // llmlint: ignore-end[e2e_not_mocked]
 
-// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness` binary and its translation of the setting under test; only the harness process is the published mock harness, passed at the existing `--bin` seam, because the deterministic gate cannot run the paid, authenticated CLIs. Claude Code's translation rests on captures of the real CLI that `domain::lean`'s table cites and the session double replays (tests/fixtures/claude-stream-json-turn.jsonl, claude-compact-fork.jsonl) and `live-claude` drives the real CLI through the same `run` path; codex's rests on captures of codex 0.159.2 that the table cites and the session double replays (tests/fixtures/codex-app-server-fork-compact.jsonl, codex-rollout-token-counts.jsonl) and `live-codex` drives the real CLI through the same `run` path (none of the live suites checks these settings yet; the task places that comparison after this change).
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its translation run; only the harness process (claude-code, codex) is the mock harness, held to its real CLI by the capture it cites and `live-claude`, `live-codex` (module doc).
 #[test]
 fn per_call_usage_reports_why_it_is_absent_and_reads_only_this_runs_calls() {
     let scratch = ScratchDir::new("lean-calls-absent").unwrap();
@@ -1856,7 +1868,7 @@ fn compact_resolves_the_configured_model_timeout_and_identity_environment() {
 }
 // llmlint: ignore-end[e2e_not_mocked]
 
-// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness` binary and its translation of the setting under test; only the harness process is the published mock harness, passed at the existing `--bin` seam, because the deterministic gate cannot run the paid, authenticated CLIs. Codex's rests on captures of codex 0.159.2 that the table cites and the session double replays (tests/fixtures/codex-app-server-fork-compact.jsonl, codex-rollout-token-counts.jsonl) and `live-codex` drives the real CLI through the same `run` path (none of the live suites checks these settings yet; the task places that comparison after this change).
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its translation run; only the harness process (codex) is the mock harness, held to its real CLI by the capture it cites and `live-codex` (module doc).
 /// `--no-mcp` on codex disables every server its configuration would load:
 /// the home config's and each `.codex/config.toml` from the working
 /// directory upward, each named once.
@@ -1931,7 +1943,7 @@ fn no_mcp_disables_codex_servers_from_home_and_every_ancestor_project() {
 }
 // llmlint: ignore-end[e2e_not_mocked]
 
-// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness` binary and its translation of the setting under test; only the harness process is the published mock harness, passed at the existing `--bin` seam, because the deterministic gate cannot run the paid, authenticated CLIs. Claude Code's translation rests on captures of the real CLI that `domain::lean`'s table cites and the session double replays (tests/fixtures/claude-stream-json-turn.jsonl, claude-compact-fork.jsonl) and `live-claude` drives the real CLI through the same `run` path (none of the live suites checks these settings yet; the task places that comparison after this change).
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its translation run; only the harness process (claude-code) is the mock harness, held to its real CLI by the capture it cites and `live-claude` (module doc).
 /// A message emitted once per content block is one call, read from its last
 /// emission, and calls keep the order their messages first appeared in.
 #[test]
@@ -2064,7 +2076,7 @@ fn a_read_only_run_withholds_the_shell_and_says_so() {
 }
 // llmlint: ignore-end[e2e_not_mocked]
 
-// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness` binary and its translation of the setting under test; only the harness process is the published mock harness, passed at the existing `--bin` seam, because the deterministic gate cannot run the paid, authenticated CLIs. Codex's rests on captures of codex 0.159.2 that the table cites and the session double replays (tests/fixtures/codex-app-server-fork-compact.jsonl, codex-rollout-token-counts.jsonl) and `live-codex` drives the real CLI through the same `run` path (none of the live suites checks these settings yet; the task places that comparison after this change).
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its translation run; only the harness process (codex) is the mock harness, held to its real CLI by the capture it cites and `live-codex` (module doc).
 /// codex's compaction is read only off the fork's own compaction turn: a
 /// response without a result, a "fork" that is the original, and another
 /// thread's or turn's notifications neither advance nor end it.
@@ -2116,7 +2128,7 @@ fn a_codex_compaction_reads_only_the_forks_own_turn() {
 }
 // llmlint: ignore-end[e2e_not_mocked]
 
-// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness` binary and its translation of the setting under test; only the harness process is the published mock harness, passed at the existing `--bin` seam, because the deterministic gate cannot run the paid, authenticated CLIs. Claude Code's translation rests on captures of the real CLI that `domain::lean`'s table cites and the session double replays (tests/fixtures/claude-stream-json-turn.jsonl, claude-compact-fork.jsonl) and `live-claude` drives the real CLI through the same `run` path (none of the live suites checks these settings yet; the task places that comparison after this change).
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its translation run; only the harness process (claude-code) is the mock harness, held to its real CLI by the capture it cites and `live-claude` (module doc).
 /// A run that ends non-zero, times out or is cancelled still reports the
 /// calls it made before it ended.
 #[test]
@@ -2180,7 +2192,7 @@ fn calls_are_reported_for_a_run_that_did_not_finish_cleanly() {
 }
 // llmlint: ignore-end[e2e_not_mocked]
 
-// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness` binary and its translation of the setting under test; only the harness process is the published mock harness, passed at the existing `--bin` seam, because the deterministic gate cannot run the paid, authenticated CLIs. Codex's rests on captures of codex 0.159.2 that the table cites and the session double replays (tests/fixtures/codex-app-server-fork-compact.jsonl, codex-rollout-token-counts.jsonl) and `live-codex` drives the real CLI through the same `run` path (none of the live suites checks these settings yet; the task places that comparison after this change).
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its translation run; only the harness process (codex) is the mock harness, held to its real CLI by the capture it cites and `live-codex` (module doc).
 /// A retried attempt on a resumed codex thread reports the final attempt's
 /// calls, the attempt its `usage` describes, not every attempt's.
 #[test]
@@ -2266,7 +2278,7 @@ fn the_list_text_view_states_each_lean_capability() {
     );
 }
 
-// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness` binary and its translation of the setting under test; only the harness process is the published mock harness, passed at the existing `--bin` seam, because the deterministic gate cannot run the paid, authenticated CLIs. Claude Code's translation rests on captures of the real CLI that `domain::lean`'s table cites and the session double replays (tests/fixtures/claude-stream-json-turn.jsonl, claude-compact-fork.jsonl) and `live-claude` drives the real CLI through the same `run` path (none of the live suites checks these settings yet; the task places that comparison after this change).
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its translation run; only the harness process (claude-code) is the mock harness, held to its real CLI by the capture it cites and `live-claude` (module doc).
 /// `compact`'s text view says how it ended, the context sizes the harness
 /// reported, and, when it did not complete, why.
 #[test]
@@ -2338,7 +2350,7 @@ fn the_config_report_attributes_each_lean_setting_to_its_layer() {
     assert_eq!(report["load_mcp"]["source"], "environment");
 }
 
-// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness` binary and its translation of the setting under test; only the harness process is the published mock harness, passed at the existing `--bin` seam, because the deterministic gate cannot run the paid, authenticated CLIs. Claude Code's translation rests on captures of the real CLI that `domain::lean`'s table cites and the session double replays (tests/fixtures/claude-stream-json-turn.jsonl, claude-compact-fork.jsonl) and `live-claude` drives the real CLI through the same `run` path (none of the live suites checks these settings yet; the task places that comparison after this change).
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its translation run; only the harness process (claude-code) is the mock harness, held to its real CLI by the capture it cites and `live-claude` (module doc).
 /// A prompt past the off-argv threshold and an image both ride claude-code's
 /// one stdin frame: the large-prompt route does not displace the image's.
 /// The prompt reaches oneharness through `--prompt-file`, as a caller with a
@@ -2428,7 +2440,7 @@ fn an_explicit_timeout_of_zero_lifts_a_configured_compaction_deadline() {
 }
 // llmlint: ignore-end[e2e_not_mocked]
 
-// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness` binary and its translation of the setting under test; only the harness process is the published mock harness, passed at the existing `--bin` seam, because the deterministic gate cannot run the paid, authenticated CLIs. Codex's rests on captures of codex 0.159.2 that the table cites and the session double replays (tests/fixtures/codex-app-server-fork-compact.jsonl, codex-rollout-token-counts.jsonl) and `live-codex` drives the real CLI through the same `run` path (none of the live suites checks these settings yet; the task places that comparison after this change).
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its translation run; only the harness process (codex) is the mock harness, held to its real CLI by the capture it cites and `live-codex` (module doc).
 /// codex reads files through its shell: `read` keeps it (and says so), and
 /// only an empty set turns it off.
 #[test]
@@ -2588,7 +2600,7 @@ fn per_call_usage_is_read_from_a_variants_own_codex_home() {
 }
 // llmlint: ignore-end[e2e_not_mocked]
 
-// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness` binary and its translation of the setting under test; only the harness process is the published mock harness, passed at the existing `--bin` seam, because the deterministic gate cannot run the paid, authenticated CLIs. Claude Code's translation rests on captures of the real CLI that `domain::lean`'s table cites and the session double replays (tests/fixtures/claude-stream-json-turn.jsonl, claude-compact-fork.jsonl) and `live-claude` drives the real CLI through the same `run` path; OpenCode's rests on its real capture, which the double replays (tests/fixtures/opencode_run.jsonl) and `live-opencode` drives the real CLI through the same `run` path (none of the live suites checks these settings yet; the task places that comparison after this change).
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its translation run; only the harness process (claude-code, opencode) is the mock harness, held to its real CLI by the capture it cites and `live-claude`, `live-opencode` (module doc).
 /// A malformed `--env` or `--bin` is a usage error even when the answer would
 /// otherwise be `unsupported` or a missing binary.
 #[test]
@@ -2666,7 +2678,7 @@ fn compact_refuses_malformed_env_or_bin_before_any_answer() {
 }
 // llmlint: ignore-end[e2e_not_mocked]
 
-// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness` binary and its translation of the setting under test; only the harness process is the published mock harness, passed at the existing `--bin` seam, because the deterministic gate cannot run the paid, authenticated CLIs. Codex's rests on captures of codex 0.159.2 that the table cites and the session double replays (tests/fixtures/codex-app-server-fork-compact.jsonl, codex-rollout-token-counts.jsonl) and `live-codex` drives the real CLI through the same `run` path (none of the live suites checks these settings yet; the task places that comparison after this change).
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its translation run; only the harness process (codex) is the mock harness, held to its real CLI by the capture it cites and `live-codex` (module doc).
 /// codex's home is wherever the launch's codex would look: `HOME/.codex`
 /// when no `CODEX_HOME` reaches it, including when a variant removes the one
 /// oneharness inherited. Per-call usage and MCP discovery both read it.
@@ -2824,7 +2836,7 @@ fn an_unreadable_codex_record_is_a_diagnostic_not_a_failed_run() {
 }
 // llmlint: ignore-end[e2e_not_mocked]
 
-// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness` binary and its translation of the setting under test; only the harness process is the published mock harness, passed at the existing `--bin` seam, because the deterministic gate cannot run the paid, authenticated CLIs. Claude Code's translation rests on captures of the real CLI that `domain::lean`'s table cites and the session double replays (tests/fixtures/claude-stream-json-turn.jsonl, claude-compact-fork.jsonl) and `live-claude` drives the real CLI through the same `run` path (none of the live suites checks these settings yet; the task places that comparison after this change).
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its translation run; only the harness process (claude-code) is the mock harness, held to its real CLI by the capture it cites and `live-claude` (module doc).
 /// A compaction whose reported per-model counts cannot be summed reports
 /// that field as unavailable rather than wrapping or failing.
 #[test]
@@ -2914,7 +2926,7 @@ fn compact_takes_an_explicit_model_over_config_and_refuses_an_unrepresentable_ti
 }
 // llmlint: ignore-end[e2e_not_mocked]
 
-// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness` binary and its translation of the setting under test; only the harness process is the published mock harness, passed at the existing `--bin` seam, because the deterministic gate cannot run the paid, authenticated CLIs. Codex's rests on captures of codex 0.159.2 that the table cites and the session double replays (tests/fixtures/codex-app-server-fork-compact.jsonl, codex-rollout-token-counts.jsonl) and `live-codex` drives the real CLI through the same `run` path (none of the live suites checks these settings yet; the task places that comparison after this change).
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its translation run; only the harness process (codex) is the mock harness, held to its real CLI by the capture it cites and `live-codex` (module doc).
 /// A fallback chain whose session resumes on a later candidate reports that
 /// candidate's own calls, not the turns the thread already held.
 #[test]

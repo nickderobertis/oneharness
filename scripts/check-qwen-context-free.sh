@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Hermetic check for oh_echo_without_context (scripts/e2e-lib.sh), the live
-# qwen journey's echo turn. It must start qwen with none of the checkout's or
+# qwen journey's echo turn and synced-settings turn. It must start qwen with none of the checkout's or
 # the machine's context or memory files loaded, and must still fail when the
 # reply lacks the marker. The real built oneharness drives a qwen double that
 # applies qwen's own context-discovery rules (packages/core memory discovery:
@@ -103,6 +103,12 @@ fi
   printf 'cwd=%s\n' "$cwd"
   printf 'home=%s\n' "$home"
   for f in "${loaded[@]+"${loaded[@]}"}"; do printf 'loaded=%s\n' "$f"; done
+  if [ -f "$cwd/.qwen/settings.json" ]; then
+    printf 'settings=%s\n' "$(tr -d '\n' <"$cwd/.qwen/settings.json")"
+  fi
+  for f in "$cwd"/* "$cwd"/.[!.]*; do
+    if [ -e "$f" ]; then printf 'entry=%s\n' "${f##*/}"; fi
+  done
 } >"$QWEN_DOUBLE_RECORD" || {
   echo "qwen double: could not write its record $QWEN_DOUBLE_RECORD; check that its directory is writable" >&2
   exit 1
@@ -198,6 +204,36 @@ grep -q "^home=$tmp/live/" "$record" ||
   fail "the context-free turn ran under the machine's HOME: $(cat "$record")"
 [ -z "$(ls -A "$tmp/live")" ] || fail "the context-free turn left its sandbox behind: $(ls -A "$tmp/live")"
 
+# 2b. The synced-settings turn: the config's rules are synced into the turn's
+#     own empty folder, which then holds qwen's settings file and nothing else,
+#     and the turn loads no context and passes on the marker alone.
+printf '[harness.qwen]\nallowed_tools = ["run_shell_command(ls)"]\n' >"$tmp/sync.toml" || fixture_failed "$tmp/sync.toml"
+# shellcheck disable=SC2016 # expanded by the driven shell
+drive "$root" 'oh_echo_without_context qwen --sync "$SYNC_TOML"' SYNC_TOML="$tmp/sync.toml"
+[ "$rc" -eq 0 ] || fail "the context-free synced-settings turn failed: $out"
+[ -f "$record" ] || fail "the qwen double never ran for the synced-settings turn: $out"
+grep -q '^settings=.*run_shell_command(ls)' "$record" ||
+  fail "the synced-settings turn ran without the synced .qwen/settings.json in its folder: $(cat "$record")"
+[ "$(grep '^entry=' "$record")" = "entry=.qwen" ] ||
+  fail "the synced-settings turn's folder held more than qwen's settings: $(grep '^entry=' "$record")"
+if grep -q '^loaded=' "$record"; then
+  fail "the synced-settings turn loaded context files: $(grep '^loaded=' "$record")"
+fi
+[ -z "$(ls -A "$tmp/live")" ] || fail "the synced-settings turn left its sandbox behind: $(ls -A "$tmp/live")"
+
+# 2c. A config sync refuses stops before launching, names the config, and
+#     gives the sandbox back.
+printf '[harness.qwen]\nallowed_tools = 3\n' >"$tmp/bad-sync.toml" || fixture_failed "$tmp/bad-sync.toml"
+# shellcheck disable=SC2016 # expanded by the driven shell
+drive "$root" 'oh_echo_without_context qwen --sync "$SYNC_TOML"' SYNC_TOML="$tmp/bad-sync.toml"
+[ "$rc" -ne 0 ] || fail "a config sync refused was accepted: $out"
+case "$out" in
+  *"oneharness sync of $tmp/bad-sync.toml into the context-free sandbox failed"*) ;;
+  *) fail "a refused sync failed without naming its config: $out" ;;
+esac
+[ ! -e "$record" ] || fail "qwen launched after its settings failed to sync"
+[ -z "$(ls -A "$tmp/live")" ] || fail "a refused sync left its sandbox behind: $(ls -A "$tmp/live")"
+
 # 3. A reply without the marker still fails, with no retry: the double runs once.
 drive "$root" 'oh_echo_without_context qwen' QWEN_DOUBLE_OMIT=1
 [ "$rc" -ne 0 ] || fail "a reply without the marker passed: $out"
@@ -243,6 +279,8 @@ esac
 # 6. The live journey uses it for its echo turn, and runs the alarm after it.
 grep -qx 'oh_echo_without_context qwen' "$root/scripts/e2e-qwen.sh" ||
   fail "scripts/e2e-qwen.sh no longer runs its echo turn through oh_echo_without_context"
+grep -q 'oh_echo_without_context qwen --sync ' "$root/scripts/e2e-qwen.sh" ||
+  fail "scripts/e2e-qwen.sh no longer runs its synced-settings turn through oh_echo_without_context --sync"
 grep -qx 'oh_context_free_enforce qwen' "$root/scripts/e2e-qwen.sh" ||
   fail "scripts/e2e-qwen.sh no longer holds real qwen to the context-free launch with oh_context_free_enforce"
 

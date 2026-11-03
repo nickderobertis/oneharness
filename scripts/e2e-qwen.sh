@@ -35,15 +35,20 @@ oh_long_prompt_enforce qwen
 #
 # What IS provable headlessly: the real CLI accepts the synced file — a
 # malformed write would break this run, so it is the format drift alarm.
+#
+# The turn runs context-free (oh_echo_without_context): run from a folder
+# holding oneharness.toml under the machine's HOME, gpt-4o-mini read the echo
+# request as a cue to go and run the project's tests (no package.json on
+# macOS; a shell refused by the runner's user-namespace limits on Ubuntu) and
+# never echoed the marker.
 sandbox="$(mktemp -d)"
 printf '[harness.qwen]\nallowed_tools = ["run_shell_command(ls)"]\ndenied_tools = ["run_shell_command(rm)"]\n' \
-  >"$sandbox/oneharness.toml"
-ONEHARNESS_NO_CONFIG='' "$(oh_bin)" sync --harness qwen --cwd "$sandbox" \
-  --config "$sandbox/oneharness.toml" --compact >/dev/null ||
-  fail "qwen: oneharness sync failed"
-marker="$(oh_marker)"
-oh_run qwen "$(oh_prompt "$marker")" --cwd "$sandbox"
-oh_assert_echoed qwen "$marker"
+  >"$sandbox/oneharness.toml" || fail "qwen: could not write the sync config into $sandbox; check that the host temp dir is writable"
+(oh_echo_without_context qwen --sync "$sandbox/oneharness.toml") || {
+  rc=$?
+  rm -rf "$sandbox"
+  exit "$rc"
+}
 rm -rf "$sandbox"
 note "PASS: qwen accepts the synced settings file (headless enforcement is flag-gated in qwen itself; see comments)"
 

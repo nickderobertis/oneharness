@@ -652,6 +652,14 @@ oh_controlled_turn() {
   [ "$status" -eq 0 ] || exit "$status"
 }
 
+# The stored run's own account of what went wrong: its `error`, else the last
+# non-blank line of the harness's stderr; empty when it reported neither.
+_oh_run_said() {
+  printf '%s' "$OH_REPORT" | jq -r '.results[0] | if (.error // "") != "" then .error
+    else ((.stderr // "") | split("\n") | map(select(test("\\S"))) | last // "") end' 2>/dev/null |
+    tr -d '\r' || true
+}
+
 # Read a field from the stored report.
 oh_field() { printf '%s' "$OH_REPORT" | jq -r "$1"; }
 
@@ -679,7 +687,7 @@ oh_dump() {
 # it for a harness whose extraction we guarantee (e.g. opencode → json:opencode-parts).
 oh_assert_echoed() {
   local id="$1" marker="$2" expected_source="${3:-}"
-  local status available exit_code source
+  local status available exit_code source said
 
   status="$(oh_field '.results[0].status')"
   available="$(oh_field '.results[0].available')"
@@ -702,7 +710,8 @@ oh_assert_echoed() {
       not_run "$id: its own provider refused the turn, so nothing was exercised: $refusal"
     fi
     oh_dump
-    fail "$id did not run cleanly: status=$status, exit_code=$exit_code"
+    said="$(_oh_run_said)"
+    fail "$id did not run cleanly: status=$status, exit_code=$exit_code${said:+ — the run reported: $said}"
   fi
   note "  ok: $id ran and exited cleanly (status=ok, exit_code=0, duration=$(oh_field '.results[0].duration_ms')ms)"
 
@@ -718,7 +727,8 @@ oh_assert_echoed() {
     fi
   else
     oh_dump
-    fail "$id ran but the unique marker never surfaced — the model did not echo it back"
+    said="$(_oh_run_said)"
+    fail "$id ran but the unique marker never surfaced — the model did not echo it back${said:+; the run reported: $said}"
   fi
 
   # When the caller guarantees a normalized-text method for this harness, hold
@@ -752,10 +762,19 @@ oh_assert_echoed() {
 # itself. A `.git` above the sandbox would make that the project root and widen
 # the search, so the helper refuses to launch. The marker assertion is
 # oh_assert_echoed's, unchanged. oh_context_free_enforce holds real qwen to this.
-#   $1 harness id, then any further oh_run arguments
+# `--sync <toml>` first syncs that config's rules into `work/` (project scope),
+# for a turn proving the real CLI accepts the synced file; the toml stays
+# outside `work/`, so the turn's folder holds only the harness's own settings.
+#   $1 harness id, then optionally `--sync <toml>`, then any further oh_run
+#   arguments
 oh_echo_without_context() {
-  local id="$1" dir up marker turn status=0
+  local id="$1" dir up marker turn status=0 sync=""
   shift
+  if [ "${1:-}" = --sync ]; then
+    [ -n "${2:-}" ] || fail "oh_echo_without_context: --sync needs the oneharness.toml to sync from"
+    sync="$2"
+    shift 2
+  fi
   local context_env=()
   case "$id" in
     qwen) ;;
@@ -785,6 +804,11 @@ oh_echo_without_context() {
     oh_drop_sandbox "$dir"
     fail "$id: could not create $dir/work and $dir/home in the context-free sandbox; check that ${TMPDIR:-/tmp} is writable and has free space"
   }
+  if [ -n "$sync" ] && ! ONEHARNESS_NO_CONFIG='' "$(oh_bin)" sync --harness "$id" --cwd "$(oh_native_path "$dir/work")" \
+    --config "$(oh_native_path "$sync")" --compact >/dev/null; then
+    oh_drop_sandbox "$dir"
+    fail "$id: oneharness sync of $sync into the context-free sandbox failed (its error above) — check that config's [harness.$id] rules"
+  fi
   context_env=(
     --env "HOME=$(oh_native_path "$dir/home")"
     --env "XDG_CONFIG_HOME=$(oh_native_path "$dir/home/.config")"

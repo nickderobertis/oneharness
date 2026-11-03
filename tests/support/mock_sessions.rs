@@ -23,10 +23,13 @@
 //!   MOCK_COMPACT_FAIL     with either, the compaction fails as that harness
 //!                   does: `refuse` (claude's `compact_result: failed`, codex's
 //!                   error answer), `exit` (the process dies), `nofork` (claude
-//!                   names no forked session), or for codex `fail-turn` (the
-//!                   turn ends `failed`), `noresult` (`thread/fork` answers no
-//!                   result), `samefork` (it names the original thread) or
-//!                   `exit-after` (it completes, then exits non-zero).
+//!                   names no forked session), `nosuccess` (claude writes the
+//!                   fork and exits 0 without `compact_result: success`), or
+//!                   for codex `fail-turn` (the turn ends `failed`), `noresult`
+//!                   (`thread/fork` answers no result), `samefork` (it names the
+//!                   original thread), `exit-after` (it completes, then exits
+//!                   non-zero) or `hang-after` (it completes, then stays alive
+//!                   after its stdin closes until it is killed).
 //!   MOCK_COMPACT_NOISE    with MOCK_CODEX_SESSIONS, the compaction is surrounded
 //!                   by another thread's turn and another turn of the fork.
 //!   MOCK_COMPACT_USAGE    with MOCK_CODEX_SESSIONS, the fork's token totals grow
@@ -96,7 +99,8 @@ fn append(path: &Path, lines: &[String]) {
 }
 
 /// How a scripted compaction fails (`MOCK_COMPACT_FAIL`): `refuse`, `exit`,
-/// and per harness `nofork` (claude-code) or `fail-turn` (codex).
+/// and per harness `nofork`/`nosuccess` (claude-code) or `fail-turn`,
+/// `exit-after`, `hang-after` (codex).
 fn compact_fault() -> Option<String> {
     std::env::var("MOCK_COMPACT_FAIL").ok()
 }
@@ -209,8 +213,12 @@ fn claude(argv: &[String]) -> ! {
             // it exits, as an npm launcher's native child can.
             let _ = std::process::Command::new("sleep").arg("30").spawn();
         }
+        // `nosuccess`: the captured stream without its `compact_result`, as a
+        // claude that wrote the fork but never reported it finished.
+        let unreported = compact_fault().as_deref() == Some("nosuccess");
         let lines: Vec<String> = CLAUDE_COMPACT
             .lines()
+            .filter(|l| !(unreported && l.contains("\"compact_result\"")))
             .map(|l| l.replace(CLAUDE_COMPACT_ID, &fork))
             .map(|l| {
                 let mut value: serde_json::Value = serde_json::from_str(&l).expect("captured JSON");
@@ -486,8 +494,13 @@ fn codex_app_server() -> ! {
                         || (method == Some("thread/tokenUsage/updated") && !scripted_usage))
                         && v["params"]["turn"]["id"] != "01a19db2-d12d-7391-9e3c-b345b40db491"
                 }));
-                if compact_fault().as_deref() == Some("exit-after") {
-                    std::process::exit(1);
+                match compact_fault().as_deref() {
+                    Some("exit-after") => std::process::exit(1),
+                    // Alive past its stdin's close, so only a deadline ends it.
+                    Some("hang-after") => loop {
+                        std::thread::sleep(std::time::Duration::from_secs(1));
+                    },
+                    _ => {}
                 }
             }
             _ => {}

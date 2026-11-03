@@ -1286,10 +1286,20 @@ fn a_failed_compaction_answers_failed_and_leaves_the_session_as_it_was() {
         ("claude-code", "refuse", "Not enough messages to compact."),
         ("claude-code", "exit", "exited with code 1"),
         ("claude-code", "nofork", "without naming a forked session"),
+        (
+            "claude-code",
+            "nosuccess",
+            "exited with code 0 before the compaction completed",
+        ),
         ("codex", "refuse", "compaction unavailable"),
         ("codex", "fail-turn", "the compaction request failed"),
         ("codex", "exit", "before the compaction completed"),
         ("codex", "exit-after", "reported the compaction complete"),
+        (
+            "codex",
+            "hang-after",
+            "reported the compaction complete, but the compaction exceeded its timeout",
+        ),
     ] {
         let s = Sessions::new(&format!("fail-{id}-{fault}"));
         s.turn(id, "alpha");
@@ -1297,7 +1307,8 @@ fn a_failed_compaction_answers_failed_and_leaves_the_session_as_it_was() {
         let original = before["session"]["token"].as_str().unwrap().to_string();
         let stored = s.stored();
         let fault_env = format!("MOCK_COMPACT_FAIL={fault}");
-        let out = s.compact(id, &["--env", &fault_env]);
+        // A server that hangs after completing ends only at a deadline.
+        let out = s.compact(id, &["--env", &fault_env, "--timeout", "2"]);
         assert_eq!(out.status.code(), Some(1), "{id} {fault}: {out:?}");
         let outcome = json(&out);
         assert_eq!(outcome["status"], "failed", "{id} {fault}: {outcome}");

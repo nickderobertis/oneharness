@@ -4777,8 +4777,9 @@ oh_reasoning_enforce() {
   note "PASS: $id reasoning enforcement"
 }
 
-# A 32x32 PNG filled with pure red, the image the lean-session phase attaches.
-OH_RED_PNG_BASE64='iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAJ0lEQVR42u3NsQkAAAjAsP7/tF7hIASyp6lTCQQCgUAgEAgEgi/BAjLD/C5w/SM9AAAAAElFTkSuQmCC'
+# A 32x32 PNG filled with pure red, the image the lean-session phase attaches,
+# as bash printf escapes (no decoder whose flags differ between platforms).
+OH_RED_PNG_ESCAPED='\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52\x00\x00\x00\x20\x00\x00\x00\x20\x08\x02\x00\x00\x00\xfc\x18\xed\xa3\x00\x00\x00\x27\x49\x44\x41\x54\x78\xda\xed\xcd\xb1\x09\x00\x00\x08\xc0\xb0\xfe\xff\xb4\x5e\xe1\x20\x04\xb2\xa7\xa9\x53\x09\x04\x02\x81\x40\x20\x10\x08\x04\x82\x2f\xc1\x02\x32\xc3\xfc\x2e\x70\xfd\x23\x3d\x00\x00\x00\x00\x49\x45\x4e\x44\xae\x42\x60\x82'
 
 # The live drift alarm for the long-session settings (`domain::lean`'s
 # translation table): the deterministic suite replays recorded captures, so
@@ -4807,11 +4808,15 @@ oh_lean_session_enforce() {
   ) </dev/null 2>"$log" &
   phase=$!
   wait "$phase" || status=$?
-  last="$(tail -n 1 "$log")" || last=""
+  # A log that cannot be read stops here, before the sandbox goes, so it can
+  # still be inspected.
+  last="$(tail -n 1 "$log")" ||
+    fail "could not read the phase's output from $log (tail's error above) — check its permissions with ls -la; $sandbox is kept for inspection"
   if [ "$status" -eq 0 ] && [ "${last#PASS: }" != "$last" ]; then
     note "$last"
   else
-    cat "$log" >&2 || note "  could not replay the phase's output from $log"
+    cat "$log" >&2 ||
+      fail "could not replay the phase's output from $log (cat's error above) — check its permissions with ls -la; $sandbox is kept for inspection"
   fi
   rm -rf "$sandbox" || note "  could not remove the scratch directory $sandbox — delete it by hand"
   [ "$status" -eq 0 ] || exit "$status"
@@ -4855,8 +4860,8 @@ _oh_lean_session() {
   session="ohlean${RANDOM}"
   store="$native/s"
   image="$native/red.png"
-  printf '%s' "$OH_RED_PNG_BASE64" | base64 --decode >"$dir/red.png" ||
-    fail "could not write the test image into $dir — check that base64 is installed"
+  printf '%b' "$OH_RED_PNG_ESCAPED" >"$dir/red.png" ||
+    fail "could not write the test image into $dir — check that the host temp dir is writable"
   local at=(--session "$session" --session-dir "$store" --cwd "$native")
   local events=()
   [ "$id" = claude-code ] && events=(--events)

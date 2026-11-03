@@ -2298,11 +2298,17 @@ fn the_config_report_attributes_each_lean_setting_to_its_layer() {
 
 /// A prompt past the off-argv threshold and an image both ride claude-code's
 /// one stdin frame: the large-prompt route does not displace the image's.
+/// The prompt reaches oneharness through `--prompt-file`, as a caller with a
+/// prompt this size must: on Windows it would overflow oneharness's own
+/// command line (32,767 characters, os error 206) before the run began.
 #[test]
 fn a_large_prompt_and_an_image_ride_one_claude_frame() {
     let scratch = ScratchDir::new("lean-large-image").unwrap();
     let image = png(&scratch, "frame.png").display().to_string();
     let prompt = format!("look: {}", "x".repeat(70 * 1024));
+    let prompt_file = scratch.join("prompt.txt");
+    std::fs::write(&prompt_file, &prompt).unwrap();
+    let prompt_file = prompt_file.display().to_string();
     let input = scratch.join("input.json");
     let input_env = format!("MOCK_INPUT_FILE={}", input.display());
     let b = bin("claude-code");
@@ -2311,8 +2317,8 @@ fn a_large_prompt_and_an_image_ride_one_claude_frame() {
             "run",
             "--harness",
             "claude-code",
-            "--prompt",
-            &prompt,
+            "--prompt-file",
+            &prompt_file,
             "--bin",
             &b,
             "--image",

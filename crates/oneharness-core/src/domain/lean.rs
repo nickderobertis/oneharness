@@ -1014,11 +1014,13 @@ pub struct ImageInput {
 
 impl ImageInput {
     /// The image at `path` whose content is `bytes`, or `None` when those
-    /// bytes are not a PNG, JPEG, GIF or WebP image.
+    /// bytes are not a PNG, JPEG, GIF or WebP image. `path` is a string, not a
+    /// `Path`, so a path a harness could not be handed unchanged (one that is
+    /// not UTF-8) is refused where it is read rather than rewritten here.
     #[must_use]
-    pub fn from_bytes(path: &std::path::Path, bytes: &[u8]) -> Option<ImageInput> {
+    pub fn from_bytes(path: &str, bytes: &[u8]) -> Option<ImageInput> {
         Some(ImageInput {
-            path: path.display().to_string(),
+            path: path.to_string(),
             format: ImageFormat::sniff(bytes)?,
             base64: base64_encode(bytes),
         })
@@ -1673,9 +1675,8 @@ mod tests {
         assert_eq!(base64_encode(b"AB"), "QUI=");
         assert_eq!(base64_encode(b"A"), "QQ==");
         assert_eq!(base64_encode(b""), "");
-        assert!(ImageInput::from_bytes(std::path::Path::new("/p/a.txt"), b"ABC").is_none());
-        let img = ImageInput::from_bytes(std::path::Path::new("/p/a.png"), b"\x89PNG\r\n\x1a\n")
-            .expect("a png");
+        assert!(ImageInput::from_bytes("/p/a.txt", b"ABC").is_none());
+        let img = ImageInput::from_bytes("/p/a.png", b"\x89PNG\r\n\x1a\n").expect("a png");
         let one = std::slice::from_ref(&img);
         assert_eq!(image_args(CODEX, one), vec!["--image=/p/a.png"]);
         assert_eq!(image_args("opencode", one), vec!["-f", "/p/a.png"]);

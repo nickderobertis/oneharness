@@ -16,7 +16,8 @@
 //! and `codex-rollout-token-counts.jsonl`; OpenCode: `opencode_run.jsonl`; the
 //! rest: the documentation their table rows cite — and each harness's `live-*`
 //! suite drives the real CLI through the same `run` path. No live suite checks
-//! these settings yet; the task places that comparison after this change.
+//! these settings, so a harness release that changes a knob is caught only
+//! when its capture or cited documentation is refreshed.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};

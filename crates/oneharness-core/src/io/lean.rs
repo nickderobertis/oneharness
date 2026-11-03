@@ -18,7 +18,8 @@ use crate::errors::OneharnessError;
 /// # Errors
 ///
 /// [`OneharnessError::ImageUnreadable`] for a file that is missing,
-/// unreadable, or not a PNG, JPEG, GIF or WebP image.
+/// unreadable, named by a path that is not UTF-8, or not a PNG, JPEG, GIF or
+/// WebP image.
 pub fn read_images(paths: &[PathBuf]) -> Result<Vec<ImageInput>, OneharnessError> {
     paths
         .iter()
@@ -28,8 +29,13 @@ pub fn read_images(paths: &[PathBuf]) -> Result<Vec<ImageInput>, OneharnessError
                 reason,
             };
             let absolute = std::path::absolute(path).map_err(|e| unreadable(e.to_string()))?;
+            // A path-taking harness is handed this path as text; a lossy
+            // conversion would hand it a different file than the one read here.
+            let text = absolute
+                .to_str()
+                .ok_or_else(|| unreadable("the path is not valid UTF-8".to_string()))?;
             let bytes = std::fs::read(&absolute).map_err(|e| unreadable(e.to_string()))?;
-            ImageInput::from_bytes(&absolute, &bytes)
+            ImageInput::from_bytes(text, &bytes)
                 .ok_or_else(|| unreadable("not a PNG, JPEG, GIF or WebP image".to_string()))
         })
         .collect()

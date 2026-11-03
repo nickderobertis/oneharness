@@ -453,7 +453,7 @@ fn a_cancelled_compaction_ends_the_harness_and_leaves_the_session_as_it_was() {
     }
 }
 
-/// An image path that is missing, unreadable or not an image is refused as a
+/// An image path that is missing, unreadable, not UTF-8 or not an image is refused as a
 /// usage error before any harness starts: the request is an `Err`, and the
 /// harness process never ran to record what it was handed.
 #[test]
@@ -474,9 +474,22 @@ fn a_run_request_naming_an_unusable_image_spawns_nothing() {
     };
     #[cfg(not(unix))]
     let locked: Option<PathBuf> = None;
+    // A real PNG named by a non-UTF-8 path: a harness handed that path as
+    // text would receive a different file. Linux only, since macOS's file
+    // systems refuse such a name and Windows paths are UTF-16.
+    #[cfg(target_os = "linux")]
+    let non_utf8 = {
+        use std::os::unix::ffi::OsStrExt;
+        let named = scratch.join(std::ffi::OsStr::from_bytes(b"pic-\xff.png"));
+        png(&named);
+        Some(named)
+    };
+    #[cfg(not(target_os = "linux"))]
+    let non_utf8: Option<PathBuf> = None;
     let cases: Vec<PathBuf> = [scratch.join("missing.png"), not_an_image]
         .into_iter()
         .chain(locked.clone())
+        .chain(non_utf8)
         .collect();
     for (index, bad) in cases.iter().enumerate() {
         let input = scratch.join(format!("input-{index}.json"));

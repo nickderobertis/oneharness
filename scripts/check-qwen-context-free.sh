@@ -99,13 +99,18 @@ fi
 # A qwen that finds context somewhere the sandbox does not cover, or none.
 [ -n "${QWEN_DOUBLE_LEAK:-}" ] && loaded+=("$QWEN_DOUBLE_LEAK")
 [ -n "${QWEN_DOUBLE_BLIND:-}" ] && loaded=()
+settings=""
+if [ -f "$cwd/.qwen/settings.json" ]; then
+  settings="$(tr -d '\n' <"$cwd/.qwen/settings.json")" || {
+    echo "qwen double: could not read the synced settings $cwd/.qwen/settings.json; check that it is readable (ls -la '$cwd/.qwen')" >&2
+    exit 1
+  }
+fi
 {
   printf 'cwd=%s\n' "$cwd"
   printf 'home=%s\n' "$home"
   for f in "${loaded[@]+"${loaded[@]}"}"; do printf 'loaded=%s\n' "$f"; done
-  if [ -f "$cwd/.qwen/settings.json" ]; then
-    printf 'settings=%s\n' "$(tr -d '\n' <"$cwd/.qwen/settings.json")"
-  fi
+  if [ -n "$settings" ]; then printf 'settings=%s\n' "$settings"; fi
   for f in "$cwd"/* "$cwd"/.[!.]*; do
     if [ -e "$f" ]; then printf 'entry=%s\n' "${f##*/}"; fi
   done

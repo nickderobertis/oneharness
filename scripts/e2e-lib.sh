@@ -711,7 +711,7 @@ oh_assert_echoed() {
     fi
     oh_dump
     said="$(_oh_run_said)"
-    fail "$id did not run cleanly: status=$status, exit_code=$exit_code${said:+ — the run reported: $said}"
+    fail "$id did not run cleanly: status=$status, exit_code=$exit_code${said:+ — the run reported: $said} — read the harness stderr above, fix what it names (credentials, install, sandbox), then rerun this suite"
   fi
   note "  ok: $id ran and exited cleanly (status=ok, exit_code=0, duration=$(oh_field '.results[0].duration_ms')ms)"
 
@@ -728,7 +728,7 @@ oh_assert_echoed() {
   else
     oh_dump
     said="$(_oh_run_said)"
-    fail "$id ran but the unique marker never surfaced — the model did not echo it back${said:+; the run reported: $said}"
+    fail "$id ran but the unique marker never surfaced — the model did not echo it back${said:+; the run reported: $said} — read the harness stdout above for what the model did instead; if it acted on its context rather than echoing, run the turn context-free (oh_echo_without_context)"
   fi
 
   # When the caller guarantees a normalized-text method for this harness, hold

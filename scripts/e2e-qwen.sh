@@ -44,12 +44,10 @@ oh_long_prompt_enforce qwen
 sandbox="$(mktemp -d)"
 printf '[harness.qwen]\nallowed_tools = ["run_shell_command(ls)"]\ndenied_tools = ["run_shell_command(rm)"]\n' \
   >"$sandbox/oneharness.toml" || fail "qwen: could not write the sync config into $sandbox; check that the host temp dir is writable"
-(oh_echo_without_context qwen --sync "$sandbox/oneharness.toml") || {
-  rc=$?
-  rm -rf "$sandbox"
-  exit "$rc"
-}
-rm -rf "$sandbox"
+rc=0
+(oh_echo_without_context qwen --sync "$sandbox/oneharness.toml") || rc=$?
+rm -rf "$sandbox" || note "  could not remove the sync config's directory $sandbox — delete it by hand (rm -rf '$sandbox')"
+[ "$rc" -eq 0 ] || exit "$rc"
 note "PASS: qwen accepts the synced settings file (headless enforcement is flag-gated in qwen itself; see comments)"
 
 # Hook enforcement DOES hold headlessly — unlike permission rules. Qwen fires a

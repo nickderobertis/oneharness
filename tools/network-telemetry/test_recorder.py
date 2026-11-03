@@ -841,12 +841,15 @@ class Unstarted(unittest.TestCase):
             env={"OH_E2E_NET_OBSERVER": '["false"]', "TMPDIR": str(tmp)},
         )
         self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertIn(b"without reporting ready", run.stderr)
+        # The namespace's own error is the line's to carry, not the launch's
+        # stderr, which stays the harness's alone.
+        self.assertNotIn(b"without reporting ready", run.stderr)
         self.assertEqual(ran.read_text().splitlines(), ["run"], "the launch ran other than once")
         (start,) = starts(lines(file))
         (line,) = measurements(lines(file), start["launch_id"])
         self.assertEqual(line["method"], "unavailable")
         self.assertIn("the measuring namespace could not start", line["reason"])
+        self.assertIn("without reporting ready", line["reason"])
         self.assertFalse(list((tmp / ".pending").glob("*")))
         self.assertEqual(
             sorted(p.name for p in tmp.glob("oh-netmeasure-*")),

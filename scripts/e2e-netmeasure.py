@@ -31,8 +31,9 @@ namespaces refused), or `--unmeasured` says why it is not tried (macOS), the
 launch runs directly instead, still under the supervisor, and the line is
 `{"launch_id", "method": "unavailable", "reason", "seconds", "exit"}`.
 
-Either way stdin, stdout and stderr are the launch's own and the exit status is
-the launch's (128+N for a launch ended by signal N). A supervisor in its own
+Either way stdin, stdout and stderr are the launch's own — what pasta says
+before the launch starts goes to the line's `reason`, never the launch's stderr
+— and the exit status is the launch's (128+N for a launch ended by signal N). A supervisor in its own
 session owns the namespace and writes the line, so a caller that signals this
 process — or SIGKILLs its whole process group, as oneharness does 100 ms after
 a SIGTERM — still gets exactly one line: the supervisor sees this process gone,
@@ -534,6 +535,13 @@ def supervise(args: argparse.Namespace, pasta: str, scratch: Path, life: int) ->
     if pasta_run.stderr is None:  # stderr=PIPE always gives one; this narrows the type
         raise RuntimeError("pasta started without its stderr pipe")
     stderr_tail = b""
+    # What pasta and the namespace's init say before the launch starts is the
+    # recorder's, not the launch's: held back, it reaches stderr only once the
+    # launch starts, and a namespace that never starts it leaves it to the
+    # line's `reason` alone — else a harness run directly after a refused
+    # namespace (`Couldn't write to /proc/self/uid_map` where AppArmor
+    # restricts user namespaces) would carry pasta's errors as its own.
+    held: Optional[bytes] = b""
     errors = pasta_run.stderr.fileno()
     watched = [life, errors]
     # Until pasta's stderr closes — the namespace's last process has exited —
@@ -547,10 +555,18 @@ def supervise(args: argparse.Namespace, pasta: str, scratch: Path, life: int) ->
                     (scratch / "stop").touch()
                     watched.remove(life)
             elif chunk:
-                os.write(2, chunk)
                 stderr_tail = (stderr_tail + chunk)[-2000:]
+                if held is None:
+                    os.write(2, chunk)
+                elif (scratch / "launched").exists():
+                    os.write(2, held + chunk)
+                    held = None
+                else:
+                    held += chunk
             else:
                 watched.remove(stream)
+    if held and (scratch / "launched").exists():
+        os.write(2, held)
     pasta_code = pasta_run.wait()
     result_path = scratch / "result.json"
     if result_path.exists():

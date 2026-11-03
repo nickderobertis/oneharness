@@ -77,6 +77,7 @@ probe() {
   out="$(
     env PATH="$tmp/bin:$PATH" ONEHARNESS_BIN="$oh" ECHO_DOUBLE_RECORD="$record" "$@" \
       bash -c 'set -euo pipefail; source "$1/scripts/e2e-lib.sh"
+        [ -z "${ECHO_PROBE_RECORDED:-}" ] || oh_telemetry_setup qwen
         m="$(oh_marker)"; echo "marker=$m"; echo "prompt=$(oh_prompt "$m")"
         oh_run qwen "$(oh_prompt "$m")"; oh_assert_echoed qwen "$m"' _ "$root" 2>&1
   )"
@@ -118,10 +119,10 @@ esac
 
 # 3. A reply without the marker from a run whose harness reported an error
 #    names that error in the failure, not only that the marker is missing.
-probe ECHO_DOUBLE_OMIT=1 ECHO_DOUBLE_STDERR="clone: Operation not permitted"
+probe ECHO_DOUBLE_OMIT=1 ECHO_DOUBLE_STDERR="[API Error: 429 Too Many Requests]"
 [ "$rc" -ne 0 ] || fail "a reply without the marker passed the probe: $out"
 case "$out" in
-  *"FAIL: qwen ran but the unique marker never surfaced — the model did not echo it back; the run reported: clone: Operation not permitted"*) ;;
+  *"FAIL: qwen ran but the unique marker never surfaced — the model did not echo it back; the run reported: [API Error: 429 Too Many Requests]"*) ;;
   *) fail "a reply without the marker did not name the run's own error in its failure: $out" ;;
 esac
 
@@ -132,5 +133,34 @@ case "$out" in
   *"FAIL: qwen did not run cleanly: status=nonzero, exit_code=3 — the run reported: "*) ;;
   *) fail "a failed run did not name its own error in its failure: $out" ;;
 esac
+
+# 5. Behind the live suites' network recorder on a Linux host that refuses
+#    pasta its user namespace (ubuntu-24.04's AppArmor), the run goes on
+#    unmeasured, and a reply without the marker is not blamed on pasta's
+#    words: they are the recorder's, kept in its line, not the run's error.
+if [ "$(uname -s)" = Linux ] && command -v python3 >/dev/null 2>&1; then
+  mkdir -p "$tmp/refused" || fail "could not create $tmp/refused; check that $tmp is writable"
+  cat >"$tmp/refused/pasta" <<'PASTA' || fail "could not write the refused pasta double; check that $tmp/refused is writable"
+#!/usr/bin/env bash
+echo "Couldn't write to /proc/self/uid_map: Operation not permitted" >&2
+echo "Couldn't configure user mappings" >&2
+echo 'clone: Operation not permitted' >&2
+exit 1
+PASTA
+  chmod +x "$tmp/refused/pasta" || fail "could not make the refused pasta double executable"
+  probe ECHO_DOUBLE_OMIT=1 ECHO_PROBE_RECORDED=1 OH_E2E_TELEMETRY_DIR="$tmp/telemetry"     PATH="$tmp/bin:$tmp/refused:$PATH"
+  [ "$rc" -ne 0 ] || fail "a reply without the marker passed the recorded probe: $out"
+  case "$out" in
+    *"FAIL: qwen ran but the unique marker never surfaced"*) ;;
+    *) fail "a recorded reply without the marker failed for another reason: $out" ;;
+  esac
+  case "$out" in
+    *"the run reported"* | *"uid_map"* | *"clone: Operation not permitted"*)
+      fail "the refused recorder's own words reached the run's stderr as the harness's: $out"
+      ;;
+  esac
+  grep -q "Couldn't write to /proc/self/uid_map" "$tmp/telemetry/qwen.jsonl" ||
+    fail "the recorder did not record why the launch went unmeasured: $(cat "$tmp/telemetry/qwen.jsonl")"
+fi
 
 echo "check-echo-probe: ok"

@@ -18,6 +18,7 @@ use std::io::{BufRead, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use oneharness_core::io::marked_processes::{find_marked, ProcessMarker};
@@ -2566,8 +2567,7 @@ fn without_a_hosted_sweeper_a_lingering_server_is_reclaimed_by_the_next_pool_ope
     use oneharness_core::io::server_pool;
     let pool = Pool::new("pool-unhosted");
     let linger = Duration::from_millis(300);
-    // Each nextest test is its own process, so this environment is this
-    // journey's alone.
+    let _environment = library_caller_environment();
     std::env::set_var("XDG_STATE_HOME", pool.path("state"));
     std::env::set_var("CODEX_HOME", pool.path("codex-home"));
     std::env::set_var("CODEX_MOCK_DIR", pool.path("mock"));
@@ -2614,11 +2614,27 @@ fn without_a_hosted_sweeper_a_lingering_server_is_reclaimed_by_the_next_pool_ope
     assert!(!entry.join("server.json").exists());
 }
 
+/// Held for its whole life by every journey that drives the pool as a library
+/// caller, because those journeys set what `PooledSession` reads — its pool
+/// root, Codex home, mock records and linger — in this process's own
+/// environment. Under nextest each test is its own process and the lock is
+/// never contended; `cargo test` runs a binary's tests as threads of one
+/// process, where an unlocked neighbour's `XDG_STATE_HOME` became this
+/// journey's pool root mid-run and its final sweep reclaimed the neighbour's
+/// pool, leaving its own server running. A journey that failed while holding
+/// it still hands it on: the environment it set is overwritten by the next.
+fn library_caller_environment() -> MutexGuard<'static, ()> {
+    static ENVIRONMENT: Mutex<()> = Mutex::new(());
+    ENVIRONMENT.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// This journey's process as a library caller of the shared pool: its pool
 /// root, Codex home, mock records and linger, set in the environment that
-/// `PooledSession` reads (each nextest test is its own process, so it is this
-/// journey's alone), and the mock's `app-server` launch.
-fn as_library_caller(pool: &Pool) -> Vec<String> {
+/// `PooledSession` reads, under [`library_caller_environment`]'s guard (held
+/// while the journey runs, so the environment is its alone), and the mock's
+/// `app-server` launch.
+fn as_library_caller(pool: &Pool) -> (MutexGuard<'static, ()>, Vec<String>) {
+    let guard = library_caller_environment();
     std::env::set_var("XDG_STATE_HOME", pool.path("state"));
     std::env::set_var("CODEX_HOME", pool.path("codex-home"));
     std::env::set_var("CODEX_MOCK_DIR", pool.path("mock"));
@@ -2626,7 +2642,10 @@ fn as_library_caller(pool: &Pool) -> Vec<String> {
         "ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS",
         LINGER_MS.to_string(),
     );
-    vec![mock_bin().display().to_string(), "app-server".to_string()]
+    (
+        guard,
+        vec![mock_bin().display().to_string(), "app-server".to_string()],
+    )
 }
 
 /// Stop the servers a library caller's released sessions left lingering: it
@@ -2650,7 +2669,7 @@ fn a_library_pooled_session_runs_a_thread_through_its_whole_life() {
     use oneharness_core::io::app_server::{PooledDispatch, PooledSession};
     use oneharness_core::io::server_pool::ThreadId;
     let pool = Pool::new("pool-session-life");
-    let argv = as_library_caller(&pool);
+    let (_environment, argv) = as_library_caller(&pool);
     let cwd = pool.worktree("work");
     // Pages of one: the listing pages through every loaded thread.
     let env = [("CODEX_MOCK_LOADED_PAGE".to_string(), "1".to_string())];
@@ -2727,7 +2746,7 @@ fn a_library_pooled_session_runs_a_thread_through_its_whole_life() {
 fn a_library_pooled_session_names_each_way_the_server_fails_it() {
     use oneharness_core::io::app_server::{PooledDispatch, PooledSession};
     let pool = Pool::new("pool-session-faults");
-    let argv = as_library_caller(&pool);
+    let (_environment, argv) = as_library_caller(&pool);
     let cwd = pool.worktree("work");
     let session = move |fault: &str, listing: Duration| -> Option<String> {
         let env = [("CODEX_MOCK_FAULT".to_string(), fault.to_string())];
@@ -2854,7 +2873,7 @@ fn exited_unreaped(pid: u32) -> bool {
 fn a_library_pooled_session_s_commands_are_stopped_when_its_server_is_found_dead() {
     use oneharness_core::io::app_server::{PooledDispatch, PooledSession};
     let pool = Pool::new("pool-session-dead-server");
-    let argv = as_library_caller(&pool);
+    let (_environment, argv) = as_library_caller(&pool);
     let cwd = pool.worktree("work");
     let plan =
         |env: &[(String, String)]| PooledDispatch::plan(&argv, env, &[], &cwd, false).unwrap();

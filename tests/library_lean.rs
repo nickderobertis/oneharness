@@ -5,10 +5,12 @@
 //! for each harness's process.
 
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
 use oneharness_core::domain::compact::CompactStatus;
 use oneharness_core::domain::lean::{Setting, ToolClass};
+#[cfg(unix)]
 use oneharness_core::io::cancel::CancelToken;
 use oneharness_core::io::compact::{compact_session, CompactRequest};
 use oneharness_core::io::run::{run, RunControls, RunRequest};
@@ -210,6 +212,7 @@ impl Kept {
     }
 
     /// Every file under the harness's own store and oneharness's, with bytes.
+    #[cfg(unix)]
     fn stored(&self) -> Vec<(PathBuf, Vec<u8>)> {
         let mut out = Vec::new();
         let mut stack = vec![self.dir.join("home"), self.dir.join("store")];
@@ -349,16 +352,21 @@ fn a_run_request_naming_an_unusable_image_spawns_nothing() {
     let scratch = ScratchDir::new("library-lean-bad-image").unwrap();
     let not_an_image = scratch.join("notes.png");
     std::fs::write(&not_an_image, "plain text").unwrap();
-    let mut cases = vec![scratch.join("missing.png"), not_an_image];
+    // Unreadable-by-permission is a unix-only case: Windows has no mode bits.
     #[cfg(unix)]
     let locked = {
         use std::os::unix::fs::PermissionsExt;
         let locked = scratch.join("locked.png");
         png(&locked);
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
-        cases.push(locked.clone());
-        locked
+        Some(locked)
     };
+    #[cfg(not(unix))]
+    let locked: Option<PathBuf> = None;
+    let cases: Vec<PathBuf> = [scratch.join("missing.png"), not_an_image]
+        .into_iter()
+        .chain(locked.clone())
+        .collect();
     for (index, bad) in cases.iter().enumerate() {
         let input = scratch.join(format!("input-{index}.json"));
         let good = scratch.join(format!("good-{index}.png"));
@@ -388,8 +396,8 @@ fn a_run_request_naming_an_unusable_image_spawns_nothing() {
         assert!(!input.exists(), "{}: no harness was started", bad.display());
     }
     #[cfg(unix)]
-    {
+    if let Some(locked) = &locked {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::set_permissions(locked, std::fs::Permissions::from_mode(0o644)).unwrap();
     }
 }

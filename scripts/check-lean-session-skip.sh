@@ -32,7 +32,7 @@ command -v jq >/dev/null 2>&1 || fail "jq is not installed; the live helpers par
 oh="$root/target/debug/oneharness"
 mock="$root/target/debug/oneharness-mock-harness"
 [ -x "$oh" ] || fail "the built oneharness binary is missing at $oh; run 'just build' and retry"
-[ -x "$mock" ] || fail "the built mock harness is missing at $mock; run 'cargo build -p oneharness-mock-harness' and retry"
+[ -x "$mock" ] || fail "the built mock harness is missing at $mock; run 'just build-mock-harness' and retry"
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX")" ||
   fail "could not create a scratch directory under ${TMPDIR:-/tmp}; check that it exists and is writable, or set TMPDIR to one that is"

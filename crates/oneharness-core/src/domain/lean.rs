@@ -605,11 +605,10 @@ const OPENCODE_TABLE: [Translation; 7] = no_lean_knobs!(
                   `output`, `cache.read`, `cache.write`) and `part.cost`; the run's `usage` is \
                   their sum",
         residual: None,
-        source: "tests/fixtures/opencode-run-tool-steps.jsonl, an opencode 1.18.5 run's own \
-                 session record of six model calls (five bash calls, then the answer): one \
-                 `step_start`/`step_finish` pair per call, each `step_finish` carrying that \
-                 call's `tokens` and `cost`, in the event shape tests/fixtures/opencode_run.jsonl \
-                 captured from `opencode run --format json`",
+        source: "tests/fixtures/opencode_run.jsonl, captured from `opencode run --format json` \
+                 (1.18.5): each model call is a `step_start`/`step_finish` pair, the \
+                 `step_finish` carrying that call's own `tokens` and `cost` (the run's usage is \
+                 already their sum, `json:summed-steps`)",
     }
 );
 
@@ -1537,18 +1536,33 @@ mod tests {
             "the per-call figures sum to the turn total codex reported"
         );
         assert!(claude_stream_calls("{\"type\":\"result\"}").is_none());
-        let opencode = opencode_step_calls(&fixture("opencode-run-tool-steps.jsonl")).unwrap();
+        // Composed in the captured `step_finish` shape (opencode_run.jsonl), not
+        // a capture: three calls, a non-finishing event between them.
+        let turn = [
+            r#"{"type":"step_start","part":{"type":"step-start"}}"#,
+            r#"{"type":"step_finish","part":{"type":"step-finish","reason":"tool-calls","tokens":{"input":8107,"output":47,"cache":{"write":0,"read":0}},"cost":0.002}}"#,
+            r#"{"type":"tool_use","part":{"type":"tool","tool":"bash","state":{"status":"completed"}}}"#,
+            r#"{"type":"step_finish","part":{"type":"step-finish","reason":"tool-calls","tokens":{"input":104,"output":47,"cache":{"write":0,"read":8064}},"cost":0.001}}"#,
+            r#"{"type":"step_finish","part":{"type":"step-finish","reason":"stop","tokens":{"input":92,"output":17,"cache":{"write":5,"read":8320}}}}"#,
+        ]
+        .join("\n");
+        let opencode = opencode_step_calls(&turn).unwrap();
         assert_eq!(
             opencode
                 .iter()
                 .map(|u| u.input_tokens.unwrap())
                 .collect::<Vec<_>>(),
-            vec![8_107, 104, 37, 98, 31, 92],
+            vec![8_107, 104, 92],
             "one usage per step_finish, in order"
         );
         assert_eq!(opencode[1].cache_read_tokens, Some(8_064));
-        assert_eq!(opencode[5].output_tokens, Some(17));
-        assert_eq!(opencode[0].cost_usd, Some(0.0));
+        assert_eq!(opencode[2].cache_write_tokens, Some(5));
+        assert_eq!(opencode[2].output_tokens, Some(17));
+        assert_eq!(opencode[0].cost_usd, Some(0.002));
+        assert_eq!(
+            opencode[2].cost_usd, None,
+            "no cost reported, none invented"
+        );
         let single = opencode_step_calls(&fixture("opencode_run.jsonl")).unwrap();
         assert_eq!(single.len(), 1);
         assert_eq!(single[0].cache_write_tokens, Some(8_176));

@@ -874,9 +874,8 @@ fn calls_list_one_usage_per_model_call_where_the_harness_records_them() {
             .join("../../tests/fixtures/claude-stream-json-turn.jsonl"),
     )
     .unwrap();
-    let opencode_steps = std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/opencode-run-tool-steps.jsonl"),
+    let opencode_capture = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/opencode_run.jsonl"),
     )
     .unwrap();
     let listed = list();
@@ -906,7 +905,7 @@ fn calls_list_one_usage_per_model_call_where_the_harness_records_them() {
             "codex" => {
                 args.extend(["--env", "MOCK_CODEX_SESSIONS=1"]);
             }
-            "opencode" => envs.push(("MOCK_STDOUT", &opencode_steps)),
+            "opencode" => envs.push(("MOCK_STDOUT", &opencode_capture)),
             _ => {}
         }
         let out = oh(&args, &envs, None);
@@ -942,17 +941,14 @@ fn calls_list_one_usage_per_model_call_where_the_harness_records_them() {
                 assert_eq!(calls[2]["output_tokens"], 5);
             }
             "opencode" => {
+                // The real single-call capture: one step_finish, one call.
+                assert_eq!(inputs, vec![3], "one call");
+                assert_eq!(calls[0]["output_tokens"], 7);
+                assert_eq!(calls[0]["cache_write_tokens"], 8_176);
+                assert_eq!(calls[0]["cache_read_tokens"], 0);
                 assert_eq!(
-                    inputs,
-                    vec![8_107, 104, 37, 98, 31, 92],
-                    "six calls, in order"
-                );
-                assert_eq!(calls[1]["cache_read_tokens"], 8_064);
-                assert_eq!(calls[5]["output_tokens"], 17);
-                assert_eq!(
-                    result["usage"]["input_tokens"],
-                    inputs.iter().sum::<u64>(),
-                    "the calls sum to the run's unchanged usage total"
+                    result["usage"]["input_tokens"], 3,
+                    "the run's usage total is unchanged"
                 );
             }
             other => panic!("{other} is listed as carrying calls but has no replay here"),

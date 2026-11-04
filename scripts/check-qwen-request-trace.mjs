@@ -15,8 +15,8 @@ for (const converterExit of ["1", "0"]) {
 		failedConversion.on("error", reject);
 		failedConversion.on("close", resolve);
 	});
-	assert.equal(conversionCode, 1, "a failed cygpath must stop Qwen setup; inspect oh_qwen_live_setup");
-	assert.match(conversionError, /qwen: could not convert .*qwen-request-trace.cjs.*check cygpath/);
+	assert.equal(conversionCode, 1, "a failed cygpath must stop Qwen setup; inspect oh_qwen_live_setup in scripts/e2e-lib.sh and rerun node scripts/check-qwen-request-trace.mjs");
+	assert.match(conversionError, /qwen: could not convert .*qwen-request-trace.cjs.*check cygpath/, "missing conversion diagnostic; inspect oh_qwen_live_setup in scripts/e2e-lib.sh and rerun node scripts/check-qwen-request-trace.mjs");
 }
 
 const server = createServer((request, response) => {
@@ -43,11 +43,11 @@ try {
 		child.on("close", resolve);
 	});
 	assert.equal(code, 0, `request trace fixture failed; rerun node scripts/check-qwen-request-trace.mjs: ${stderr}`);
-	assert.match(stderr, /id=1 event=start at=\d{4}-/);
-	assert.match(stderr, /id=1 event=headers:200 .*elapsed_ms=\d+/);
-	assert.match(stderr, /id=2 event=start /);
-	assert.match(stderr, /id=2 event=error .*elapsed_ms=\d+/);
-	assert.doesNotMatch(stderr, /PRIVATE_SENTINEL|Authorization|\/stall|\/ok/);
+	assert.match(stderr, /id=1 event=start at=\d{4}-/, "missing request start timestamp; inspect scripts/qwen-request-trace.cjs and rerun node scripts/check-qwen-request-trace.mjs");
+	assert.match(stderr, /id=1 event=headers:200 .*elapsed_ms=\d+/, "missing successful response timing; inspect scripts/qwen-request-trace.cjs and rerun node scripts/check-qwen-request-trace.mjs");
+	assert.match(stderr, /id=2 event=start /, "missing stalled request start; inspect scripts/qwen-request-trace.cjs and rerun node scripts/check-qwen-request-trace.mjs");
+	assert.match(stderr, /id=2 event=error .*elapsed_ms=\d+/, "missing aborted request timing; inspect scripts/qwen-request-trace.cjs and rerun node scripts/check-qwen-request-trace.mjs");
+	assert.doesNotMatch(stderr, /PRIVATE_SENTINEL|Authorization|\/stall|\/ok/, "request trace leaked sensitive request data; inspect scripts/qwen-request-trace.cjs and rerun node scripts/check-qwen-request-trace.mjs");
 } finally {
 	server.closeAllConnections();
 	await new Promise((resolve) => server.close(resolve));

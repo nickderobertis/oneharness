@@ -39,6 +39,14 @@ cat >"$scratch/bin/cygpath" <<'CYGPATH'
 #!/usr/bin/env bash
 exit 1
 CYGPATH
-if ( _oh_codex_direct "$scratch/project" "$POSIX_CODEX_HOME" 'echo marker' ) >"$scratch/conversion.log" 2>&1; then
+if (_oh_codex_direct "$scratch/project" "$POSIX_CODEX_HOME" 'echo marker') >"$scratch/conversion.log" 2>&1; then
   fail 'direct Codex launch must fail when its home cannot be converted'
+fi
+# A converter that succeeds without a path must also stop before the launch.
+cat >"$scratch/bin/cygpath" <<'CYGPATH'
+#!/usr/bin/env bash
+exit 0
+CYGPATH
+if (_oh_codex_direct "$scratch/project" "$POSIX_CODEX_HOME" 'echo marker') >"$scratch/empty.log" 2>&1; then
+  fail 'direct Codex launch must fail when conversion returns an empty path'
 fi

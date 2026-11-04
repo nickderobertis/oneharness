@@ -15,7 +15,9 @@ need_env "Qwen (OpenAI-compatible) auth" OPENAI_API_KEY DASHSCOPE_API_KEY
 
 export OH_MODEL="${QWEN_E2E_MODEL:-}"
 # Not from the checkout: qwen would load its AGENTS.md files into the turn.
-oh_echo_without_context qwen
+# Socket diagnostics survive an outer deadline even when Qwen has emitted no
+# response or error yet. Node logs connection/TLS state, without request bodies.
+oh_echo_without_context qwen --env NODE_DEBUG=net,tls
 oh_context_free_enforce qwen
 
 # Large prompt + system (issue #1115): oneharness pipes a >128 KiB prompt to

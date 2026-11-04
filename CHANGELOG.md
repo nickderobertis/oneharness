@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.27.2](https://github.com/nickderobertis/oneharness/compare/v0.27.1...v0.27.2) - 2026-11-04
+
+### Fixed
+
+- *(e2e)* make the Codex Windows and Qwen Ubuntu live jobs pass ([#1554](https://github.com/nickderobertis/oneharness/pull/1554))
+
 ## [0.27.1](https://github.com/nickderobertis/oneharness/compare/v0.27.0...v0.27.1) - 2026-11-04
 
 ### Fixed

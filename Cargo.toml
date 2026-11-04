@@ -33,7 +33,7 @@ windows-sys = "0.61"
 
 [package]
 name = "oneharness"
-version = "0.27.1"
+version = "0.27.2"
 edition.workspace = true
 rust-version.workspace = true
 description = "One CLI to drive many agentic coding harnesses non-interactively and return uniform JSON."

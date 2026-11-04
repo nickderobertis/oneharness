@@ -836,6 +836,7 @@ oh_echo_without_context() {
     opencode)
       # Project AGENTS.md and global rules/config must not steer an echo probe.
       # Provider API keys stay in the inherited environment.
+      # llmlint: ignore[changed_behavior_has_e2e] The live alarm proves native-path success against real OpenCode; converter failure/empty output require the cygpath double in check-opencode-context-free.sh because real cygpath cannot produce those outcomes on demand. Both stop before launch and give back the scratch directory.
       native_home="$(oh_native_path "$dir/home")" && [ -n "$native_home" ] || {
         oh_drop_sandbox "$dir"
         fail "opencode: could not convert $dir/home to a native context home; check cygpath on this host"
@@ -899,9 +900,11 @@ oh_opencode_context_free_enforce() {
     _oh_stall_abort "$sandbox" "$pid" "opencode: cannot build capture provider config; check jq is installed"
   # llmlint: ignore-block[e2e_not_mocked] This records requests from the real OpenCode CLI through real oneharness. Only the model endpoint is local; the paid marker turn immediately before it proves the actual provider path.
   (
-    local requests="$sandbox/endpoint/requests.txt" home
+    local requests="$sandbox/endpoint/requests.txt" home checkout
     home="$(oh_native_path "$sandbox/home")" && [ -n "$home" ] ||
       fail "opencode: cannot convert control home to a native path; check cygpath"
+    checkout="$(oh_native_path "$OH_REPO_ROOT")" && [ -n "$checkout" ] ||
+      fail "opencode: cannot convert checkout to a native path; check cygpath"
     # Both native global rules and Claude fallback must be observed in a
     # checkout control before their absence in the isolated turn means anything.
     local fallback
@@ -911,7 +914,7 @@ oh_opencode_context_free_enforce() {
       fi
       rm -f "$requests" || fail "opencode: cannot clear capture requests; check temp permissions"
       OH_MODEL='' oh_run opencode "$(oh_prompt "$(oh_marker)")" --model capture/test --bin "opencode=$real" \
-        --cwd "$(oh_native_path "$OH_REPO_ROOT")" --env "HOME=$home" \
+        --cwd "$checkout" --env "HOME=$home" \
         --env "XDG_CONFIG_HOME=$home/.config" --env "OPENCODE_CONFIG_DIR=$home/.config/opencode" \
         --env "OPENCODE_CONFIG=" --env "OPENCODE_CONFIG_CONTENT=$config" --env OPENCODE_DISABLE_CLAUDE_CODE=0
       if ! grep -qF -- "$project_line" "$requests" || ! grep -qF -- "$canary" "$requests"; then

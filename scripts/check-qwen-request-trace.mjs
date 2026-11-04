@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("../", import.meta.url));
 // Only the external converter is doubled to induce otherwise unavailable errors.
 for (const converterExit of ["1", "0"]) {
-	const failedConversion = spawn("bash", ["-c", 'set -euo pipefail; source "$1/scripts/e2e-lib.sh"; cygpath() { return "$2"; }; oh_qwen_live_setup', "_", root, converterExit], { stdio: ["ignore", "pipe", "pipe"] });
+	const failedConversion = spawn("bash", ["-c", 'set -euo pipefail; source "$1/scripts/e2e-lib.sh"; converter_status="$2"; cygpath() { return "$converter_status"; }; oh_qwen_live_setup', "_", root, converterExit], { stdio: ["ignore", "pipe", "pipe"] });
 	let conversionError = "";
 	failedConversion.stderr.setEncoding("utf8").on("data", (chunk) => { conversionError += chunk; });
 	const conversionCode = await new Promise((resolve, reject) => {

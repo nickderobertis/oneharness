@@ -27,6 +27,7 @@ on:
       - scripts/e2e-netmeasure.py
       - scripts/install-e2e.sh
       - scripts/e2e-qwen.sh
+      - scripts/qwen-request-trace.cjs
       - .github/workflows/e2e-qwen.yml
   workflow_dispatch:
     inputs:

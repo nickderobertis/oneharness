@@ -99,6 +99,11 @@ fi
 # A qwen that finds context somewhere the sandbox does not cover, or none.
 [ -n "${QWEN_DOUBLE_LEAK:-}" ] && loaded+=("$QWEN_DOUBLE_LEAK")
 [ -n "${QWEN_DOUBLE_BLIND:-}" ] && loaded=()
+system=""
+args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do
+  if [ "${args[$i]}" = --system-prompt ]; then system="${args[$((i + 1))]}"; fi
+done
 settings=""
 if [ -f "$cwd/.qwen/settings.json" ]; then
   settings="$(tr -d '\n' <"$cwd/.qwen/settings.json")" || {
@@ -109,6 +114,7 @@ fi
 {
   printf 'cwd=%s\n' "$cwd"
   printf 'home=%s\n' "$home"
+  printf 'system=%s\n' "$system"
   for f in "${loaded[@]+"${loaded[@]}"}"; do printf 'loaded=%s\n' "$f"; done
   if [ -n "$settings" ]; then printf 'settings=%s\n' "$settings"; fi
   for f in "$cwd"/* "$cwd"/.[!.]*; do
@@ -135,7 +141,7 @@ with urllib.request.urlopen(request, timeout=30) as reply:
     print(json.load(reply)["choices"][0]["message"]["content"])
 ' "$OPENAI_BASE_URL" "$context" "$*"
 fi
-if [ "${#loaded[@]}" -gt 0 ] || [ -n "${QWEN_DOUBLE_OMIT:-}" ]; then
+if [ "${#loaded[@]}" -gt 0 ] || [ -n "${QWEN_DOUBLE_OMIT:-}" ] || [ -z "$system" ]; then
   echo "I'm ready to assist you! If there's something specific you need help with, please let me know."
   exit 0
 fi
@@ -195,6 +201,8 @@ grep -qx "loaded=$tmp/ambient/.qwen/QWEN.md" "$record" ||
 #    loads nothing and passes on the marker alone.
 drive "$root" 'oh_echo_without_context qwen'
 [ "$rc" -eq 0 ] || fail "the context-free turn failed: $out"
+grep -qx 'system=Repeat exactly the string requested in the user message.' "$record" ||
+  fail "the marker turn retained Qwen's application-building system prompt: $(cat "$record")"
 case "$out" in
   *"PASS: qwen live e2e"*) ;;
   *) fail "the context-free turn did not reach the marker assertion: $out" ;;
@@ -314,7 +322,10 @@ case "$out" in
   *) fail "an unknown harness failed without saying why: $out" ;;
 esac
 
-# 6. The live journey uses it for its echo turn, and runs the alarm after it.
+# 6. The live journey installs its retry budget/diagnostics, uses the helper
+# for its echo turn, and runs the alarm after it.
+grep -qx 'oh_qwen_live_setup' "$root/scripts/e2e-qwen.sh" ||
+  fail "scripts/e2e-qwen.sh no longer installs its retry budget and request diagnostics; restore oh_qwen_live_setup"
 grep -qx 'oh_echo_without_context qwen' "$root/scripts/e2e-qwen.sh" ||
   fail "scripts/e2e-qwen.sh no longer runs its echo turn through oh_echo_without_context"
 grep -q 'oh_echo_without_context qwen --sync ' "$root/scripts/e2e-qwen.sh" ||

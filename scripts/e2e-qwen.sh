@@ -14,6 +14,9 @@ oh_telemetry_setup qwen
 need_env "Qwen (OpenAI-compatible) auth" OPENAI_API_KEY DASHSCOPE_API_KEY
 
 export OH_MODEL="${QWEN_E2E_MODEL:-}"
+# Leave time for Qwen's own 120-second request timeout/retry and retain timing
+# diagnostics in stderr if the outer deadline still kills it.
+oh_qwen_live_setup
 # Not from the checkout: qwen would load its AGENTS.md files into the turn.
 oh_echo_without_context qwen
 oh_context_free_enforce qwen

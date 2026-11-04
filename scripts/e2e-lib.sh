@@ -781,7 +781,7 @@ oh_assert_echoed() {
 #   $1 harness id, then optionally `--sync <toml>`, then any further oh_run
 #   arguments
 oh_echo_without_context() {
-  local id="$1" dir up marker turn status=0 sync="" source=""
+  local id="$1" dir up marker turn status=0 sync="" source="" native_home=""
   shift
   if [ "${1:-}" = --sync ]; then
     [ -n "${2:-}" ] || fail "oh_echo_without_context: --sync needs the oneharness.toml to sync from"
@@ -823,13 +823,11 @@ oh_echo_without_context() {
     oh_drop_sandbox "$dir"
     fail "$id: oneharness sync of $sync into the context-free sandbox failed (its error above) — check that config's [harness.$id] rules"
   fi
-  context_env=(
-    --env "HOME=$(oh_native_path "$dir/home")"
-    --env "XDG_CONFIG_HOME=$(oh_native_path "$dir/home/.config")"
-  )
   case "$id" in
     qwen)
-      context_env+=(
+      context_env=(
+        --env "HOME=$(oh_native_path "$dir/home")"
+        --env "XDG_CONFIG_HOME=$(oh_native_path "$dir/home/.config")"
         --env "QWEN_HOME=$(oh_native_path "$dir/home/.qwen")"
         --env "QWEN_RUNTIME_DIR=$(oh_native_path "$dir/home/.qwen")"
         --env "QWEN_CODE_MEMORY_BASE_DIR=$(oh_native_path "$dir/home/.qwen")"
@@ -838,12 +836,18 @@ oh_echo_without_context() {
     opencode)
       # Project AGENTS.md and global rules/config must not steer an echo probe.
       # Provider API keys stay in the inherited environment.
-      context_env+=(
-        --env "XDG_DATA_HOME=$(oh_native_path "$dir/home/.local/share")"
-        --env "XDG_CACHE_HOME=$(oh_native_path "$dir/home/.cache")"
-        --env "XDG_STATE_HOME=$(oh_native_path "$dir/home/.local/state")"
+      native_home="$(oh_native_path "$dir/home")" && [ -n "$native_home" ] || {
+        oh_drop_sandbox "$dir"
+        fail "opencode: could not convert $dir/home to a native context home; check cygpath on this host"
+      }
+      context_env=(
+        --env "HOME=$native_home"
+        --env "XDG_CONFIG_HOME=$native_home/.config"
+        --env "XDG_DATA_HOME=$native_home/.local/share"
+        --env "XDG_CACHE_HOME=$native_home/.cache"
+        --env "XDG_STATE_HOME=$native_home/.local/state"
         --env "OPENCODE_CONFIG="
-        --env "OPENCODE_CONFIG_DIR=$(oh_native_path "$dir/home/.config/opencode")"
+        --env "OPENCODE_CONFIG_DIR=$native_home/.config/opencode"
         --env "OPENCODE_CONFIG_CONTENT={}"
         --env "OPENCODE_DISABLE_CLAUDE_CODE=1"
       )
@@ -862,6 +866,73 @@ oh_echo_without_context() {
   wait "$turn" || status=$?
   oh_drop_sandbox "$dir"
   [ "$status" -eq 0 ] || exit "$status"
+}
+
+# Prove OpenCode's actual request excludes project/global/Claude fallback rules.
+# The local endpoint stands in for the model, not the CLI being tested.
+oh_opencode_context_free_enforce() {
+  _oh_phase
+  local real py sandbox pid="" port status=0 config canary project_line
+  real="$(_oh_unshimmed opencode)" || real="$(command -v opencode)" ||
+    fail "opencode: install the real CLI before running its context isolation check"
+  py="$(command -v python3 || command -v python)" ||
+    fail "opencode: install Python to run the local context capture endpoint"
+  sandbox="$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX")" ||
+    fail "opencode: cannot create context capture scratch space; check TMPDIR"
+  mkdir -p "$sandbox/endpoint" "$sandbox/home/.config/opencode" "$sandbox/home/.claude" ||
+    _oh_stall_abort "$sandbox" "$pid" "opencode: cannot create context capture directories; check temp disk space"
+  canary="ONEHARNESS-OPENCODE-CONTEXT-$RANDOM$RANDOM"
+  printf 'Context canary: %s\n' "$canary" >"$sandbox/home/.config/opencode/AGENTS.md" ||
+    _oh_stall_abort "$sandbox" "$pid" "opencode: cannot write global rule canary; check temp disk space"
+  printf 'Context canary: %s\n' "$canary" >"$sandbox/home/.claude/CLAUDE.md" ||
+    _oh_stall_abort "$sandbox" "$pid" "opencode: cannot write Claude fallback canary; check temp disk space"
+  project_line="$(awk '{ sub(/\r$/, "") } length > 40 { print; exit }' "$OH_REPO_ROOT/AGENTS.md")" && [ -n "$project_line" ] ||
+    _oh_stall_abort "$sandbox" "$pid" "opencode: cannot read project rules; check AGENTS.md is readable and nonempty"
+  local started=0
+  _oh_endpoint_start chat-capture-endpoint.py "$py" "$sandbox/endpoint" "$sandbox/endpoint.log" || started=$?
+  pid="$_OH_ENDPOINT_PID"
+  [ "$started" -eq 0 ] ||
+    _oh_stall_abort "$sandbox" "$pid" "opencode: context endpoint failed to start; check Python and loopback access"
+  port="$(_oh_port_in "$sandbox/endpoint/port")" ||
+    _oh_stall_abort "$sandbox" "$pid" "opencode: context endpoint wrote an invalid port; inspect chat-capture-endpoint.py"
+  config="$(jq -cn --arg base "http://127.0.0.1:$port/v1" '{provider:{capture:{npm:"@ai-sdk/openai-compatible",name:"capture",options:{baseURL:$base,apiKey:"local-only"},models:{test:{name:"test",limit:{context:100000,output:1000}}}}}}')" ||
+    _oh_stall_abort "$sandbox" "$pid" "opencode: cannot build capture provider config; check jq is installed"
+  # llmlint: ignore-block[e2e_not_mocked] This records requests from the real OpenCode CLI through real oneharness. Only the model endpoint is local; the paid marker turn immediately before it proves the actual provider path.
+  (
+    local requests="$sandbox/endpoint/requests.txt" home
+    home="$(oh_native_path "$sandbox/home")" && [ -n "$home" ] ||
+      fail "opencode: cannot convert control home to a native path; check cygpath"
+    # Both native global rules and Claude fallback must be observed in a
+    # checkout control before their absence in the isolated turn means anything.
+    local fallback
+    for fallback in 0 1; do
+      if [ "$fallback" -ne 0 ]; then
+        rm "$sandbox/home/.config/opencode/AGENTS.md" || fail "opencode: cannot remove global rules for fallback control; check temp permissions"
+      fi
+      rm -f "$requests" || fail "opencode: cannot clear capture requests; check temp permissions"
+      OH_MODEL='' oh_run opencode "$(oh_prompt "$(oh_marker)")" --model capture/test --bin "opencode=$real" \
+        --cwd "$(oh_native_path "$OH_REPO_ROOT")" --env "HOME=$home" \
+        --env "XDG_CONFIG_HOME=$home/.config" --env "OPENCODE_CONFIG_DIR=$home/.config/opencode" \
+        --env "OPENCODE_CONFIG=" --env "OPENCODE_CONFIG_CONTENT=$config" --env OPENCODE_DISABLE_CLAUDE_CODE=0
+      if ! grep -qF -- "$project_line" "$requests" || ! grep -qF -- "$canary" "$requests"; then
+        fail "opencode: checkout control did not send project/global rules (fallback=$fallback); inspect OpenCode rule discovery"
+      fi
+    done
+    rm -f "$requests" || fail "opencode: cannot clear capture requests; check temp permissions"
+    OH_MODEL='' HOME="$home" XDG_CONFIG_HOME="$home/.config" OPENCODE_CONFIG_DIR="$home/.config/opencode" \
+      OPENCODE_CONFIG_CONTENT="$config" oh_echo_without_context opencode --model capture/test --bin "opencode=$real" --env "OPENCODE_CONFIG_CONTENT=$config"
+    [ -s "$requests" ] || fail "opencode: isolated turn sent no request; inspect endpoint configuration"
+    if grep -qF -- "$project_line" "$requests" || grep -qF -- "$canary" "$requests"; then
+      fail "opencode: isolated turn leaked project/global/Claude rules; inspect context home overrides"
+    fi
+  ) </dev/null >"$sandbox/turns.log" 2>&1 &
+  # llmlint: ignore-end[e2e_not_mocked]
+  wait "$!" || status=$?
+  if [ "$status" -ne 0 ]; then sed 's/^/    /' "$sandbox/turns.log" >&2 || true; fi
+  _oh_stall_cleanup "$sandbox" "$pid"
+  [ "$status" -eq 0 ] || exit "$status"
+  # llmlint: ignore[tool_output_is_signal] A single verdict identifies the real-CLI isolation proof in live CI logs.
+  note "PASS: opencode real CLI excludes project/global/Claude rules from the isolated echo"
 }
 
 # Live drift alarm for oh_echo_without_context, against the real harness and no

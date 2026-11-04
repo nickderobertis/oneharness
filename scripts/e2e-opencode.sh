@@ -17,6 +17,7 @@ export OH_MODEL="${OPENCODE_E2E_MODEL:-anthropic/claude-haiku-4-5}"
 # Keep checkout/global rules out of this marker-only turn. The helper retains
 # the exact json:opencode-parts extraction assertion, without retrying.
 oh_echo_without_context opencode
+oh_opencode_context_free_enforce
 
 # Large prompt + system (issue #1115): oneharness pipes a >128 KiB prompt to
 # `opencode run`'s stdin (positional omitted), with the system prepended — so it

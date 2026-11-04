@@ -237,6 +237,7 @@ oh_native_path() {
 oh_qwen_live_setup() {
   local trace
   export OH_TIMEOUT="${OH_TIMEOUT:-300}"
+  # llmlint: ignore[changed_behavior_has_e2e] The real Qwen live job proves preload installation; failed/empty conversion needs a cygpath double because real cygpath cannot produce those results on demand. The real setup rejects both before launching Node, covered by check-qwen-request-trace.mjs.
   trace="$(oh_native_path "$OH_REPO_ROOT/scripts/qwen-request-trace.cjs")" && [ -n "$trace" ] ||
     fail "qwen: could not convert $OH_REPO_ROOT/scripts/qwen-request-trace.cjs to a native path; check cygpath on this host"
   export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--require=\"$trace\""

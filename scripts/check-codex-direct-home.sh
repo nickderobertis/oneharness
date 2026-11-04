@@ -40,6 +40,7 @@ _oh_codex_direct "$scratch/project" "$POSIX_CODEX_HOME" 'echo marker'
 # Exercise the Windows boundary on Unix too, including a conversion failure.
 cat >"$scratch/bin/cygpath" <<'CYGPATH' || fail "could not write the converter fixture; check $scratch permissions"
 #!/usr/bin/env bash
+set -euo pipefail
 printf 'C:/native home with spaces\n'
 CYGPATH
 chmod +x "$scratch/bin/cygpath" || fail "could not make the converter executable; check $scratch permissions"
@@ -48,6 +49,7 @@ _oh_codex_direct "$scratch/project" "$POSIX_CODEX_HOME" 'echo marker'
 [ "$_OH_CODEX_OUT" = 'direct turn reached its home' ] || fail "direct Codex launch passed a POSIX home to a native CLI: $_OH_CODEX_OUT"
 cat >"$scratch/bin/cygpath" <<'CYGPATH' || fail "could not write the converter fixture; check $scratch permissions"
 #!/usr/bin/env bash
+set -euo pipefail
 exit 1
 CYGPATH
 if (_oh_codex_direct "$scratch/project" "$POSIX_CODEX_HOME" 'echo marker') >"$scratch/conversion.log" 2>&1; then
@@ -56,6 +58,7 @@ fi
 # A converter that succeeds without a path must also stop before the launch.
 cat >"$scratch/bin/cygpath" <<'CYGPATH' || fail "could not write the converter fixture; check $scratch permissions"
 #!/usr/bin/env bash
+set -euo pipefail
 exit 0
 CYGPATH
 if (_oh_codex_direct "$scratch/project" "$POSIX_CODEX_HOME" 'echo marker') >"$scratch/empty.log" 2>&1; then

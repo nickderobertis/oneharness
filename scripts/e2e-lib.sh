@@ -780,6 +780,7 @@ oh_assert_echoed() {
 # outside `work/`, so the turn's folder holds only the harness's own settings.
 #   $1 harness id, then optionally `--sync <toml>`, then any further oh_run
 #   arguments
+OH_QWEN_ECHO_SYSTEM="Repeat exactly the string requested in the user message."
 oh_echo_without_context() {
   local id="$1" dir up marker turn status=0 sync="" source="" native_home=""
   shift
@@ -788,9 +789,11 @@ oh_echo_without_context() {
     sync="$2"
     shift 2
   fi
-  local context_env=()
+  local context_env=() harness_args=()
   case "$id" in
-    qwen) ;;
+    # The echo does not need Qwen's bundled application-building workflow.
+    # Override that system prompt only; still load and parse synced settings.
+    qwen) harness_args=(-- --system-prompt "$OH_QWEN_ECHO_SYSTEM") ;;
     opencode) source="json:opencode-parts" ;;
     *) fail "oh_echo_without_context: no context-free launch is known for $id; name the context it loads and how to point it away first" ;;
   esac
@@ -841,6 +844,7 @@ oh_echo_without_context() {
         oh_drop_sandbox "$dir"
         fail "opencode: could not convert $dir/home to a native context home; check cygpath on this host"
       }
+      # llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] OpenCode is an external CLI unavailable in the hermetic gate. oh_opencode_context_free_enforce in the live suite proves real OpenCode loads project/global/Claude rules in controls and excludes them under these overrides; it fails if these environment controls drift.
       context_env=(
         --env "HOME=$native_home"
         --env "XDG_CONFIG_HOME=$native_home/.config"
@@ -852,6 +856,7 @@ oh_echo_without_context() {
         --env "OPENCODE_CONFIG_CONTENT={}"
         --env "OPENCODE_DISABLE_CLAUDE_CODE=1"
       )
+      # llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
       ;;
   esac
   marker="$(oh_marker)"
@@ -859,7 +864,7 @@ oh_echo_without_context() {
   # turn ends.
   # llmlint: ignore-block[tool_output_is_signal] This is the journey's echo turn, and these are oh_run's driving line and oh_assert_echoed's verdict, the same lines every live suite's echo turn prints: a live run is read and cited by them, and they are what the journey printed before it moved off the checkout.
   (
-    oh_run "$id" "$(oh_prompt "$marker")" --cwd "$(oh_native_path "$dir/work")" "${context_env[@]}" "$@"
+    oh_run "$id" "$(oh_prompt "$marker")" --cwd "$(oh_native_path "$dir/work")" "${context_env[@]}" "$@" "${harness_args[@]+"${harness_args[@]}"}"
     oh_assert_echoed "$id" "$marker" "$source"
   ) </dev/null &
   # llmlint: ignore-end[tool_output_is_signal]
@@ -892,10 +897,13 @@ oh_opencode_context_free_enforce() {
   local started=0
   _oh_endpoint_start chat-capture-endpoint.py "$py" "$sandbox/endpoint" "$sandbox/endpoint.log" || started=$?
   pid="$_OH_ENDPOINT_PID"
-  [ "$started" -eq 0 ] ||
-    _oh_stall_abort "$sandbox" "$pid" "opencode: context endpoint failed to start; check Python and loopback access"
+  if [ "$started" -ne 0 ]; then
+    sed 's/^/    /' "$sandbox/endpoint.log" >&2 || true
+    _oh_stall_abort "$sandbox" "$pid" "opencode: context endpoint failed to start (error/stack above); check Python and loopback access"
+  fi
   port="$(_oh_port_in "$sandbox/endpoint/port")" ||
     _oh_stall_abort "$sandbox" "$pid" "opencode: context endpoint wrote an invalid port; inspect chat-capture-endpoint.py"
+  # llmlint: ignore[contracts_have_one_source_or_a_drift_gate] This is the external OpenCode provider configuration. oh_opencode_context_free_enforce drives real OpenCode against it in the live suite and requires captured requests plus marker extraction, so incompatible config fails that assertion instead of silently passing the hermetic gate.
   config="$(jq -cn --arg base "http://127.0.0.1:$port/v1" '{provider:{capture:{npm:"@ai-sdk/openai-compatible",name:"capture",options:{baseURL:$base,apiKey:"local-only"},models:{test:{name:"test",limit:{context:100000,output:1000}}}}}}')" ||
     _oh_stall_abort "$sandbox" "$pid" "opencode: cannot build capture provider config; check jq is installed"
   # llmlint: ignore-block[e2e_not_mocked] This records requests from the real OpenCode CLI through real oneharness. Only the model endpoint is local; the paid marker turn immediately before it proves the actual provider path.
@@ -997,6 +1005,8 @@ oh_context_free_enforce() {
       sed 's/^/    /' "$sandbox/endpoint.log" >&2 || true
       fail "$id: the context-free turn sent nothing to the endpoint, so nothing was proven about what it loads; check that oh_echo_without_context still passes the caller's environment (OPENAI_BASE_URL) and --bin through to oneharness, and read the endpoint's output above"
     fi
+    grep -qF -- "$OH_QWEN_ECHO_SYSTEM" "$requests" ||
+      fail "$id: the isolated request lost its echo system prompt; check Qwen's --system-prompt support"
     if grep -qF -- "$project_line" "$requests" || grep -qF -- "$canary" "$requests"; then
       fail "$id: the context-free turn still sent the checkout's AGENTS.md or the global QWEN.md canary to the model; find where this $id now discovers context and point that location into oh_echo_without_context's sandbox"
     fi

@@ -57,6 +57,7 @@ if mode != "empty" or project.exists():
 CAPTURE
 fi
 [ "${PROBE_OMIT:-0}" = 0 ] || text='Please provide more context.'
+# llmlint: ignore[contracts_have_one_source_or_a_drift_gate] This is external OpenCode JSONL. The real-CLI marker turn and oh_opencode_context_free_enforce in the live suite both require json:opencode-parts extraction, so event-shape drift fails those assertions.
 jq -cn --arg text "$text" '{type:"text",sessionID:"ses_probe",part:{type:"text",text:$text}}'
 DOUBLE
 chmod +x "$tmp/bin/opencode" || fail "cannot make $tmp/bin/opencode executable; check permissions"

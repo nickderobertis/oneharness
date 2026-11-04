@@ -18,7 +18,11 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || fail "cannot resolve 
 [ -x "$root/target/debug/oneharness" ] || fail "run just build first"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX")" || fail "cannot create scratch space; check TMPDIR and free disk space"
 trap 'rm -rf "$tmp" || echo "check-opencode-context-free: remove abandoned scratch directory $tmp by hand" >&2' EXIT
+# The driven process reports physical paths (macOS /var points to /private/var).
+tmp="$(cd "$tmp" && pwd -P)" || fail "cannot resolve scratch directory; check permissions"
 mkdir -p "$tmp/bin" "$tmp/sandboxes" "$tmp/ambient" || fail "cannot create fixtures under $tmp; check permissions and disk space"
+# Exercise a symlinked TMPDIR on every host, retaining physical containment checks.
+ln -s "$tmp/sandboxes" "$tmp/sandbox-link" || fail "cannot create temporary directory alias; check permissions"
 cat >"$tmp/bin/opencode" <<'DOUBLE' || fail "cannot write $tmp/bin/opencode; check permissions and disk space"
 #!/usr/bin/env bash
 set -euo pipefail
@@ -33,7 +37,7 @@ if [ -n "${PROBE_CONTEXT_MODE:-}" ]; then
   # Stand in for the paid CLI only: requests still reach the real local HTTP
   # endpoint. The live alarm runs these discovery observations on real OpenCode.
   export PROBE_MARKER="$text"
-  python3 - <<'CAPTURE'
+  python3 - <<'CAPTURE' || { echo "opencode double: context capture failed; inspect the Python error above and check fixture files, capture configuration and the loopback endpoint" >&2; exit 1; }
 import json, os, pathlib, urllib.request
 cfg = json.loads(os.environ["OPENCODE_CONFIG_CONTENT"])
 base = cfg["provider"]["capture"]["options"]["baseURL"]
@@ -58,14 +62,14 @@ CAPTURE
 fi
 [ "${PROBE_OMIT:-0}" = 0 ] || text='Please provide more context.'
 # llmlint: ignore[contracts_have_one_source_or_a_drift_gate] This is external OpenCode JSONL. The real-CLI marker turn and oh_opencode_context_free_enforce in the live suite both require json:opencode-parts extraction, so event-shape drift fails those assertions.
-jq -cn --arg text "$text" '{type:"text",sessionID:"ses_probe",part:{type:"text",text:$text}}'
+jq -cn --arg text "$text" '{type:"text",sessionID:"ses_probe",part:{type:"text",text:$text}}' || { echo "opencode double: cannot emit JSONL; check jq and the output pipe" >&2; exit 1; }
 DOUBLE
 chmod +x "$tmp/bin/opencode" || fail "cannot make $tmp/bin/opencode executable; check permissions"
 probe() {
   rm -f "$tmp/record" || fail "cannot clear $tmp/record; check directory permissions"
   local rc=0
   # shellcheck disable=SC2016 # the driven shell expands its own positional argument
-  env PATH="$tmp/bin:$PATH" HOME="$tmp/ambient" TMPDIR="$tmp/sandboxes" \
+  env PATH="$tmp/bin:$PATH" HOME="$tmp/ambient" TMPDIR="$tmp/sandbox-link" \
     ONEHARNESS_BIN="$root/target/debug/oneharness" PROBE_RECORD="$tmp/record" PROBE_OMIT="$1" \
     OPENCODE_CONFIG=/ambient/config OPENCODE_CONFIG_DIR=/ambient/dir OPENCODE_CONFIG_CONTENT='{"instructions":["/ambient/rules"]}' \
     bash -c 'set -euo pipefail; cd "$1"; source scripts/e2e-lib.sh; oh_echo_without_context opencode' _ "$root" >"$tmp/output" 2>&1 || rc=$?

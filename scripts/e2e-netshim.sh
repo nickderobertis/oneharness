@@ -209,7 +209,12 @@ fi
 trap ':' TERM INT HUP
 t0="$(date +%s)"
 rc=0
-"${launch[@]}" "$@" || rc=$?
+# The argv reaches the launch verbatim. On Windows this is Git Bash, whose
+# MSYS runtime rewrites a POSIX-path-looking argument it hands a native
+# program: claude's `-p /compact` arrived as `C:/Program Files/Git/compact`,
+# a prompt the model answered instead of compacting. Both runtimes' opt-outs
+# (Git for Windows', MSYS2's); elsewhere they mean nothing.
+MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' "${launch[@]}" "$@" || rc=$?
 unrecorded() {
   printf 'e2e-netshim: %s exited %s, but its measurement line could not be written to %s (%s); check that the directory is writable, then rerun the suite\n' \
     "$real" "$rc" "$file" "$1" >&2

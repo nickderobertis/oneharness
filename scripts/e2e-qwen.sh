@@ -39,8 +39,7 @@ oh_long_prompt_enforce qwen
 # The turn runs context-free (oh_echo_without_context): run from a folder
 # holding oneharness.toml under the machine's HOME, gpt-4o-mini read the echo
 # request as a cue to go and run the project's tests (no package.json on
-# macOS; a shell refused by the runner's user-namespace limits on Ubuntu) and
-# never echoed the marker.
+# macOS, no run_tests.sh on Ubuntu) and never echoed the marker.
 sandbox="$(mktemp -d)"
 printf '[harness.qwen]\nallowed_tools = ["run_shell_command(ls)"]\ndenied_tools = ["run_shell_command(rm)"]\n' \
   >"$sandbox/oneharness.toml" || fail "qwen: could not write the sync config into $sandbox; check that the host temp dir is writable"

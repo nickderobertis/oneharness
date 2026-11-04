@@ -314,7 +314,10 @@ case "$out" in
   *) fail "an unknown harness failed without saying why: $out" ;;
 esac
 
-# 6. The live journey uses it for its echo turn, and runs the alarm after it.
+# 6. The live journey installs its retry budget/diagnostics, uses the helper
+# for its echo turn, and runs the alarm after it.
+grep -qx 'oh_qwen_live_setup' "$root/scripts/e2e-qwen.sh" ||
+  fail "scripts/e2e-qwen.sh no longer installs its retry budget and request diagnostics; restore oh_qwen_live_setup"
 grep -qx 'oh_echo_without_context qwen' "$root/scripts/e2e-qwen.sh" ||
   fail "scripts/e2e-qwen.sh no longer runs its echo turn through oh_echo_without_context"
 grep -q 'oh_echo_without_context qwen --sync ' "$root/scripts/e2e-qwen.sh" ||

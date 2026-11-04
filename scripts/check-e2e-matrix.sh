@@ -57,6 +57,7 @@ scripts/install-e2e.sh'
 # `just live-codex` checks after its suite (scripts/e2e-network-budget.sh).
 extra_paths() {
   case "$1" in
+    qwen) printf '%s\n' scripts/qwen-request-trace.cjs ;;
     codex) printf '%s\n' scripts/e2e-network-budget.sh "live/pr-matrix/harness/codex/**" python/uv.lock ;;
   esac
 }

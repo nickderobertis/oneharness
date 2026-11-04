@@ -232,6 +232,16 @@ oh_native_path() {
   fi
 }
 
+# Qwen's request timeout is 120 seconds; leave a retry room inside the suite's
+# outer deadline, and retain request timing when that deadline kills the CLI.
+oh_qwen_live_setup() {
+  local trace
+  export OH_TIMEOUT="${OH_TIMEOUT:-300}"
+  trace="$(oh_native_path "$OH_REPO_ROOT/scripts/qwen-request-trace.cjs")" && [ -n "$trace" ] ||
+    fail "qwen: could not convert $OH_REPO_ROOT/scripts/qwen-request-trace.cjs to a native path; check cygpath on this host"
+  export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--require=\"$trace\""
+}
+
 # Per-harness preparation of the enforcement scratch dir, run after it's created
 # and before the harness is driven. Claude gates project `.claude/settings.json`
 # (permissions AND hooks) behind a per-directory trust flag in ~/.claude.json;
@@ -2026,6 +2036,7 @@ _OH_CODEX_OUT=""
 _oh_codex_direct() {
   local proj="$1" home="$2" prompt="$3" native_home
   shift 3
+  # llmlint: ignore[changed_behavior_has_e2e] The real Codex Windows live job proves the native-home success path; conversion failure/empty output need a cygpath double because real cygpath cannot be made to return them on demand. The shell helper runs unchanged and rejects both before launching Codex.
   native_home="$(oh_native_path "$home")" && [ -n "$native_home" ] ||
     fail "codex: could not convert $home to a native CODEX_HOME; check cygpath on this host"
   local model_args=()

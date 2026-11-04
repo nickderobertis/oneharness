@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.27.1](https://github.com/nickderobertis/oneharness/compare/v0.27.0...v0.27.1) - 2026-11-04
+
+### Fixed
+
+- *(lean)* finish claude-code compaction on Windows and start qwen where user namespaces are restricted ([#1552](https://github.com/nickderobertis/oneharness/pull/1552))
+
 ## [0.27.0](https://github.com/nickderobertis/oneharness/compare/v0.26.1...v0.27.0) - 2026-11-03
 
 ### Added

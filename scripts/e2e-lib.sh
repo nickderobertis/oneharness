@@ -2024,11 +2024,13 @@ oh_enforce_file() { printf '%s-%s%s.txt' "$1" "${RANDOM}" "${RANDOM}"; }
 _OH_CODEX_DEFAULTS=(-c features.plugins=false -c features.apps=false -c analytics.enabled=false)
 _OH_CODEX_OUT=""
 _oh_codex_direct() {
-  local proj="$1" home="$2" prompt="$3"
+  local proj="$1" home="$2" prompt="$3" native_home
   shift 3
+  native_home="$(oh_native_path "$home")" && [ -n "$native_home" ] ||
+    fail "codex: could not convert $home to a native CODEX_HOME; check cygpath on this host"
   local model_args=()
   [ -n "${OH_MODEL:-}" ] && model_args=(-m "$OH_MODEL")
-  _OH_CODEX_OUT="$(cd "$proj" && CODEX_HOME="$home" \
+  _OH_CODEX_OUT="$(cd "$proj" && CODEX_HOME="$native_home" \
     oh_deadline "${OH_TIMEOUT:-300}" codex exec --skip-git-repo-check "${_OH_CODEX_DEFAULTS[@]}" \
     "${model_args[@]+"${model_args[@]}"}" "$@" "$prompt" </dev/null 2>&1)" || true
   local refusal

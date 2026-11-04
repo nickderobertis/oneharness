@@ -6,6 +6,7 @@ let nextId = 0;
 function trace(request, event) {
 	const state = requests.get(request);
 	if (!state) return;
+	// llmlint: ignore[tool_output_is_signal] Qwen stderr is captured inside the oneharness report; successful live checks do not print it. Only a failed assertion dumps it, when request counts/timestamps show what stalled after the child is gone.
 	process.stderr.write(
 		`qwen-request id=${state.id} event=${event} at=${new Date().toISOString()} elapsed_ms=${Date.now() - state.started}\n`,
 	);

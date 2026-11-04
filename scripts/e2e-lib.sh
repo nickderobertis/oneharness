@@ -761,6 +761,8 @@ oh_assert_echoed() {
   note "PASS: $id live e2e"
 }
 
+# OpenCode also reads project AGENTS.md, global XDG config/rules and Claude
+# fallback rules; isolate these for its echo while retaining the provider keys.
 # The plain echo turn, started with nothing from the checkout or the machine in
 # the model's context, so it passes or fails on oneharness delivering the prompt
 # and extracting the reply. Run from the repository root, qwen loads every
@@ -779,7 +781,7 @@ oh_assert_echoed() {
 #   $1 harness id, then optionally `--sync <toml>`, then any further oh_run
 #   arguments
 oh_echo_without_context() {
-  local id="$1" dir up marker turn status=0 sync=""
+  local id="$1" dir up marker turn status=0 sync="" source=""
   shift
   if [ "${1:-}" = --sync ]; then
     [ -n "${2:-}" ] || fail "oh_echo_without_context: --sync needs the oneharness.toml to sync from"
@@ -789,6 +791,7 @@ oh_echo_without_context() {
   local context_env=()
   case "$id" in
     qwen) ;;
+    opencode) source="json:opencode-parts" ;;
     *) fail "oh_echo_without_context: no context-free launch is known for $id; name the context it loads and how to point it away first" ;;
   esac
   dir="$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX")" ||
@@ -823,17 +826,36 @@ oh_echo_without_context() {
   context_env=(
     --env "HOME=$(oh_native_path "$dir/home")"
     --env "XDG_CONFIG_HOME=$(oh_native_path "$dir/home/.config")"
-    --env "QWEN_HOME=$(oh_native_path "$dir/home/.qwen")"
-    --env "QWEN_RUNTIME_DIR=$(oh_native_path "$dir/home/.qwen")"
-    --env "QWEN_CODE_MEMORY_BASE_DIR=$(oh_native_path "$dir/home/.qwen")"
   )
+  case "$id" in
+    qwen)
+      context_env+=(
+        --env "QWEN_HOME=$(oh_native_path "$dir/home/.qwen")"
+        --env "QWEN_RUNTIME_DIR=$(oh_native_path "$dir/home/.qwen")"
+        --env "QWEN_CODE_MEMORY_BASE_DIR=$(oh_native_path "$dir/home/.qwen")"
+      )
+      ;;
+    opencode)
+      # Project AGENTS.md and global rules/config must not steer an echo probe.
+      # Provider API keys stay in the inherited environment.
+      context_env+=(
+        --env "XDG_DATA_HOME=$(oh_native_path "$dir/home/.local/share")"
+        --env "XDG_CACHE_HOME=$(oh_native_path "$dir/home/.cache")"
+        --env "XDG_STATE_HOME=$(oh_native_path "$dir/home/.local/state")"
+        --env "OPENCODE_CONFIG="
+        --env "OPENCODE_CONFIG_DIR=$(oh_native_path "$dir/home/.config/opencode")"
+        --env "OPENCODE_CONFIG_CONTENT={}"
+        --env "OPENCODE_DISABLE_CLAUDE_CODE=1"
+      )
+      ;;
+  esac
   marker="$(oh_marker)"
   # In a subshell, as oh_controlled_turn does, so the sandbox goes however the
   # turn ends.
   # llmlint: ignore-block[tool_output_is_signal] This is the journey's echo turn, and these are oh_run's driving line and oh_assert_echoed's verdict, the same lines every live suite's echo turn prints: a live run is read and cited by them, and they are what the journey printed before it moved off the checkout.
   (
     oh_run "$id" "$(oh_prompt "$marker")" --cwd "$(oh_native_path "$dir/work")" "${context_env[@]}" "$@"
-    oh_assert_echoed "$id" "$marker"
+    oh_assert_echoed "$id" "$marker" "$source"
   ) </dev/null &
   # llmlint: ignore-end[tool_output_is_signal]
   turn=$!

@@ -14,11 +14,9 @@ oh_telemetry_setup opencode
 need_env "OpenCode provider key" ANTHROPIC_API_KEY OPENAI_API_KEY
 
 export OH_MODEL="${OPENCODE_E2E_MODEL:-anthropic/claude-haiku-4-5}"
-marker="$(oh_marker)"
-oh_run opencode "$(oh_prompt "$marker")"
-# OpenCode streams JSONL under `--format json`; oneharness must reconstruct the
-# answer from its `text` parts, so require that exact extraction method here.
-oh_assert_echoed opencode "$marker" "json:opencode-parts"
+# Keep checkout/global rules out of this marker-only turn. The helper retains
+# the exact json:opencode-parts extraction assertion, without retrying.
+oh_echo_without_context opencode
 
 # Large prompt + system (issue #1115): oneharness pipes a >128 KiB prompt to
 # `opencode run`'s stdin (positional omitted), with the system prepended — so it

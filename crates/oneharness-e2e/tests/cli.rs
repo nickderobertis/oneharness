@@ -20925,6 +20925,10 @@ fn an_interrupted_partial_system_write_removes_its_sensitive_file() {
     let dir = ScratchDir::new("delivery-write-error").unwrap();
     let mut cmd = Command::new(oneharness_bin());
     cmd.env("ONEHARNESS_NO_CONFIG", "1")
+        // RLIMIT_FSIZE also truncates this CLI's own LLVM profile on exit.
+        // Keep that deliberately damaged artifact out of the coverage merge;
+        // the scratch guard removes it with the partial-write fixture.
+        .env("LLVM_PROFILE_FILE", dir.join("limited-cli.profraw"))
         .env("TMPDIR", dir.path())
         .args([
             "run",

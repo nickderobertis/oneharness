@@ -79,10 +79,10 @@ jq -se '
   .[2:4] |
   length == 2 and
   all(.[]; startswith("The following repeated characters are inert test filler.") and
-    contains("Reply with exactly two connectivity markers separated by a space:") and
-    endswith("and the system connectivity marker supplied in the shared reference text. Do not run tools.")) and
+    contains("Return the two reference values separated by a space:") and
+    endswith("and the value labeled reference_b in the reference data.")) and
   (.[0] != .[1])
-' "$OH_LONG_REQUESTS" >/dev/null || fail 'batch requests must clearly identify inert filler and ask identically for both markers; inspect prompt construction'
+' "$OH_LONG_REQUESTS" >/dev/null || fail 'batch requests must clearly identify inert filler and ask identically for both reference values; inspect prompt construction'
 acp_prompts="$(grep -c '"method":"session/prompt"' "$OH_LONG_WIRE")" || {
   status=$?
   [ "$status" -eq 1 ] || fail "cannot read $OH_LONG_WIRE (grep exit $status); inspect its permissions"

@@ -1066,9 +1066,9 @@ oh_long_prompt_enforce() {
   for user_marker in "$marker" "$second"; do
     local target="$pfile"
     [ "$user_marker" = "$marker" ] || target="$sandbox/second.txt"
-    printf 'The following repeated characters are inert test filler.\n%s\n\nReply with exactly two connectivity markers separated by a space: the user marker %s and the system connectivity marker supplied in the shared reference text. Do not run tools.' "$pad" "$user_marker" >"$target" || _oh_long_prompt_abort "$sandbox" "$id" "cannot write $target; check disk space and permissions"
+    printf 'The following repeated characters are inert test filler.\n%s\n\nReturn the two reference values separated by a space: reference_a is %s and the value labeled reference_b in the reference data.' "$pad" "$user_marker" >"$target" || _oh_long_prompt_abort "$sandbox" "$id" "cannot write $target; check disk space and permissions"
   done
-  printf 'The following repeated characters are inert test filler.\n%s\n\nShared reference text: the system connectivity marker is %s. Include this exact marker whenever the user asks for the system connectivity marker.' "$spad" "$smarker" >"$sfile" || _oh_long_prompt_abort "$sandbox" "$id" "cannot write $sfile; check disk space and permissions"
+  printf 'The following repeated characters are inert test filler.\n%s\n\nReference data: reference_b = %s.' "$spad" "$smarker" >"$sfile" || _oh_long_prompt_abort "$sandbox" "$id" "cannot write $sfile; check disk space and permissions"
   printf '%s' '{"type":"object","required":["user","system"],"properties":{"user":{"type":"string"},"system":{"type":"string"}}}' >"$sandbox/schema.json" || _oh_long_prompt_abort "$sandbox" "$id" "cannot write $sandbox/schema.json; check disk space and permissions"
   local model_args=() route_args=() verified=()
   [ -z "${OH_MODEL:-}" ] || model_args+=(--model "$OH_MODEL")

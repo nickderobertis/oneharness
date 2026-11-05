@@ -19,7 +19,7 @@ tmp="$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX")" || fail "cannot create scrat
 trap 'rm -rf "$tmp" || echo "could not remove $tmp; delete it by hand" >&2' EXIT
 export OH_REAL_BIN="$root/target/debug/oneharness" OH_MOCK_BIN="$root/target/debug/oneharness-mock-harness"
 [ -x "$OH_REAL_BIN" ] && [ -x "$OH_MOCK_BIN" ] || fail 'missing built binaries; run just build and build oneharness-mock-harness through its Nx build target'
-export OH_LONG_RECORD="$tmp/cases.jsonl" OH_LONG_WIRE="$tmp/acp.jsonl"
+export OH_LONG_RECORD="$tmp/cases.jsonl" OH_LONG_WIRE="$tmp/acp.jsonl" OH_LONG_REQUESTS="$tmp/requests.jsonl"
 cat >"$tmp/driver" <<'DRIVER' || fail "cannot write $tmp/driver; check disk space and directory permissions"
 #!/usr/bin/env bash
 set -euo pipefail
@@ -44,6 +44,10 @@ id=""
 args=("$@")
 for ((i=0; i<${#args[@]}; i++)); do
   if [ "${args[$i]}" = --harness ]; then id="${args[$((i + 1))]}"; fi
+  if [ "${args[$i]}" = --prompt-file ]; then
+    jq -Rs . "${args[$((i + 1))]}" >>"$OH_LONG_REQUESTS" || { echo "cannot capture prompt file; inspect jq and file permissions" >&2; exit 1; }
+  fi
+  if [ "${args[$i]}" = --batch-strategy ] && [ -n "${MOCK_LONG_BATCH_OMIT_SYSTEM:-}" ]; then export MOCK_LONG_OMIT_SYSTEM=1; fi
 done
 [ -n "$id" ] || { echo 'long helper wrapper: missing harness id; inspect the --harness argument in oh_long_prompt_enforce' >&2; exit 2; }
 launch "$verb" --bin "$id=$OH_MOCK_BIN" "$@"
@@ -69,6 +73,16 @@ jq -se 'length == 5 and any(.[]; index("--resume")) and any(.[]; index("--batch-
   show "$OH_LONG_RECORD"
   fail 'expected five Goose invocations covering resume, batch, control and schema, each with system input; inspect helper case selection'
 }
+# The two batch requests have identical instructions, with distinct user
+# markers, so a missing system marker cannot be excused by different wording.
+jq -se '
+  .[2:4] |
+  length == 2 and
+  all(.[]; startswith("The following repeated characters are inert test filler.") and
+    contains("Reply with exactly two connectivity markers separated by a space:") and
+    endswith("and the system connectivity marker supplied in the shared reference text. Do not run tools.")) and
+  (.[0] != .[1])
+' "$OH_LONG_REQUESTS" >/dev/null || fail 'batch requests must clearly identify inert filler and ask identically for both markers; inspect prompt construction'
 acp_prompts="$(grep -c '"method":"session/prompt"' "$OH_LONG_WIRE")" || {
   status=$?
   [ "$status" -eq 1 ] || fail "cannot read $OH_LONG_WIRE (grep exit $status); inspect its permissions"
@@ -94,7 +108,7 @@ grep -q 'NOT-RUN: qwen resumed' "$tmp/unsupported.log" || {
   show "$tmp/unsupported.log"
   fail 'missing explicit resumed NOT-RUN; inspect the absent-handle branch'
 }
-for omitted in MOCK_LONG_OMIT_SYSTEM MOCK_LONG_OMIT_USER; do
+for omitted in MOCK_LONG_OMIT_SYSTEM MOCK_LONG_OMIT_USER MOCK_LONG_BATCH_OMIT_SYSTEM; do
   if (
     export "$omitted=1"
     bash -c 'set -euo pipefail; source "$1/scripts/e2e-lib.sh"; oh_long_prompt_enforce goose' _ "$root" >"$tmp/fail.log" 2>&1
@@ -106,5 +120,11 @@ for omitted in MOCK_LONG_OMIT_SYSTEM MOCK_LONG_OMIT_USER; do
     show "$tmp/fail.log"
     fail "$omitted failed for a different reason; inspect the error above rather than accepting it as receipt evidence"
   }
+  if [ "$omitted" = MOCK_LONG_BATCH_OMIT_SYSTEM ]; then
+    grep -q '"result_index": 1' "$tmp/fail.log" || {
+      show "$tmp/fail.log"
+      fail 'batch failure hid the second result; print every result before aborting'
+    }
+  fi
 done
 echo 'check-long-prompt-enforce: all journeys selected; missing user/system receipt rejected'

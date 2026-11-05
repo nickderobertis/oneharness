@@ -1045,7 +1045,7 @@ oh_long_prompt_enforce() {
   _oh_phase
   local id="$1"
   shift
-  local bin sandbox pfile sfile marker smarker second pad spad caps journey resume name not_run=""
+  local bin sandbox pfile sfile marker smarker second pad spad caps journey resume name user_marker not_run=""
   bin="$(oh_bin)"
   [ -n "$bin" ] || skip "oneharness binary not found (build it: just build-release)"
   caps="$(ONEHARNESS_NO_CONFIG=1 "$bin" list --compact | jq -ce --arg id "$id" '.harnesses[] | select(.id == $id)')" || fail "$id: cannot read delivery capabilities; run oneharness list --compact and check the registry id and jq installation"
@@ -1061,9 +1061,14 @@ oh_long_prompt_enforce() {
   second="SECOND$(oh_marker)"
   pad="$(head -c 143360 /dev/zero | tr '\0' 'x')" || _oh_long_prompt_abort "$sandbox" "$id" "cannot generate user padding; check head/tr and /dev/zero"
   spad="$(head -c 40000 /dev/zero | tr '\0' 'y')" || _oh_long_prompt_abort "$sandbox" "$id" "cannot generate system padding; check head/tr and /dev/zero"
-  printf 'Inert padding: %s\n\nReply with %s and the system connectivity marker, separated by a space. Do not run tools.' "$pad" "$marker" >"$pfile" || _oh_long_prompt_abort "$sandbox" "$id" "cannot write $pfile; check disk space and permissions"
-  printf 'Inert padding: %s\n\nThe system connectivity marker is %s. Include it when asked for connectivity markers.' "$spad" "$smarker" >"$sfile" || _oh_long_prompt_abort "$sandbox" "$id" "cannot write $sfile; check disk space and permissions"
-  printf 'Inert padding: %s\n\nReply with %s and the system connectivity marker, separated by a space.' "$pad" "$second" >"$sandbox/second.txt" || _oh_long_prompt_abort "$sandbox" "$id" "cannot write $sandbox/second.txt; check disk space and permissions"
+  # Both batch turns ask the same question; only their user marker differs.
+  # Describe the filler so the echo request remains clear after a long prefix.
+  for user_marker in "$marker" "$second"; do
+    local target="$pfile"
+    [ "$user_marker" = "$marker" ] || target="$sandbox/second.txt"
+    printf 'The following repeated characters are inert test filler.\n%s\n\nReply with exactly two connectivity markers separated by a space: the user marker %s and the system connectivity marker supplied in the shared reference text. Do not run tools.' "$pad" "$user_marker" >"$target" || _oh_long_prompt_abort "$sandbox" "$id" "cannot write $target; check disk space and permissions"
+  done
+  printf 'The following repeated characters are inert test filler.\n%s\n\nShared reference text: the system connectivity marker is %s. Include this exact marker whenever the user asks for the system connectivity marker.' "$spad" "$smarker" >"$sfile" || _oh_long_prompt_abort "$sandbox" "$id" "cannot write $sfile; check disk space and permissions"
   printf '%s' '{"type":"object","required":["user","system"],"properties":{"user":{"type":"string"},"system":{"type":"string"}}}' >"$sandbox/schema.json" || _oh_long_prompt_abort "$sandbox" "$id" "cannot write $sandbox/schema.json; check disk space and permissions"
   local model_args=() route_args=() verified=()
   [ -z "${OH_MODEL:-}" ] || model_args+=(--model "$OH_MODEL")
@@ -1097,7 +1102,7 @@ oh_long_prompt_enforce() {
         route_args+=(--control --session "$name-control" --session-dir "$sandbox/sessions")
         ;;
       structured)
-        printf 'Inert padding: %s\n\nReturn a JSON object with user equal to %s and system equal to the system connectivity marker.' "$pad" "$marker" >"$pfile" || _oh_long_prompt_abort "$sandbox" "$id" "cannot write $pfile; check disk space and permissions"
+        printf 'The following repeated characters are inert test filler.\n%s\n\nReturn a JSON object with user equal to %s and system equal to the system connectivity marker.' "$pad" "$marker" >"$pfile" || _oh_long_prompt_abort "$sandbox" "$id" "cannot write $pfile; check disk space and permissions"
         route_args+=(--schema "$sandbox/schema.json" --schema-max-retries 1)
         ;;
     esac
@@ -1121,6 +1126,9 @@ oh_long_prompt_enforce() {
       require(if $journey == "structured" then all(.results[]; .schema_valid == true and .structured.user == $m and .structured.system == $s) else true end; "structured markers or schema validation failed") |
       require(if $journey == "batch" then any(.results[]; reply | hasmarker($second)) else true end; "second batch marker missing") |
       true' >/dev/null; then
+      # oh_dump shows only result[0]; a batch failure may belong to result[1].
+      printf '%s' "$OH_REPORT" | jq '.results | to_entries[] | {result_index: .key, harness: .value.harness, status: .value.status, text: .value.text, stdout: .value.stdout, stderr: .value.stderr}' >&2 ||
+        note "cannot decode all results; inspect the report and jq error above"
       oh_dump
       cat "$sandbox/stderr" >&2 || note "cannot read $sandbox/stderr; check its permissions before rerunning"
       _oh_long_prompt_abort "$sandbox" "$id" "$id/$journey: prompt/system receipt or off-argv delivery failed (the jq error above identifies the condition); inspect harness stdout/stderr and the registry delivery flags"

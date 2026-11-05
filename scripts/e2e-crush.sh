@@ -21,7 +21,7 @@ oh_assert_echoed crush "$marker"
 # `crush run`'s stdin (positional omitted), with the system prepended — so it
 # never trips the argv ceiling. The marker must still round-trip.
 note "» long prompt: a >128 KiB prompt+system must round-trip off the argv"
-oh_long_prompt_enforce crush
+oh_long_prompt_enforce crush # ordinary, resumed, batch, control, structured
 
 # Sync enforcement: crush's permissions are tool-coarse — allowed_tools admits
 # the bash tool (crush.json permissions.allowed_tools), denied_tools disables

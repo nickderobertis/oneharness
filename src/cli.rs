@@ -915,11 +915,10 @@ pub struct RunArgs {
     #[arg(long)]
     pub model: Vec<String>,
 
-    /// System prompt passed to every harness. Delivered via the harness's native
-    /// system flag where one exists (e.g. Claude Code's --append-system-prompt,
-    /// Goose's --system); for harnesses without one it is prepended to the prompt
-    /// so the instructions still reach the model. `allow_hyphen_values` so system
-    /// text beginning with `-`/`--` (or `---` front matter) is read as the value.
+    /// System text supplied to every harness, always outside the child's argv.
+    /// Claude Code uses a private --append-system-prompt-file; other harnesses
+    /// fold it into the user turn. Goose loses native system-slot priority.
+    /// Values beginning with `-`/`--` or `---` front matter are accepted as text.
     #[arg(long, value_name = "TEXT", allow_hyphen_values = true)]
     pub system: Option<String>,
 

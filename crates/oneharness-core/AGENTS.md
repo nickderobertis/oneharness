@@ -606,29 +606,26 @@ shape. When you add one:
   (a forum report says cursor-agent may reject the very bracket syntax its `--help`
   advertises — the phase fails loudly if so). The config/env/CLI trio gained
   `reasoning` / `ONEHARNESS_REASONING` / `--reasoning`.
-- Declare its `large_input` (`LargeInput`): how a **large** prompt/system reaches
+- Declare its `large_input` (`LargeInput`): how every prompt/system reaches
   the harness without inlining it into the argv (past the OS ceiling → `E2BIG`;
   issue #1115). Three fields, all sourced from the CLI's headless docs, never
   guessed: `prompt_stdin` (the harness reads the user prompt from stdin — add a
-  `c.prompt_stdin` arm to `build_argv` that omits the positional and adds any
+  `c.delivery` arm to `build_argv` that omits the positional and adds any
   stdin-selecting flags, e.g. Claude's `--input-format text`, Goose's `-i -`);
   `system_rides_prompt` (for a harness with no system flag, whose `--system` is
   already prepended to the prompt — so the combined text rides the same stdin);
   and `system_file_flag` (a CLI flag that reads the system prompt from a file,
   Claude's `--append-system-prompt-file`). The command layer materializes/pipes
-  only when a value clears the 64 KiB `LARGE_INPUT_THRESHOLD` (small prompts keep
-  the byte-identical inline argv, so `--print-command` is unchanged); `build_argv`
-  reads the `BuildCtx::system_file`/`prompt_stdin` fields. Pin the stdin/file arms
+  for every input size, including `--print-command` (which uses a symbolic
+  file path and materializes nothing); `build_argv` reads the
+  `BuildCtx::system_file`/`delivery` fields. Goose folds system text into the
+  user turn and loses native system-slot priority. Pin the stdin/file arms
   with a `build_argv` assertion, add the harness to the README large-prompt
   matrix, and add the `oh_long_prompt_enforce <id>` live phase (a >128 KiB
   prompt+system must round-trip and stay out of `.command`) — the drift alarm that
-  the CLI still reads the off-argv input. `LargeInput::NONE` (inline only) is the
-  honest default until a stdin/file route is *verified* from a real invocation —
-  a large value then stays inline and the command layer warns loudly rather than
-  risking a silent E2BIG. All eight harnesses are wired today (cursor's
-  stdin-only-prompt path was closed-source, so it was **probe-verified** via
-  `scripts/explore-cursor-stdin.sh` + the dispatch-only `explore-cursor-stdin.yml`
-  before wiring — the pattern to reuse for the next uncertain CLI).
+  the CLI still reads the off-argv input. `LargeInput::NONE` remains public for
+  embedders; every registry entry must declare a verified off-argv route, held
+  by the delivery-planning reconciliation assertion.
   <!-- llmlint: ignore-block[no_redundant_instruction_pointers, agents_md_durable_and_terse, comments_earn_their_place] This bullet can state the two rules an adapter author must satisfy or defer them to `docs/harness-usage.md`, and one rule in this list forbids each; it keeps the minimum, with the pointer intact. `comments_earn_their_place` is listed because the span covers these directive lines too. -->
 - Declare its `usage` (`UsageSupport`). Every harness must report an honest tier:
   one that cannot report headroom says *which kind* of cannot (no plan quota at

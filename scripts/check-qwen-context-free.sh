@@ -100,6 +100,10 @@ fi
 [ -n "${QWEN_DOUBLE_LEAK:-}" ] && loaded+=("$QWEN_DOUBLE_LEAK")
 [ -n "${QWEN_DOUBLE_BLIND:-}" ] && loaded=()
 system=""
+prompt="$(cat)" || {
+  echo "qwen context double: cannot read stdin; inspect the runner stdin pipe and rerun bash -x scripts/check-qwen-context-free.sh" >&2
+  exit 1
+}
 args=("$@")
 for ((i = 0; i < ${#args[@]}; i++)); do
   if [ "${args[$i]}" = --system-prompt ]; then system="${args[$((i + 1))]}"; fi
@@ -125,7 +129,7 @@ fi
   exit 1
 }
 if [ -n "${OPENAI_BASE_URL:-}" ]; then
-  context=""
+  context="$system"
   for f in "${loaded[@]+"${loaded[@]}"}"; do
     part="$(find "$f" -type f -exec cat {} +)" || {
       echo "qwen double: could not read the context it loaded from $f; check that it and every file under it are readable (ls -lR '$f')" >&2
@@ -139,13 +143,16 @@ body = {"model": "double", "messages": [{"role": "system", "content": sys.argv[2
 request = urllib.request.Request(sys.argv[1] + "/chat/completions", json.dumps(body).encode(), {"Content-Type": "application/json"})
 with urllib.request.urlopen(request, timeout=30) as reply:
     print(json.load(reply)["choices"][0]["message"]["content"])
-' "$OPENAI_BASE_URL" "$context" "$*"
+' "$OPENAI_BASE_URL" "$context" "$prompt"
 fi
 if [ "${#loaded[@]}" -gt 0 ] || [ -n "${QWEN_DOUBLE_OMIT:-}" ] || [ -z "$system" ]; then
   echo "I'm ready to assist you! If there's something specific you need help with, please let me know."
   exit 0
 fi
-marker="$(printf '%s\n' "$@" | grep -o 'ONEHARNESS-LIVE-[0-9]*' | head -n 1)"
+marker="$(printf '%s\n' "$prompt" | grep -o 'ONEHARNESS-LIVE-[0-9]*' | head -n 1)" || {
+  echo 'qwen context double: no marker on stdin; inspect oh_prompt and rerun bash -x scripts/check-qwen-context-free.sh' >&2
+  exit 1
+}
 echo "Round-trip confirmed: $marker"
 DOUBLE
 chmod +x "$tmp/bin/qwen" || fixture_failed "$tmp/bin/qwen (making it executable)"

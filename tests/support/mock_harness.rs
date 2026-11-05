@@ -60,6 +60,12 @@
 //!                   the only way a test can tell a caller that holds stdin open
 //!                   for its answer from one that closes the pipe behind it.
 //!                   A delay above `MAX_REPLY_DELAY_MS` is refused.
+//!   MOCK_LONG_RECEIPT answers the live helper marker turns; MOCK_LONG_OMIT_SYSTEM
+//!                     or MOCK_LONG_OMIT_USER drops one marker to prove the helper fails.
+//!   MOCK_SYSTEM_FILE_RECORD records the native system file before control starts.
+//!   MOCK_CRUSH_HTTP_LOG serves the Crush Unix HTTP protocol and logs requests.
+//!   MOCK_DELIVERY_FILE appends delivery JSON before normal scripted output.
+//!   MOCK_CAPTURE_DELIVERY records stdin and the native Claude system file as JSON.
 //!   MOCK_ECHO_STDIN if set, read ALL of stdin and write it verbatim to stdout,
 //!                   then exit — proving a prompt delivered on the child's stdin
 //!                   (the large-prompt escape hatch) actually arrived, and with
@@ -1088,6 +1094,148 @@ impl HttpControlFault {
     }
 }
 
+/// Deterministic model reply for the live delivery helper's inert marker turns.
+fn long_receipt_text(prompt: &str) -> String {
+    let marker = |prefix: &str| {
+        prompt
+            .split_whitespace()
+            .find(|word| word.starts_with(prefix))
+            .unwrap_or("")
+            .trim_end_matches(['.', ',', ';'])
+            .to_string()
+    };
+    let user = if prompt.contains("SECONDONEHARNESS-LIVE-") {
+        marker("SECONDONEHARNESS-LIVE-")
+    } else {
+        marker("ONEHARNESS-LIVE-")
+    };
+    let user = if std::env::var_os("MOCK_LONG_OMIT_USER").is_some() {
+        String::new()
+    } else {
+        user
+    };
+    let system = if std::env::var_os("MOCK_LONG_OMIT_SYSTEM").is_some() {
+        String::new()
+    } else {
+        marker("SYSTEMONEHARNESS-LIVE-")
+    };
+    if prompt.contains("Return a JSON object") {
+        serde_json::json!({"user":user,"system":system}).to_string()
+    } else {
+        format!("{user} {system}")
+    }
+}
+
+/// Crush wire shapes are the same fixtures as io::http_turn::crush_redirects,
+/// reached here through the real CLI's server launch and Unix HTTP transport.
+#[cfg(unix)]
+fn run_crush_http_server(log: &str, argv: &[String]) -> ! {
+    use serde_json::Value;
+    use std::io::{BufRead, Read};
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    let address = argv
+        .windows(2)
+        .find(|w| w[0] == "-H")
+        .and_then(|w| w[1].strip_prefix("unix://"))
+        .expect("crush Unix server address");
+    let listener = std::os::unix::net::UnixListener::bind(address).expect("bind crush fixture");
+    let admitted = Arc::new(AtomicBool::new(false));
+    for stream in listener.incoming() {
+        let mut stream = stream.expect("accept crush request");
+        let log = log.to_string();
+        let admitted = Arc::clone(&admitted);
+        std::thread::spawn(move || {
+            let mut reader =
+                std::io::BufReader::new(stream.try_clone().expect("clone crush stream"));
+            let mut line = String::new();
+            reader
+                .by_ref()
+                .take(8192)
+                .read_line(&mut line)
+                .expect("read request");
+            let path = line
+                .split_whitespace()
+                .nth(1)
+                .expect("request path")
+                .to_string();
+            let mut length = 0;
+            let mut complete = false;
+            for _ in 0..64 {
+                let mut header = String::new();
+                reader
+                    .by_ref()
+                    .take(8192)
+                    .read_line(&mut header)
+                    .expect("read header");
+                if header == "\r\n" {
+                    complete = true;
+                    break;
+                }
+                if let Some(value) = header.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse::<usize>().expect("numeric body length");
+                    assert!(length <= 1024 * 1024, "bounded body");
+                }
+            }
+            assert!(complete, "terminated HTTP headers");
+            let mut bytes = vec![0; length];
+            reader.read_exact(&mut bytes).expect("read body");
+            let body: Value = if bytes.is_empty() {
+                Value::Null
+            } else {
+                serde_json::from_slice(&bytes).expect("JSON body")
+            };
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log)
+                .expect("open crush log");
+            file.write_all(
+                format!("{}\n", serde_json::json!({"path":path,"body":body})).as_bytes(),
+            )
+            .expect("log crush request");
+            if path.contains("/events") {
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n"
+                )
+                .expect("event headers");
+                stream.flush().expect("flush headers");
+                let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
+                while !admitted.load(Ordering::SeqCst) && std::time::Instant::now() < until {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                assert!(admitted.load(Ordering::SeqCst), "turn admitted");
+                write!(stream, "data: {{\"type\":\"message\",\"payload\":{{\"type\":\"created\",\"payload\":{{}}}}}}\n\ndata: {{\"type\":\"run_complete\",\"payload\":{{\"type\":\"created\",\"payload\":{{}}}}}}\n\n").expect("completion event");
+                stream.flush().expect("flush completion");
+                exit_shortly();
+            } else {
+                let response = if path == "/v1/workspaces" {
+                    r#"{"id":"ws-1"}"#
+                } else if path.contains("/sessions?") {
+                    r#"{"id":"sid-1"}"#
+                } else {
+                    "{}"
+                };
+                let status = if path.contains("/agent") {
+                    "202 Accepted"
+                } else {
+                    "200 OK"
+                };
+                write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).expect("HTTP reply");
+                stream.flush().expect("flush reply");
+                if path.contains("/agent") {
+                    assert!(body["prompt"].is_string());
+                    admitted.store(true, Ordering::SeqCst);
+                }
+            }
+        });
+    }
+    std::process::exit(0);
+}
+
 /// The largest request body the mock control server will reserve room for. A
 /// control request is a small JSON object; the bound exists because the number
 /// that sizes the allocation arrives on the socket.
@@ -2066,6 +2214,9 @@ fn run_acp_server(log_path: &str) -> ! {
                 id.unwrap_or_else(|| "2".to_string())
             )),
             Some("session/prompt") => {
+                if std::env::var_os("MOCK_LONG_RECEIPT").is_some() {
+                    redirected_text = message.pointer("/params/prompt/0/text").and_then(serde_json::Value::as_str).expect("ACP text turn").to_string();
+                }
                 prompt_id = id.clone();
                 if cancelled && std::env::var_os("MOCK_EXIT_ON_REDIRECT").is_some() {
                     append("EXITED_SILENTLY");
@@ -2130,6 +2281,9 @@ fn run_acp_server(log_path: &str) -> ! {
                     // it. The default fixture ends only on a cancel, which a run
                     // nobody interrupts would wait out.
                     if std::env::var_os("MOCK_ACP_COMPLETE_TURN").is_some() {
+                        if std::env::var_os("MOCK_LONG_RECEIPT").is_some() {
+                            send(&serde_json::json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"mock-acp-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":long_receipt_text(&redirected_text)}}}}).to_string());
+                        }
                         if let Some(prompt_id) = prompt_id.take() {
                             send(&format!(
                                 "{{\"jsonrpc\":\"2.0\",\"id\":{prompt_id},\"result\":{{\"stopReason\":\"end_turn\"}}}}"
@@ -2400,6 +2554,23 @@ pub fn run() -> ! {
         let _ = std::fs::write(path, argv.join("\n"));
     }
 
+    if let Ok(record) = std::env::var("MOCK_SYSTEM_FILE_RECORD") {
+        let path = argv
+            .windows(2)
+            .find(|w| w[0] == "--append-system-prompt-file")
+            .expect("native system file flag");
+        let contents = std::fs::read_to_string(&path[1]).expect("native system file contents");
+        std::fs::write(
+            record,
+            serde_json::json!({"path": path[1], "contents": contents}).to_string(),
+        )
+        .expect("record native system delivery");
+    }
+    #[cfg(unix)]
+    if let Ok(log) = std::env::var("MOCK_CRUSH_HTTP_LOG") {
+        run_crush_http_server(&log, &argv);
+    }
+
     if let Ok(path) = std::env::var("MOCK_INPUT_FILE") {
         // A recording that dropped or mangled stdin would pass for a delivery
         // that never happened, so an unreadable or non-UTF-8 stdin fails loudly.
@@ -2602,6 +2773,41 @@ pub fn run() -> ! {
                 .and_then(|code| code.parse().ok())
                 .unwrap_or(0),
         );
+    }
+
+    if std::env::var_os("MOCK_LONG_RECEIPT").is_some() {
+        let mut prompt = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut prompt)
+            .expect("read long helper input");
+        println!("{}", long_receipt_text(&prompt));
+        std::process::exit(0);
+    }
+
+    if std::env::var_os("MOCK_CAPTURE_DELIVERY").is_some()
+        || std::env::var_os("MOCK_DELIVERY_FILE").is_some()
+    {
+        let mut input = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)
+            .expect("read delivery stdin");
+        let path = argv
+            .windows(2)
+            .find(|w| w[0] == "--append-system-prompt-file")
+            .map(|w| &w[1]);
+        let system = path.map(|p| std::fs::read_to_string(p).expect("read delivered system file"));
+        let capture = serde_json::json!({"stdin": input, "system": system, "system_path": path, "argv": argv});
+        if let Ok(record) = std::env::var("MOCK_DELIVERY_FILE") {
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(record)
+                .expect("open delivery record");
+            file.write_all(format!("{capture}\n").as_bytes())
+                .expect("write delivery record");
+        }
+        if std::env::var_os("MOCK_CAPTURE_DELIVERY").is_some() {
+            println!("{capture}");
+            std::process::exit(0);
+        }
     }
 
     if std::env::var_os("MOCK_ECHO_STDIN").is_some() {

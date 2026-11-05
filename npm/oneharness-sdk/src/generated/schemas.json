@@ -17254,7 +17254,7 @@
             "type": "boolean"
           },
           "supports_prompt_stdin": {
-            "description": "Whether a large user prompt can be delivered off the argv (piped to the\nharness's stdin) so it never trips the OS argument ceiling (`E2BIG`).",
+            "description": "Whether every user prompt is delivered off the argv (piped to the\nharness's stdin) so it never trips the OS argument ceiling (`E2BIG`).",
             "type": "boolean"
           },
           "supports_reasoning": {
@@ -17270,7 +17270,7 @@
             "type": "boolean"
           },
           "supports_system_file": {
-            "description": "Whether a large system prompt can be delivered off the argv via a file\nflag (Claude Code's `--append-system-prompt-file`). `false` does not mean a\nlarge system is unhandled — for a harness whose system rides the prompt it\ntravels on stdin with the prompt; see the README large-prompt matrix.",
+            "description": "Whether supplied system text is delivered off the argv via a file\nflag (Claude Code's `--append-system-prompt-file`). `false` does not mean a\nsystem is unhandled — for a harness whose system rides the prompt it\ntravels on stdin with the prompt; see the README large-prompt matrix.",
             "type": "boolean"
           },
           "supports_tool_set": {

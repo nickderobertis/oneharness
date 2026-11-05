@@ -144,7 +144,7 @@ oh_lean_session_enforce codex
 # `codex exec -` (stdin sentinel), with the system prepended into that stream —
 # so it never trips the argv ceiling. The marker must still round-trip.
 note "» long prompt: a >128 KiB prompt+system must round-trip off the argv"
-oh_long_prompt_enforce codex
+oh_long_prompt_enforce codex # ordinary, resumed, batch, control, structured
 
 # Approval-mode enforcement: `read-only` is Codex's OS-enforced read-only
 # sandbox, and `plan` is that same sandbox plus a prepended plan instruction —

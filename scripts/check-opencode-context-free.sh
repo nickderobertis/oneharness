@@ -32,7 +32,7 @@ jq -cn --arg cwd "$PWD" --arg home "$HOME" --arg config "${XDG_CONFIG_HOME:-}" \
   --arg custom "${OPENCODE_CONFIG:-}" --arg dir "${OPENCODE_CONFIG_DIR:-}" \
   --arg content "${OPENCODE_CONFIG_CONTENT:-}" --arg claude "${OPENCODE_DISABLE_CLAUDE_CODE:-}" \
   '{cwd:$cwd,home:$home,config:$config,data:$data,cache:$cache,state:$state,custom:$custom,dir:$dir,content:$content,claude:$claude}' >>"$PROBE_RECORD" || { echo "opencode double: cannot write $PROBE_RECORD; check permissions and disk space" >&2; exit 1; }
-text="$(printf '%s\n' "$@" | grep -o 'ONEHARNESS-LIVE-[0-9]*' | head -n 1)" || { echo "opencode double: no marker in argv; inspect the live echo prompt" >&2; exit 1; }
+text="$(cat | grep -o 'ONEHARNESS-LIVE-[0-9]*' | head -n 1)" || { echo "opencode double: no marker on stdin; inspect the live echo prompt" >&2; exit 1; }
 if [ -n "${PROBE_CONTEXT_MODE:-}" ]; then
   # Stand in for the paid CLI only: requests still reach the real local HTTP
   # endpoint. The live alarm runs these discovery observations on real OpenCode.

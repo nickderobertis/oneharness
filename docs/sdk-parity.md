@@ -529,3 +529,14 @@ caller rather than being dropped.
 | `history_pointers` | `pointers`, `skipped` | 15 | yes | yes | yes |
 
 <!-- END GENERATED: capability-tables -->
+
+## Prompt delivery
+
+CLI and SDK runs always deliver user and supplied system text outside the child
+argv, regardless of size. Claude Code receives user text on stdin and system
+text via a private `--append-system-prompt-file`; the other seven harnesses fold
+nonempty system text into the stdin or control turn (`system + "\n\n" + user`). Goose
+therefore loses native system-slot priority. Mode, schema and retry additions
+retain their assembly. Control uses its first protocol frame or HTTP payload.
+Dry runs show these routes without spawning or writing prompt files;
+`<private-system-prompt-file>` is symbolic. The report shape is unchanged.

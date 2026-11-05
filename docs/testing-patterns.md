@@ -54,6 +54,11 @@ const report = await new OneHarness().runMock(
 | `MOCK_CAT_FILE` | Emit the current contents of this file and exit. |
 | `MOCK_CAT_ARG_AFTER` | Find this argv flag, emit the file named by its next argument, and exit. |
 | `MOCK_ECHO_STDIN` | Copy stdin verbatim to stdout and exit. |
+| `MOCK_CAPTURE_DELIVERY` | Read stdin and Claude's native system file, emit `{stdin, system, system_path, argv}` as JSON, and exit. |
+| `MOCK_DELIVERY_FILE` | Append that delivery record as one JSON line, then continue normal scripted output (including retries). |
+| `MOCK_SYSTEM_FILE_RECORD` | Record `{path, contents}` for Claude's native system file before starting a control protocol. |
+| `MOCK_CRUSH_HTTP_LOG` | On Unix, serve the Crush HTTP workspace/session/turn protocol on the launched socket and record each request as `{path, body}`. |
+| `MOCK_LONG_RECEIPT` | Answer the live delivery helper's inert marker turns; `MOCK_LONG_OMIT_USER` / `MOCK_LONG_OMIT_SYSTEM` deliberately omit a marker to verify failure detection. |
 | `MOCK_ATTEMPT_FILE` | Increment a counter file and prefer `MOCK_STDOUT_<n>` for that 1-based attempt. |
 | `MOCK_STDOUT_<n>` | Attempt-specific stdout used with `MOCK_ATTEMPT_FILE`. |
 | `MOCK_STREAM_DELAY_MS` | Emit one line at a time with this delay; in chunk mode, delay between chunks. |

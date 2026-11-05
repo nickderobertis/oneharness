@@ -25,7 +25,7 @@ oh_context_free_enforce qwen
 # qwen's stdin (`-p` omitted), with the system prepended — so it never trips the
 # argv ceiling. The marker must still round-trip.
 note "» long prompt: a >128 KiB prompt+system must round-trip off the argv"
-oh_long_prompt_enforce qwen
+oh_long_prompt_enforce qwen # ordinary, resumed, batch, control, structured
 
 # Sync enforcement is NOT provable headlessly for qwen — live findings:
 # without -y/--yolo on the CLI, qwen never auto-approves tools from settings.

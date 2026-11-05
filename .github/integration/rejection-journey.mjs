@@ -65,9 +65,13 @@ with tarfile.open(sys.argv[1],'w:gz') as t:
   execFileSync('tar',['-czf',join(dir,`oneharness-${r.tag}-${target}.tar.gz`),'-C',join(dir,'archive'),'oneharness','README.md','LICENSE','CHANGELOG.md']);
  },/Missing planned command contract/);
  // llmlint: ignore-block[e2e_not_mocked] This staged executable is a deliberately defective product input; the installer under test runs for real, while the happy path uses the real compiled CLI.
- reject('null CLI report',(dir,r)=>{
+ for (const [label,report] of [
+  ['null CLI report',null],
+  ['prompt leaked in planned argv',{results:[{status:'planned',command:['codex','hello','-']}]}],
+  ['missing stdin sentinel',{results:[{status:'planned',command:['codex','exec']}]}],
+ ]) reject(label,(dir,r)=>{
   const binary=join(dir,'archive','oneharness'), source=join(work,'null-report.rs');
-  writeFileSync(source,`fn main(){ let a:Vec<String>=std::env::args().collect(); if a.contains(&"--version".into()){println!("oneharness ${r.version}");}else if a.contains(&"--print-command".into()){println!("null");}else{std::process::exit(2);} }`);
+  writeFileSync(source,`fn main(){ let a:Vec<String>=std::env::args().collect(); if a.contains(&"--version".into()){println!("oneharness ${r.version}");}else if a.contains(&"--print-command".into()){println!("{}",r#"${JSON.stringify(report)}"#);}else{std::process::exit(2);} }`);
   execFileSync('rustc',[source,'-o',binary]);
   r.binarySha256=createHash('sha256').update(readFileSync(binary)).digest('hex');writeFileSync(join(dir,'payload.json'),JSON.stringify(r));
   execFileSync('tar',['-czf',join(dir,`oneharness-${r.tag}-${target}.tar.gz`),'-C',join(dir,'archive'),'oneharness','README.md','LICENSE','CHANGELOG.md']);

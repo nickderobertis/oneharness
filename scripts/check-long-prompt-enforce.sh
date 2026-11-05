@@ -24,7 +24,16 @@ cat >"$tmp/driver" <<'DRIVER' || fail "cannot write $tmp/driver; check disk spac
 #!/usr/bin/env bash
 set -euo pipefail
 [ "$#" -gt 0 ] || { echo 'long helper wrapper: missing verb; inspect oh_long_prompt_enforce invocation' >&2; exit 2; }
-if [ "$1" = list ]; then exec "$OH_REAL_BIN" "$@"; fi
+launch() {
+  # Keep the wrapper alive on exec failure so it can explain how to recover.
+  shopt -s execfail
+  set +e
+  exec "$OH_REAL_BIN" "$@"
+  status=$?
+  echo "long helper wrapper: cannot launch $OH_REAL_BIN (exit $status); rebuild oneharness through its Nx build target and check executable permissions" >&2
+  exit "$status"
+}
+if [ "$1" = list ]; then launch "$@"; fi
 jq -cn --args '$ARGS.positional' -- "$@" >>"$OH_LONG_RECORD" || { echo "cannot append $OH_LONG_RECORD; check jq, disk space and permissions" >&2; exit 1; }
 for arg in "$@"; do
   if [ "$arg" = --control ]; then export MOCK_ACP_LOG="$OH_LONG_WIRE" MOCK_ACP_COMPLETE_TURN=1; fi
@@ -37,9 +46,20 @@ for ((i=0; i<${#args[@]}; i++)); do
   if [ "${args[$i]}" = --harness ]; then id="${args[$((i + 1))]}"; fi
 done
 [ -n "$id" ] || { echo 'long helper wrapper: missing harness id; inspect the --harness argument in oh_long_prompt_enforce' >&2; exit 2; }
-exec "$OH_REAL_BIN" "$verb" --bin "$id=$OH_MOCK_BIN" "$@"
+launch "$verb" --bin "$id=$OH_MOCK_BIN" "$@"
 DRIVER
 chmod +x "$tmp/driver" || fail "cannot make $tmp/driver executable; check filesystem permissions"
+# Both delegation paths must retain an actionable diagnostic if launch fails.
+for verb in list run; do
+  if OH_REAL_BIN="$tmp/missing-oneharness" "$tmp/driver" "$verb" --harness goose >"$tmp/launch.log" 2>&1; then
+    fail "$verb accepted a missing executable; inspect wrapper launch handling"
+  fi
+  grep -q 'rebuild oneharness through its Nx build target' "$tmp/launch.log" || {
+    show "$tmp/launch.log"
+    fail "$verb omitted launch recovery guidance; inspect wrapper launch handling"
+  }
+done
+: >"$OH_LONG_RECORD" || fail "cannot reset $OH_LONG_RECORD; inspect disk space and permissions"
 export ONEHARNESS_BIN="$tmp/driver" MOCK_LONG_RECEIPT=1 OH_MODEL=""
 bash -c 'set -euo pipefail; source "$1/scripts/e2e-lib.sh"; oh_long_prompt_enforce goose' _ "$root" >"$tmp/pass.log" 2>&1 || {
   show "$tmp/pass.log"
@@ -49,7 +69,10 @@ jq -se 'length == 5 and any(.[]; index("--resume")) and any(.[]; index("--batch-
   show "$OH_LONG_RECORD"
   fail 'expected five Goose invocations covering resume, batch, control and schema, each with system input; inspect helper case selection'
 }
-acp_prompts="$(grep -c '"method":"session/prompt"' "$OH_LONG_WIRE")" || [ "$acp_prompts" = 0 ] || fail "cannot read $OH_LONG_WIRE; inspect its permissions"
+acp_prompts="$(grep -c '"method":"session/prompt"' "$OH_LONG_WIRE")" || {
+  status=$?
+  [ "$status" -eq 1 ] || fail "cannot read $OH_LONG_WIRE (grep exit $status); inspect its permissions"
+}
 [ "$acp_prompts" -eq 1 ] || {
   show "$OH_LONG_WIRE"
   fail "expected one actual ACP prompt, got $acp_prompts; inspect control case arguments"

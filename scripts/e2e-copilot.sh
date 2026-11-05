@@ -23,7 +23,7 @@ oh_assert_echoed copilot "$marker"
 # the system prepended — so it never trips the argv ceiling. The marker must
 # still round-trip.
 note "» long prompt: a >128 KiB prompt+system must round-trip off the argv"
-oh_long_prompt_enforce copilot # ordinary, resumed, batch, control, structured
+oh_long_prompt_enforce copilot
 
 # Approval-mode enforcement: `read-only` denies the `shell`/`write` tools (deny
 # beats allow-all) and `plan` is `--mode plan` — each must block a write that

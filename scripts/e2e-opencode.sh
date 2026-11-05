@@ -23,7 +23,7 @@ oh_opencode_context_free_enforce
 # `opencode run`'s stdin (positional omitted), with the system prepended — so it
 # never trips the argv ceiling. The marker must still round-trip.
 note "» long prompt: a >128 KiB prompt+system must round-trip off the argv"
-oh_long_prompt_enforce opencode # ordinary, resumed, batch, control, structured
+oh_long_prompt_enforce opencode
 
 # Cache-token reporting: with an Anthropic model OpenCode caches its tools+system
 # prefix, so a second run reads it back. Assert oneharness surfaces the summed

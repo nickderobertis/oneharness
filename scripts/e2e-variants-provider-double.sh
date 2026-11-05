@@ -17,8 +17,18 @@ case "${1:-}" in
     ;;
 esac
 
+# Turns arrive on stdin; --version probes must not read the caller's stdin.
+prompt=""
+case " $* " in
+  *" --input-format text "* | *" - "*)
+    prompt="$(cat)" || {
+      echo "e2e-variants-provider-double: could not read the turn from stdin; inspect the CLI input pipe and retry the boundary test" >&2
+      exit 1
+    }
+    ;;
+esac
 marker=""
-for arg in "$@"; do
+for arg in "$@" "$prompt"; do
   case "$arg" in
     *"Reply exactly "*) marker="${arg##*Reply exactly }" ;;
   esac

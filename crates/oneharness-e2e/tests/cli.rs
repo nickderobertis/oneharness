@@ -722,7 +722,8 @@ fn print_command_pins_argv_for_every_harness() {
             "claude-code",
             &[
                 "-p",
-                "hi",
+                "--input-format",
+                "text",
                 "--permission-mode",
                 "bypassPermissions",
                 "--output-format",
@@ -743,35 +744,23 @@ fn print_command_pins_argv_for_every_harness() {
                 "model_catalog_json=\"<shared model catalog>\"",
                 "--dangerously-bypass-approvals-and-sandbox",
                 "--json",
-                "hi",
+                "-",
             ],
         ),
         (
             "opencode",
-            &[
-                "run",
-                "--dangerously-skip-permissions",
-                "--format",
-                "json",
-                "hi",
-            ],
+            &["run", "--dangerously-skip-permissions", "--format", "json"],
         ),
-        ("goose", &["run", "--with-builtin", "developer", "-t", "hi"]),
-        ("qwen", &["--yolo", "-p", "hi"]),
-        ("crush", &["run", "-q", "hi"]),
+        ("goose", &["run", "--with-builtin", "developer", "-i", "-"]),
+        ("qwen", &["--yolo"]),
+        ("crush", &["run", "-q"]),
         (
             "copilot",
-            &[
-                "-p",
-                "hi",
-                "--allow-all-tools",
-                "--allow-all-paths",
-                "--no-ask-user",
-            ],
+            &["--allow-all-tools", "--allow-all-paths", "--no-ask-user"],
         ),
         (
             "cursor",
-            &["-p", "hi", "--force", "--output-format", "stream-json"],
+            &["-p", "--force", "--output-format", "stream-json"],
         ),
     ];
 
@@ -1018,10 +1007,11 @@ fn codex_plan_is_read_only_sandbox_plus_a_plan_instruction() {
             "refactor auth",
             "--mode",
             "plan",
-            "--print-command",
+            "--bin",
+            &bin_override("codex"),
             "--compact",
         ],
-        &[],
+        &[("MOCK_ECHO_STDIN", "1")],
     );
     assert!(output.status.success());
     let value = json_stdout(&output);
@@ -1036,7 +1026,7 @@ fn codex_plan_is_read_only_sandbox_plus_a_plan_instruction() {
         command.windows(2).any(|w| w == ["--sandbox", "read-only"]),
         "{command:?}"
     );
-    let joined = command.join(" ");
+    let joined = value["results"][0]["stdout"].as_str().unwrap();
     assert!(
         joined.contains("PLAN MODE"),
         "plan instruction missing: {joined}"
@@ -1362,15 +1352,17 @@ fn system_prompt_maps_to_append_system_prompt_for_claude() {
         .map(|s| s.as_str().unwrap().to_string())
         .collect();
     assert!(
-        command
-            .windows(2)
-            .any(|w| w == ["--append-system-prompt", "be terse"]),
+        command.windows(2).any(|w| w
+            == [
+                "--append-system-prompt-file",
+                "<private-system-prompt-file>"
+            ]),
         "{command:?}"
     );
 }
 
 #[test]
-fn system_prompt_maps_to_gooses_native_system_flag() {
+fn goose_system_is_folded_into_stdin() {
     // Goose exposes its own `--system`, so `--system` maps to it (not prepended).
     let output = run(
         &[
@@ -1381,7 +1373,10 @@ fn system_prompt_maps_to_gooses_native_system_flag() {
             "hi",
             "--system",
             "be terse",
-            "--print-command",
+            "--bin",
+            &bin_override("goose"),
+            "--env",
+            "MOCK_ECHO_STDIN=1",
             "--compact",
         ],
         &[],
@@ -1393,12 +1388,10 @@ fn system_prompt_maps_to_gooses_native_system_flag() {
         .iter()
         .map(|s| s.as_str().unwrap().to_string())
         .collect();
-    assert!(
-        command.windows(2).any(|w| w == ["--system", "be terse"]),
-        "{command:?}"
-    );
-    // The prompt is delivered via -t and left un-prefixed.
-    assert!(command.windows(2).any(|w| w == ["-t", "hi"]), "{command:?}");
+    assert_eq!(value["results"][0]["stdout"], "be terse\n\nhi");
+    assert!(!command
+        .iter()
+        .any(|a| a.contains("be terse") || a.contains("name: x") || a == "hi"));
 }
 
 #[test]
@@ -1414,7 +1407,10 @@ fn system_prompt_is_prepended_for_harness_without_a_flag() {
             "hi",
             "--system",
             "be terse",
-            "--print-command",
+            "--bin",
+            &bin_override("codex"),
+            "--env",
+            "MOCK_ECHO_STDIN=1",
             "--compact",
         ],
         &[],
@@ -1426,7 +1422,10 @@ fn system_prompt_is_prepended_for_harness_without_a_flag() {
         .iter()
         .map(|s| s.as_str().unwrap().to_string())
         .collect();
-    assert!(command.iter().any(|t| t == "be terse\n\nhi"), "{command:?}");
+    assert_eq!(value["results"][0]["stdout"], "be terse\n\nhi");
+    assert!(!command
+        .iter()
+        .any(|a| a.contains("be terse") || a.contains("name: x") || a == "hi"));
 }
 
 #[test]
@@ -1442,7 +1441,10 @@ fn hyphenated_system_and_prompt_values_are_accepted() {
             "--look-like-a-flag",
             "--system",
             "---\nname: x",
-            "--print-command",
+            "--bin",
+            &bin_override("codex"),
+            "--env",
+            "MOCK_ECHO_STDIN=1",
             "--compact",
         ],
         &[],
@@ -1454,12 +1456,13 @@ fn hyphenated_system_and_prompt_values_are_accepted() {
         .iter()
         .map(|s| s.as_str().unwrap().to_string())
         .collect();
-    assert!(
-        command
-            .iter()
-            .any(|t| t == "---\nname: x\n\n--look-like-a-flag"),
-        "{command:?}"
+    assert_eq!(
+        value["results"][0]["stdout"],
+        "---\nname: x\n\n--look-like-a-flag"
     );
+    assert!(!command
+        .iter()
+        .any(|a| a.contains("be terse") || a.contains("name: x") || a == "hi"));
 }
 
 #[test]
@@ -8604,7 +8607,7 @@ fn built_argv_actually_reaches_the_binary() {
     let _ = std::fs::remove_file(&argv_file);
     let argv: Vec<&str> = received.lines().collect();
     assert!(argv.contains(&"-p"), "argv: {argv:?}");
-    assert!(argv.contains(&"unique-prompt-marker"), "argv: {argv:?}");
+    assert!(!argv.contains(&"unique-prompt-marker"), "argv: {argv:?}");
     assert!(argv.contains(&"bypassPermissions"), "argv: {argv:?}");
 }
 
@@ -8644,6 +8647,9 @@ fn cmd_shim_spawns_with_a_multiline_argument() {
             "--bin",
             &format!("claude-code={}", cmd_path.display()),
             "--compact",
+            "--",
+            "--unrelated-text",
+            system,
         ],
         &[("MOCK_ARGV_FILE", &argv_file.display().to_string())],
     );
@@ -8666,7 +8672,7 @@ fn cmd_shim_spawns_with_a_multiline_argument() {
     );
     assert!(
         received.contains(system),
-        "the multi-line --system value must reach the child intact: {received:?}"
+        "the multi-line passthrough value must reach the child intact: {received:?}"
     );
 }
 
@@ -8677,7 +8683,7 @@ fn native_exe_cmd_shim_spawns_with_a_multiline_argument() {
     // `claude.cmd` shim forwards straight to that exe — no `_prog`, no script,
     // an *empty* prefix. This is the layout that defeated the first fix attempt.
     // Stand in a `%dp0%`-rooted exe shim pointing at a colocated copy of the mock
-    // harness, drive a multi-line `--system`, and assert it spawns and the value
+    // harness, drive a multi-line passthrough value, and assert it spawns and the value
     // arrives intact — the end-to-end proof of the native-exe rewrite branch.
     let dir = ScratchDir::new("exeshim").unwrap();
     // Colocate the target exe beside the shim so `%dp0%\claude.exe` resolves.
@@ -8704,6 +8710,9 @@ fn native_exe_cmd_shim_spawns_with_a_multiline_argument() {
             "--bin",
             &format!("claude-code={}", cmd_path.display()),
             "--compact",
+            "--",
+            "--unrelated-text",
+            system,
         ],
         &[("MOCK_ARGV_FILE", &argv_file.display().to_string())],
     );
@@ -8722,7 +8731,7 @@ fn native_exe_cmd_shim_spawns_with_a_multiline_argument() {
         std::fs::read_to_string(&argv_file).expect("mock recorded no argv — the spawn failed");
     assert!(
         received.contains(system),
-        "the multi-line --system value must reach the child intact: {received:?}"
+        "the multi-line passthrough value must reach the child intact: {received:?}"
     );
 }
 
@@ -8791,10 +8800,11 @@ fn user_config_applies_and_project_file_wins_per_field() {
             "hi",
             "--cwd",
             &fx.cwd(),
-            "--print-command",
+            "--bin",
+            &bin_override("claude-code"),
             "--compact",
         ],
-        &[],
+        &[("MOCK_CAT_ARG_AFTER", "--append-system-prompt-file")],
         &fx.user_config(),
     );
     let value = json_stdout(&output);
@@ -8809,9 +8819,10 @@ fn user_config_applies_and_project_file_wins_per_field() {
     assert!(
         command
             .windows(2)
-            .any(|w| w == ["--append-system-prompt", "from user"]),
+            .any(|w| w[0] == "--append-system-prompt-file"),
         "{command:?}"
     );
+    assert_eq!(value["results"][0]["stdout"], "from user");
 }
 
 #[test]
@@ -14258,7 +14269,10 @@ fn prompt_file_reads_the_prompt_from_a_file() {
             "claude-code",
             "--prompt-file",
             &file.display().to_string(),
-            "--print-command",
+            "--bin",
+            &bin_override("claude-code"),
+            "--env",
+            "MOCK_ECHO_STDIN=1",
             "--compact",
         ],
         &[],
@@ -14272,9 +14286,10 @@ fn prompt_file_reads_the_prompt_from_a_file() {
         .map(|s| s.as_str().unwrap().to_string())
         .collect();
     assert!(
-        command.iter().any(|t| t == "prompt-from-a-file"),
+        !command.iter().any(|t| t == "prompt-from-a-file"),
         "{command:?}"
     );
+    assert_eq!(value["results"][0]["stdout"], "prompt-from-a-file");
 }
 
 #[test]
@@ -14288,7 +14303,10 @@ fn prompt_file_dash_reads_the_prompt_from_stdin() {
             "claude-code",
             "--prompt-file",
             "-",
-            "--print-command",
+            "--bin",
+            &bin_override("claude-code"),
+            "--env",
+            "MOCK_ECHO_STDIN=1",
             "--compact",
         ],
         "prompt-from-stdin",
@@ -14302,9 +14320,10 @@ fn prompt_file_dash_reads_the_prompt_from_stdin() {
         .map(|s| s.as_str().unwrap().to_string())
         .collect();
     assert!(
-        command.iter().any(|t| t == "prompt-from-stdin"),
+        !command.iter().any(|t| t == "prompt-from-stdin"),
         "{command:?}"
     );
+    assert_eq!(value["results"][0]["stdout"], "prompt-from-stdin");
 }
 
 #[test]
@@ -14355,9 +14374,11 @@ fn system_file_reads_the_system_prompt_from_a_file() {
     assert!(output.status.success(), "exit {:?}", output.status.code());
     let command = command_of(&json_stdout(&output), 0);
     assert!(
-        command
-            .windows(2)
-            .any(|w| w == ["--append-system-prompt", "be terse"]),
+        command.windows(2).any(|w| w
+            == [
+                "--append-system-prompt-file",
+                "<private-system-prompt-file>"
+            ]),
         "{command:?}"
     );
 }
@@ -14391,7 +14412,10 @@ fn system_file_value_reaches_a_spawned_harness_intact() {
             &bin_override("claude-code"),
             "--compact",
         ],
-        &[("MOCK_ARGV_FILE", &argv_file.display().to_string())],
+        &[
+            ("MOCK_ARGV_FILE", &argv_file.display().to_string()),
+            ("MOCK_CAT_ARG_AFTER", "--append-system-prompt-file"),
+        ],
     );
     assert!(
         output.status.success(),
@@ -14406,9 +14430,10 @@ fn system_file_value_reaches_a_spawned_harness_intact() {
         "argv: {received:?}"
     );
     assert!(
-        received.contains(system),
-        "the file-sourced --system value must reach the child intact: {received:?}"
+        !received.contains(system),
+        "system text must stay off argv: {received:?}"
     );
+    assert_eq!(json_stdout(&output)["results"][0]["stdout"], system);
 }
 
 #[test]
@@ -14432,9 +14457,11 @@ fn system_file_dash_reads_the_system_prompt_from_stdin() {
     assert!(output.status.success(), "exit {:?}", output.status.code());
     let command = command_of(&json_stdout(&output), 0);
     assert!(
-        command
-            .windows(2)
-            .any(|w| w == ["--append-system-prompt", "be terse"]),
+        command.windows(2).any(|w| w
+            == [
+                "--append-system-prompt-file",
+                "<private-system-prompt-file>"
+            ]),
         "{command:?}"
     );
 }
@@ -14540,11 +14567,12 @@ fn large_system_file_avoids_the_argv_limit() {
     );
     assert!(output.status.success(), "exit {:?}", output.status.code());
     let command = command_of(&json_stdout(&output), 0);
-    assert!(
-        command.iter().any(|t| t == &big),
-        "the whole >128 KiB system prompt should reach the built command"
-    );
-    assert!(command.iter().any(|t| t.contains(marker)), "{marker}");
+    assert!(command.windows(2).any(|w| w
+        == [
+            "--append-system-prompt-file",
+            "<private-system-prompt-file>"
+        ]));
+    assert!(!command.iter().any(|t| t.contains(marker)));
 }
 
 // --- Structured output (--schema): validate the final answer against a JSON
@@ -14581,6 +14609,8 @@ fn schema_prompt_based_validates_and_appends_instruction() {
     // A non-native harness (crush): the schema is appended to the prompt, and the
     // mock returns a conforming JSON object that oneharness validates.
     let schema = temp_file("schema-pb", PERSON_SCHEMA);
+    let delivery = ScratchDir::new("schema-input").unwrap();
+    let delivery_log = delivery.join("input.jsonl");
     let output = run(
         &[
             "run",
@@ -14594,7 +14624,10 @@ fn schema_prompt_based_validates_and_appends_instruction() {
             &bin_override("crush"),
             "--compact",
         ],
-        &[("MOCK_STDOUT", r#"{"name":"Ada","age":36}"#)],
+        &[
+            ("MOCK_STDOUT", r#"{"name":"Ada","age":36}"#),
+            ("MOCK_DELIVERY_FILE", delivery_log.to_str().unwrap()),
+        ],
     );
     assert!(output.status.success(), "exit {:?}", output.status.code());
     let value = json_stdout(&output);
@@ -14607,7 +14640,10 @@ fn schema_prompt_based_validates_and_appends_instruction() {
     // The schema instruction reached the prompt (non-native delivery)...
     let command = command_of(&value, 0);
     assert!(
-        command.iter().any(|a| a.contains("JSON Schema")),
+        read_delivery(&delivery_log)[0]["stdin"]
+            .as_str()
+            .unwrap()
+            .contains("JSON Schema"),
         "prompt should carry the schema instruction: {command:?}"
     );
     // ...and it stays newline-free, so the prompt argument survives being passed
@@ -14706,6 +14742,8 @@ fn codex_overload_and_schema_retries_have_separate_budgets_and_keep_schema_deliv
     let schema = temp_file("schema-overload", PERSON_SCHEMA);
     let counter = temp_counter("schema-overload");
     let argv_file = temp_file("schema-overload-argv", "");
+    let delivery = ScratchDir::new("overload-delivery").unwrap();
+    let delivery_log = delivery.join("input.jsonl");
     let overloaded = r#"{"type":"turn.failed","error":{"codex_error_info":"server_overloaded"}}"#;
     let invalid =
         r#"{"type":"item.completed","item":{"type":"agent_message","text":"{\"name\":\"Ada\"}"}}"#;
@@ -14730,6 +14768,7 @@ fn codex_overload_and_schema_retries_have_separate_budgets_and_keep_schema_deliv
         &[
             ("MOCK_ATTEMPT_FILE", &counter),
             ("MOCK_ARGV_FILE", &argv_file),
+            ("MOCK_DELIVERY_FILE", delivery_log.to_str().unwrap()),
             ("MOCK_STDOUT_1", overloaded),
             ("MOCK_STDOUT_2", invalid),
             ("MOCK_STDOUT_3", valid),
@@ -14744,7 +14783,9 @@ fn codex_overload_and_schema_retries_have_separate_budgets_and_keep_schema_deliv
     assert_eq!(std::fs::read_to_string(counter).unwrap(), "3");
     let final_argv = std::fs::read_to_string(argv_file).unwrap();
     assert!(
-        final_argv.contains("JSON Schema"),
+        read_delivery(&delivery_log)
+            .iter()
+            .all(|r| r["stdin"].as_str().unwrap().contains("JSON Schema")),
         "the overload retry dropped schema delivery: {final_argv}"
     );
 }
@@ -15327,8 +15368,10 @@ fn print_command_works_for_a_batch() {
     assert_eq!(value["batch"]["prompt_count"], 2);
     let results = value["results"].as_array().unwrap();
     assert_eq!(results.len(), 2);
-    assert!(command_of(&value, 0).contains(&"alpha".to_string()));
-    assert!(command_of(&value, 1).contains(&"beta".to_string()));
+    assert_eq!(results[0]["prompt"], "alpha");
+    assert_eq!(results[1]["prompt"], "beta");
+    assert!(!command_of(&value, 0).contains(&"alpha".to_string()));
+    assert!(!command_of(&value, 1).contains(&"beta".to_string()));
 }
 
 #[test]
@@ -15459,7 +15502,7 @@ fn batch_min_tokens_forks_the_warmed_session_for_the_fan_out() {
     // Warm-up establishes the session: no --resume, and it carries --system.
     assert!(!warm.contains(&"--resume".to_string()), "warm-up: {warm:?}");
     assert!(
-        warm.contains(&"--append-system-prompt".to_string()),
+        warm.contains(&"--append-system-prompt-file".to_string()),
         "warm-up should send --system: {warm:?}"
     );
     // Fan-out forks the warmed session and does not re-send --system.
@@ -15474,7 +15517,7 @@ fn batch_min_tokens_forks_the_warmed_session_for_the_fan_out() {
             "fan-out {i} should fork: {fan:?}"
         );
         assert!(
-            !fan.contains(&"--append-system-prompt".to_string()),
+            !fan.iter().any(|a| a.starts_with("--append-system-prompt")),
             "fan-out {i} must not re-send --system (inherited from the session): {fan:?}"
         );
     }
@@ -20325,7 +20368,7 @@ fn history_list_scopes_by_project() {
 
 // --- large prompts / system (issue #1115): off-argv delivery ----------------
 
-/// A prompt/system value bigger than the 64 KiB off-argv threshold, carrying a
+/// A prompt/system value past Linux's single-argument ceiling, carrying a
 /// unique marker so the test can prove exactly which text reached the harness.
 fn big_with_marker(marker: &str) -> String {
     format!("{marker} {}", "x".repeat(70 * 1024))
@@ -20504,93 +20547,873 @@ fn large_prompt_folds_system_into_stdin_for_a_prepend_harness() {
     );
 }
 
-// Non-Windows only: goose keeps a large system on its inline `--system` argv, and
-// there is no size that is both over the 64 KiB threshold (to fire the branch) AND
-// under Windows' ~32 KiB command-line limit (to spawn the harness), so the inline
-// delivery this asserts can only be exercised where the argv ceiling is higher.
-#[cfg(not(windows))]
+/// Every route is exercised through the actual CLI and subprocess boundary.
+/// File inputs keep the caller's Windows command line below its own ceiling.
 #[test]
-fn large_system_on_goose_warns_no_off_argv_route() {
-    // Goose's `--system` is inline TEXT with no file/stdin route, so a large
-    // system prompt cannot leave the argv — oneharness must warn loudly (not fail
-    // silently) and keep it inline. Kept under 128 KiB so spawning the mock itself
-    // doesn't E2BIG on Linux, but over the 64 KiB threshold so the branch fires.
-    let marker = "OHGOOSESYS-333";
-    // Delivered to oneharness via a file (caller hop); goose still inlines it.
-    let sf = BigFile::new("goose-sys", &format!("{marker} {}", "y".repeat(80 * 1024)));
-    let sfp = sf.path();
-    let out = run(
-        &[
-            "run",
-            "--harness",
-            "goose",
-            "--prompt",
-            "hi",
-            "--system-file",
-            &sfp,
-            "--bin",
-            &bin_override("goose"),
-            "--compact",
-        ],
-        &[],
-    );
-    assert!(out.status.success(), "{out:?}");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("--system prompt for harness `goose`")
-            && stderr.contains("cannot be delivered off the argv"),
-        "expected a large-system warning, got: {stderr}"
-    );
-    // It stays on goose's inline `--system` flag.
-    let v = json_stdout(&out);
-    let cmd = command_of(&v, 0);
-    let pos = cmd
-        .iter()
-        .position(|a| a == "--system")
-        .expect("inline flag");
-    assert!(
-        cmd[pos + 1].contains(marker),
-        "system stays inline: {cmd:?}"
-    );
+fn every_input_size_uses_registry_delivery_without_argv_leakage() {
+    for spec in oneharness_core::domain::harness::all() {
+        for (case, plen, slen) in [
+            ("small", 0, 0),
+            ("user40k", 40_000, 0),
+            ("system40k", 0, 40_000),
+            ("combined", 20_000, 20_000),
+            ("over128k", 140_000, 0),
+        ] {
+            for suffix in ["single-line", "multi\nline λ {{ literal"] {
+                let user = format!("USER-{case}-{suffix}{}", "u".repeat(plen));
+                let system = format!("SYSTEM-{case}-{suffix}{}", "s".repeat(slen));
+                let scratch = ScratchDir::new("delivery").unwrap();
+                let pf = scratch.path().join("user.txt");
+                let sf = scratch.path().join("system.txt");
+                let af = scratch.path().join("argv.txt");
+                std::fs::write(&pf, &user).unwrap();
+                std::fs::write(&sf, &system).unwrap();
+                let out = run(
+                    &[
+                        "run",
+                        "--harness",
+                        spec.id,
+                        "--prompt-file",
+                        pf.to_str().unwrap(),
+                        "--system-file",
+                        sf.to_str().unwrap(),
+                        "--bin",
+                        &bin_override(spec.id),
+                    ],
+                    &[
+                        ("MOCK_CAPTURE_DELIVERY", "1"),
+                        ("MOCK_ARGV_FILE", af.to_str().unwrap()),
+                    ],
+                );
+                assert!(out.status.success(), "{} {case}: {out:?}", spec.id);
+                let v = json_stdout(&out);
+                let capture: Value =
+                    serde_json::from_str(v["results"][0]["stdout"].as_str().unwrap()).unwrap();
+                let expected = if spec.large_input.system_rides_prompt {
+                    format!("{system}\n\n{user}")
+                } else {
+                    user.clone()
+                };
+                assert_eq!(capture["stdin"], expected, "{} {case}", spec.id);
+                if spec.large_input.system_file_flag.is_some() {
+                    assert_eq!(capture["system"], system);
+                    assert!(!Path::new(capture["system_path"].as_str().unwrap()).exists());
+                }
+                let argv = std::fs::read_to_string(&af).unwrap();
+                assert!(
+                    !argv.contains("USER-") && !argv.contains("SYSTEM-"),
+                    "{argv}"
+                );
+                std::fs::remove_file(&af).unwrap();
+                let dry = run(
+                    &[
+                        "run",
+                        "--harness",
+                        spec.id,
+                        "--prompt-file",
+                        pf.to_str().unwrap(),
+                        "--system-file",
+                        sf.to_str().unwrap(),
+                        "--bin",
+                        &bin_override(spec.id),
+                        "--print-command",
+                    ],
+                    &[
+                        ("MOCK_ARGV_FILE", af.to_str().unwrap()),
+                        ("TMPDIR", scratch.to_str().unwrap()),
+                        ("TMP", scratch.to_str().unwrap()),
+                        ("TEMP", scratch.to_str().unwrap()),
+                    ],
+                );
+                assert!(!af.exists(), "dry run launched a child for {}", spec.id);
+                assert!(std::fs::read_dir(scratch.path()).unwrap().all(|e| !e
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("oneharness-input-")));
+                assert!(dry.status.success(), "{dry:?}");
+                let dry = json_stdout(&dry);
+                let command = command_of(&dry, 0);
+                assert!(!command
+                    .iter()
+                    .any(|a| a.contains("USER-") || a.contains("SYSTEM-")));
+                if let Some(flag) = spec.large_input.system_file_flag {
+                    assert!(command
+                        .windows(2)
+                        .any(|w| w == [flag, "<private-system-prompt-file>"]));
+                }
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_single_line_40k_inputs_reach_native_and_real_cmd_children() {
+    for id in ALL_IDS {
+        for shim in [false, true] {
+            let dir = ScratchDir::new("delivery-cmd").unwrap();
+            let user = format!("USER-single-line-{}", "u".repeat(40_000));
+            let system = format!("SYSTEM-single-line-{}", "s".repeat(40_000));
+            let pf = dir.join("user.txt");
+            let sf = dir.join("system.txt");
+            std::fs::write(&pf, &user).unwrap();
+            std::fs::write(&sf, &system).unwrap();
+            let program = if shim {
+                let path = dir.join("harness.cmd");
+                std::fs::write(
+                    &path,
+                    format!("@echo off\r\n\"{}\" %*\r\n", mock_bin().display()),
+                )
+                .unwrap();
+                path
+            } else {
+                mock_bin()
+            };
+            let out = run(
+                &[
+                    "run",
+                    "--harness",
+                    id,
+                    "--prompt-file",
+                    pf.to_str().unwrap(),
+                    "--system-file",
+                    sf.to_str().unwrap(),
+                    "--bin",
+                    &format!("{id}={}", program.display()),
+                ],
+                &[("MOCK_CAPTURE_DELIVERY", "1")],
+            );
+            assert!(out.status.success(), "{id} shim={shim}: {out:?}");
+            let report = json_stdout(&out);
+            assert_eq!(report["results"][0]["status"], "ok");
+            let capture: Value =
+                serde_json::from_str(report["results"][0]["stdout"].as_str().unwrap()).unwrap();
+            assert_delivered(
+                oneharness_core::domain::harness::by_id(id).unwrap(),
+                &capture,
+                &user,
+                &system,
+            );
+        }
+    }
+}
+
+fn assert_private_prompt(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+    #[cfg(windows)]
+    {
+        // Read the actual DACL back, including inheritance protection and every
+        // ACE, rather than trusting the creation API or a read-only attribute.
+        let out = Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command",
+            "$a=Get-Acl -LiteralPath $env:OH_PRIVATE_FILE; $a.Sddl; if (!$a.AreAccessRulesProtected) {exit 2}; $rules=@($a.Access); if ($rules.Count -ne 1) {exit 3}; $sid=$rules[0].IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value; if ($sid -ne 'S-1-3-4' -and $sid -ne [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value) {exit 4}; if ($rules[0].AccessControlType -ne 'Allow') {exit 5}; if ([int]$rules[0].FileSystemRights -ne 0x13019f) {exit 6}"])
+            .env("OH_PRIVATE_FILE", path).output().unwrap();
+        assert!(out.status.success(), "DACL inspection: {out:?}");
+    }
 }
 
 #[test]
-fn small_prompt_keeps_the_inline_argv() {
-    // The common case is unperturbed: a prompt under the threshold stays a
-    // positional argv argument (no stdin, no --input-format), so `--print-command`
-    // and every existing assertion keep their byte-identical shape.
-    let out = run(
-        &[
+fn private_system_files_survive_until_children_finish_and_are_removed_on_exit() {
+    for finish in ["success", "timeout", "cancel"] {
+        #[cfg(not(unix))]
+        if finish == "cancel" {
+            continue;
+        }
+        let dir = ScratchDir::new("delivery-private").unwrap();
+        let log = dir.join("delivery.jsonl");
+        let gate = dir.join("release");
+        let system = "SYSTEM-private λ {{\nsecond line";
+        let redirect = mock_profile_redirect();
+        let mut cmd = Command::new(oneharness_bin());
+        cmd.env("ONEHARNESS_NO_CONFIG", "1")
+            .env("MOCK_DELIVERY_FILE", &log)
+            .env("MOCK_OUTPUT_GATE", &gate)
+            .args([
+                "run",
+                "--harness",
+                "claude-code",
+                "--prompt",
+                "USER-private",
+                "--system",
+                system,
+                "--bin",
+                &bin_override("claude-code"),
+                "--compact",
+                "--env",
+                &redirect,
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if finish == "timeout" {
+            cmd.args(["--timeout", if cfg!(windows) { "10" } else { "2" }]);
+        }
+        let child = cmd.spawn().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !delivery_recorded(&log) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let records = read_delivery(&log);
+        let path = Path::new(records[0]["system_path"].as_str().unwrap());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), system);
+        assert_private_prompt(path);
+        match finish {
+            "success" => std::fs::write(&gate, "release").unwrap(),
+            #[cfg(unix)]
+            "cancel" => {
+                // SAFETY: this is the PID returned by the child we just started.
+                assert_eq!(
+                    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) },
+                    0
+                );
+            }
+            _ => {}
+        }
+        let out = child.wait_with_output().unwrap();
+        let report = json_stdout(&out);
+        assert_eq!(
+            report["results"][0]["status"],
+            match finish {
+                "timeout" => "timeout",
+                "cancel" => "cancelled",
+                _ => "ok",
+            }
+        );
+        assert!(!path.exists(), "{finish}: {}", path.display());
+    }
+}
+
+#[test]
+fn private_system_files_are_cleaned_after_spawn_failure_and_post_creation_error() {
+    for early in [false, true] {
+        let dir = ScratchDir::new("delivery-error").unwrap();
+        let (_bin_dir, bad_bin) = unspawnable_bin("claude-code");
+        let good_bin = bin_override("claude-code");
+        let mut cmd = Command::new(oneharness_bin());
+        cmd.env("ONEHARNESS_NO_CONFIG", "1")
+            .env("TMPDIR", dir.path())
+            .env("TMP", dir.path())
+            .env("TEMP", dir.path())
+            .args([
+                "run",
+                "--harness",
+                "claude-code",
+                "--prompt",
+                "USER-error",
+                "--system",
+                "SYSTEM-error",
+                "--bin",
+                if early { &good_bin } else { &bad_bin },
+                "--compact",
+            ]);
+        if early {
+            cmd.args(["--timeout", "18446744073709551615"]);
+        }
+        let out = cmd.output().unwrap();
+        assert!(!out.status.success(), "{out:?}");
+        if early {
+            assert_eq!(out.status.code(), Some(2));
+        } else {
+            assert_eq!(json_stdout(&out)["results"][0]["status"], "spawn-error");
+        }
+        assert!(std::fs::read_dir(dir.path()).unwrap().all(|e| !e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("oneharness-input-")));
+    }
+}
+
+#[test]
+fn concurrent_private_prompt_files_do_not_collide_or_overwrite_existing_entries() {
+    let dir = ScratchDir::new("delivery-concurrent").unwrap();
+    let sentinel = dir.join("oneharness-input-claude-code-existing.txt");
+    std::fs::write(&sentinel, "untouched").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(
+        &sentinel,
+        dir.join("oneharness-input-claude-code-symlink.txt"),
+    )
+    .unwrap();
+    let gate = dir.join("release");
+    let mut children = Vec::new();
+    let mut preexisting = Vec::new();
+    for index in 0..4 {
+        let log = dir.join(format!("child-{index}.jsonl"));
+        let mut child = Command::new(oneharness_bin())
+            .env("ONEHARNESS_NO_CONFIG", "1")
+            .env("TMPDIR", dir.path())
+            .env("TMP", dir.path())
+            .env("TEMP", dir.path())
+            .env("MOCK_DELIVERY_FILE", &log)
+            .env("MOCK_OUTPUT_GATE", &gate)
+            .args([
+                "run",
+                "--harness",
+                "claude-code",
+                "--prompt-file",
+                "-",
+                "--system",
+                "SYSTEM concurrent",
+                "--bin",
+                &bin_override("claude-code"),
+                "--compact",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        // Stdin keeps planning blocked while we seed the old predictable name
+        // for THIS CLI PID. Exclusive random creation must leave it untouched.
+        let old_path = dir.join(format!("oneharness-input-claude-code-{}-0.txt", child.id()));
+        #[cfg(unix)]
+        if index % 2 == 0 {
+            std::os::unix::fs::symlink(&sentinel, &old_path).unwrap();
+        } else {
+            std::fs::write(&old_path, "untouched").unwrap();
+        }
+        #[cfg(windows)]
+        std::fs::write(&old_path, "untouched").unwrap();
+        preexisting.push(old_path);
+        std::io::Write::write_all(&mut child.stdin.take().unwrap(), b"USER concurrent").unwrap();
+        children.push((child, log));
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while children.iter().any(|(_, log)| !delivery_recorded(log))
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let mut paths = std::collections::BTreeSet::new();
+    let mut random_tails = std::collections::BTreeSet::new();
+    for (_, log) in &children {
+        let record = read_delivery(log);
+        let path = PathBuf::from(record[0]["system_path"].as_str().unwrap());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "SYSTEM concurrent");
+        assert_private_prompt(&path);
+        let name = path.file_name().unwrap().to_str().unwrap();
+        let uuid = name
+            .strip_prefix("oneharness-input-claude-code-")
+            .unwrap()
+            .strip_suffix("-0.txt")
+            .unwrap();
+        // UUIDv7 includes OS-random bits beyond its timestamp/counter. Inspect
+        // the low word, rather than accepting uniqueness from a PID/counter.
+        assert_eq!(uuid.len(), 36);
+        assert_eq!(&uuid[14..15], "7");
+        random_tails.insert(u32::from_str_radix(&uuid[28..], 16).unwrap());
+        assert!(paths.insert(path));
+    }
+    assert_eq!(random_tails.len(), children.len());
+    let tails: Vec<_> = random_tails.into_iter().collect();
+    assert!(tails.windows(2).all(|pair| pair[1] - pair[0] > 4));
+    std::fs::write(&gate, "release").unwrap();
+    for (child, _) in children {
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success(), "{out:?}");
+    }
+    assert!(paths.iter().all(|p| !p.exists()));
+    for path in preexisting {
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "untouched");
+    }
+    assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "untouched");
+    #[cfg(unix)]
+    assert!(
+        std::fs::symlink_metadata(dir.join("oneharness-input-claude-code-symlink.txt"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn an_interrupted_partial_system_write_removes_its_sensitive_file() {
+    use std::os::unix::process::CommandExt;
+    let dir = ScratchDir::new("delivery-write-error").unwrap();
+    let mut cmd = Command::new(oneharness_bin());
+    cmd.env("ONEHARNESS_NO_CONFIG", "1")
+        // RLIMIT_FSIZE also truncates this CLI's own LLVM profile on exit.
+        // Keep that deliberately damaged artifact out of the coverage merge;
+        // the scratch guard removes it with the partial-write fixture.
+        .env("LLVM_PROFILE_FILE", dir.join("limited-cli.profraw"))
+        .env("TMPDIR", dir.path())
+        .args([
             "run",
             "--harness",
             "claude-code",
             "--prompt",
-            "just a small prompt",
+            "USER write error",
+            "--system",
+            &"s".repeat(4096),
             "--bin",
             &bin_override("claude-code"),
             "--compact",
-        ],
-        &[("MOCK_ECHO_STDIN", "1")],
-    );
-    assert!(out.status.success(), "{out:?}");
-    let v = json_stdout(&out);
-    let cmd = command_of(&v, 0);
+        ]);
+    // SAFETY: this runs only in the child we spawn, calls only async-signal-safe
+    // libc operations and changes no host process's signal or resource state.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::signal(libc::SIGXFSZ, libc::SIG_IGN);
+            let limit = libc::rlimit {
+                rlim_cur: 16,
+                rlim_max: 16,
+            };
+            if libc::setrlimit(libc::RLIMIT_FSIZE, &limit) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
+    let out = cmd.output().unwrap();
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
     assert!(
-        cmd.iter().any(|a| a == "just a small prompt"),
-        "small prompt stays inline: {cmd:?}"
+        String::from_utf8_lossy(&out.stderr).contains("oneharness-input-"),
+        "{out:?}"
     );
+    let remaining: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .filter(|name| name.to_string_lossy().starts_with("oneharness-input-"))
+        .collect();
     assert!(
-        !cmd.iter().any(|a| a == "--input-format"),
-        "no stdin mode for a small prompt: {cmd:?}"
+        remaining.is_empty(),
+        "partially written files leaked: {remaining:?}"
     );
-    // Nothing was piped, so the mock's echo produced empty stdout.
-    assert_eq!(v["results"][0]["stdout"].as_str().unwrap(), "");
 }
 
-// (The large-prompt warning path — a harness with no off-argv route — is now
-// covered by a unit test in src/commands/run.rs against a synthetic spec, since
-// every real harness is wired for off-argv delivery. See
-// `plan_large_input_warns_and_stays_inline_when_unwired`.)
+fn json_has_exact_text(value: &Value, expected: &str) -> bool {
+    match value {
+        Value::String(s) => s == expected,
+        Value::Array(a) => a.iter().any(|v| json_has_exact_text(v, expected)),
+        Value::Object(o) => o.values().any(|v| json_has_exact_text(v, expected)),
+        _ => false,
+    }
+}
+
+#[test]
+fn control_delivery_uses_real_protocol_turns_and_dry_runs_do_not_launch() {
+    use oneharness_core::domain::control::ControlShape;
+    let user = "USER control λ {{\nsecond line";
+    let system = "SYSTEM control λ {{\nsecond line";
+    for spec in oneharness_core::domain::harness::all() {
+        let store = control_store_dir("delivery-ctl");
+        let log = store.join("wire.jsonl");
+        let argv = store.join("argv.txt");
+        let native = store.join("native.json");
+        let base = [
+            "run",
+            "--harness",
+            spec.id,
+            "--prompt",
+            user,
+            "--system",
+            system,
+            "--control",
+            "--session",
+            "delivery",
+            "--session-dir",
+            store.to_str().unwrap(),
+            "--cwd",
+            store.to_str().unwrap(),
+            "--timeout",
+            "15",
+            "--bin",
+            &bin_override(spec.id),
+        ];
+        let mut env = vec![
+            ("MOCK_ARGV_FILE", argv.to_str().unwrap()),
+            ("XDG_STATE_HOME", store.to_str().unwrap()),
+        ];
+        let env_key = match spec.control {
+            Some(ControlShape::ClaudeControlRequest) => "MOCK_TURN_LOG",
+            Some(ControlShape::CodexAppServer) => "MOCK_CODEX_APP_SERVER_LOG",
+            Some(ControlShape::AcpCancel) => "MOCK_ACP_LOG",
+            Some(ControlShape::OpencodeHttp) => "MOCK_HTTP_CONTROL_LOG",
+            Some(ControlShape::CrushHttp) => "MOCK_CRUSH_HTTP_LOG",
+            None => "MOCK_TURN_LOG",
+        };
+        env.push((env_key, log.to_str().unwrap()));
+        env.extend([
+            ("MOCK_CODEX_COMPLETE_TURN", "1"),
+            ("MOCK_ACP_COMPLETE_TURN", "1"),
+            ("MOCK_HTTP_CONTROL_FAULT", "slow-turn"),
+        ]);
+        if spec.large_input.system_file_flag.is_some() {
+            env.push(("MOCK_SYSTEM_FILE_RECORD", native.to_str().unwrap()));
+        }
+        let mut dry_args = base.to_vec();
+        dry_args.push("--print-command");
+        let dry = run_per_dispatch(&dry_args, &env);
+        if spec.control.is_none() {
+            assert_eq!(dry.status.code(), Some(2));
+        } else {
+            assert!(dry.status.success(), "{}: {dry:?}", spec.id);
+            let command = command_of(&json_stdout(&dry), 0);
+            assert!(!command
+                .iter()
+                .any(|a| a.contains(user) || a.contains(system)));
+            if let Some(server) = spec.server {
+                assert!(command.iter().any(|a| a == server.launch[0]));
+            }
+        }
+        assert!(
+            !argv.exists() && !log.exists() && !native.exists(),
+            "dry run launched a child"
+        );
+        let out = run_per_dispatch(&base, &env);
+        if spec.control.is_none() || !cfg!(unix) {
+            assert_eq!(out.status.code(), Some(2), "{}: {out:?}", spec.id);
+            assert!(!log.exists());
+            continue;
+        }
+        assert!(out.status.success(), "{}: {out:?}", spec.id);
+        let report = json_stdout(&out);
+        assert_eq!(
+            report["results"][0]["status"], "ok",
+            "{}: {report}",
+            spec.id
+        );
+        let received = std::fs::read_to_string(&argv).unwrap();
+        assert!(!received.contains("USER control") && !received.contains("SYSTEM control"));
+        let expected = if spec.large_input.system_rides_prompt {
+            format!("{system}\n\n{user}")
+        } else {
+            user.to_string()
+        };
+        let wire = std::fs::read_to_string(&log).unwrap();
+        let frames: Vec<Value> = wire
+            .lines()
+            .filter_map(|line| {
+                serde_json::from_str(line).ok().or_else(|| {
+                    line.find("HTTP/1.1 ")
+                        .and_then(|at| serde_json::from_str(&line[at + 9..]).ok())
+                })
+            })
+            .collect();
+        assert!(
+            frames.iter().any(|v| json_has_exact_text(v, &expected)),
+            "{}: {wire}",
+            spec.id
+        );
+        if spec.large_input.system_file_flag.is_some() {
+            let saved: Value =
+                serde_json::from_str(&std::fs::read_to_string(&native).unwrap()).unwrap();
+            assert_eq!(saved["contents"], system);
+            assert!(!Path::new(saved["path"].as_str().unwrap()).exists());
+        }
+        if spec.control == Some(ControlShape::AcpCancel) {
+            assert!(
+                frames
+                    .iter()
+                    .any(|v| v["id"] == 9001 && v["result"].is_object()),
+                "permission response was displaced: {wire}"
+            );
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn opencode_control_finishes_on_terminal_step_without_session_idle() {
+    let store = control_store_dir("terminal-step");
+    let log = store.join("wire.jsonl");
+    let user = format!("USER terminal λ {{{{\n{}", "x".repeat(140_000));
+    let system = "SYSTEM terminal λ {{";
+    let prompt = store.join("prompt.txt");
+    std::fs::write(&prompt, &user).unwrap();
+    let out = run_per_dispatch(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--prompt-file",
+            prompt.to_str().unwrap(),
+            "--system",
+            system,
+            "--control",
+            "--session",
+            "terminal",
+            "--session-dir",
+            store.to_str().unwrap(),
+            "--cwd",
+            store.to_str().unwrap(),
+            "--timeout",
+            "5",
+            "--bin",
+            &bin_override("opencode"),
+        ],
+        &[
+            ("MOCK_HTTP_CONTROL_LOG", log.to_str().unwrap()),
+            ("MOCK_HTTP_CONTROL_FAULT", "terminal-step"),
+            ("XDG_STATE_HOME", store.to_str().unwrap()),
+        ],
+    );
+    let report = json_stdout(&out);
+    let result = &report["results"][0];
+    assert_eq!(result["status"], "ok", "{}", result["error"]);
+    assert!(out.status.success());
+    assert_eq!(result["text"], "final controlled answer");
+    let transcript = result["stdout"].as_str().unwrap();
+    assert!(transcript.contains(r#""finish":"tool-calls""#));
+    assert!(transcript.contains(r#""finish":"stop""#));
+    let wire = std::fs::read_to_string(log).unwrap();
+    let expected = format!("{system}\n\n{user}");
+    assert!(
+        wire.lines().any(|line| line
+            .find("HTTP/1.1 ")
+            .and_then(|at| serde_json::from_str::<Value>(&line[at + 9..]).ok())
+            .is_some_and(|value| json_has_exact_text(&value, &expected))),
+        "{wire}"
+    );
+    let command = command_of(&report, 0);
+    assert!(!command
+        .iter()
+        .any(|arg| arg.contains(system) || arg.contains(&user)));
+}
+
+#[test]
+fn unsupported_control_batch_and_schema_combinations_refuse_before_delivery() {
+    let dir = ScratchDir::new("delivery-refused").unwrap();
+    let sf = dir.join("schema.json");
+    std::fs::write(&sf, r#"{"type":"object"}"#).unwrap();
+    let log = dir.join("delivery.jsonl");
+    for spec in oneharness_core::domain::harness::all() {
+        for extra in [
+            vec!["--schema", sf.to_str().unwrap()],
+            vec!["--prompt", "USER second"],
+        ] {
+            let bin = bin_override(spec.id);
+            let mut args = vec![
+                "run",
+                "--harness",
+                spec.id,
+                "--prompt",
+                "USER refused",
+                "--system",
+                "SYSTEM refused",
+                "--control",
+                "--session",
+                "refused",
+                "--session-dir",
+                dir.to_str().unwrap(),
+                "--bin",
+                &bin,
+            ];
+            args.extend(extra);
+            let out = run(&args, &[("MOCK_DELIVERY_FILE", log.to_str().unwrap())]);
+            assert_eq!(out.status.code(), Some(2), "{}: {out:?}", spec.id);
+            assert!(!log.exists());
+        }
+    }
+}
+
+fn delivery_recorded(path: &Path) -> bool {
+    std::fs::read_to_string(path).is_ok_and(|text| {
+        !text.is_empty()
+            && text.ends_with('\n')
+            && text
+                .lines()
+                .all(|line| serde_json::from_str::<Value>(line).is_ok())
+    })
+}
+
+fn read_delivery(path: &Path) -> Vec<Value> {
+    std::fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+fn assert_delivered(
+    spec: &oneharness_core::domain::harness::HarnessSpec,
+    record: &Value,
+    user: &str,
+    system: &str,
+) {
+    let expected = if spec.large_input.system_rides_prompt {
+        format!("{system}\n\n{user}")
+    } else {
+        user.to_string()
+    };
+    assert_eq!(record["stdin"], expected, "{}", spec.id);
+    if spec.large_input.system_file_flag.is_some() {
+        assert_eq!(record["system"], system);
+        assert!(!Path::new(record["system_path"].as_str().unwrap()).exists());
+    }
+    assert!(
+        !record["argv"].as_array().unwrap().iter().any(|a| {
+            let a = a.as_str().unwrap();
+            a.contains(user) || a.contains(system)
+        }),
+        "{}: {}",
+        spec.id,
+        record["argv"]
+    );
+}
+
+#[test]
+fn resumed_and_batch_turns_keep_exact_off_argv_delivery() {
+    let system = "SYSTEM shared λ {{ prefix\nsecond line";
+    for spec in oneharness_core::domain::harness::all() {
+        let scratch = ScratchDir::new("delivery-modes").unwrap();
+        let log = scratch.join("delivery.jsonl");
+        let args = [
+            "run",
+            "--harness",
+            spec.id,
+            "--prompt",
+            "USER resumed {{ λ",
+            "--system",
+            system,
+            "--resume",
+            "requested-session",
+            "--bin",
+            &bin_override(spec.id),
+        ];
+        let out = run(&args, &[("MOCK_DELIVERY_FILE", log.to_str().unwrap())]);
+        if spec.supports_resume {
+            assert!(out.status.success(), "{}: {out:?}", spec.id);
+            let records = read_delivery(&log);
+            assert_eq!(records.len(), 1);
+            assert_delivered(spec, &records[0], "USER resumed {{ λ", system);
+            assert!(records[0]["argv"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|a| a == "requested-session"));
+        } else {
+            assert_eq!(out.status.code(), Some(2), "{}: {out:?}", spec.id);
+            assert!(!log.exists());
+        }
+        let _ = std::fs::remove_file(&log);
+        let out = run(
+            &[
+                "run",
+                "--harness",
+                spec.id,
+                "--prompt",
+                "USER batch-one",
+                "--prompt",
+                "USER batch-two",
+                "--system",
+                system,
+                "--batch-strategy",
+                "speed",
+                "--bin",
+                &bin_override(spec.id),
+            ],
+            &[("MOCK_DELIVERY_FILE", log.to_str().unwrap())],
+        );
+        assert!(out.status.success(), "{}: {out:?}", spec.id);
+        let mut records = read_delivery(&log);
+        records.sort_by_key(|r| r["stdin"].as_str().unwrap().to_string());
+        assert_eq!(records.len(), 2);
+        for (record, user) in records.iter().zip(["USER batch-one", "USER batch-two"]) {
+            assert_delivered(spec, record, user, system);
+            let argv = record["argv"].as_array().unwrap();
+            assert!(
+                argv.iter().all(|arg| {
+                    let arg = arg.as_str().unwrap();
+                    !matches!(
+                        arg,
+                        "--resume" | "--session" | "--session-id" | "--continue"
+                    ) && !arg.contains("requested-session")
+                }),
+                "{} batch must start independent turns: {argv:?}",
+                spec.id
+            );
+        }
+    }
+}
+
+#[test]
+fn structured_retries_keep_system_and_exact_feedback_off_argv() {
+    use oneharness_core::domain::structured::{self, Schema};
+    let raw_schema =
+        r#"{"type":"object","required":["ok"],"properties":{"ok":{"type":"boolean"}}}"#;
+    let schema = Schema::compile(raw_schema).unwrap();
+    let errors = schema.validate(&serde_json::json!({})).unwrap_err();
+    let user = "USER retry {{ λ";
+    let system = "SYSTEM retry\nline";
+    for spec in oneharness_core::domain::harness::all() {
+        let dir = ScratchDir::new("delivery-retry").unwrap();
+        let sf = dir.join("schema.json");
+        std::fs::write(&sf, raw_schema).unwrap();
+        let log = dir.join("delivery.jsonl");
+        let counter = dir.join("attempt");
+        let answer = |value: Value| {
+            let text = value.to_string();
+            match spec.id {
+                "claude-code" => serde_json::json!({"type":"result","result": text,"structured_output":value}).to_string(),
+                "codex" => serde_json::json!({"type":"item.completed","item":{"type":"agent_message","text":text}}).to_string(),
+                "opencode" => serde_json::json!({"type":"text","part":{"type":"text","text":text}}).to_string(),
+                "cursor" => serde_json::json!({"type":"result","result":text}).to_string(),
+                _ => text,
+            }
+        };
+        let first = answer(serde_json::json!({}));
+        let second = answer(serde_json::json!({"ok":true}));
+        let out = run(
+            &[
+                "run",
+                "--harness",
+                spec.id,
+                "--prompt",
+                user,
+                "--system",
+                system,
+                "--schema",
+                sf.to_str().unwrap(),
+                "--schema-max-retries",
+                "1",
+                "--bin",
+                &bin_override(spec.id),
+            ],
+            &[
+                ("MOCK_DELIVERY_FILE", log.to_str().unwrap()),
+                ("MOCK_ATTEMPT_FILE", counter.to_str().unwrap()),
+                ("MOCK_STDOUT_1", &first),
+                ("MOCK_STDOUT_2", &second),
+            ],
+        );
+        assert!(out.status.success(), "{}: {out:?}", spec.id);
+        let report = json_stdout(&out);
+        assert_eq!(
+            report["results"][0]["schema_valid"], true,
+            "{}: {report}",
+            spec.id
+        );
+        assert_eq!(report["results"][0]["schema_attempts"], 2);
+        let records = read_delivery(&log);
+        assert_eq!(records.len(), 2);
+        let mut prompt = user.to_string();
+        if spec.native_schema.is_none() {
+            prompt.push(' ');
+            prompt.push_str(&structured::prompt_instruction(schema.as_text()));
+        }
+        assert_delivered(spec, &records[0], &prompt, system);
+        prompt.push(' ');
+        prompt.push_str(&structured::retry_instruction(
+            schema.as_text(),
+            "{}",
+            &errors,
+        ));
+        assert_delivered(spec, &records[1], &prompt, system);
+        if spec.large_input.system_file_flag.is_some() {
+            assert_eq!(records[0]["system_path"], records[1]["system_path"]);
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Fallback run mode (`--run-mode fallback`): drive the selected harnesses in
@@ -29920,10 +30743,10 @@ fn interrupt_resolves_a_variant_qualified_record_to_its_harness() {
 }
 
 #[test]
-fn a_run_without_control_opens_no_socket_and_keeps_its_argv() {
+fn a_run_without_control_opens_no_socket_and_delivers_its_prompt_on_stdin() {
     let mock_profile = mock_profile_redirect();
-    // The non-breaking guarantee: absent `--control`, nothing changes — no
-    // socket directory, and the prompt still rides the argv as a positional.
+    // Without `--control`, no socket directory is opened; ordinary turns
+    // still deliver the prompt outside argv.
     let store = control_store_dir("absent");
     let store_arg = store.display().to_string();
     let cwd = control_store_dir("absent-cwd");
@@ -29965,8 +30788,8 @@ fn a_run_without_control_opens_no_socket_and_keeps_its_argv() {
     );
     let argv = std::fs::read_to_string(&argv_file).unwrap();
     assert!(
-        argv.lines().any(|l| l == "ordinary-prompt"),
-        "the prompt must still ride the argv:\n{argv}"
+        !argv.lines().any(|l| l == "ordinary-prompt"),
+        "the prompt must leave the argv:\n{argv}"
     );
     assert!(
         !argv.lines().any(|l| l == "stream-json"),
@@ -37358,13 +38181,13 @@ fn run_text_view_shows_each_command_under_print_command() {
     assert!(text.contains("mode: default · dry run\n"), "{text}");
     assert!(
         text.contains(
-            "claude-code: planned · exit null · not run\n  command: claude -p 'say hi there' --permission-mode dontAsk --output-format json\n"
+            "claude-code: planned · exit null · not run\n  command: claude -p --input-format text --permission-mode dontAsk --output-format json\n"
         ),
         "{text}"
     );
     assert!(
         text.contains(
-            "codex: planned · exit null · not run\n  command: codex exec -c features.plugins=false -c features.apps=false -c analytics.enabled=false -c 'model_catalog_json=\"<shared model catalog>\"' --json 'say hi there'\n"
+            "codex: planned · exit null · not run\n  command: codex exec -c features.plugins=false -c features.apps=false -c analytics.enabled=false -c 'model_catalog_json=\"<shared model catalog>\"' --json -\n"
         ),
         "{text}"
     );
@@ -42562,6 +43385,7 @@ fn buffered_and_streamed_runs_deliver_the_whole_prompt_and_system_to_the_harness
     let record = ScratchDir::new("delivered-input").unwrap();
     let input_file = record.join("input.json");
     let input_arg = input_file.display().to_string();
+    let system_record = record.join("system.json");
     let delivered = |argv: &[String], stdin: &str, text: &str| {
         argv.iter().any(|arg| arg == text) || stdin == text
     };
@@ -42584,7 +43408,10 @@ fn buffered_and_streamed_runs_deliver_the_whole_prompt_and_system_to_the_harness
                 stream,
                 "--compact",
             ],
-            &[("MOCK_INPUT_FILE", &input_arg)],
+            &[
+                ("MOCK_INPUT_FILE", &input_arg),
+                ("MOCK_SYSTEM_FILE_RECORD", system_record.to_str().unwrap()),
+            ],
         );
         assert!(output.status.success(), "{stream}: {output:?}");
         let (argv, stdin) = recorded_input(&input_file);
@@ -42593,7 +43420,9 @@ fn buffered_and_streamed_runs_deliver_the_whole_prompt_and_system_to_the_harness
             "{stream}: prompt not whole in {argv:?} / {stdin:?}"
         );
         assert!(
-            delivered(&argv, &stdin, system),
+            serde_json::from_str::<Value>(&std::fs::read_to_string(&system_record).unwrap())
+                .unwrap()["contents"]
+                == system,
             "{stream}: system not whole in {argv:?} / {stdin:?}"
         );
     }

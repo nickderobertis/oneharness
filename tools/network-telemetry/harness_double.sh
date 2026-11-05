@@ -43,9 +43,12 @@ fi
 
 # The prompt: the argv after the subcommand, or stdin for `exec -`.
 prompt="$*"
+if [[ " $* " == *" --input-format text "* ]]; then
+  prompt="$(cat)" || refuse "could not read the turn from stdin; inspect the CLI input pipe and retry the recorder test"
+fi
 for arg in "$@"; do
   if [ "$arg" = - ]; then
-    prompt="$(cat)"
+    prompt="$(cat)" || refuse "could not read the turn from stdin; inspect the CLI input pipe and retry the recorder test"
   fi
 done
 marker="$(printf '%s' "$prompt" | grep -oE 'ONEHARNESS-LIVE-[0-9]+|OH_VARIANT_[0-9]+_[0-9]+_[a-z]+' | head -1 || true)"
@@ -106,13 +109,13 @@ if [ -z "${OH_TEST_PLUGINS_EVIDENCE:-}" ]; then
 fi
 # The mock's own plugins record of this launch, as the per-process evidence
 # e2e-variants.sh's opted-in phase reads in place of Codex's log: its text is
-# this launch's argv, which carries the prompt's marker.
+# this launch's argv plus the prompt received on stdin.
 record="$(mktemp)" || refuse "cannot create a scratch file for the mock's plugins record; check TMPDIR is writable"
 trap 'rm -f "$record" || { echo "harness_double: could not remove its scratch file $record; delete it by hand" >&2; exit 1; }' EXIT
 rc=0
 MOCK_CODEX_PLUGINS_LOG="$record" "$mock" "$@" || rc=$?
 if [ -s "$record" ]; then
-  printf '%s\0' "$@" | jq -Rsc --slurpfile mock "$record" --arg pid "$$" \
+  printf '%s\0' "$@" "$prompt" | jq -Rsc --slurpfile mock "$record" --arg pid "$$" \
     '{process: $pid, text: (split("\u0000")[:-1] | join(" ")), catalog_request: $mock[0].catalog_fetched,
       plugin_load_ran: ($mock[0].loaded | length > 0)}' >>"$OH_TEST_PLUGINS_EVIDENCE" ||
     refuse "cannot turn the mock's plugins record $record into evidence in $OH_TEST_PLUGINS_EVIDENCE (jq's error is above)"

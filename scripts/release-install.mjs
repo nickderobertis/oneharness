@@ -80,7 +80,8 @@ const prove = (bin) => {
     command.results.length !== 1 ||
     command.results[0]?.status !== "planned" ||
     !Array.isArray(command.results[0]?.command) ||
-    !command.results[0].command.includes("hello")
+    command.results[0].command.includes("hello") ||
+    command.results[0].command.at(-1) !== "-"
   )
     throw Error(
       `Missing planned command contract: ${JSON.stringify(command)}. Next: run this staged CLI with --format json and inspect its report.`,

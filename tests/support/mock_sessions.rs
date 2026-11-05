@@ -3,7 +3,8 @@
 //!
 //!   MOCK_CLAUDE_SESSIONS  act like Claude Code keeping transcripts under
 //!                   `$CLAUDE_CONFIG_DIR/projects/oneharness-mock/<id>.jsonl`:
-//!                   `-p <prompt>` starts one, `--resume <id>` appends to it,
+//!                   `-p --input-format text` reads a turn from stdin,
+//!                   `--resume <id>` appends to it,
 //!                   and `-p /compact --resume <id> --fork-session` writes a
 //!                   compacted FORK and replays the captured compaction
 //!                   (`tests/fixtures/claude-compact-fork.jsonl`) under the
@@ -13,7 +14,7 @@
 //!   MOCK_CODEX_SESSIONS   the same for codex under
 //!                   `$CODEX_HOME` (else `$HOME/.codex`)
 //!                   `/sessions/2026/11/02/rollout-…-<id>.jsonl`:
-//!                   `exec [resume <id>] … <prompt>` appends the turn and the
+//!                   `exec [resume <id>] … -` reads stdin, appends the turn and the
 //!                   captured per-call `token_count` events
 //!                   (`tests/fixtures/codex-rollout-token-counts.jsonl`), and a
 //!                   stdio `app-server` answers `thread/fork` and
@@ -50,7 +51,7 @@
 //!                   writes its own pid to this path, and then holds until it is
 //!                   killed — the compaction a caller cancels mid-rewrite.
 
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 
 const CLAUDE_COMPACT: &str = include_str!("../fixtures/claude-compact-fork.jsonl");
@@ -73,6 +74,14 @@ pub fn run_if_requested(argv: &[String]) {
             _ => {}
         }
     }
+}
+
+fn stdin_prompt() -> String {
+    let mut prompt = String::new();
+    std::io::stdin()
+        .read_to_string(&mut prompt)
+        .expect("mock session prompt on stdin");
+    prompt
 }
 
 fn fresh_id() -> String {
@@ -166,7 +175,11 @@ fn claude_context(path: &Path) -> Vec<String> {
 }
 
 fn claude(argv: &[String]) -> ! {
-    let prompt = value_after(argv, "-p").unwrap_or_default().to_string();
+    let prompt = if value_after(argv, "--input-format") == Some("text") {
+        stdin_prompt()
+    } else {
+        value_after(argv, "-p").unwrap_or_default().to_string()
+    };
     let store = claude_store();
     let resumed = value_after(argv, "--resume").map(str::to_string);
     if prompt == "/compact" {
@@ -349,11 +362,14 @@ fn codex_exec(argv: &[String]) -> ! {
             "-c" | "--config" | "-m" | "--model" | "-s" | "--sandbox"
         ) {
             rest.next();
-        } else if !arg.starts_with('-') {
+        } else if arg == "-" || !arg.starts_with('-') {
             positionals.push(arg.clone());
         }
     }
-    let prompt = positionals.last().cloned().unwrap_or_default();
+    let prompt = match positionals.last().map(String::as_str) {
+        Some("-") => stdin_prompt(),
+        other => other.unwrap_or_default().to_string(),
+    };
     let resumed = resuming.then(|| positionals.first().cloned()).flatten();
     let thread = match &resumed {
         Some(id) => {

@@ -1391,6 +1391,7 @@ describe("OneHarness", () => {
 
 	test("continues a native session with the new user message", async () => {
 		const argvFile = resolve(await scratch("resume"), "argv");
+		const inputFile = `${argvFile}.input`;
 		const client = sdk();
 		const first = await client.run({
 			prompt: "first user message",
@@ -1410,6 +1411,7 @@ describe("OneHarness", () => {
 			mode: "bypass",
 			env: {
 				MOCK_ARGV_FILE: argvFile,
+				MOCK_INPUT_FILE: inputFile,
 				MOCK_STDOUT: '{"result":"continued"}',
 			},
 			bins: { "claude-code": mock },
@@ -1418,7 +1420,10 @@ describe("OneHarness", () => {
 		expect(continued.prompt).toBe("second user message");
 		const argv = (await readFile(argvFile, "utf8")).split("\n");
 		expect(argv).toContain("sdk-session-1");
-		expect(argv).toContain("second user message");
+		expect(argv).not.toContain("second user message");
+		expect(JSON.parse(await readFile(inputFile, "utf8")).stdin).toBe(
+			"second user message",
+		);
 	});
 
 	test("surfaces missing history and unsupported continuation selections", async () => {
@@ -1688,7 +1693,7 @@ describe("OneHarness", () => {
 			'model_catalog_json="<shared model catalog>"',
 			"--dangerously-bypass-approvals-and-sandbox",
 			"--json",
-			"empty system still suppresses --system-file",
+			"-",
 		]);
 	});
 

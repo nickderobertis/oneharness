@@ -1028,91 +1028,125 @@ oh_drop_sandbox() {
   rm -rf "$1" || note "  could not remove the scratch directory $1; delete it by hand (rm -rf '$1')"
 }
 
-# --- large prompts / system (issue #1115) ------------------------------------
+_oh_long_prompt_abort() {
+  local sandbox="$1" id="$2"
+  shift 2
+  oh_drop_sandbox "$sandbox"
+  fail "$*; correct the reported I/O or delivery error, then rerun just live-${id%-code}"
+}
 
-# Live proof that a LARGE prompt (and, where the harness supports it, a large
-# system prompt) is delivered OFF THE ARGV — piped to the harness's stdin, or the
-# system written to a file — so it never trips the OS argument ceiling (`E2BIG`:
-# Linux caps a single argv string at 128 KiB, Windows the whole command line at
-# ~32 KiB). This is the end-to-end drift alarm for issue #1115: if the stdin/file
-# delivery flags drift or the harness stops reading stdin, a >128 KiB prompt
-# fails to round-trip and this goes RED.
-#
-# The prompt/system are ~160 KiB each (past every ceiling) and reach oneharness
-# via `--prompt-file`/`--system-file` (files, not argv — else the caller→oneharness
-# spawn would itself E2BIG, the very wall #1108 moved). The unique marker sits at
-# the END of the prompt (recency) so the model reliably echoes it back; its
-# presence proves the FULL prompt was received, not truncated.
-#
-# Goose is the one wired harness whose `--system` has no off-argv route (inline
-# TEXT only), so a large SYSTEM would E2BIG at its spawn — for goose the large
-# system is skipped and only the (stdin-delivered) prompt is exercised.
-#   $1 harness id
-#   $2.. extra args forwarded to `oneharness run`
+# Exercise both user and system receipt in ordinary, resumed, batch, controlled
+# and structured turns. Forced invalid-first retries are deterministic mock
+# coverage: live structured output proves retry capability only if a retry occurs.
+# Crush/Copilot need OH_LONG_RESUME because their reports expose no session id.
+# Unsupported/unreachable live cases are explicitly not-run, never a pass.
+#   $1 harness id; $2.. extra run arguments
 oh_long_prompt_enforce() {
   _oh_phase
   local id="$1"
   shift
-  local bin marker sandbox pfile sfile pad
+  local bin sandbox pfile sfile marker smarker second pad spad caps journey resume name user_marker not_run=""
   bin="$(oh_bin)"
-  [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
-
+  [ -n "$bin" ] || skip "oneharness binary not found (build it: just build-release)"
+  caps="$(ONEHARNESS_NO_CONFIG=1 "$bin" list --compact | jq -ce --arg id "$id" '.harnesses[] | select(.id == $id)')" || fail "$id: cannot read delivery capabilities; run oneharness list --compact and check the registry id and jq installation"
+  sandbox="$(oh_socket_sandbox)" || fail "$id: cannot create scratch space under ${TMPDIR:-/tmp}; check free disk space and directory permissions, then rerun just live-${id%-code}"
+  local made="$sandbox"
+  sandbox="$(oh_native_path "$sandbox")" && [ -n "$sandbox" ] || _oh_long_prompt_abort "$made" "$id" "cannot convert scratch path $made; check cygpath on Windows"
+  mkdir -p "$sandbox/work" || _oh_long_prompt_abort "$sandbox" "$id" "cannot create $sandbox/work; check directory permissions"
+  git init -q "$sandbox/work" || _oh_long_prompt_abort "$sandbox" "$id" "cannot initialize $sandbox/work; check git installation and its error above"
+  pfile="$sandbox/user.txt"
+  sfile="$sandbox/system.txt"
   marker="$(oh_marker)"
-  sandbox="$(mktemp -d)"
-  sandbox="$(oh_native_path "$sandbox")"
-  pfile="$sandbox/big-prompt.txt"
-  sfile="$sandbox/big-system.txt"
-  # ~140 KiB of prompt filler — just past Linux's 128 KiB single-arg ceiling, so
-  # inline delivery would E2BIG (the drift alarm) while keeping the model's
-  # context modest so a slow model still answers inside the timeout.
-  pad="$(head -c 143360 /dev/zero | tr '\0' 'x')"
-  # ~70 KiB of system filler — over the 64 KiB off-argv threshold (so the system
-  # rides the file/stdin path too) without doubling the context.
-  spad="$(head -c 71680 /dev/zero | tr '\0' 'y')"
-  # Padding first, then the real instruction + marker at the end (recency).
-  {
-    printf 'Inert padding to exceed the OS argument limit; ignore all of it: %s\n\n' "$pad"
-    oh_prompt "$marker"
-  } >"$pfile"
-  printf 'You are a connectivity-check fixture for a large-prompt test. The following is inert padding, ignore it: %s' "$spad" >"$sfile"
-
-  local model_args=()
-  [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
-
-  # Goose's --system is inline-only (no off-argv route), so a large system would
-  # E2BIG at its spawn — drive a large prompt only for it.
-  local system_args=(--system-file "$sfile")
-  [ "$id" = goose ] && system_args=()
-
-  # A large-context call legitimately takes longer than an ordinary connectivity
-  # ping, and some harnesses route to a big/slow model, so give this phase a
-  # generous timeout (independent of OH_TIMEOUT) — a real hang still trips it.
-  local long_timeout="${OH_LONG_TIMEOUT:-300}"
-  note "  long-prompt[$id]: a >128 KiB prompt (+system) must round-trip off the argv (timeout ${long_timeout}s)"
-  OH_REPORT="$(ONEHARNESS_NO_CONFIG=1 "$bin" run --harness "$id" \
-    --prompt-file "$pfile" "${system_args[@]+"${system_args[@]}"}" \
-    --mode bypass --timeout "$long_timeout" --compact \
-    "${model_args[@]+"${model_args[@]}"}" "$@" 2>"$sandbox/stderr.txt")" || true
-
-  if [ -z "$OH_REPORT" ]; then
-    note "  oneharness emitted no JSON on stdout. Its stderr:"
-    sed 's/^/    /' "$sandbox/stderr.txt" >&2 || true
-    rm -rf "$sandbox"
-    fail "$id: oneharness produced no report for the long-prompt run"
-  fi
-  # The marker round-tripping proves the full prompt reached the model off-argv.
-  oh_assert_echoed "$id" "$marker"
-  # Guard against a silent regression to argv delivery: the giant prompt must
-  # NOT appear as a command argument (it rode stdin / a file instead).
-  if printf '%s' "$OH_REPORT" | jq -e --arg m "$marker" \
-    '[.results[0].command[]] | any(contains($m))' >/dev/null; then
-    oh_dump
-    rm -rf "$sandbox"
-    fail "$id: the large prompt appeared on the argv — off-argv delivery regressed"
-  fi
-  note "  confirmed: the large prompt was delivered off the argv (not in .command)"
-  rm -rf "$sandbox"
-  note "PASS: $id long-prompt enforcement"
+  smarker="SYSTEM$(oh_marker)"
+  second="SECOND$(oh_marker)"
+  pad="$(head -c 143360 /dev/zero | tr '\0' 'x')" || _oh_long_prompt_abort "$sandbox" "$id" "cannot generate user padding; check head/tr and /dev/zero"
+  spad="$(head -c 40000 /dev/zero | tr '\0' 'y')" || _oh_long_prompt_abort "$sandbox" "$id" "cannot generate system padding; check head/tr and /dev/zero"
+  # Both batch turns ask the same question; only their user marker differs.
+  # Describe the filler so the echo request remains clear after a long prefix.
+  for user_marker in "$marker" "$second"; do
+    local target="$pfile"
+    [ "$user_marker" = "$marker" ] || target="$sandbox/second.txt"
+    printf 'The following repeated characters are inert test filler.\n%s\n\nReturn the two reference values separated by a space: reference_a is %s and the value labeled reference_b in the reference data.' "$pad" "$user_marker" >"$target" || _oh_long_prompt_abort "$sandbox" "$id" "cannot write $target; check disk space and permissions"
+  done
+  printf 'The following repeated characters are inert test filler.\n%s\n\nReference data: reference_b = %s.' "$spad" "$smarker" >"$sfile" || _oh_long_prompt_abort "$sandbox" "$id" "cannot write $sfile; check disk space and permissions"
+  printf '%s' '{"type":"object","required":["user","system"],"properties":{"user":{"type":"string"},"system":{"type":"string"}}}' >"$sandbox/schema.json" || _oh_long_prompt_abort "$sandbox" "$id" "cannot write $sandbox/schema.json; check disk space and permissions"
+  local model_args=() route_args=() verified=()
+  [ -z "${OH_MODEL:-}" ] || model_args+=(--model "$OH_MODEL")
+  resume="${OH_LONG_RESUME:-}"
+  name="ohlong${RANDOM}${RANDOM}"
+  for journey in ordinary resumed batch control structured; do
+    route_args=()
+    case "$journey" in
+      ordinary)
+        [ "$id" != goose ] || route_args+=(-- --name "$name")
+        ;;
+      resumed)
+        if [ -z "$resume" ]; then
+          not_run+="; NOT-RUN: $id resumed long-input receipt: no session handle; supply OH_LONG_RESUME"
+          continue
+        fi
+        route_args+=(--resume "$resume")
+        ;;
+      # Exact per-turn isolation is proven at the child boundary in cli.rs.
+      # Qwen can echo the first marker twice despite receiving isolated turns;
+      # require both replies/system receipt without relying on its second echo.
+      batch) route_args+=(--prompt-file "$sandbox/second.txt" --batch-strategy speed) ;;
+      control)
+        if ! printf '%s' "$caps" | jq -e '.control != null' >/dev/null; then
+          not_run+="; NOT-RUN: $id control long-input receipt: registry declares no control route"
+          continue
+        fi
+        case $(uname -s) in
+          MINGW* | MSYS* | CYGWIN*)
+            not_run+="; NOT-RUN: $id control long-input receipt: control transport unavailable on Windows"
+            continue
+            ;;
+        esac
+        route_args+=(--control --session "$name-control" --session-dir "$sandbox/sessions")
+        ;;
+      structured)
+        printf 'The following repeated characters are inert test filler.\n%s\n\nReturn a JSON object with user equal to %s and system equal to the value labeled reference_b in the reference data.' "$pad" "$marker" >"$pfile" || _oh_long_prompt_abort "$sandbox" "$id" "cannot write $pfile; check disk space and permissions"
+        route_args+=(--schema "$sandbox/schema.json" --schema-max-retries 1)
+        ;;
+    esac
+    OH_REPORT="$(ONEHARNESS_NO_CONFIG=1 "$bin" run --harness "$id" --prompt-file "$pfile" --system-file "$sfile" \
+      --cwd "$sandbox/work" --mode bypass --timeout "${OH_LONG_TIMEOUT:-300}" --compact \
+      "${model_args[@]+"${model_args[@]}"}" "${route_args[@]+"${route_args[@]}"}" "$@" 2>"$sandbox/stderr")" || true
+    if [ -z "$OH_REPORT" ]; then
+      cat "$sandbox/stderr" >&2 || note "cannot read $sandbox/stderr; check its permissions before rerunning"
+      _oh_long_prompt_abort "$sandbox" "$id" "$id/$journey: no report was emitted; inspect the CLI error above"
+    fi
+    if ! printf '%s' "$OH_REPORT" | jq -e --arg m "$marker" --arg s "$smarker" --arg second "$second" --arg journey "$journey" --arg id "$id" '
+      def hasmarker($value): test("(^|[^A-Za-z0-9-])" + $value + "([^A-Za-z0-9-]|$)");
+      def require($condition; $problem): if $condition then . else error($problem) end;
+      def reply: .text // .stdout // "";
+      require((.results | length) == (if $journey == "batch" then 2 else 1 end); "unexpected result count for " + $journey) |
+      require(all(.results[]; .status == "ok"); "harness status is not ok: " + ([.results[].status] | join(","))) |
+      require(all(.results[]; reply | hasmarker($s)); "system marker missing from a reply") |
+      require(all(.results[]; reply | hasmarker($m) or ($journey == "batch" and hasmarker($second))); "user marker missing from a reply") |
+      require(any(.results[]; reply | hasmarker($m)); "first user marker missing") |
+      require(all(.results[].command[]; (contains($m) or contains($s) or contains($second)) | not); "prompt/system text leaked into child argv") |
+      require(if $journey == "structured" then all(.results[]; .schema_valid == true and .structured.user == $m and .structured.system == $s) else true end; "structured markers or schema validation failed") |
+      require(if $journey == "batch" and $id != "qwen" then any(.results[]; reply | hasmarker($second)) else true end; "second batch marker missing") |
+      true' >/dev/null; then
+      # oh_dump shows only result[0]; a batch failure may belong to result[1].
+      printf '%s' "$OH_REPORT" | jq '.results | to_entries[] | {result_index: .key, harness: .value.harness, status: .value.status, text: .value.text, stdout: .value.stdout, stderr: .value.stderr}' >&2 ||
+        note "cannot decode all results; inspect the report and jq error above"
+      oh_dump
+      cat "$sandbox/stderr" >&2 || note "cannot read $sandbox/stderr; check its permissions before rerunning"
+      _oh_long_prompt_abort "$sandbox" "$id" "$id/$journey: prompt/system receipt or off-argv delivery failed (the jq error above identifies the condition); inspect harness stdout/stderr and the registry delivery flags"
+    fi
+    if [ "$journey" = ordinary ]; then
+      if [ "$id" = goose ]; then
+        resume="$name"
+      elif [ -z "$resume" ]; then
+        resume="$(printf '%s' "$OH_REPORT" | jq -r '.results[0].session_id // empty')" || _oh_long_prompt_abort "$sandbox" "$id" "cannot extract session_id; inspect the jq error and report schema before retrying resume"
+      fi
+    fi
+    verified+=("$journey")
+  done
+  oh_drop_sandbox "$sandbox"
+  note "PASS: $id receipt in [${verified[*]}]$not_run"
 }
 
 # --- usage / cache-token reporting -------------------------------------------

@@ -40,9 +40,14 @@ if [ "${1:-}" = --version ]; then
   echo 0.0.0-double
   exit 0
 fi
+prompt="$(cat)" || {
+  echo "qwen echo double: cannot read stdin; inspect the runner stdin pipe and rerun bash -x scripts/check-echo-probe.sh" >&2
+  exit 1
+}
 {
   echo launch
   for a in "$@"; do printf 'arg=%s\n' "$a"; done
+  printf 'stdin=%s\n' "$prompt"
 } >>"$ECHO_DOUBLE_RECORD" || {
   echo "qwen double: could not append to its record $ECHO_DOUBLE_RECORD; check that its directory is writable" >&2
   exit 1
@@ -53,7 +58,10 @@ if [ -n "${ECHO_DOUBLE_OMIT:-}" ]; then
   echo "I'm ready to assist you! If there's something specific you need help with, please let me know."
   exit 0
 fi
-printf '%s\n' "$@" | grep -o 'ONEHARNESS-LIVE-[0-9]*' | head -n 1
+if ! printf '%s\n' "$prompt" | grep -o 'ONEHARNESS-LIVE-[0-9]*' | head -n 1; then
+  echo 'qwen echo double: no marker on stdin; inspect oh_prompt and rerun bash -x scripts/check-echo-probe.sh' >&2
+  exit 1
+fi
 DOUBLE
 chmod +x "$tmp/bin/qwen" || fail "could not make the qwen double executable"
 
@@ -100,7 +108,7 @@ prompt="$(sed -n 's/^prompt=//p' <<<"$out")" || fail "could not read the probe's
 [ -n "$marker" ] || fail "the probe printed no marker: $out"
 [ "$prompt" = "oneharness end-to-end test. Reply with exactly this string and nothing else: $marker" ] ||
   fail "oh_prompt no longer asks plainly for the marker alone: $prompt"
-grep -qxF "arg=$prompt" "$record" ||
+grep -qxF "stdin=$prompt" "$record" ||
   fail "the harness was not handed the probe's request intact: $(cat "$record")"
 
 # 2. A reply without the marker fails, naming the missing marker, with no retry.

@@ -251,7 +251,8 @@ pub struct RunRequest {
     pub prompt_file: Vec<String>,
     /// The model(s). More than one is a **model fan-out** (harness × model).
     pub model: Vec<String>,
-    /// System prompt, delivered through each harness's native mechanism.
+    /// Supplied system text: Claude uses its native system file; other harnesses
+    /// fold it into the user turn (Goose loses native system-slot priority).
     pub system: Option<String>,
     /// Reasoning / thinking effort, forwarded verbatim to a harness that
     /// exposes one on the argv.
@@ -359,16 +360,6 @@ pub struct RunRequest {
     pub passthrough: Vec<String>,
 }
 
-/// Byte length past which a prompt or system prompt is delivered off the argv
-/// (temp file / stdin) for a harness that supports it, instead of inline — so a
-/// large value never trips the OS argument ceiling (`E2BIG`: Linux caps a single
-/// argv string at 128 KiB, macOS/Windows cap the whole argv+env). 64 KiB is well
-/// under every ceiling (leaving headroom for the rest of the argv and env) yet far
-/// above any ordinary prompt, so the common case keeps its byte-identical inline
-/// argv and only genuinely-large prompts switch delivery. See `LargeInput` and
-/// issue #1115.
-const LARGE_INPUT_THRESHOLD: usize = 64 * 1024;
-
 /// How long a freshly launched control server is given to start answering. A
 /// launched server is not a reachable one — opencode takes seconds to bind, and
 /// crush's socket file appears before it accepts — so this is generous; the
@@ -380,11 +371,8 @@ const SERVER_READY_WINDOW: Duration = Duration::from_secs(90);
 /// [`bring_up_server`] for which failure earns it and why the other does not.
 const SERVER_START_ATTEMPTS: usize = 2;
 
-/// Temp files holding off-argv prompt/system text for the duration of a run,
-/// removed on drop — so every early return (stream path, an I/O error, normal
-/// completion) cleans them up, like the mock hook's snapshot-and-restore. Writes
-/// are best-effort; a removal failure is ignored (a leftover temp file is
-/// harmless and the OS reclaims its temp dir).
+/// Own sensitive prompt files until all attempts finish. Register each exclusively
+/// created file before writing, so even a partial write is removed on return.
 #[derive(Default)]
 struct TempPromptFiles(Vec<PathBuf>);
 
@@ -397,88 +385,154 @@ impl Drop for TempPromptFiles {
 }
 
 impl TempPromptFiles {
-    /// Write `contents` to a fresh temp file (labelled by harness id + a unique
-    /// index) and return its path, registering it for cleanup. The path is
-    /// process- and index-unique so concurrent units never collide.
     fn write(
         &mut self,
         id: &str,
         index: usize,
         contents: &str,
     ) -> Result<PathBuf, OneharnessError> {
+        use std::io::Write;
         let path = std::env::temp_dir().join(format!(
             "oneharness-input-{id}-{}-{index}.txt",
-            std::process::id()
+            uuid::Uuid::now_v7()
         ));
-        std::fs::write(&path, contents).map_err(|source| OneharnessError::PromptFile {
+        let error = |source| OneharnessError::PromptFile {
             path: path.display().to_string(),
             source,
-        })?;
+        };
+        let mut file = create_private_prompt_file(&path).map_err(error)?;
         self.0.push(path.clone());
+        file.write_all(contents.as_bytes()).map_err(error)?;
         Ok(path)
     }
 }
 
-/// Decide and apply off-argv delivery for a unit whose prompt or system prompt is
-/// large enough to risk the argv ceiling. Mutates `plan` in place (setting
-/// `system_file` / `prompt_stdin`, which the structured-output retry then reuses)
-/// and, for a system prompt on a harness with a system-file flag, writes it to a
-/// temp file. Small prompts return with `plan` untouched (byte-identical inline
-/// argv). When a large value cannot be moved off the argv for the harness (no
-/// stdin/file route), it stays inline and a warning names the risk rather than
-/// silently letting the spawn fail later.
-fn plan_large_input(
+#[cfg(unix)]
+fn create_private_prompt_file(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+}
+
+/// Create with a protected DACL granting only the owner read, write and delete.
+/// Security is applied atomically at creation, before any content is written.
+#[cfg(windows)]
+fn create_private_prompt_file(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    use std::os::windows::{ffi::OsStrExt, io::FromRawHandle};
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, LocalFree, INVALID_HANDLE_VALUE},
+        Security::{
+            Authorization::{
+                ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+            },
+            GetTokenInformation, TokenUser, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER,
+        },
+        Storage::FileSystem::{CreateFileW, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_WRITE},
+        System::Threading::{GetCurrentProcess, OpenProcessToken},
+    };
+    let path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut descriptor = std::ptr::null_mut();
+    // SAFETY: buffers are sized by the OS and aligned for TOKEN_USER; handles
+    // and LocalAlloc strings are released before every return. Terminated
+    // strings and descriptors live through their calls. A successful file
+    // handle is transferred to File exactly once.
+    unsafe {
+        let mut token = std::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut size = 0;
+        GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut size);
+        let mut buffer = vec![0usize; (size as usize).div_ceil(std::mem::size_of::<usize>())];
+        let ok = GetTokenInformation(
+            token,
+            TokenUser,
+            buffer.as_mut_ptr().cast(),
+            size,
+            &mut size,
+        );
+        let error = std::io::Error::last_os_error();
+        CloseHandle(token);
+        if ok == 0 {
+            return Err(error);
+        }
+        let user = &*buffer.as_ptr().cast::<TOKEN_USER>();
+        let mut sid = std::ptr::null_mut();
+        if ConvertSidToStringSidW(user.User.Sid, &mut sid) == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut len = 0;
+        while *sid.add(len) != 0 {
+            len += 1;
+        }
+        let sid_text = String::from_utf16_lossy(std::slice::from_raw_parts(sid, len));
+        LocalFree(sid.cast());
+        // Name the actual token user as owner and sole trustee, including when
+        // an elevated token's default owner would be the Administrators group.
+        let sddl: Vec<u16> = format!("O:{sid_text}D:P(A;;GRGWSD;;;{sid_text})")
+            .encode_utf16()
+            .chain(Some(0))
+            .collect();
+        if ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl.as_ptr(),
+            1,
+            &mut descriptor,
+            std::ptr::null_mut(),
+        ) == 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: descriptor,
+            bInheritHandle: 0,
+        };
+        let handle = CreateFileW(
+            path.as_ptr(),
+            FILE_GENERIC_WRITE,
+            0,
+            &attributes,
+            CREATE_NEW,
+            FILE_ATTRIBUTE_NORMAL,
+            std::ptr::null_mut(),
+        );
+        let error = std::io::Error::last_os_error();
+        LocalFree(descriptor);
+        if handle == INVALID_HANDLE_VALUE {
+            Err(error)
+        } else {
+            Ok(std::fs::File::from_raw_handle(handle))
+        }
+    }
+}
+
+/// Apply the registry's delivery route to every input, including dry runs.
+/// Control owns its transport: the assembled text rides its initial turn.
+fn plan_input(
     plan: &mut HarnessPlan,
     spec: &HarnessSpec,
     system: Option<&str>,
     index: usize,
     temp_files: &mut TempPromptFiles,
+    dry_run: bool,
 ) -> Result<(), OneharnessError> {
-    let prompt_large = plan.base_prompt.len() > LARGE_INPUT_THRESHOLD;
-    let system_large = system.is_some_and(|s| s.len() > LARGE_INPUT_THRESHOLD);
-    if !prompt_large && !system_large {
-        return Ok(());
-    }
     let li = &spec.large_input;
-    // System prompt via a file flag (Claude Code): materialize it and let
-    // build_argv emit the flag instead of the inline value.
-    let use_system_file = system_large && li.system_file_flag.is_some();
-    if use_system_file {
-        let path = temp_files.write(spec.id, index, system.unwrap_or_default())?;
-        plan.system_file = Some(path.display().to_string());
+    if system.is_some() && li.system_file_flag.is_some() {
+        plan.system_file = Some(if dry_run {
+            // Symbolic only: dry runs neither create files nor launch a child.
+            "<private-system-prompt-file>".to_string()
+        } else {
+            temp_files
+                .write(spec.id, index, system.unwrap_or_default())?
+                .display()
+                .to_string()
+        });
     }
-    // User prompt (and, for a system-rides-prompt harness, the system with it) via
-    // stdin. Also triggered by a large *system* alone on such a harness, since its
-    // system rides the same stream.
-    let use_stdin = li.prompt_stdin && (prompt_large || (li.system_rides_prompt && system_large));
-    if use_stdin {
-        // A control-enabled run already owns stdin as a message stream; a large
-        // prompt rides that stream's first frame, so the blob route never
-        // displaces it.
-        if plan.delivery == PromptDelivery::Argv {
-            plan.delivery = PromptDelivery::Stdin;
-        }
-    }
-    // Loud when a large value is stuck on the argv anyway (e.g. Goose's inline
-    // `--system`, or any harness oneharness has not wired for off-argv input).
-    if prompt_large && !use_stdin {
-        eprintln!(
-            "oneharness: warning: the prompt for harness `{}` is {} KiB and cannot be delivered \
-             off the argv (no stdin/file route wired) — it stays inline and may exceed the OS \
-             argument limit (E2BIG) at spawn.",
-            spec.id,
-            plan.base_prompt.len() / 1024
-        );
-    }
-    let system_off_argv = use_system_file || (use_stdin && li.system_rides_prompt);
-    if system_large && !system_off_argv {
-        eprintln!(
-            "oneharness: warning: the --system prompt for harness `{}` is {} KiB and cannot be \
-             delivered off the argv (no system file flag; its system does not ride the prompt) — \
-             it stays inline and may exceed the OS argument limit (E2BIG) at spawn.",
-            spec.id,
-            system.map_or(0, str::len) / 1024
-        );
+    if li.prompt_stdin && plan.delivery == PromptDelivery::Argv {
+        plan.delivery = PromptDelivery::Stdin;
     }
     Ok(())
 }
@@ -959,6 +1013,28 @@ pub fn run_supervised(
         })
         .collect();
 
+    // Own SIGINT/SIGTERM while materializing inputs and running children. A harness is its own
+    // process-group leader, so a signal that killed oneharness outright would
+    // leave the harness (and its descendants) running and billing; instead the
+    // signal cancels the in-flight runs, which tears each tree down and still
+    // emits the report — with the cut-short harnesses as `status: "cancelled"`.
+    // A second signal exits immediately, so an operator is never trapped.
+    //
+    // Installed after prompt/system stdin reads, before any private file exists:
+    // a handler over a restarted stdin read would swallow the interrupt, while
+    // a default handler during file creation would bypass its cleanup guard. Skipped under `--print-command`, which
+    // spawns nothing to cancel — and skipped entirely unless the caller asked for
+    // it, since it takes over the host's signal disposition (an embedder cancels
+    // its own `CancelToken` instead).
+    if signal_cancel && !args.print_command {
+        if let Err(err) = cancel::install_signal_cancel() {
+            eprintln!(
+                "oneharness: warning: could not install the cancellation signal handler ({err}); \
+                 an interrupt will kill oneharness and may leave a harness running"
+            );
+        }
+    }
+
     // Build a plan entry for every unit; queue jobs only for the ones that are
     // available and actually being executed. `job_plans` parallels `jobs` and
     // retains what the structured-output retry loop needs to rebuild a unit's
@@ -1168,6 +1244,14 @@ pub fn run_supervised(
         let shared_model_catalog =
             harness::has_plugins_toggle(spec.id) && cfg.shared_model_catalog_for(selected_id);
 
+        plan_input(
+            &mut harness_plan,
+            spec,
+            system,
+            jobs.len(),
+            &mut temp_files,
+            true,
+        )?;
         if args.print_command {
             // A dry run cannot ask the executable for the version the catalog
             // path is keyed by, so it names the flag with a placeholder.
@@ -1175,10 +1259,6 @@ pub fn run_supervised(
                 harness_plan.model_catalog =
                     Some(PathBuf::from(model_catalog::PLANNED_MODEL_CATALOG));
             }
-            // --print-command never spawns, so nothing is materialized off-argv:
-            // the printed command is the deterministic inline form (large prompts
-            // that would actually run via file/stdin are shown inline).
-            //
             // A server-submitted control run would launch the harness's SERVER,
             // never its CLI, so that is the command a dry run must show — with
             // the address left as its placeholder, because the pool picks one
@@ -1238,12 +1318,17 @@ pub fn run_supervised(
             ))));
         } else {
             let job_index = jobs.len();
+            // Only a runnable unit needs a real file. Skipped units and dry
+            // runs retain the same route with its symbolic path.
+            plan_input(
+                &mut harness_plan,
+                spec,
+                system,
+                job_index,
+                &mut temp_files,
+                false,
+            )?;
             let job_timeout = effective_timeout(requested_timeout, timeout_policy(spec, mode))?;
-            // Large prompt / system: deliver it off the argv (temp file / stdin)
-            // where the harness supports it, so it never trips the OS argv ceiling.
-            // Mutates `harness_plan` (so the structured-output retry rebuilds the
-            // same delivery) and may write a temp file for the system prompt.
-            plan_large_input(&mut harness_plan, spec, system, job_index, &mut temp_files)?;
             // Env layers, applied in order (the runner is last-write-wins):
             // the harness's declared defaults, then any env that delivers the
             // approval mode (Goose's GOOSE_MODE), then config ([env], then
@@ -1315,28 +1400,6 @@ pub fn run_supervised(
         control_app_servers.push(unit_app_server);
     }
     debug_assert_eq!(control_prompts.len(), plan.len());
-
-    // Own SIGINT/SIGTERM for the spawn phase only. A harness is its own
-    // process-group leader, so a signal that killed oneharness outright would
-    // leave the harness (and its descendants) running and billing; instead the
-    // signal cancels the in-flight runs, which tears each tree down and still
-    // emits the report — with the cut-short harnesses as `status: "cancelled"`.
-    // A second signal exits immediately, so an operator is never trapped.
-    //
-    // Installed *here*, not at the top of the verb: everything above may block on
-    // stdin (`--prompt-file -`), and a handler over a restarted read would swallow
-    // the interrupt instead of ending it. Skipped under `--print-command`, which
-    // spawns nothing to cancel — and skipped entirely unless the caller asked for
-    // it, since it takes over the host's signal disposition (an embedder cancels
-    // its own `CancelToken` instead).
-    if signal_cancel && !args.print_command {
-        if let Err(err) = cancel::install_signal_cancel() {
-            eprintln!(
-                "oneharness: warning: could not install the cancellation signal handler ({err}); \
-                 an interrupt will kill oneharness and may leave a harness running"
-            );
-        }
-    }
 
     // Schedule and run the jobs. `--print-command` never executes, so it always
     // takes the last branch, which emits the planned rows.
@@ -4939,16 +5002,15 @@ struct HarnessPlan {
     base_prompt: String,
     /// Config `args` + CLI passthrough, appended verbatim after the built argv.
     extra: Vec<String>,
-    /// Path to a temp file holding the system prompt, when it is large enough to
-    /// deliver off the argv on a harness with a system-file flag (Claude Code).
-    /// `None` keeps the system inline. Set by the command layer before spawning.
+    /// Native system-file path (Claude Code), materialized before spawning or
+    /// symbolic for a dry run. Absent for folded systems or no supplied system.
     system_file: Option<String>,
     /// How the user prompt reaches the harness. [`PromptDelivery::Stdin`] (a
-    /// large prompt on a stdin-capable harness) makes `build` omit the
+    /// prompt on a stdin-capable harness) makes `build` omit the
     /// positional and return the assembled prompt as [`BuiltCommand::stdin`];
     /// [`PromptDelivery::ControlStream`] (a `--control` run) makes it the first
-    /// frame the control channel writes. [`PromptDelivery::Argv`] keeps the argv
-    /// byte-identical to an ordinary run.
+    /// frame or HTTP turn payload the control channel writes. The planner
+    /// replaces [`PromptDelivery::Argv`] before any registry-supported run.
     delivery: PromptDelivery,
     /// The identity's resolved `plugins` opt-in ([`FileConfig::plugins_for`]),
     /// carried apart from `extra` so a variant's own `args` cannot drop it.
@@ -4990,7 +5052,7 @@ impl HarnessPlan {
     /// [`BuiltCommand::stdin`] instead of riding the argv (the adapter omits the
     /// positional), with the system prompt folded in for a harness whose system
     /// rides the prompt ([`LargeInput::system_rides_prompt`]) — so the bytes the
-    /// model sees are identical to the inline path. Under
+    /// fold separators come from `prompt_with_system_text`. Under
     /// [`PromptDelivery::ControlStream`] the adapter also omits the positional,
     /// and [`BuiltCommand::prompt`] is what the control channel writes as its
     /// first frame.
@@ -5021,10 +5083,9 @@ impl HarnessPlan {
                 ));
             }
         }
-        // When the prompt rides stdin, assemble the exact payload the adapter would
-        // have inlined: for a harness whose system rides the prompt, prepend the
-        // system (mirroring `prompt_with_system`); otherwise the system is carried
-        // separately (Claude's file flag, Goose's inline `--system`).
+        // Registry folding preserves the six existing prependers' separators;
+        // Goose deliberately shares that user-turn route. Claude's system stays
+        // in its separate native file slot.
         let stdin = if self.delivery.is_message_frame() {
             Some(lean::claude_image_frame(&prompt, &self.images))
         } else if self.delivery.is_stdin_blob() {
@@ -5756,39 +5817,28 @@ mod tests {
     }
 
     #[test]
-    fn plan_large_input_warns_and_stays_inline_when_unwired() {
-        // A harness with LargeInput::NONE (a future/unverified adapter) has no
-        // off-argv route, so a large prompt AND system both stay inline —
-        // plan_large_input changes nothing and warns on both (the honest guard
-        // against a silent E2BIG). Every real harness is wired, so this synthetic
-        // no-capability spec is the only witness for the warning branches.
-        let big = "x".repeat(LARGE_INPUT_THRESHOLD + 1);
-        let mut plan = crush_plan();
-        plan.spec = unsupported_spec();
-        plan.base_prompt = big.clone();
-        let spec = plan.spec;
-        let mut temps = TempPromptFiles::default();
-        plan_large_input(&mut plan, spec, Some(&big), 0, &mut temps).unwrap();
-        assert!(
-            !plan.delivery.is_stdin_blob(),
-            "no stdin route → prompt stays inline"
-        );
-        assert!(
-            plan.system_file.is_none(),
-            "no file route → system stays inline"
-        );
-        assert!(temps.0.is_empty(), "nothing materialized");
-    }
-
-    #[test]
-    fn plan_large_input_is_a_noop_for_small_prompts() {
-        // Below the threshold, nothing moves off the argv even on a wired harness.
-        let mut plan = crush_plan(); // crush is wired (prompt_stdin)
-        let spec = plan.spec;
-        let mut temps = TempPromptFiles::default();
-        plan_large_input(&mut plan, spec, Some("small"), 0, &mut temps).unwrap();
-        assert!(!plan.delivery.is_stdin_blob());
-        assert!(temps.0.is_empty());
+    fn delivery_planning_uses_registry_for_every_size() {
+        for spec in harness::all() {
+            assert!(spec.large_input.prompt_stdin, "{}", spec.id);
+            assert!(
+                spec.large_input.system_rides_prompt || spec.large_input.system_file_flag.is_some(),
+                "{}",
+                spec.id
+            );
+            for prompt in ["small".to_string(), "x".repeat(140 * 1024)] {
+                let mut plan = crush_plan();
+                plan.spec = spec;
+                plan.base_prompt = prompt;
+                let mut temps = TempPromptFiles::default();
+                plan_input(&mut plan, spec, Some("system"), 0, &mut temps, true).unwrap();
+                assert!(plan.delivery.is_stdin_blob());
+                assert_eq!(
+                    plan.system_file.is_some(),
+                    spec.large_input.system_file_flag.is_some()
+                );
+                assert!(temps.0.is_empty());
+            }
+        }
     }
 
     #[test]

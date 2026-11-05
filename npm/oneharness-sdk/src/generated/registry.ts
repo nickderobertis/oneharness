@@ -130,7 +130,7 @@ export interface HarnessInfo {
    */
   supports_native_schema: boolean;
   /**
-   * Whether a large user prompt can be delivered off the argv (piped to the
+   * Whether every user prompt is delivered off the argv (piped to the
    * harness's stdin) so it never trips the OS argument ceiling (`E2BIG`).
    */
   supports_prompt_stdin: boolean;
@@ -150,9 +150,9 @@ export interface HarnessInfo {
    */
   supports_skills_off: boolean;
   /**
-   * Whether a large system prompt can be delivered off the argv via a file
+   * Whether supplied system text is delivered off the argv via a file
    * flag (Claude Code's `--append-system-prompt-file`). `false` does not mean a
-   * large system is unhandled — for a harness whose system rides the prompt it
+   * system is unhandled — for a harness whose system rides the prompt it
    * travels on stdin with the prompt; see the README large-prompt matrix.
    */
   supports_system_file: boolean;

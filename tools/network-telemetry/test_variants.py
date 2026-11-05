@@ -99,14 +99,23 @@ class OptedInLaunch(unittest.TestCase):
         telemetry = lines(tmp / "telemetry" / "variants.jsonl")
         opted = [s for s in starts(telemetry) if s["phase"] == PHASE and s["kind"] == "exec"]
         launch = opted[0] if opted else {}
-        found = re.search(r"OH_VARIANT_\d+_\d+_pl", " ".join(launch.get("argv", [])))
+        # The marker travels in the turn on stdin, so read the child's own
+        # receipt evidence. The measured launch is identified by its phase.
+        evidence = tmp / "plugins-evidence.jsonl"
+        markers = {
+            match.group(0)
+            for record in lines(evidence)
+            for match in re.finditer(r"OH_VARIANT_\d+_\d+_pl", record["text"])
+        }
+        if run.returncode == 0:
+            self.assertEqual(len(markers), 1, lines(evidence))
         return Journey(
             tmp,
             run,
             telemetry,
             launch,
-            tmp / "plugins-evidence.jsonl",
-            found.group(0) if found else "",
+            evidence,
+            next(iter(markers), ""),
         )
 
     def test_the_opted_in_launch_runs_with_plugins_on_measured_outside_live_codex(self) -> None:
@@ -127,10 +136,12 @@ class OptedInLaunch(unittest.TestCase):
         launched = [
             json.loads(row)
             for row in (journey.tmp / "argv.jsonl").read_text().splitlines()
-            if journey.marker in row and '"exec"' in row
+            if json.loads(row)["argv"] == journey.launch["argv"]
         ]
         self.assertEqual(len(launched), 1, launched)
         argv = launched[0]["argv"]
+        self.assertTrue(argv and argv[0] == "exec", argv)
+        self.assertFalse(any(journey.marker in arg for arg in argv), argv)
         pairs = [argv[i : i + 2] for i in range(len(argv) - 1)]
         self.assertIn(
             ["-c", 'model_reasoning_effort="low"'],

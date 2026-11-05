@@ -1057,7 +1057,7 @@ oh_long_prompt_enforce() {
   pfile="$sandbox/user.txt"
   sfile="$sandbox/system.txt"
   marker="$(oh_marker)"
-  smarker="SYSTEM${marker}"
+  smarker="SYSTEM$(oh_marker)"
   second="SECOND$(oh_marker)"
   pad="$(head -c 143360 /dev/zero | tr '\0' 'x')" || _oh_long_prompt_abort "$sandbox" "$id" "cannot generate user padding; check head/tr and /dev/zero"
   spad="$(head -c 40000 /dev/zero | tr '\0' 'y')" || _oh_long_prompt_abort "$sandbox" "$id" "cannot generate system padding; check head/tr and /dev/zero"

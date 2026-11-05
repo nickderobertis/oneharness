@@ -19,7 +19,7 @@ tmp="$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX")" || fail "cannot create scrat
 trap 'rm -rf "$tmp" || echo "could not remove $tmp; delete it by hand" >&2' EXIT
 export OH_REAL_BIN="$root/target/debug/oneharness" OH_MOCK_BIN="$root/target/debug/oneharness-mock-harness"
 [ -x "$OH_REAL_BIN" ] && [ -x "$OH_MOCK_BIN" ] || fail 'missing built binaries; run just build and build oneharness-mock-harness through its Nx build target'
-export OH_LONG_RECORD="$tmp/cases.jsonl" OH_LONG_WIRE="$tmp/acp.jsonl" OH_LONG_REQUESTS="$tmp/requests.jsonl"
+export OH_LONG_RECORD="$tmp/cases.jsonl" OH_LONG_WIRE="$tmp/acp.jsonl" OH_LONG_REQUESTS="$tmp/requests.jsonl" OH_LONG_SYSTEMS="$tmp/systems.jsonl"
 cat >"$tmp/driver" <<'DRIVER' || fail "cannot write $tmp/driver; check disk space and directory permissions"
 #!/usr/bin/env bash
 set -euo pipefail
@@ -46,6 +46,9 @@ for ((i=0; i<${#args[@]}; i++)); do
   if [ "${args[$i]}" = --harness ]; then id="${args[$((i + 1))]}"; fi
   if [ "${args[$i]}" = --prompt-file ]; then
     jq -Rs . "${args[$((i + 1))]}" >>"$OH_LONG_REQUESTS" || { echo "cannot capture prompt file; inspect jq and file permissions" >&2; exit 1; }
+  fi
+  if [ "${args[$i]}" = --system-file ]; then
+    jq -Rs . "${args[$((i + 1))]}" >>"$OH_LONG_SYSTEMS" || { echo "cannot capture system file; inspect jq and file permissions" >&2; exit 1; }
   fi
   if [ "${args[$i]}" = --batch-strategy ] && [ -n "${MOCK_LONG_BATCH_OMIT_SYSTEM:-}" ]; then export MOCK_LONG_OMIT_SYSTEM=1; fi
 done
@@ -83,6 +86,12 @@ jq -se '
     endswith("and the value labeled reference_b in the reference data.")) and
   (.[0] != .[1])
 ' "$OH_LONG_REQUESTS" >/dev/null || fail 'batch requests must clearly identify inert filler and ask identically for both reference values; inspect prompt construction'
+# Shared reference data must not also contain either user answer. Otherwise a
+# model can repeat the first answer on turn two by reading only shared data.
+jq -se --slurpfile systems "$OH_LONG_SYSTEMS" '
+  (.[2:4] | map([scan("(?:SECOND)?ONEHARNESS-LIVE-[0-9]+")][0])) as $users |
+  all($systems[]; . as $system | all($users[]; . as $user | $system | contains($user) | not))
+' "$OH_LONG_REQUESTS" >/dev/null || fail 'shared system reference data contains a batch user marker; generate independent user and system values'
 # Inspect the request itself: the mock extracts marker values without interpreting
 # which reference label the structured instruction asks the model to read.
 jq -se '

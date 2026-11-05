@@ -20892,13 +20892,28 @@ fn concurrent_private_prompt_files_do_not_collide_or_overwrite_existing_entries(
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     let mut paths = std::collections::BTreeSet::new();
+    let mut random_tails = std::collections::BTreeSet::new();
     for (_, log) in &children {
         let record = read_delivery(log);
         let path = PathBuf::from(record[0]["system_path"].as_str().unwrap());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "SYSTEM concurrent");
         assert_private_prompt(&path);
+        let name = path.file_name().unwrap().to_str().unwrap();
+        let uuid = name
+            .strip_prefix("oneharness-input-claude-code-")
+            .unwrap()
+            .strip_suffix("-0.txt")
+            .unwrap();
+        // UUIDv7 includes OS-random bits beyond its timestamp/counter. Inspect
+        // the low word, rather than accepting uniqueness from a PID/counter.
+        assert_eq!(uuid.len(), 36);
+        assert_eq!(&uuid[14..15], "7");
+        random_tails.insert(u32::from_str_radix(&uuid[28..], 16).unwrap());
         assert!(paths.insert(path));
     }
+    assert_eq!(random_tails.len(), children.len());
+    let tails: Vec<_> = random_tails.into_iter().collect();
+    assert!(tails.windows(2).all(|pair| pair[1] - pair[0] > 4));
     std::fs::write(&gate, "release").unwrap();
     for (child, _) in children {
         let out = child.wait_with_output().unwrap();
@@ -21305,6 +21320,18 @@ fn resumed_and_batch_turns_keep_exact_off_argv_delivery() {
         assert_eq!(records.len(), 2);
         for (record, user) in records.iter().zip(["USER batch-one", "USER batch-two"]) {
             assert_delivered(spec, record, user, system);
+            let argv = record["argv"].as_array().unwrap();
+            assert!(
+                argv.iter().all(|arg| {
+                    let arg = arg.as_str().unwrap();
+                    !matches!(
+                        arg,
+                        "--resume" | "--session" | "--session-id" | "--continue"
+                    ) && !arg.contains("requested-session")
+                }),
+                "{} batch must start independent turns: {argv:?}",
+                spec.id
+            );
         }
     }
 }

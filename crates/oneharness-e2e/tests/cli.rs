@@ -21106,6 +21106,65 @@ fn control_delivery_uses_real_protocol_turns_and_dry_runs_do_not_launch() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn opencode_control_finishes_on_terminal_step_without_session_idle() {
+    let store = control_store_dir("terminal-step");
+    let log = store.join("wire.jsonl");
+    let user = format!("USER terminal λ {{{{\n{}", "x".repeat(140_000));
+    let system = "SYSTEM terminal λ {{";
+    let prompt = store.join("prompt.txt");
+    std::fs::write(&prompt, &user).unwrap();
+    let out = run_per_dispatch(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--prompt-file",
+            prompt.to_str().unwrap(),
+            "--system",
+            system,
+            "--control",
+            "--session",
+            "terminal",
+            "--session-dir",
+            store.to_str().unwrap(),
+            "--cwd",
+            store.to_str().unwrap(),
+            "--timeout",
+            "5",
+            "--bin",
+            &bin_override("opencode"),
+        ],
+        &[
+            ("MOCK_HTTP_CONTROL_LOG", log.to_str().unwrap()),
+            ("MOCK_HTTP_CONTROL_FAULT", "terminal-step"),
+            ("XDG_STATE_HOME", store.to_str().unwrap()),
+        ],
+    );
+    let report = json_stdout(&out);
+    let result = &report["results"][0];
+    assert_eq!(result["status"], "ok", "{}", result["error"]);
+    assert!(out.status.success());
+    assert_eq!(result["text"], "final controlled answer");
+    let transcript = result["stdout"].as_str().unwrap();
+    assert!(transcript.contains(r#""finish":"tool-calls""#));
+    assert!(transcript.contains(r#""finish":"stop""#));
+    let wire = std::fs::read_to_string(log).unwrap();
+    let expected = format!("{system}\n\n{user}");
+    assert!(
+        wire.lines().any(|line| line
+            .find("HTTP/1.1 ")
+            .and_then(|at| serde_json::from_str::<Value>(&line[at + 9..]).ok())
+            .is_some_and(|value| json_has_exact_text(&value, &expected))),
+        "{wire}"
+    );
+    let command = command_of(&report, 0);
+    assert!(!command
+        .iter()
+        .any(|arg| arg.contains(system) || arg.contains(&user)));
+}
+
 #[test]
 fn unsupported_control_batch_and_schema_combinations_refuse_before_delivery() {
     let dir = ScratchDir::new("delivery-refused").unwrap();

@@ -720,6 +720,12 @@ fn classify_opencode(kind: &str, value: &Value) -> TurnEvent {
         // admitted, and reading that as terminal ended every run in under a
         // second. The driver holds this until it has seen `Started`.
         "session.idle" => TurnEvent::Finished,
+        // Current OpenCode may settle the final model step without an idle
+        // event. A tool-calls step continues the turn, so only the explicit
+        // final-answer stop is terminal. The driver still requires Started.
+        "session.next.step.ended" if data.get("finish").and_then(Value::as_str) == Some("stop") => {
+            TurnEvent::Finished
+        }
         "session.next.prompt.admitted" => TurnEvent::Started,
         "session.next.text.ended" => data
             .get("text")
@@ -1588,6 +1594,30 @@ mod tests {
                 .unwrap()
                 .path(),
             "/api/session/ses_abc/permission/per_2/reply"
+        );
+    }
+
+    #[test]
+    fn opencode_final_answer_step_ends_the_turn_but_tool_steps_do_not() {
+        for (finish, expected) in [
+            ("stop", TurnEvent::Finished),
+            ("tool-calls", TurnEvent::Ignored),
+            ("unknown", TurnEvent::Ignored),
+        ] {
+            let payload = serde_json::json!({
+                "type": "session.next.step.ended", "data": {"finish": finish}
+            });
+            assert_eq!(
+                classify_event(HttpShape::Opencode, &payload.to_string()),
+                expected
+            );
+        }
+        assert_eq!(
+            classify_event(
+                HttpShape::Opencode,
+                r#"{"type":"session.next.step.ended","data":{}}"#
+            ),
+            TurnEvent::Ignored
         );
     }
 

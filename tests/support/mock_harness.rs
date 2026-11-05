@@ -1053,6 +1053,7 @@ enum HttpControlFault {
     RefusePrompt,
     HangPrompt,
     SlowTurn,
+    TerminalStep,
     RefuseEvents,
     UnreadableEvents,
     RedirectInterrupt,
@@ -1081,6 +1082,7 @@ impl HttpControlFault {
             "refuse-prompt" => HttpControlFault::RefusePrompt,
             "hang-prompt" => HttpControlFault::HangPrompt,
             "slow-turn" => HttpControlFault::SlowTurn,
+            "terminal-step" => HttpControlFault::TerminalStep,
             "refuse-events" => HttpControlFault::RefuseEvents,
             "unreadable-events" => HttpControlFault::UnreadableEvents,
             "redirect-interrupt" => HttpControlFault::RedirectInterrupt,
@@ -1540,6 +1542,26 @@ fn run_http_control_server(log_path: &str) -> ! {
                             &mut socket,
                             "{\"type\":\"permission.requested\",\"data\":{\"id\":\"per_1\",\"sessionID\":\"ses_mock\"}}",
                         );
+                        if fault == HttpControlFault::TerminalStep {
+                            // Current OpenCode ends a final model step without
+                            // necessarily announcing session.idle. Tool steps
+                            // must not terminate the run before the final text.
+                            send(
+                                &mut socket,
+                                r#"{"type":"session.next.step.ended","data":{"finish":"tool-calls"}}"#,
+                            );
+                            send(
+                                &mut socket,
+                                r#"{"type":"session.next.text.ended","data":{"text":"final controlled answer"}}"#,
+                            );
+                            send(
+                                &mut socket,
+                                r#"{"type":"session.next.step.ended","data":{"finish":"stop"}}"#,
+                            );
+                            // Keep the SSE stream open as the real server does.
+                            std::thread::sleep(std::time::Duration::from_secs(30));
+                            return;
+                        }
                         if fault == HttpControlFault::SlowTurn {
                             std::thread::sleep(std::time::Duration::from_millis(1500));
                             send(

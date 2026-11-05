@@ -417,7 +417,7 @@ fn create_private_prompt_file(path: &std::path::Path) -> std::io::Result<std::fs
         .open(path)
 }
 
-/// Create with a protected DACL granting only the owning user full access.
+/// Create with a protected DACL granting only the owner read, write and delete.
 /// Security is applied atomically at creation, before any content is written.
 #[cfg(windows)]
 fn create_private_prompt_file(path: &std::path::Path) -> std::io::Result<std::fs::File> {
@@ -472,7 +472,7 @@ fn create_private_prompt_file(path: &std::path::Path) -> std::io::Result<std::fs
         LocalFree(sid.cast());
         // Name the actual token user as owner and sole trustee, including when
         // an elevated token's default owner would be the Administrators group.
-        let sddl: Vec<u16> = format!("O:{sid_text}D:P(A;;GA;;;{sid_text})")
+        let sddl: Vec<u16> = format!("O:{sid_text}D:P(A;;GRGWSD;;;{sid_text})")
             .encode_utf16()
             .chain(Some(0))
             .collect();

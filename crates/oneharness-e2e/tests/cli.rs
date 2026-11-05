@@ -20713,7 +20713,7 @@ fn assert_private_prompt(path: &Path) {
         // Read the actual DACL back, including inheritance protection and every
         // ACE, rather than trusting the creation API or a read-only attribute.
         let out = Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command",
-            "$a=Get-Acl -LiteralPath $env:OH_PRIVATE_FILE; $a.Sddl; if (!$a.AreAccessRulesProtected) {exit 2}; $rules=@($a.Access); if ($rules.Count -ne 1) {exit 3}; $sid=$rules[0].IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value; if ($sid -ne 'S-1-3-4' -and $sid -ne [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value) {exit 4}; if ($rules[0].AccessControlType -ne 'Allow') {exit 5}"])
+            "$a=Get-Acl -LiteralPath $env:OH_PRIVATE_FILE; $a.Sddl; if (!$a.AreAccessRulesProtected) {exit 2}; $rules=@($a.Access); if ($rules.Count -ne 1) {exit 3}; $sid=$rules[0].IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value; if ($sid -ne 'S-1-3-4' -and $sid -ne [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value) {exit 4}; if ($rules[0].AccessControlType -ne 'Allow') {exit 5}; if ([int]$rules[0].FileSystemRights -ne 0x13019f) {exit 6}"])
             .env("OH_PRIVATE_FILE", path).output().unwrap();
         assert!(out.status.success(), "DACL inspection: {out:?}");
     }
@@ -30653,10 +30653,10 @@ fn interrupt_resolves_a_variant_qualified_record_to_its_harness() {
 }
 
 #[test]
-fn a_run_without_control_opens_no_socket_and_keeps_its_argv() {
+fn a_run_without_control_opens_no_socket_and_delivers_its_prompt_on_stdin() {
     let mock_profile = mock_profile_redirect();
-    // The non-breaking guarantee: absent `--control`, nothing changes — no
-    // socket directory, and the prompt still rides the argv as a positional.
+    // Without `--control`, no socket directory is opened; ordinary turns
+    // still deliver the prompt outside argv.
     let store = control_store_dir("absent");
     let store_arg = store.display().to_string();
     let cwd = control_store_dir("absent-cwd");

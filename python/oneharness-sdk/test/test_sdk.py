@@ -956,7 +956,7 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
                 'model_catalog_json="<shared model catalog>"',
                 "--dangerously-bypass-approvals-and-sandbox",
                 "--json",
-                prompt,
+                "-",
             ],
         )
 

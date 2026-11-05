@@ -83,6 +83,13 @@ jq -se '
     endswith("and the value labeled reference_b in the reference data.")) and
   (.[0] != .[1])
 ' "$OH_LONG_REQUESTS" >/dev/null || fail 'batch requests must clearly identify inert filler and ask identically for both reference values; inspect prompt construction'
+# Inspect the request itself: the mock extracts marker values without interpreting
+# which reference label the structured instruction asks the model to read.
+jq -se '
+  length == 6 and
+  (.[5] | contains("Return a JSON object with user equal to ") and
+    endswith("and system equal to the value labeled reference_b in the reference data."))
+' "$OH_LONG_REQUESTS" >/dev/null || fail 'structured request must ask for reference_b in its system field; inspect structured prompt construction'
 acp_prompts="$(grep -c '"method":"session/prompt"' "$OH_LONG_WIRE")" || {
   status=$?
   [ "$status" -eq 1 ] || fail "cannot read $OH_LONG_WIRE (grep exit $status); inspect its permissions"

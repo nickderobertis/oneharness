@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.28.0](https://github.com/nickderobertis/oneharness/compare/v0.27.2...v0.28.0) - 2026-11-05
+
+### Fixed
+
+- [**breaking**] always deliver harness prompts off argv ([#1560](https://github.com/nickderobertis/oneharness/pull/1560))
+
 ## [0.27.2](https://github.com/nickderobertis/oneharness/compare/v0.27.1...v0.27.2) - 2026-11-04
 
 ### Fixed

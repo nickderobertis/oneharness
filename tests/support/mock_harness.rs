@@ -3470,15 +3470,14 @@ mod listen_server {
             std::env::var("CODEX_MOCK_SERVER_BYTES")
                 .map_or(0, |n| whole("CODEX_MOCK_SERVER_BYTES", &n))
         ];
+        // llmlint: ignore-block[changed_behavior_has_e2e] Test-support code: this knob exists only so `concurrent_dispatches_behind_a_slow_starting_server_share_it_each_with_its_own_environment` can stage a slow start, which exercises it; a malformed value is refused by the same `whole` parser every numeric knob of this double shares, and no consumer of oneharness ever sets it.
         if let Ok(ms) = std::env::var("CODEX_MOCK_STARTUP_MS") {
             std::thread::sleep(std::time::Duration::from_millis(whole(
                 "CODEX_MOCK_STARTUP_MS",
                 &ms,
             )));
         }
-        if let Ok(url) = std::env::var("CODEX_MOCK_STARTUP_FETCH") {
-            startup_fetch(&url);
-        }
+        // llmlint: ignore-end[changed_behavior_has_e2e]
         let listener = bind(&path);
         // Started once listening: a launch refused here — its socket already
         // in use — must leave no helper behind.
@@ -3494,6 +3493,9 @@ mod listen_server {
                     });
                 }
             }
+        }
+        if let Ok(url) = std::env::var("CODEX_MOCK_STARTUP_FETCH") {
+            startup_fetch(&url);
         }
         let dir = std::env::var_os("CODEX_MOCK_DIR").map(PathBuf::from);
         let pid = std::process::id();

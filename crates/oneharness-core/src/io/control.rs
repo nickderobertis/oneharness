@@ -2816,6 +2816,87 @@ mod tests {
     }
 
     #[test]
+    fn a_turn_held_open_for_a_redirection_whose_prompt_could_not_be_written_is_ended() {
+        // The turn ends while the abort is going out, so the run keeps it open
+        // for the redirection; the abort's write then succeeds, but the harness
+        // is gone by the time the replacement prompt is written. The interrupt
+        // owns that write, so it must tell the supervisor the message was not
+        // delivered and close the turn kept open for it — nothing else will.
+        struct AbortThenGone {
+            entered: std::sync::mpsc::Sender<()>,
+            release: std::sync::mpsc::Receiver<()>,
+            written: Arc<Mutex<Vec<u8>>>,
+        }
+        impl io::Write for AbortThenGone {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                if !String::from_utf8_lossy(bytes).contains("control_request") {
+                    return Err(io::Error::new(io::ErrorKind::BrokenPipe, "harness gone"));
+                }
+                let _ = self.entered.send(());
+                let _ = self.release.recv();
+                self.written
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let dir = temp_dir("redirect-prompt-failed");
+        let path = socket_path(&dir, "live")
+            .expect("a short fixture name fits every platform's socket-address budget");
+        let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
+        let handle = listener.handle();
+        let (entered, writing) = std::sync::mpsc::channel();
+        let (release, gate) = std::sync::mpsc::channel();
+        let written = Arc::new(Mutex::new(Vec::new()));
+        handle.bind(Binding::Stdin);
+        *handle
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            TurnState::Active(Box::new(AbortThenGone {
+                entered,
+                release: gate,
+                written: Arc::clone(&written),
+            }));
+
+        let pending = send_in_background(&path, "do X instead");
+        writing.recv().unwrap();
+        assert!(
+            !handle.advance(r#"{"type":"result","subtype":"error_during_execution"}"#),
+            "a turn that may be the abort's answer is kept open for its redirection"
+        );
+        release.send(()).unwrap();
+        let response = pending.join().unwrap();
+        assert_eq!(
+            response.reason(),
+            Some(ControlReason::NoActiveTurn),
+            "{response:?}"
+        );
+        let line = response.to_line();
+        assert!(
+            line.contains("its replacement could not be opened") && line.contains("harness gone"),
+            "{response:?}"
+        );
+        assert!(!handle.has_pending_redirect());
+        assert_eq!(
+            handle.write_line("anything\n").unwrap_err().kind(),
+            io::ErrorKind::NotConnected,
+            "the turn kept open for the redirection must be ended"
+        );
+        let events = handle.events();
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].reason(), Some(ControlReason::NoActiveTurn));
+        let written = String::from_utf8(written.lock().unwrap().clone()).unwrap();
+        assert!(written.contains("control_request"), "{written}");
+        assert!(!written.contains("do X instead"), "{written}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn a_redirection_whose_interrupt_was_refused_is_not_taken_over() {
         use crate::domain::control::RedirectInput;
         // Nothing was stopped, so nothing may be queued behind it: a supervisor

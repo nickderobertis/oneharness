@@ -133,19 +133,6 @@ _oh_pooled_start() {
   POOLED_PID=$!
 }
 
-# Why a pooled dispatch failed: its stderr, then each result's `error` from its
-# report. The stderr alone says only that the candidate failed to start; the
-# reason — a server that exited, a handshake that timed out — is in the report,
-# which is gone with $POOLED_DIR once the suite exits.
-#   $1 the dispatch's report file (its stderr is "$1.err")
-_oh_pooled_why() {
-  local report="$1" errors
-  cat "$report.err" 2>/dev/null || printf '(no stderr at %s.err)\n' "$report"
-  errors="$(jq -r '.results[]? | select(.error != null) | "report error (\(.harness // "?") \(.status)): \(.error)"' "$report" 2>/dev/null)" ||
-    errors="(the report at $report is not JSON)"
-  [ -z "$errors" ] || printf '%s\n' "$errors"
-}
-
 oh_pooled_env() {
   _oh_phase pooled-env
   local a b report_a report_b value_a value_b digest_a digest_b out_a out_b pid_a pid_b home
@@ -167,8 +154,8 @@ oh_pooled_env() {
   a=$POOLED_PID
   OH_POOLED_PROBE="$value_b" _oh_pooled_start pooled-env-b "$report_b" "$POOLED_DIR/wb" "$probe"
   b=$POOLED_PID
-  wait "$a" || fail "pooled-env: dispatch A failed: $(_oh_pooled_why "$report_a")"
-  wait "$b" || fail "pooled-env: dispatch B failed: $(_oh_pooled_why "$report_b")"
+  wait "$a" || fail "pooled-env: dispatch A failed: $(cat "$report_a.err")"
+  wait "$b" || fail "pooled-env: dispatch B failed: $(cat "$report_b.err")"
   local tool_output='[.results[0].events[]? | select(.kind == "tool_call") | .output // empty] | join("\n")'
   out_a="$(jq -r "$tool_output" "$report_a")" ||
     fail "pooled-env: dispatch A's report is not JSON (see $report_a and $report_a.err)"
@@ -230,12 +217,12 @@ oh_pooled_kill() {
       kill -9 "$pid" 2>/dev/null || note "  the dispatch (pid $pid) had already ended"
       fail "pooled-kill: the heartbeat never started (see $POOLED_DIR/kill.json.err)"
     }
-    kill -0 "$pid" 2>/dev/null || fail "pooled-kill: the dispatch ended before its heartbeat started: $(_oh_pooled_why "$POOLED_DIR/kill.json")"
+    kill -0 "$pid" 2>/dev/null || fail "pooled-kill: the dispatch ended before its heartbeat started: $(cat "$POOLED_DIR/kill.json.err")"
   done
   if ! kill -9 "$pid" 2>/dev/null; then
     kill -0 "$pid" 2>/dev/null &&
       fail "pooled-kill: cannot SIGKILL the dispatch (pid $pid), which is still running; check that this shell owns it"
-    fail "pooled-kill: the dispatch (pid $pid) ended before it could be killed: $(_oh_pooled_why "$POOLED_DIR/kill.json")"
+    fail "pooled-kill: the dispatch (pid $pid) ended before it could be killed: $(cat "$POOLED_DIR/kill.json.err")"
   fi
   wait "$pid" 2>/dev/null || true
   # Sample the heartbeat every 0.2 s until it has been still for 1 s; the last

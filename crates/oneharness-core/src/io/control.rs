@@ -493,11 +493,27 @@ pub struct ControlHandle {
 /// turn being cancelled. "Committed but not yet deliverable" is exactly that
 /// window, and two independent fields would let a reader see a message as
 /// deliverable while its abort was still in flight.
+///
+/// On a stdin-borne abort the in-flight part is split in two, because the
+/// moment the frame's bytes are in the pipe the harness may read and answer it
+/// — before the write call returns to the run. A turn that ends while the abort
+/// is being written may be its answer, and must not be read as a turn that
+/// ended on its own: that is the race in which every redirection whose answer
+/// beat the run's own bookkeeping was refused `no_active_turn`. The turn's end
+/// never waits on the write to find out (the thread reading the harness's
+/// output must keep reading whatever the stdin pipe does), so it records that
+/// it came, keeps the turn open, and the interrupt — once its write finishes —
+/// delivers the message itself.
 enum Redirect {
     /// Nothing was committed.
     None,
-    /// Accepted from the supervisor; the abort has not landed yet.
+    /// Accepted from the supervisor; the abort has not gone out yet.
     Committed(RedirectInput),
+    /// The abort frame is being written to the harness's stdin.
+    Aborting(RedirectInput),
+    /// The turn ended while its abort frame was being written: the run kept
+    /// the turn open, and the interrupt delivers this once its write is done.
+    Answered(RedirectInput),
     /// The abort landed, so the turn is over and this is the next one.
     Deliverable(RedirectInput),
 }
@@ -907,6 +923,60 @@ impl ControlHandle {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = deadline;
     }
 
+    /// The abort frame is about to be written: a turn that ends from here on
+    /// may be its answer.
+    fn begin_abort_write(&self) {
+        let mut slot = self.redirect();
+        if let Redirect::Committed(input) = std::mem::replace(&mut *slot, Redirect::None) {
+            *slot = Redirect::Aborting(input);
+        }
+    }
+
+    /// Every abort frame is written. A redirection still waiting on the turn's
+    /// end becomes deliverable; one whose turn already ended while the frames
+    /// went out is delivered here, since the turn's end left it to this. A
+    /// delivery that cannot be written ends the turn the run kept open for it.
+    fn finish_abort_write(&self, shape: ControlShape) {
+        let answered = {
+            let mut slot = self.redirect();
+            match std::mem::replace(&mut *slot, Redirect::None) {
+                Redirect::Committed(input) | Redirect::Aborting(input) => {
+                    *slot = Redirect::Deliverable(input);
+                    None
+                }
+                Redirect::Answered(input) => Some(input),
+                other => {
+                    *slot = other;
+                    None
+                }
+            }
+        };
+        if let Some(input) = answered {
+            if !self.write_redirected_turn(shape, input) {
+                self.end_turn();
+            }
+        }
+    }
+
+    /// The abort's write failed. A turn that ended while it was going out was
+    /// kept open only for its redirection, which will now never be written, so
+    /// that turn is ended here — as the run would have ended it.
+    fn fail_abort_write(&self) {
+        let answered = {
+            let mut slot = self.redirect();
+            match std::mem::replace(&mut *slot, Redirect::None) {
+                Redirect::Answered(_) => true,
+                other => {
+                    *slot = other;
+                    false
+                }
+            }
+        };
+        if answered {
+            self.end_turn();
+        }
+    }
+
     /// The abort landed, so a committed redirection is now the next turn.
     fn release_redirect(&self) {
         let mut slot = self.redirect();
@@ -940,14 +1010,45 @@ impl ControlHandle {
     /// `shape` is passed in rather than read back off the handle: the caller is
     /// already holding the `mechanism` lock it would have to take.
     ///
-    /// A redirection whose abort had not landed when this turn ended belonged
-    /// to a turn that finished on its own: it is refused as undelivered, never
-    /// carried into a turn of its own.
+    /// A redirection whose abort had not started going out when this turn
+    /// ended belonged to a turn that finished on its own: it is refused as
+    /// undelivered, never carried into a turn of its own.
+    ///
+    /// A redirection whose abort is still being written was answered by this
+    /// end: the turn is kept open (`true`) and the interrupt, once its write
+    /// returns, delivers it — never waited on here, because waiting would stop
+    /// this thread reading the harness's output on a write into its stdin.
+    ///
+    /// The slot is read and changed under ONE acquisition of its lock, so the
+    /// interrupt finishing its write lands either before this (the message is
+    /// deliverable) or after it (the message is answered), never in between.
     fn open_redirected_turn(&self, shape: ControlShape) -> bool {
-        let Some(input) = self.take_redirect() else {
-            self.redirect_turn_ended();
-            return false;
+        let input = {
+            let mut slot = self.redirect();
+            match std::mem::replace(&mut *slot, Redirect::None) {
+                Redirect::Deliverable(input) => input,
+                Redirect::Aborting(input) | Redirect::Answered(input) => {
+                    *slot = Redirect::Answered(input);
+                    return true;
+                }
+                Redirect::Committed(_) => {
+                    drop(slot);
+                    self.settle_delivery(turn_ended_undelivered(None));
+                    return false;
+                }
+                Redirect::None => return false,
+            }
         };
+        self.write_redirected_turn(shape, input)
+    }
+
+    /// Write `input` as the prompt of the turn replacing the aborted one, once
+    /// its delivery is claimed. `true` when it was written.
+    fn write_redirected_turn(&self, shape: ControlShape, input: RedirectInput) -> bool {
+        // Withdrawn: the interrupt already told the supervisor it is theirs.
+        if self.claim_delivery().is_none() {
+            return false;
+        }
         let Some(frame) = prompt_frame(shape, input.as_str()) else {
             self.redirect_refused("this mechanism has no frame to open a turn with");
             return false;
@@ -1243,13 +1344,16 @@ impl ControlHandle {
         // unless something already claimed it — the turn can end on its own
         // while the abort is in flight — in which case what became of it is
         // the answer, so a message that was written is never called undelivered.
-        let refused = |error: String, reason: ControlReason| match &ticket {
-            Some(ticket) if !ticket.withdraw(reason, error.clone()) => {
-                self.delivery_answer(shape, ticket)
-            }
-            _ => {
-                self.abandon_redirect();
-                ControlResponse::refused(error, reason)
+        let refused = |error: String, reason: ControlReason| {
+            self.fail_abort_write();
+            match &ticket {
+                Some(ticket) if !ticket.withdraw(reason, error.clone()) => {
+                    self.delivery_answer(shape, ticket)
+                }
+                _ => {
+                    self.abandon_redirect();
+                    ControlResponse::refused(error, reason)
+                }
             }
         };
         let frames = match delivery {
@@ -1285,6 +1389,7 @@ impl ControlHandle {
             board.expect(id);
             Some(id)
         });
+        self.begin_abort_write();
         for frame in &frames {
             match self.write_line(frame) {
                 Ok(()) => {}
@@ -1324,8 +1429,9 @@ impl ControlHandle {
             }
         }
         // Every abort frame is on the child's stdin, so the message may be
-        // handed on once the harness says the turn it aborted has ended.
-        self.release_redirect();
+        // handed on once the harness says the turn it aborted has ended — or
+        // is handed on now, if it already said so while the frames went out.
+        self.finish_abort_write(shape);
         served()
     }
 
@@ -2525,18 +2631,128 @@ mod tests {
     }
 
     #[test]
-    fn a_turn_that_ends_before_its_abort_lands_refuses_the_redirection_it_was_given() {
-        // The window the old answer lied about: the message is committed, the
-        // abort is still being written, and the turn ends on its own. That turn
-        // was never redirected, so its message is refused `no_active_turn` —
-        // and not delivered into whatever comes next.
+    fn a_harness_that_answers_the_abort_before_the_run_marks_it_landed_gets_the_redirection() {
+        use std::io::BufRead;
+        // The race a loaded host hits: the abort frame is in the harness's
+        // pipe, the harness reads it and ends the turn, and the line saying so
+        // is read before the run has recorded that the abort went out. That
+        // end IS the abort's answer, so the message must become the next turn
+        // — not be refused as if the turn had ended on its own.
+        //
+        // A scripted harness: its first stdin line is the abort, which it
+        // answers with its end-of-turn document; then it echoes what it is
+        // sent next, so the replacement prompt is read back off a process.
+        const ANSWER: &str = r#"{"type":"result","subtype":"error_during_execution"}"#;
+        let dir = temp_dir("redirect-race");
+        let path = socket_path(&dir, "live")
+            .expect("a short fixture name fits every platform's socket-address budget");
+        let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
+        let handle = listener.handle();
+        let mut child = std::process::Command::new("sh")
+            .args([
+                "-c",
+                &format!("IFS= read -r abort; printf '%s\\n' '{ANSWER}'; exec cat"),
+            ])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        // The child's real stdin, holding the run inside the abort's write —
+        // after the frame has reached the harness — until the run has handled
+        // the harness's answer to it. Bounded, so a run that waits on this
+        // write to handle the answer is slowed rather than hung.
+        struct HeldUntilAnswered {
+            stdin: std::process::ChildStdin,
+            handled: std::sync::mpsc::Receiver<()>,
+            held: bool,
+        }
+        impl io::Write for HeldUntilAnswered {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.stdin.write(bytes)
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                self.stdin.flush()?;
+                if !std::mem::replace(&mut self.held, true) {
+                    let _ = self.handled.recv_timeout(std::time::Duration::from_secs(5));
+                }
+                Ok(())
+            }
+        }
+        let (answered, handled) = std::sync::mpsc::channel();
+        handle.bind(Binding::Stdin);
+        *handle
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            TurnState::Active(Box::new(HeldUntilAnswered {
+                stdin: child.stdin.take().unwrap(),
+                handled,
+                held: false,
+            }));
+
+        // The run's own reading of the harness's output, as its stdout loop
+        // does it: every line advances the turn, and an ended turn closes it.
+        let stdout = child.stdout.take().unwrap();
+        let reading = Arc::clone(&handle);
+        let reader = std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            for line in io::BufReader::new(stdout).lines() {
+                let line = line.unwrap();
+                let over = reading.advance(&line);
+                if line == ANSWER {
+                    answered.send(()).unwrap();
+                }
+                if over {
+                    reading.end_turn();
+                }
+                seen.push((line, over));
+            }
+            seen
+        });
+
+        let response = send_in_background(&path, "do X instead").join().unwrap();
+        assert!(
+            response.is_redirected(),
+            "the abort's own answer must deliver its redirection: {response:?}"
+        );
+        handle.end_turn();
+        let seen = reader.join().unwrap();
+        child.wait().ok();
+        assert_eq!(seen.len(), 2, "{seen:?}");
+        assert_eq!(
+            seen[0],
+            (ANSWER.to_string(), false),
+            "the run must keep open the turn it owes a redirection"
+        );
+        let echoed: serde_json::Value = serde_json::from_str(&seen[1].0).unwrap();
+        assert_eq!(echoed["type"], "user");
+        assert_eq!(echoed["message"]["content"][0]["text"], "do X instead");
+        let events = handle.events();
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert!(events[0].is_redirected(), "{events:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_turn_held_open_for_an_abort_that_could_not_be_written_is_ended() {
+        // The turn ends while the abort is going out, so the run keeps it open
+        // for the redirection — and then the abort's write fails. Nothing will
+        // write the message now, so the supervisor is told it is still theirs
+        // and the turn kept open for it is closed rather than left to hang
+        // until the run's timeout.
         struct Gated {
+            entered: std::sync::mpsc::Sender<()>,
             release: std::sync::mpsc::Receiver<()>,
             written: Arc<Mutex<Vec<u8>>>,
         }
         impl io::Write for Gated {
             fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                let _ = self.entered.send(());
                 let _ = self.release.recv();
+                if String::from_utf8_lossy(bytes).contains("control_request") {
+                    return Err(io::Error::new(io::ErrorKind::BrokenPipe, "harness gone"));
+                }
                 self.written
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -2547,11 +2763,12 @@ mod tests {
                 Ok(())
             }
         }
-        let dir = temp_dir("redirect-early-end");
+        let dir = temp_dir("redirect-abort-failed");
         let path = socket_path(&dir, "live")
             .expect("a short fixture name fits every platform's socket-address budget");
         let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
         let handle = listener.handle();
+        let (entered, writing) = std::sync::mpsc::channel();
         let (release, gate) = std::sync::mpsc::channel();
         let written = Arc::new(Mutex::new(Vec::new()));
         handle.bind(Binding::Stdin);
@@ -2560,46 +2777,41 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) =
             TurnState::Active(Box::new(Gated {
+                entered,
                 release: gate,
                 written: Arc::clone(&written),
             }));
 
         let pending = send_in_background(&path, "do X instead");
-        wait_for("the redirection to be committed", || {
-            handle.has_pending_redirect()
-        });
-        // The turn's own end arrives while the abort is still in flight: there
-        // is nothing to keep the turn open for.
-        let ended = std::thread::scope(|scope| {
-            let advancing =
-                scope.spawn(|| handle.advance(r#"{"type":"result","subtype":"success"}"#));
-            // The abort's write is held until the turn has ended.
-            wait_for("the turn's end to refuse the redirection", || {
-                !handle.has_pending_redirect()
-            });
-            release.send(()).unwrap();
-            advancing.join().unwrap()
-        });
-        assert!(ended, "a turn that ended on its own is over");
+        writing.recv().unwrap();
+        // Handled at once, though the abort's write is still blocked: reading
+        // the harness's output never waits on a write to its stdin.
+        assert!(
+            !handle.advance(r#"{"type":"result","subtype":"error_during_execution"}"#),
+            "a turn that may be the abort's answer is kept open for its redirection"
+        );
+        assert!(handle.has_pending_redirect());
+        release.send(()).unwrap();
         let response = pending.join().unwrap();
         assert_eq!(
             response.reason(),
-            Some(ControlReason::NoActiveTurn),
+            Some(ControlReason::NotRunning),
             "{response:?}"
         );
         assert!(
             response
                 .to_line()
-                .contains("the redirection was not delivered"),
+                .contains("could not deliver the interrupt"),
             "{response:?}"
         );
-        let written = String::from_utf8(written.lock().unwrap().clone()).unwrap();
-        assert!(written.contains("control_request"), "{written}");
-        assert!(!written.contains("do X instead"), "{written}");
+        assert!(!handle.has_pending_redirect());
         assert_eq!(
-            handle.events()[0].reason(),
-            Some(ControlReason::NoActiveTurn)
+            handle.write_line("anything\n").unwrap_err().kind(),
+            io::ErrorKind::NotConnected,
+            "the turn kept open for the redirection must be ended"
         );
+        let written = String::from_utf8(written.lock().unwrap().clone()).unwrap();
+        assert!(!written.contains("do X instead"), "{written}");
         std::fs::remove_dir_all(&dir).ok();
     }
 

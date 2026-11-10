@@ -880,6 +880,52 @@ fn server_may_hold(name: &str) -> bool {
         || name.starts_with("__LLVM_PROFILE_")
 }
 
+// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run --control` through the real pool; only codex is the repository's subprocess double, whose initialization can be made to take a set time, as committing its footprint on a loaded host does — real Codex cannot be slowed on demand within the gate. Real Codex's sharing is held by scripts/e2e-control.sh's pooled-env phase.
+/// A shared server listens only once it has initialized, so two concurrent
+/// pooled dispatches behind one whose initialization outlasts the WebSocket
+/// handshake's deadline wait for its socket rather than for an upgrade it
+/// cannot yet answer: both run on that one server, each command seeing only
+/// its own dispatch's variable — the control suite's pooled-env assertions.
+/// The double once listened first, and every connection made while it was
+/// still committing its footprint timed out its upgrade as `spawn-error`.
+#[test]
+fn concurrent_dispatches_behind_a_slow_starting_server_share_it_each_with_its_own_environment() {
+    use oneharness_core::io::websocket::HANDSHAKE_DEADLINE;
+    let startup = HANDSHAKE_DEADLINE + Duration::from_secs(1);
+    let pool = Pool::new("pool-slow-start")
+        .with_env("CODEX_MOCK_STARTUP_MS", &startup.as_millis().to_string());
+    let dispatch = |session: &str, value: &str| {
+        pool.spawn(pool.command(
+            session,
+            &["--mode", "bypass"],
+            &[("MOCK_CODEX_RUN_COMMAND", "env"), ("PER_DISPATCH", value)],
+        ))
+    };
+    let first = dispatch("slow-a", "alpha");
+    let second = dispatch("slow-b", "beta");
+    let (out_a, report_a) = Pool::finish(first);
+    let (out_b, report_b) = Pool::finish(second);
+    succeeded(&out_a, &report_a);
+    succeeded(&out_b, &report_b);
+    assert_eq!(
+        reported_server(&report_a),
+        reported_server(&report_b),
+        "the two dispatches ran on two servers"
+    );
+    let has = |env: &str, pair: &str| env.lines().any(|line| line == pair);
+    let env_a = command_output(&report_a);
+    let env_b = command_output(&report_b);
+    assert!(
+        has(&env_a, "PER_DISPATCH=alpha") && !has(&env_a, "PER_DISPATCH=beta"),
+        "{env_a}"
+    );
+    assert!(
+        has(&env_b, "PER_DISPATCH=beta") && !has(&env_b, "PER_DISPATCH=alpha"),
+        "{env_b}"
+    );
+}
+// llmlint: ignore-end[e2e_not_mocked]
+
 /// Two concurrent pooled dispatches with different values of one variable
 /// each see their own in a command the server runs for their thread; a
 /// variable only the starting dispatch has, and one the second removes

@@ -1849,19 +1849,25 @@ fn redirect_once_its_abort_lands(pool: &Pool, server: u32, session: &str, messag
     }
 }
 
+fn pool_server_records(pool: &Pool) -> Vec<Value> {
+    std::fs::read_dir(pool.path("state/oneharness/servers"))
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter_map(|e| std::fs::read_to_string(e.path().join("server.json")).ok())
+                .filter_map(|text| serde_json::from_str(&text).ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Wait until server `pid`, its last lease released, has lingered out and been
-/// stopped, and its pool entry names no server.
+/// stopped, and the pool records no server.
 fn await_lingered_out(pool: &Pool, pid: u32) {
-    let servers = pool.path("state").join("oneharness").join("servers");
     let stop =
         Duration::from_millis(LINGER_MS) + DEAD_LEASE_SWEEP_INTERVAL * 3 + Duration::from_secs(10);
     wait_for("the lingered-out server to stop", stop, || {
-        !alive(pid)
-            && std::fs::read_dir(&servers).is_ok_and(|entries| {
-                !entries
-                    .flatten()
-                    .any(|e| e.path().join("server.json").is_file())
-            })
+        !alive(pid) && pool_server_records(pool).is_empty()
     });
 }
 
@@ -1876,7 +1882,7 @@ fn turns_on(pool: &Pool, server: u32, thread: &str) -> Vec<Value> {
         .collect()
 }
 
-// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run --control` through the real pool and its real linger; only codex is the repository's subprocess double, because the gate cannot run real Codex, and real Codex cannot be made to refuse a second turn, die on interrupt, or hold an aborted turn's end behind a gate on demand. Real Codex's redirect is held live by scripts/e2e-control.sh's `oh_control_redirect_enforce`.
+// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run --control` and `oneharness interrupt --input` through the real pool and its real linger; only codex is the repository's subprocess double, because the gate cannot run real Codex, and real Codex cannot be made to refuse a second turn, die on interrupt, or hold an aborted turn's end behind a gate on demand. Real Codex's redirect is held live by scripts/e2e-control.sh's `oh_control_redirect_enforce`.
 /// On the shared app-server, as on every mechanism: a redirect is answered
 /// `redirected` only once the server has opened the replacement turn with the
 /// message. The server holds the aborted turn's end behind a gate, so the
@@ -1933,6 +1939,12 @@ fn pooled_redirect_journey(pool: Pool, after_each_server_stops: bool) {
         ];
         let child = pool.spawn(pool.command(session, &[], &envs));
         let server = pool.await_a_server_with_live_turns(1);
+        // While its lease is held the pool records the server, so the linger
+        // wait below cannot pass merely because it watches the wrong place.
+        assert!(
+            !pool_server_records(&pool).is_empty(),
+            "{session}: the pool records no server while one holds a turn"
+        );
         if let (true, Some(stopped)) = (after_each_server_stops, previous) {
             assert_ne!(server, stopped, "{session}: the stopped server served it");
             assert!(

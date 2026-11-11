@@ -10,7 +10,10 @@
 #   network-recorder-preflight.sh [PYTHON]   (default: python3 on PATH)
 set -euo pipefail
 
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || {
+  echo "network-recorder-preflight: cannot resolve the repository root from ${BASH_SOURCE[0]}; run it as scripts/network-recorder-preflight.sh from a readable checkout" >&2
+  exit 1
+}
 python="${1:-python3}"
 by_hand="run \`$python -I scripts/e2e-netmeasure.py --line-file /tmp/line.jsonl -- true\` by hand and read its stderr"
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/oh-net-preflight-XXXXXX")" || {
@@ -19,8 +22,17 @@ scratch="$(mktemp -d "${TMPDIR:-/tmp}/oh-net-preflight-XXXXXX")" || {
 }
 trap 'rm -rf "$scratch" || echo "network-recorder-preflight: could not remove $scratch; delete it by hand" >&2' EXIT
 
+"$python" -I -c '' || {
+  echo "network-recorder-preflight: cannot run the interpreter \`$python\` (its error is above); install python3 or pass a working one as the first argument" >&2
+  exit 1
+}
+status=0
 "$python" -I "$root/scripts/e2e-netmeasure.py" \
-  --line-file "$scratch/preflight.jsonl" --launch-id preflight -- true
+  --line-file "$scratch/preflight.jsonl" --launch-id preflight -- true || status=$?
+if [ "$status" -ne 0 ]; then
+  echo "network-recorder-preflight: the recorder launch of \`true\` exited $status (its stderr is above); $by_hand" >&2
+  exit 1
+fi
 "$python" -I - "$scratch/preflight.jsonl" "$by_hand" <<'PY'
 import json, sys
 

@@ -996,6 +996,40 @@ class Preflight(unittest.TestCase):
         self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
         self.assertIn(f"cannot create scratch space under {tmp / 'missing'}", run.stderr)
 
+    def test_it_fails_naming_an_interpreter_it_cannot_run(self) -> None:
+        missing = scratch(self) / "no-such-python"
+        run = subprocess.run(
+            [BASH, str(PREFLIGHT), str(missing)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+        self.assertIn(f"cannot run the interpreter `{missing}`", run.stderr)
+        self.assertIn("pass a working one as the first argument", run.stderr)
+
+    def test_it_fails_naming_the_exit_of_a_recorder_that_does_not_finish(self) -> None:
+        tmp = scratch(self)
+        python = tmp / "python"
+        python.write_text(
+            "#!/usr/bin/env bash\n"
+            'if [ "${2##*/}" = e2e-netmeasure.py ]; then echo "recorder broke" >&2; exit 3; fi\n'
+            f'exec {shlex.quote(sys.executable)} "$@"\n'
+        )
+        python.chmod(0o755)
+        run = subprocess.run(
+            [BASH, str(PREFLIGHT), str(python)],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "TMPDIR": str(tmp)},
+            check=False,
+        )
+        self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+        self.assertIn("recorder broke", run.stderr)
+        self.assertIn("the recorder launch of `true` exited 3", run.stderr)
+        self.assertIn("by hand and read its stderr", run.stderr)
+        self.assertEqual(list(tmp.glob("oh-net-preflight-*")), [], "scratch was left")
+
     def test_it_fails_where_there_is_no_pasta(self) -> None:
         run = self.run_preflight(path_without(scratch(self), "pasta"))
         self.assertEqual(run.returncode, 1, run.stdout + run.stderr)

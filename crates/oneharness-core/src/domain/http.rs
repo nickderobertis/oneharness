@@ -488,6 +488,7 @@ pub fn open_request(opening: &TurnOpening) -> HttpRequest {
                 "client_id": client.as_str(),
                 "path": cwd.to_string(),
                 "yolo": decision.allows(),
+                // llmlint: ignore[contracts_have_one_source_or_a_drift_gate] Crush's server defines this field and publishes no schema oneharness could derive it from; its drift gate is the live crush journey: `just live-crush` (the required check jobs and e2e-crush.yml) installs the latest crush unpinned and runs `oh_long_prompt_enforce crush`'s `control` journey, a permissive turn through these routes, which is what failed when v0.100 removed `permissions/skip`. The pre-v0.100 shapes are crush's frozen past releases, checked against the real v0.87.0 and v0.100.0 servers when this was written.
                 "permission_mode": crush_permission_mode(*decision),
             })),
         ),
@@ -572,6 +573,7 @@ pub fn interrupt_request(address: &TurnAddress) -> HttpRequest {
     }
 }
 
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] Crush's permission routes, payloads and its mux's unrouted answer are its server's own and published in no schema oneharness could derive them from; its drift gate is the live crush journey: `just live-crush` (the required check jobs and e2e-crush.yml) installs the latest crush unpinned and runs `oh_long_prompt_enforce crush`'s `control` journey, a permissive turn through these routes, which is what failed when v0.100 removed `permissions/skip`. The pre-v0.100 shapes are crush's frozen past releases, checked against the real v0.87.0 and v0.100.0 servers when this was written.
 /// Crush's name for the posture `decision` asks for, as its v0.100+ workspace
 /// API spells it. `yolo` is what `--yolo` (and the older `permissions/skip`)
 /// always meant: approve every request while crush keeps its exec-time block
@@ -641,6 +643,7 @@ pub fn legacy_skip_permissions_request(
 pub fn is_unrouted(status: StatusCode, body: &str) -> bool {
     status.get() == 404 && body.trim() == "404 page not found"
 }
+// llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 
 /// The request that answers one permission ask, or `None` when the ask is not
 /// this turn's to answer.

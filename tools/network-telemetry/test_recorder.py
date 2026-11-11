@@ -843,6 +843,31 @@ class MalformedResult(unittest.TestCase):
         self.assertEqual(list(tmp.glob("oh-netmeasure-*")), [])
 
 
+def confined_pasta(tmp: Path) -> Path:
+    """A directory holding a stand-in for Ubuntu 26.04's confined pasta: it
+    starts only a program whose resolved path is under /usr/bin or /bin
+    (26.04's /usr/bin/env resolves into uutils' /usr/lib/cargo/bin), and drops
+    what a secure exec drops."""
+    confined = tmp / "confined-pasta"
+    confined.mkdir()
+    (confined / "pasta").write_text(
+        "#!/usr/bin/env bash\n"
+        'while [ "$1" != -- ]; do shift; done\n'
+        "shift\n"
+        'case "$1" in\n'
+        "  /usr/bin/env | /bin/env) target=/usr/lib/cargo/bin/coreutils/env ;;\n"
+        '  *) target=$(realpath -- "$(command -v -- "$1")") ;;\n'
+        "esac\n"
+        'case "$target" in\n'
+        "  /usr/bin/* | /bin/*) ;;\n"
+        '  *) echo "Failed to start command or shell: Permission denied" >&2; exit 1 ;;\n'
+        "esac\n"
+        'exec env -u TMPDIR -u LD_LIBRARY_PATH "$@"\n'
+    )
+    (confined / "pasta").chmod(0o755)
+    return confined
+
+
 class ConfinedPasta(unittest.TestCase):
     @unittest.skipUnless(
         sys.platform.startswith("linux"), "the recorder's namespace path is Linux's"
@@ -859,23 +884,7 @@ class ConfinedPasta(unittest.TestCase):
         # pasta enforcing all of that must still reach the namespace's init,
         # which then sees the caller's environment whole.
         tmp = scratch(self)
-        confined = tmp / "confined-pasta"
-        confined.mkdir()
-        (confined / "pasta").write_text(
-            "#!/usr/bin/env bash\n"
-            'while [ "$1" != -- ]; do shift; done\n'
-            "shift\n"
-            'case "$1" in\n'
-            "  /usr/bin/env | /bin/env) target=/usr/lib/cargo/bin/coreutils/env ;;\n"
-            '  *) target=$(realpath -- "$(command -v -- "$1")") ;;\n'
-            "esac\n"
-            'case "$target" in\n'
-            "  /usr/bin/* | /bin/*) ;;\n"
-            '  *) echo "Failed to start command or shell: Permission denied" >&2; exit 1 ;;\n'
-            "esac\n"
-            'exec env -u TMPDIR -u LD_LIBRARY_PATH "$@"\n'
-        )
-        (confined / "pasta").chmod(0o755)
+        confined = confined_pasta(tmp)
         seen = tmp / "init-environment"
         ran = tmp / "ran"
         real = tmp / "counting-double"
@@ -908,6 +917,44 @@ class ConfinedPasta(unittest.TestCase):
         self.assertEqual(environment.get("OH_NET.NOT_AN_IDENTIFIER"), "kept")
         self.assertFalse(list((tmp / ".pending").glob("*")))
         self.assertEqual(list(tmp.glob("oh-netmeasure-*")), [])
+
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"), "the recorder's namespace path is Linux's"
+    )
+    def test_the_namespace_bash_runs_no_startup_file_or_inherited_function(self) -> None:
+        # The bash pasta starts runs only the recorder's restore-and-exec: a
+        # caller's $BASH_ENV, or an exported function shadowing the `exec` it
+        # ends in, must not run there. Each acts only in that bash (its -c
+        # string), since every other bash on the way legitimately reads it.
+        for channel in ("BASH_ENV", "BASH_FUNC_exec%%"):
+            with self.subTest(channel):
+                tmp = scratch(self)
+                hijacked = tmp / "hijacked"
+                caller_code = (
+                    "case ${BASH_EXECUTION_STRING:-} in *'export \"$1\"'*) "
+                    f"echo ran >>{shlex.quote(str(hijacked))} ;; esac"
+                )
+                if channel == "BASH_ENV":
+                    startup = tmp / "bash-env"
+                    startup.write_text(caller_code + "\n")
+                    planted = str(startup)
+                else:
+                    planted = "() { " + caller_code + '; builtin exec "$@"; }'
+                real = tmp / "true-double"
+                real.write_text("#!/usr/bin/env bash\nbuiltin exit 0\n")
+                real.chmod(0o755)
+                file = tmp / "codex.jsonl"
+                env = {
+                    "PATH": f"{confined_pasta(tmp)}{os.pathsep}{os.environ['PATH']}",
+                    "TMPDIR": str(tmp),
+                    channel: planted,
+                }
+                run = run_shim(tmp, [str(real)], ["exec", "x"], file=file, env=env)
+                self.assertEqual(run.returncode, 0, run.stderr)
+                (start,) = starts(lines(file))
+                (line,) = measurements(lines(file), start["launch_id"])
+                self.assertNotIn("Permission denied", line.get("reason", ""), line)
+                self.assertFalse(hijacked.exists(), f"the namespace bash ran {channel}'s code")
 
 
 PREFLIGHT = SCRIPTS / "network-recorder-preflight.sh"

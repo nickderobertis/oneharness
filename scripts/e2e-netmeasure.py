@@ -518,14 +518,43 @@ def namespace_init(scratch: Path, deadline: float, argv: list[str]) -> int:
     return 0
 
 
+def through_env(argv: list[str]) -> list[bytes]:
+    """The command pasta starts in the namespace: ARGV, by way of env.
+
+    Ubuntu 26.04's passt confines /usr/bin/pasta under its own AppArmor
+    profile (`usr.bin.pasta`; 24.04's has none) whose one exec rule is
+    `/{usr/,}bin/** Ux`: pasta may start a program under /usr/bin or /bin and
+    nothing else, so a toolcache or uv python is refused with "Failed to start
+    command or shell: Permission denied". env is under /usr/bin; and since `Ux`
+    is a secure exec, whose loader drops LD_LIBRARY_PATH, TMPDIR and the like,
+    env re-sets this process's whole environment from its arguments, which no
+    exec scrubs. Without an env there is no such profile to satisfy."""
+    env = next((p for p in ("/usr/bin/env", "/bin/env") if os.access(p, os.X_OK)), None)
+    command = [os.fsencode(word) for word in argv]
+    if env is None:
+        return command
+    pairs = [k + b"=" + v for k, v in os.environb.items() if k and b"=" not in k]
+    return [os.fsencode(env), b"--", *pairs, *command]
+
+
 def supervise(args: argparse.Namespace, pasta: str, scratch: Path, life: int) -> Outcome:
     """In its own session: run pasta, stop the namespace if the shim goes, write the line."""
     t0 = time.monotonic()
-    inner = [sys.executable, os.path.abspath(__file__), "--_init", str(scratch), "--", *args.argv]
+    inner = through_env(
+        [sys.executable, os.path.abspath(__file__), "--_init", str(scratch), "--", *args.argv]
+    )
     no_ports = ["-t", "none", "-u", "none", "-T", "none", "-U", "none"]
     try:
         pasta_run = subprocess.Popen(
-            [pasta, "--config-net", "--quiet", "-4", *no_ports, "--", *inner],
+            [
+                os.fsencode(pasta),
+                b"--config-net",
+                b"--quiet",
+                b"-4",
+                *map(os.fsencode, no_ports),
+                b"--",
+                *inner,
+            ],
             stderr=subprocess.PIPE,
         )
     except OSError as error:

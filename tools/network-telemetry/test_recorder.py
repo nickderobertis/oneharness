@@ -23,6 +23,7 @@ from support import (
     NETMEASURE,
     NETSHIM,
     OBSERVER,
+    SCRIPTS,
     WINDOWS,
     LaunchId,
     Record,
@@ -839,6 +840,107 @@ class MalformedResult(unittest.TestCase):
         self.assertIn("the measuring supervisor failed (ValueError", line["reason"])
         self.assertFalse(list((tmp / ".pending").glob("*")))
         self.assertEqual(list(tmp.glob("oh-netmeasure-*")), [])
+
+
+class ConfinedPasta(unittest.TestCase):
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"), "the recorder's namespace path is Linux's"
+    )
+    def test_a_pasta_confined_to_starting_system_binaries_reaches_the_init_with_its_environment(
+        self,
+    ) -> None:
+        # Ubuntu 26.04's passt confines pasta (`usr.bin.pasta`): it may start
+        # only a program under /usr/bin or /bin (`/{usr/,}bin/** Ux`), and that
+        # secure exec drops TMPDIR, LD_LIBRARY_PATH and the like. A stand-in
+        # pasta enforcing both must still reach the namespace's init, which
+        # then sees the caller's environment whole.
+        tmp = scratch(self)
+        confined = tmp / "confined-pasta"
+        confined.mkdir()
+        (confined / "pasta").write_text(
+            "#!/usr/bin/env bash\n"
+            'while [ "$1" != -- ]; do shift; done\n'
+            "shift\n"
+            'target=$(realpath -- "$(command -v -- "$1")")\n'
+            'case "$target" in\n'
+            "  /usr/bin/* | /bin/*) ;;\n"
+            '  *) echo "Failed to start command or shell: Permission denied" >&2; exit 1 ;;\n'
+            "esac\n"
+            'exec env -u TMPDIR -u LD_LIBRARY_PATH "$@"\n'
+        )
+        (confined / "pasta").chmod(0o755)
+        seen = tmp / "init-environment"
+        ran = tmp / "ran"
+        real = tmp / "counting-double"
+        real.write_text(f'#!/usr/bin/env bash\necho run >>"{ran}"\n')
+        real.chmod(0o755)
+        file = tmp / "codex.jsonl"
+        kept_library_path = str(tmp / "no-such-library-dir")
+        env = {
+            "PATH": f"{confined}{os.pathsep}{os.environ['PATH']}",
+            "TMPDIR": str(tmp),
+            "LD_LIBRARY_PATH": kept_library_path,
+            # Started by the init before anything needs privilege: what it
+            # sees is the init's own environment.
+            "OH_E2E_NET_OBSERVER": json.dumps(["bash", "-c", 'env >"$0"; echo ready', str(seen)]),
+        }
+        run = run_shim(tmp, [str(real)], ["exec", "x"], file=file, env=env)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(ran.read_text().splitlines(), ["run"], "the launch ran other than once")
+        (start,) = starts(lines(file))
+        (line,) = measurements(lines(file), start["launch_id"])
+        self.assertNotIn("Permission denied", line.get("reason", ""), line)
+        self.assertTrue(seen.exists(), f"pasta never started the namespace's init: {line}")
+        environment = dict(
+            entry.split("=", 1) for entry in seen.read_text().splitlines() if "=" in entry
+        )
+        self.assertEqual(environment.get("TMPDIR"), str(tmp))
+        self.assertEqual(environment.get("LD_LIBRARY_PATH"), kept_library_path)
+        self.assertFalse(list((tmp / ".pending").glob("*")))
+        self.assertEqual(list(tmp.glob("oh-netmeasure-*")), [])
+
+
+PREFLIGHT = SCRIPTS / "network-recorder-preflight.sh"
+
+
+@unittest.skipIf(WINDOWS, "the preflight guards CI's Linux runners")
+class Preflight(unittest.TestCase):
+    def run_preflight(self, path: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [BASH, str(PREFLIGHT), sys.executable],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PATH": path},
+            check=False,
+        )
+
+    def test_it_fails_naming_the_refusal_when_pasta_cannot_start_the_recorder(self) -> None:
+        # What 26.04's confined pasta said to the recorder's toolcache python,
+        # while it still started the bare `true` the old preflight ran.
+        tmp = scratch(self)
+        refusing = tmp / "refusing-pasta"
+        refusing.mkdir()
+        (refusing / "pasta").write_text(
+            "#!/usr/bin/env bash\n"
+            'echo "Failed to start command or shell: Permission denied" >&2\n'
+            "exit 1\n"
+        )
+        (refusing / "pasta").chmod(0o755)
+        run = self.run_preflight(f"{refusing}{os.pathsep}{os.environ['PATH']}")
+        self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+        self.assertIn("the network recorder cannot measure here", run.stderr)
+        self.assertIn("Failed to start command or shell: Permission denied", run.stderr)
+
+    def test_it_fails_where_there_is_no_pasta(self) -> None:
+        run = self.run_preflight(path_without(scratch(self), "pasta"))
+        self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+        self.assertIn("the network recorder cannot measure here: no pasta on PATH", run.stderr)
+
+    def test_it_passes_where_the_recorder_measures_a_launch_in_the_namespace(self) -> None:
+        need_recorder(self)
+        run = self.run_preflight(os.environ["PATH"])
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIn("measured a launch in pasta's namespace", run.stdout)
 
 
 class Unstarted(unittest.TestCase):

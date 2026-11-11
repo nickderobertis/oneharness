@@ -54,11 +54,12 @@ scripts/e2e-netmeasure.py
 scripts/install-e2e.sh'
 
 # What one suite reads beyond the shared list: codex's network budgets, which
-# `just live-codex` checks after its suite (scripts/e2e-network-budget.sh).
+# `just live-codex` checks after its suite (scripts/e2e-network-budget.sh), and
+# the recorder preflight its workflow runs (scripts/network-recorder-preflight.sh).
 extra_paths() {
   case "$1" in
     qwen) printf '%s\n' scripts/qwen-request-trace.cjs ;;
-    codex) printf '%s\n' scripts/e2e-network-budget.sh "live/pr-matrix/harness/codex/**" python/uv.lock ;;
+    codex) printf '%s\n' scripts/e2e-network-budget.sh scripts/network-recorder-preflight.sh "live/pr-matrix/harness/codex/**" python/uv.lock ;;
   esac
 }
 

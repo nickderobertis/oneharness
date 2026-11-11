@@ -28,6 +28,7 @@ on:
       - scripts/install-e2e.sh
       - scripts/e2e-codex.sh
       - scripts/e2e-network-budget.sh
+      - scripts/network-recorder-preflight.sh
       - live/pr-matrix/harness/codex/**
       - python/uv.lock
       - .github/workflows/e2e-codex.yml
@@ -114,6 +115,13 @@ jobs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           pasta --config-net --quiet -- true
       # llmlint: ignore-end[least_privilege_grants, changed_behavior_has_e2e]
+      # A pasta that starts `true` can still refuse the recorder: Ubuntu
+      # 26.04's passt confines pasta to starting programs under /usr/bin and
+      # /bin, and refused the toolcache python the recorder runs in its
+      # namespace. So the recorder itself must measure one launch here.
+      - name: Prove the network recorder measures in pasta's namespace
+        if: runner.os == 'Linux'
+        run: bash scripts/network-recorder-preflight.sh
       - name: Install Codex CLI
         run: |
           npm install -g @openai/codex

@@ -1876,6 +1876,7 @@ fn turns_on(pool: &Pool, server: u32, thread: &str) -> Vec<Value> {
         .collect()
 }
 
+// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run --control` through the real pool and its real linger; only codex is the repository's subprocess double, because the gate cannot run real Codex, and real Codex cannot be made to refuse a second turn, die on interrupt, or hold an aborted turn's end behind a gate on demand. Real Codex's redirect is held live by scripts/e2e-control.sh's `oh_control_redirect_enforce`.
 /// On the shared app-server, as on every mechanism: a redirect is answered
 /// `redirected` only once the server has opened the replacement turn with the
 /// message. The server holds the aborted turn's end behind a gate, so the
@@ -1901,12 +1902,10 @@ fn a_pooled_redirect_is_answered_and_refused_on_a_server_started_after_the_last_
     pooled_redirect_journey(Pool::new("pool-redirect-relinger"), true);
 }
 
-/// The body of the pooled redirect journeys: `delivered`, `refused` and
-/// `orphaned`, one session after another in `pool`. With
-/// `after_each_server_stops`, each session after the first dispatches only once
-/// the server the session before ran on has lingered out and stopped, and the
-/// journey asserts it was then served by another server while the stopped
-/// one's record stayed.
+/// The body of the pooled redirect journeys. With `after_each_server_stops`,
+/// the stopped server's record must still be there when the next session is
+/// served: only then has the journey met the case that broke the old
+/// one-server wait, rather than a pool that happened to keep one server.
 fn pooled_redirect_journey(pool: Pool, after_each_server_stops: bool) {
     let mut previous: Option<u32> = None;
     for (session, knob) in [
@@ -2036,6 +2035,7 @@ fn pooled_redirect_journey(pool: Pool, after_each_server_stops: bool) {
         assert_eq!(carried, 0, "{session}: {turns:?}");
     }
 }
+// llmlint: ignore-end[e2e_not_mocked]
 
 /// A zero-work overload on a pooled turn repeats the turn on the shared
 /// server — a fresh lease, the same server — and recovers within

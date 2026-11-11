@@ -17,5 +17,6 @@ UTC instants `scripts/e2e-lib.sh` and `UtcInstant` must agree on
   each claim cites crush's source at the release's tagged commit
   (`path:line` + the line verbatim), and `observed` is that release's real
   server answering. A new crush release that changes the posture routes or
-  fields gets a NEW entry with both, never an edit to an older one; bumping
-  the justfile's crush pin without an entry fails `oneharness-core`'s test.
+  fields gets a NEW entry with both, never an edit to an older one
+  (`the_crush_http_api_fixture_is_backed_by_its_pinned_source_and_covers_the_pinned_release`
+  in `crates/oneharness-core/src/domain/http.rs` holds the pin to it).

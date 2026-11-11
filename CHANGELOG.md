@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.28.1](https://github.com/nickderobertis/oneharness/compare/v0.28.0...v0.28.1) - 2026-11-11
+
+### Fixed
+
+- crush permissions via current API, telemetry namespace on Ubuntu 26.04, copilot prompt budget ([#1573](https://github.com/nickderobertis/oneharness/pull/1573))
+
 ## [0.28.0](https://github.com/nickderobertis/oneharness/compare/v0.27.2...v0.28.0) - 2026-11-05
 
 ### Fixed

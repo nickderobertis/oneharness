@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -940,29 +941,60 @@ class Preflight(unittest.TestCase):
         self.assertIn("the network recorder cannot measure here", run.stderr)
         self.assertIn("Failed to start command or shell: Permission denied", run.stderr)
 
-    def test_it_fails_naming_a_recorder_line_that_is_not_an_object(self) -> None:
-        # A python standing in for the recorder's alone: the preflight's own
-        # check of its line runs under the real one.
+    def test_it_fails_naming_each_line_the_recorder_should_never_write(self) -> None:
+        # A python standing in for the recorder's alone, writing CONTENT (or no
+        # file) as its line file: the preflight's own check of that line runs
+        # under the real python, and must name the fault and the next step.
+        by_hand = "by hand and read its stderr"
+        for name, content, expected in (
+            ("no file", None, "left no readable JSON lines"),
+            ("not JSON", "{not json\n", "left no readable JSON lines"),
+            ("no line", "", "wrote 0 lines for one launch, not 1"),
+            ("two lines", '{"a": 1}\n{"a": 2}\n', "wrote 2 lines for one launch, not 1"),
+            ("not an object", '["netns-pasta"]\n', "is not a JSON object: ['netns-pasta']"),
+            (
+                "no reason",
+                '{"method": "unavailable"}\n',
+                "cannot measure here: it recorded method 'unavailable' without a reason",
+            ),
+        ):
+            with self.subTest(name):
+                tmp = scratch(self)
+                write = "" if content is None else f"  printf '%s' {shlex.quote(content)} >\"$4\"\n"
+                python = tmp / "python"
+                python.write_text(
+                    "#!/usr/bin/env bash\n"
+                    'if [ "${2##*/}" = e2e-netmeasure.py ]; then  # -I SCRIPT --line-file FILE\n'
+                    f"{write}"
+                    "  exit 0\n"
+                    "fi\n"
+                    f'exec "{sys.executable}" "$@"\n'
+                )
+                python.chmod(0o755)
+                run = subprocess.run(
+                    [BASH, str(PREFLIGHT), str(python)],
+                    capture_output=True,
+                    text=True,
+                    env={**os.environ, "TMPDIR": str(tmp)},
+                    check=False,
+                )
+                self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+                self.assertIn(expected, run.stderr)
+                self.assertIn(by_hand, run.stderr)
+                self.assertNotIn("Traceback", run.stderr)
+                self.assertEqual(list(tmp.glob("oh-net-preflight-*")), [], "scratch was left")
+
+    def test_it_fails_naming_scratch_space_it_cannot_create(self) -> None:
         tmp = scratch(self)
-        python = tmp / "python"
-        python.write_text(
-            "#!/usr/bin/env bash\n"
-            'if [ "${2##*/}" = e2e-netmeasure.py ]; then  # -I SCRIPT --line-file FILE\n'
-            '  printf \'["netns-pasta"]\\n\' >"$4"\n'
-            "  exit 0\n"
-            "fi\n"
-            f'exec "{sys.executable}" "$@"\n'
-        )
-        python.chmod(0o755)
         run = subprocess.run(
-            [BASH, str(PREFLIGHT), str(python)],
+            [BASH, str(PREFLIGHT), sys.executable],
             capture_output=True,
             text=True,
+            env={**os.environ, "TMPDIR": str(tmp / "missing")},
             check=False,
         )
         self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
-        self.assertIn("is not a JSON object: ['netns-pasta']", run.stderr)
-        self.assertNotIn("Traceback", run.stderr)
+        self.assertIn(f"cannot create scratch space under {tmp / 'missing'}", run.stderr)
 
     def test_it_fails_where_there_is_no_pasta(self) -> None:
         run = self.run_preflight(path_without(scratch(self), "pasta"))

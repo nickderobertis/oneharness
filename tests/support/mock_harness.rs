@@ -62,6 +62,8 @@
 //!                   A delay above `MAX_REPLY_DELAY_MS` is refused.
 //!   MOCK_LONG_RECEIPT answers the live helper marker turns; MOCK_LONG_OMIT_SYSTEM
 //!                     or MOCK_LONG_OMIT_USER drops one marker to prove the helper fails.
+//!   MOCK_LONG_STRUCTURED_SYSTEM replaces the structured turn's system answer,
+//!                     `{}` standing for the delivered system marker.
 //!   MOCK_SYSTEM_FILE_RECORD records the native system file before control starts.
 //!   MOCK_CRUSH_HTTP_LOG serves the Crush Unix HTTP protocol and logs requests.
 //!   MOCK_DELIVERY_FILE appends delivery JSON before normal scripted output.
@@ -1122,6 +1124,12 @@ fn long_receipt_text(prompt: &str) -> String {
         marker("SYSTEMONEHARNESS-LIVE-")
     };
     if prompt.contains("Return a JSON object") {
+        // A recorded model answer for the system field, with `{}` standing for
+        // the delivered marker (empty when it was not delivered).
+        let system = match std::env::var("MOCK_LONG_STRUCTURED_SYSTEM") {
+            Ok(answer) => answer.replace("{}", &system),
+            Err(_) => system,
+        };
         serde_json::json!({"user":user,"system":system}).to_string()
     } else {
         format!("{user} {system}")

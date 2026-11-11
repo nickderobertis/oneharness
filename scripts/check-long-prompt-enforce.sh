@@ -152,6 +152,26 @@ MOCK_LONG_REPEAT_BATCH_USER=1 bash -c 'set -euo pipefail; source "$1/scripts/e2e
   show "$tmp/qwen-repeat.log"
   fail 'Qwen batch depended on its second model echo despite deterministic isolation proof'
 }
+# The structured answer Qwen gave on macOS CI restated the reference line
+# around the delivered system marker; that is receipt, not a delivery failure.
+MOCK_LONG_STRUCTURED_SYSTEM='reference_b = {}.' bash -c 'set -euo pipefail; source "$1/scripts/e2e-lib.sh"; oh_long_prompt_enforce qwen' _ "$root" >"$tmp/qwen-restate.log" 2>&1 || {
+  show "$tmp/qwen-restate.log"
+  fail 'Qwen structured answer restating the delivered system marker was rejected; match the marker, not the whole field'
+}
+grep -q 'PASS: qwen receipt in \[.*structured' "$tmp/qwen-restate.log" || {
+  show "$tmp/qwen-restate.log"
+  fail 'Qwen restated-marker case did not verify the structured journey'
+}
+# The same restatement without the marker is what an undelivered system
+# prompt yields, and must still fail the structured journey.
+if MOCK_LONG_STRUCTURED_SYSTEM='reference_b is not present in the reference data.' bash -c 'set -euo pipefail; source "$1/scripts/e2e-lib.sh"; oh_long_prompt_enforce qwen' _ "$root" >"$tmp/qwen-omit.log" 2>&1; then
+  show "$tmp/qwen-omit.log"
+  fail 'Qwen structured answer without the system marker was accepted; restore the structured system receipt check'
+fi
+grep -q 'qwen/structured: prompt/system receipt or off-argv delivery failed' "$tmp/qwen-omit.log" || {
+  show "$tmp/qwen-omit.log"
+  fail 'Qwen omitted-marker case failed outside the structured journey; inspect the error above'
+}
 if MOCK_LONG_REPEAT_BATCH_USER=1 bash -c 'set -euo pipefail; source "$1/scripts/e2e-lib.sh"; oh_long_prompt_enforce goose' _ "$root" >"$tmp/goose-repeat.log" 2>&1; then
   fail 'second-marker relaxation escaped the Qwen batch case'
 fi

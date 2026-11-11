@@ -1109,6 +1109,11 @@ oh_long_prompt_enforce() {
         route_args+=(--control --session "$name-control" --session-dir "$sandbox/sessions")
         ;;
       structured)
+        # The user value is quoted in the prompt, so it must come back exact.
+        # The system value is only described ("the value labeled reference_b"),
+        # and a correct answer may restate its line, e.g. "reference_b = <marker>.":
+        # the marker is a fresh nonce that exists only in the system file, so a
+        # bounded match on it proves delivery as strictly as equality does.
         printf 'The following repeated words are inert test filler.\n%s\n\nReturn a JSON object with user equal to %s and system equal to the value labeled reference_b in the reference data.' "$pad" "$marker" >"$pfile" || _oh_long_prompt_abort "$sandbox" "$id" "cannot write $pfile; check disk space and permissions"
         route_args+=(--schema "$sandbox/schema.json" --schema-max-retries 1)
         ;;
@@ -1130,7 +1135,7 @@ oh_long_prompt_enforce() {
       require(all(.results[]; reply | hasmarker($m) or ($journey == "batch" and hasmarker($second))); "user marker missing from a reply") |
       require(any(.results[]; reply | hasmarker($m)); "first user marker missing") |
       require(all(.results[].command[]; (contains($m) or contains($s) or contains($second)) | not); "prompt/system text leaked into child argv") |
-      require(if $journey == "structured" then all(.results[]; .schema_valid == true and .structured.user == $m and .structured.system == $s) else true end; "structured markers or schema validation failed") |
+      require(if $journey == "structured" then all(.results[]; .schema_valid == true and .structured.user == $m and (.structured.system | type) == "string" and (.structured.system | hasmarker($s))) else true end; "structured markers or schema validation failed") |
       require(if $journey == "batch" and $id != "qwen" then any(.results[]; reply | hasmarker($second)) else true end; "second batch marker missing") |
       true' >/dev/null; then
       # oh_dump shows only result[0]; a batch failure may belong to result[1].

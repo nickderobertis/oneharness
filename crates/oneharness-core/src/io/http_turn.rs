@@ -273,11 +273,48 @@ pub fn open(
         }
     };
 
-    if let Some(request) = http::skip_permissions_request(&address, decision) {
-        expect_ok(&client, &request, "set the permission posture")?;
-    }
+    set_permission_posture(&client, &address, decision)?;
 
     Ok(HttpTurn { client, address })
+}
+
+/// Tell the server to stop asking, where the run's posture says so and the
+/// server has one blanket switch for it.
+///
+/// Crush v0.100 replaced `permissions/skip` with `permissions/mode`, and no
+/// release serves both, so the current route is asked first and the legacy one
+/// only when the server answered that it has no such route — never on a refusal
+/// a routed handler made, which the legacy route could not cure. A server that
+/// serves neither fails the turn naming both answers.
+fn set_permission_posture(
+    client: &HttpClient,
+    address: &TurnAddress,
+    decision: PermissionDecision,
+) -> io::Result<()> {
+    const WHAT: &str = "set the permission posture";
+    let Some(request) = http::skip_permissions_request(address, decision) else {
+        return Ok(());
+    };
+    let response = client.send(&request)?;
+    if response.ok() {
+        return Ok(());
+    }
+    let refused = format!(
+        "{} {} answered {}: {}",
+        request.method().as_str(),
+        request.path(),
+        response.status,
+        response.body.trim()
+    );
+    let legacy = http::is_unrouted(response.status, &response.body)
+        .then(|| http::legacy_skip_permissions_request(address, decision))
+        .flatten();
+    match legacy {
+        Some(legacy) => expect_ok(client, &legacy, WHAT)
+            .map(drop)
+            .map_err(|err| io::Error::other(format!("{err}; before it, {refused}"))),
+        None => Err(io::Error::other(format!("could not {WHAT} ({refused})"))),
+    }
 }
 
 /// The id a create response named, or the loud failure of a server that named
@@ -1140,7 +1177,9 @@ mod crush_redirects {
     const MAX_BODY: usize = 1024 * 1024;
 
     /// One HTTP/1.1 request's path and JSON body (`Null` when it has none).
-    fn read_request(reader: &mut impl BufRead) -> Result<(String, serde_json::Value), String> {
+    pub(super) fn read_request(
+        reader: &mut impl BufRead,
+    ) -> Result<(String, serde_json::Value), String> {
         let mut line = |what: &str| -> Result<String, String> {
             let mut line = String::new();
             let read = reader
@@ -1332,5 +1371,181 @@ mod crush_redirects {
         );
         assert_eq!(events[0].reason(), Some(ControlReason::NotRunning));
         assert_eq!(prompts, vec!["keep working".to_string()]);
+    }
+}
+
+/// How a controlled crush turn tells the server to stop asking, against a
+/// crush-shaped stand-in that serves exactly one release's permission API: the
+/// `permissions/mode` route v0.100 introduced, or the `permissions/skip` route it
+/// removed (answering the other with Go's unrouted `404 page not found`, as each
+/// real release does). Driven through [`open`], the same entry `run` uses.
+#[cfg(all(test, unix))]
+mod crush_permission_posture {
+    use super::crush_redirects::read_request;
+    use super::*;
+    use crate::io::scratch::ScratchDir;
+    use serde_json::Value;
+    use std::io::{BufReader, Write};
+    use std::os::unix::net::{UnixListener, UnixStream};
+
+    /// Which permission API the stand-in serves.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Api {
+        /// crush v0.100+: `permissions/mode`; `permissions/skip` is unrouted.
+        Mode,
+        /// crush v0.99 and earlier: `permissions/skip`; `permissions/mode` is
+        /// unrouted.
+        Skip,
+        /// A release whose `permissions/mode` handler refuses the workspace
+        /// with its own JSON 404 — a refusal, not an older API.
+        ModeRefusesWorkspace,
+        /// A release serving neither route.
+        Neither,
+    }
+
+    /// Serve `api` until the test drops the listener's socket; every request's
+    /// route (query stripped) and body, in order.
+    fn serve(api: Api, listener: UnixListener, seen: Arc<Mutex<Vec<(String, Value)>>>) {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { return };
+            let Ok((path, body)) =
+                read_request(&mut BufReader::new(UnixStream::try_clone(&stream).unwrap()))
+            else {
+                return;
+            };
+            let route = path.split('?').next().unwrap().to_string();
+            seen.lock().unwrap().push((route.clone(), body));
+            let unrouted = ("404 Not Found", "text/plain", "404 page not found\n");
+            let (status, kind, reply) = if route == "/v1/workspaces" {
+                ("200 OK", "application/json", r#"{"id":"ws-1"}"#)
+            } else if route == "/v1/workspaces/ws-1/sessions" {
+                ("200 OK", "application/json", r#"{"id":"sid-1"}"#)
+            } else if route == "/v1/workspaces/ws-1/permissions/mode" {
+                match api {
+                    Api::Mode => ("200 OK", "application/json", ""),
+                    Api::ModeRefusesWorkspace => (
+                        "404 Not Found",
+                        "application/json",
+                        r#"{"message":"workspace not found"}"#,
+                    ),
+                    Api::Skip | Api::Neither => unrouted,
+                }
+            } else if route == "/v1/workspaces/ws-1/permissions/skip" && api == Api::Skip {
+                ("200 OK", "application/json", "")
+            } else {
+                unrouted
+            };
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                reply.len()
+            );
+        }
+    }
+
+    /// Open a permissive crush turn against a stand-in serving `api`: what
+    /// `open` returned, and every request the stand-in received.
+    fn open_against(
+        api: Api,
+        decision: PermissionDecision,
+    ) -> (io::Result<HttpTurn>, Vec<(String, Value)>) {
+        let root = std::fs::canonicalize("/tmp").unwrap();
+        let dir = ScratchDir::under(&root, &format!("crush-posture-{api:?}-{decision:?}")).unwrap();
+        let server = dir.join("crush.sock");
+        let listener = UnixListener::bind(&server).unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        std::thread::spawn({
+            let seen = Arc::clone(&seen);
+            move || serve(api, listener, seen)
+        });
+        let opened = open(
+            HttpShape::Crush,
+            DialAddress::UnixSocket {
+                path: AbsolutePath::new(&server).unwrap(),
+            },
+            &AbsolutePath::new(dir.path()).unwrap(),
+            decision,
+            &client_id("crush-posture"),
+            None,
+        );
+        let seen = seen.lock().unwrap().clone();
+        (opened, seen)
+    }
+
+    fn routes(seen: &[(String, Value)]) -> Vec<&str> {
+        seen.iter().map(|(route, _)| route.as_str()).collect()
+    }
+
+    #[test]
+    fn a_current_crush_is_put_in_yolo_mode_through_its_mode_route() {
+        let (opened, seen) = open_against(Api::Mode, PermissionDecision::Allow);
+        opened.expect("a v0.100 crush accepts the posture");
+        assert_eq!(
+            routes(&seen),
+            [
+                "/v1/workspaces",
+                "/v1/workspaces/ws-1/sessions",
+                "/v1/workspaces/ws-1/permissions/mode",
+            ]
+        );
+        // Declared at creation in the spelling v0.100 reads, then set.
+        assert_eq!(seen[0].1["permission_mode"], "yolo");
+        assert_eq!(seen[2].1, serde_json::json!({"mode": "yolo"}));
+    }
+
+    #[test]
+    fn a_crush_that_predates_the_mode_route_is_told_through_permissions_skip() {
+        let (opened, seen) = open_against(Api::Skip, PermissionDecision::Allow);
+        opened.expect("a v0.99 crush accepts the posture");
+        assert_eq!(
+            routes(&seen),
+            [
+                "/v1/workspaces",
+                "/v1/workspaces/ws-1/sessions",
+                "/v1/workspaces/ws-1/permissions/mode",
+                "/v1/workspaces/ws-1/permissions/skip",
+            ]
+        );
+        assert_eq!(seen[0].1["yolo"], true);
+        assert_eq!(seen[3].1, serde_json::json!({"skip": true}));
+    }
+
+    #[test]
+    fn a_routed_refusal_fails_the_turn_without_trying_the_legacy_route() {
+        let (opened, seen) = open_against(Api::ModeRefusesWorkspace, PermissionDecision::Allow);
+        let message = opened
+            .expect_err("a refused posture fails the turn")
+            .to_string();
+        assert!(
+            message.contains("could not set the permission posture")
+                && message.contains("workspace not found"),
+            "{message}"
+        );
+        assert!(!routes(&seen).contains(&"/v1/workspaces/ws-1/permissions/skip"));
+    }
+
+    #[test]
+    fn a_crush_serving_neither_route_fails_naming_both_answers() {
+        let (opened, seen) = open_against(Api::Neither, PermissionDecision::Allow);
+        let message = opened
+            .expect_err("no posture route fails the turn")
+            .to_string();
+        assert!(
+            message.contains("permissions/skip") && message.contains("permissions/mode"),
+            "{message}"
+        );
+        assert_eq!(seen.len(), 4, "{seen:?}");
+    }
+
+    #[test]
+    fn a_restrictive_crush_turn_sends_no_blanket_switch() {
+        let (opened, seen) = open_against(Api::Mode, PermissionDecision::Deny);
+        opened.expect("nothing to set");
+        assert_eq!(
+            routes(&seen),
+            ["/v1/workspaces", "/v1/workspaces/ws-1/sessions"]
+        );
+        assert_eq!(seen[0].1["permission_mode"], "normal");
+        assert_eq!(seen[0].1["yolo"], false);
     }
 }

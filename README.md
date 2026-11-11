@@ -1888,9 +1888,10 @@ wrong:
 
 - **Both servers block on a permission decision**, exactly as ACP does. Crush
   emits `permission_request` and waits; opencode emits `permission.*`. A
-  permissive run tells crush once (`permissions/skip`) and answers opencode's
-  per request (`…/permission/{id}/reply`). Without an answer the agent never
-  runs a single tool.
+  permissive run tells crush once (`permissions/mode` set to `yolo` from crush
+  v0.100; `permissions/skip` on the earlier releases that serve no `mode`
+  route) and answers opencode's per request (`…/permission/{id}/reply`).
+  Without an answer the agent never runs a single tool.
 - **Opencode announces `session.idle` before the prompt is admitted**, not only
   after the turn ends — and its `/wait` route returns immediately in the same
   window. A driver that treats either as the end of the turn finishes every run

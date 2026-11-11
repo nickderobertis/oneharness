@@ -481,6 +481,32 @@ impl Pool {
         self.the_server()
     }
 
+    /// Wait until a running server holds `n` live turns, and answer its pid —
+    /// for a journey that dispatches one session after another into the same
+    /// world, where an earlier server may have lingered out and been replaced
+    /// between them (its record stays, so [`Self::await_live_turns`] would
+    /// count two servers forever).
+    fn await_a_server_with_live_turns(&self, n: usize) -> u32 {
+        let mut holding = None;
+        wait_for(
+            &format!("a running server holding {n} live turns"),
+            Duration::from_secs(30),
+            || {
+                let pids: Vec<u32> = self
+                    .server_pids()
+                    .into_iter()
+                    .filter(|pid| alive(*pid) && self.live_turns(*pid) == n)
+                    .collect();
+                holding = match pids.as_slice() {
+                    [pid] => Some(*pid),
+                    _ => None,
+                };
+                holding.is_some()
+            },
+        );
+        holding.expect("wait_for returned only once a server held the turns")
+    }
+
     /// The turn record server `pid` kept for `thread`.
     fn turn_of(&self, pid: u32, thread: &str) -> Value {
         self.state(pid)["turns"]
@@ -1866,7 +1892,7 @@ fn a_pooled_redirect_is_answered_on_delivery_and_refused_when_it_cannot_be() {
             (knob, value),
         ];
         let child = pool.spawn(pool.command(session, &[], &envs));
-        let server = pool.await_live_turns(1);
+        let server = pool.await_a_server_with_live_turns(1);
         let message = format!("stop and do the right thing for {session}");
         let mut answer = redirect_once_its_abort_lands(&pool, server, session, &message);
         if session == "delivered" {

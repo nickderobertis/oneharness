@@ -26,6 +26,8 @@ try:
         (line,) = [json.loads(text) for text in file if text.strip()]
 except (OSError, ValueError) as error:
     sys.exit(f"network-recorder-preflight: the recorder wrote no single line to {path} ({error}); run scripts/e2e-netmeasure.py by hand to see why")
+if not isinstance(line, dict):
+    sys.exit(f"network-recorder-preflight: the recorder's line in {path} is not a JSON object: {line!r}")
 if line.get("method") != "netns-pasta":
     sys.exit(
         "network-recorder-preflight: the network recorder cannot measure here: "

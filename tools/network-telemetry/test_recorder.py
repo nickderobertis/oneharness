@@ -850,10 +850,13 @@ class ConfinedPasta(unittest.TestCase):
         self,
     ) -> None:
         # Ubuntu 26.04's passt confines pasta (`usr.bin.pasta`): it may start
-        # only a program under /usr/bin or /bin (`/{usr/,}bin/** Ux`), and that
-        # secure exec drops TMPDIR, LD_LIBRARY_PATH and the like. A stand-in
-        # pasta enforcing both must still reach the namespace's init, which
-        # then sees the caller's environment whole.
+        # only a program whose resolved path is under /usr/bin or /bin
+        # (`/{usr/,}bin/** Ux`), and that secure exec drops TMPDIR,
+        # LD_LIBRARY_PATH and the like. 26.04's /usr/bin/env is a symlink to
+        # uutils' /usr/lib/cargo/bin/coreutils/env (coreutils-from-uutils), so
+        # pasta refuses it there as it refuses a toolcache python. A stand-in
+        # pasta enforcing all of that must still reach the namespace's init,
+        # which then sees the caller's environment whole.
         tmp = scratch(self)
         confined = tmp / "confined-pasta"
         confined.mkdir()
@@ -861,7 +864,10 @@ class ConfinedPasta(unittest.TestCase):
             "#!/usr/bin/env bash\n"
             'while [ "$1" != -- ]; do shift; done\n'
             "shift\n"
-            'target=$(realpath -- "$(command -v -- "$1")")\n'
+            'case "$1" in\n'
+            "  /usr/bin/env | /bin/env) target=/usr/lib/cargo/bin/coreutils/env ;;\n"
+            '  *) target=$(realpath -- "$(command -v -- "$1")") ;;\n'
+            "esac\n"
             'case "$target" in\n'
             "  /usr/bin/* | /bin/*) ;;\n"
             '  *) echo "Failed to start command or shell: Permission denied" >&2; exit 1 ;;\n'
@@ -880,6 +886,8 @@ class ConfinedPasta(unittest.TestCase):
             "PATH": f"{confined}{os.pathsep}{os.environ['PATH']}",
             "TMPDIR": str(tmp),
             "LD_LIBRARY_PATH": kept_library_path,
+            # No shell can export this name; it must cross in the environment.
+            "OH_NET.NOT_AN_IDENTIFIER": "kept",
             # Started by the init before anything needs privilege: what it
             # sees is the init's own environment.
             "OH_E2E_NET_OBSERVER": json.dumps(["bash", "-c", 'env >"$0"; echo ready', str(seen)]),
@@ -896,6 +904,7 @@ class ConfinedPasta(unittest.TestCase):
         )
         self.assertEqual(environment.get("TMPDIR"), str(tmp))
         self.assertEqual(environment.get("LD_LIBRARY_PATH"), kept_library_path)
+        self.assertEqual(environment.get("OH_NET.NOT_AN_IDENTIFIER"), "kept")
         self.assertFalse(list((tmp / ".pending").glob("*")))
         self.assertEqual(list(tmp.glob("oh-netmeasure-*")), [])
 
@@ -930,6 +939,30 @@ class Preflight(unittest.TestCase):
         self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
         self.assertIn("the network recorder cannot measure here", run.stderr)
         self.assertIn("Failed to start command or shell: Permission denied", run.stderr)
+
+    def test_it_fails_naming_a_recorder_line_that_is_not_an_object(self) -> None:
+        # A python standing in for the recorder's alone: the preflight's own
+        # check of its line runs under the real one.
+        tmp = scratch(self)
+        python = tmp / "python"
+        python.write_text(
+            "#!/usr/bin/env bash\n"
+            'if [ "${2##*/}" = e2e-netmeasure.py ]; then  # -I SCRIPT --line-file FILE\n'
+            '  printf \'["netns-pasta"]\\n\' >"$4"\n'
+            "  exit 0\n"
+            "fi\n"
+            f'exec "{sys.executable}" "$@"\n'
+        )
+        python.chmod(0o755)
+        run = subprocess.run(
+            [BASH, str(PREFLIGHT), str(python)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+        self.assertIn("is not a JSON object: ['netns-pasta']", run.stderr)
+        self.assertNotIn("Traceback", run.stderr)
 
     def test_it_fails_where_there_is_no_pasta(self) -> None:
         run = self.run_preflight(path_without(scratch(self), "pasta"))

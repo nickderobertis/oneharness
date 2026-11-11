@@ -58,6 +58,7 @@ import ctypes
 import json
 import math
 import os
+import re
 import select
 import shutil
 import signal
@@ -518,29 +519,54 @@ def namespace_init(scratch: Path, deadline: float, argv: list[str]) -> int:
     return 0
 
 
-def through_env(argv: list[str]) -> list[bytes]:
-    """The command pasta starts in the namespace: ARGV, by way of env.
+# Restores, in the namespace's first process, each NAME=VALUE before `--` that
+# the exec dropped, then execs what follows. A variable the shell still holds
+# came through the exec whole and is left as it is: re-exporting it would undo
+# bash's own SHLVL bookkeeping and trip on its read-only UID and the like.
+RESTORE_ENVIRONMENT = (
+    'while [ "$1" != -- ]; do [[ -v ${1%%=*} ]] || export "$1"; shift; done; shift; exec "$@"'
+)
+# What bash can export: the restore loop's NAME is a shell identifier. Any
+# other name crosses the exec in the environment itself (bash keeps it), since
+# a secure exec scrubs only the loader's own variables, all identifiers.
+SHELL_NAME = re.compile(rb"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def through_bash(argv: list[str]) -> list[bytes]:
+    """The command pasta starts in the namespace: ARGV, by way of /bin/bash.
 
     Ubuntu 26.04's passt confines /usr/bin/pasta under its own AppArmor
     profile (`usr.bin.pasta`; 24.04's has none) whose one exec rule is
-    `/{usr/,}bin/** Ux`: pasta may start a program under /usr/bin or /bin and
-    nothing else, so a toolcache or uv python is refused with "Failed to start
-    command or shell: Permission denied". env is under /usr/bin; and since `Ux`
-    is a secure exec, whose loader drops LD_LIBRARY_PATH, TMPDIR and the like,
-    env re-sets this process's whole environment from its arguments, which no
-    exec scrubs. Without an env there is no such profile to satisfy."""
-    env = next((p for p in ("/usr/bin/env", "/bin/env") if os.access(p, os.X_OK)), None)
+    `/{usr/,}bin/** Ux`, matched against the path the exec resolves to: pasta
+    may start a program that IS under /usr/bin or /bin, so a toolcache or uv
+    python is refused with "Failed to start command or shell: Permission
+    denied", and so is 26.04's /usr/bin/env, a symlink into
+    /usr/lib/cargo/bin/coreutils/ (coreutils-from-uutils). bash is a file in
+    /usr/bin there. `Ux` is a secure exec, whose loader drops LD_LIBRARY_PATH,
+    TMPDIR and the like, so bash re-sets those from its arguments before it
+    execs the interpreter; `-p` keeps it from sourcing $BASH_ENV or importing
+    functions on the way. Linux hosts the recorder measures on all have
+    /bin/bash (/usr/bin/bash where /bin is merged into /usr); one without it is
+    told so by pasta's own "Failed to start command or shell", the line's
+    reason."""
+    pairs = [k + b"=" + v for k, v in os.environb.items() if SHELL_NAME.fullmatch(k)]
     command = [os.fsencode(word) for word in argv]
-    if env is None:
-        return command
-    pairs = [k + b"=" + v for k, v in os.environb.items() if k and b"=" not in k]
-    return [os.fsencode(env), b"--", *pairs, *command]
+    return [
+        b"/bin/bash",
+        b"-p",
+        b"-c",
+        RESTORE_ENVIRONMENT.encode(),
+        b"bash",
+        *pairs,
+        b"--",
+        *command,
+    ]
 
 
 def supervise(args: argparse.Namespace, pasta: str, scratch: Path, life: int) -> Outcome:
     """In its own session: run pasta, stop the namespace if the shim goes, write the line."""
     t0 = time.monotonic()
-    inner = through_env(
+    inner = through_bash(
         [sys.executable, os.path.abspath(__file__), "--_init", str(scratch), "--", *args.argv]
     )
     no_ports = ["-t", "none", "-u", "none", "-T", "none", "-U", "none"]

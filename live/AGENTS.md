@@ -27,9 +27,10 @@ each runs from its own `.github/workflows/e2e-*.yml` (and `just live-<id>`).
   recorder resolves (`Couldn't write to /proc/self/uid_map`), so a Linux runner
   must lift `kernel.apparmor_restrict_unprivileged_userns` before the recorder
   tests and the suite. Ubuntu 26.04's passt also confines pasta itself
-  (`usr.bin.pasta`: it may start only `/{usr/,}bin/**`), so the recorder has
-  pasta start `/usr/bin/env`, which re-sets the environment and execs the real
-  python (`through_env`). A pasta that starts `true` proves nothing about the
+  (`usr.bin.pasta`: it may start only what RESOLVES under `/{usr/,}bin/`, which
+  26.04's `/usr/bin/env`, a symlink into uutils' `/usr/lib/cargo/bin/`, does
+  not), so the recorder has pasta start `/bin/bash`, which re-sets what the
+  secure exec dropped and execs the real python (`through_bash`). A pasta that starts `true` proves nothing about the
   recorder: CI's preflight is `scripts/network-recorder-preflight.sh`, which
   measures one launch through the recorder itself. The macOS and Windows legs, or a
   Linux host without them, record `"method": "unavailable"` and the budgets are

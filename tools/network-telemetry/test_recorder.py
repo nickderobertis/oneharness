@@ -913,6 +913,14 @@ class ConfinedPasta(unittest.TestCase):
 PREFLIGHT = SCRIPTS / "network-recorder-preflight.sh"
 
 
+class LineCase(NamedTuple):
+    """A recorder line file the preflight must refuse, and what it must say."""
+
+    name: str
+    content: str | None  # None: the recorder wrote no file at all
+    expected: str
+
+
 @unittest.skipIf(WINDOWS, "the preflight guards CI's Linux runners")
 class Preflight(unittest.TestCase):
     def run_preflight(self, path: str) -> subprocess.CompletedProcess[str]:
@@ -947,12 +955,12 @@ class Preflight(unittest.TestCase):
         # under the real python, and must name the fault and the next step.
         by_hand = "by hand and read its stderr"
         for name, content, expected in (
-            ("no file", None, "left no readable JSON lines"),
-            ("not JSON", "{not json\n", "left no readable JSON lines"),
-            ("no line", "", "wrote 0 lines for one launch, not 1"),
-            ("two lines", '{"a": 1}\n{"a": 2}\n', "wrote 2 lines for one launch, not 1"),
-            ("not an object", '["netns-pasta"]\n', "is not a JSON object: ['netns-pasta']"),
-            (
+            LineCase("no file", None, "left no readable JSON lines"),
+            LineCase("not JSON", "{not json\n", "left no readable JSON lines"),
+            LineCase("no line", "", "wrote 0 lines for one launch, not 1"),
+            LineCase("two lines", '{"a": 1}\n{"a": 2}\n', "wrote 2 lines for one launch, not 1"),
+            LineCase("not an object", '["netns-pasta"]\n', "is not a JSON object: ['netns-pasta']"),
+            LineCase(
                 "no reason",
                 '{"method": "unavailable"}\n',
                 "cannot measure here: it recorded method 'unavailable' without a reason",

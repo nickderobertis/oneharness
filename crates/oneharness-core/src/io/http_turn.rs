@@ -1440,8 +1440,9 @@ mod crush_permission_posture {
         (format!("{status} {reason}"), kind, body)
     }
 
-    /// Serve `api` until the test drops the listener's socket; every request's
-    /// route (query stripped) and body, in order.
+    /// Serve `api` on a detached thread that lives as long as the test
+    /// process, recording every request's route (query stripped) and body, in
+    /// order.
     fn serve(api: Api, listener: UnixListener, seen: Arc<Mutex<Vec<(String, Value)>>>) {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { return };

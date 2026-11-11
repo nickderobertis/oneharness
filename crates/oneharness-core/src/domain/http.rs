@@ -488,7 +488,6 @@ pub fn open_request(opening: &TurnOpening) -> HttpRequest {
                 "client_id": client.as_str(),
                 "path": cwd.to_string(),
                 "yolo": decision.allows(),
-                // llmlint: ignore[contracts_have_one_source_or_a_drift_gate] Crush's server defines this field and publishes no schema oneharness could derive it from; its drift gate is the live crush journey: `just live-crush` (the required check jobs and e2e-crush.yml) installs the latest crush unpinned and runs `oh_long_prompt_enforce crush`'s `control` journey, a permissive turn through these routes, which is what failed when v0.100 removed `permissions/skip`. The pre-v0.100 shapes are crush's frozen past releases, checked against the real v0.87.0 and v0.100.0 servers when this was written.
                 "permission_mode": crush_permission_mode(*decision),
             })),
         ),
@@ -573,7 +572,6 @@ pub fn interrupt_request(address: &TurnAddress) -> HttpRequest {
     }
 }
 
-// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] Crush's permission routes, payloads and its mux's unrouted answer are its server's own and published in no schema oneharness could derive them from; its drift gate is the live crush journey: `just live-crush` (the required check jobs and e2e-crush.yml) installs the latest crush unpinned and runs `oh_long_prompt_enforce crush`'s `control` journey, a permissive turn through these routes, which is what failed when v0.100 removed `permissions/skip`. The pre-v0.100 shapes are crush's frozen past releases, checked against the real v0.87.0 and v0.100.0 servers when this was written.
 /// Crush's name for the posture `decision` asks for, as its v0.100+ workspace
 /// API spells it. `yolo` is what `--yolo` (and the older `permissions/skip`)
 /// always meant: approve every request while crush keeps its exec-time block
@@ -643,7 +641,6 @@ pub fn legacy_skip_permissions_request(
 pub fn is_unrouted(status: StatusCode, body: &str) -> bool {
     status.get() == 404 && body.trim() == "404 page not found"
 }
-// llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 
 /// The request that answers one permission ask, or `None` when the ask is not
 /// this turn's to answer.
@@ -1805,6 +1802,93 @@ mod tests {
         );
         let body: Value = serde_json::from_str(legacy.body().unwrap()).unwrap();
         assert_eq!(body, json!({"skip": true}));
+    }
+
+    /// The pinned half of the crush HTTP contract
+    /// (`tests/fixtures/crush-http-api.json`; `io::http_turn` replays its
+    /// recorded answers through the real turn opener): every claim a release
+    /// makes is one of the source lines pinned at its tag, its recorded answers
+    /// agree with the claims, and the crush release this repository pins is
+    /// one it covers.
+    #[test]
+    fn the_crush_http_api_fixture_is_backed_by_its_pinned_source_and_covers_the_pinned_release() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../tests/fixtures/crush-http-api.json"
+        ))
+        .unwrap();
+        let releases = fixture["releases"].as_array().unwrap();
+        let unrouted_path = |route: &str| route.split_once(' ').unwrap().1.to_string();
+        for release in releases {
+            let version = release["version"].as_str().unwrap();
+            let commit = release["commit"].as_str().unwrap();
+            assert!(
+                commit.len() == 40 && commit.bytes().all(|b| b.is_ascii_hexdigit()),
+                "{version}: `commit` pins a full SHA"
+            );
+            let source: Vec<&str> = release["source"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|line| line.as_str().unwrap())
+                .collect();
+            let cites = |needle: &str| source.iter().any(|line| line.contains(needle));
+            let create = &release["workspace_create"];
+            let wanted = &release["permission_route"];
+            for route in [&create["route"], &wanted["route"]] {
+                let route = route.as_str().unwrap();
+                let path = unrouted_path(route);
+                assert!(
+                    cites(&format!("\"{route}\"")) || cites(&format!("apigen.Post(\"{path}\")")),
+                    "{version}: no pinned source line serves {route}"
+                );
+            }
+            let field = create["posture_field"].as_str().unwrap();
+            assert!(cites(&format!("json:\"{field}")), "{version}: {field}");
+            for value in create["posture"].as_object().unwrap().values() {
+                if let Some(value) = value.as_str() {
+                    assert!(cites(&format!("= \"{value}\"")), "{version}: {value}");
+                }
+            }
+            for key in wanted["body"].as_object().unwrap().keys() {
+                assert!(cites(&format!("json:\"{key}\"")), "{version}: {key}");
+            }
+            for route in release["unserved_routes"].as_array().unwrap() {
+                let route = route.as_str().unwrap();
+                assert!(
+                    !cites(&unrouted_path(route)),
+                    "{version}: {route} is both cited and unserved"
+                );
+                let answer = &release["observed"][route];
+                let status =
+                    StatusCode::new(u16::try_from(answer["status"].as_u64().unwrap()).unwrap())
+                        .unwrap();
+                assert!(
+                    is_unrouted(status, answer["body"].as_str().unwrap()),
+                    "{version}: {route} answered {answer}"
+                );
+            }
+            let served = &release["observed"][wanted["route"].as_str().unwrap()];
+            assert_eq!(served["status"], 200, "{version}");
+            assert_eq!(
+                release["observed"]["workspace_create"][field], create["posture"]["allow"],
+                "{version}: the created workspace reported another posture"
+            );
+        }
+        // The release `just live-variants-tools` pins, which the variants live
+        // suite installs; the unpinned live suites run the newest, which the
+        // fixture's latest entry was captured from.
+        let justfile = include_str!("../../../../justfile");
+        let pinned = justfile
+            .split("@charmland/crush@")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .expect("the justfile pins a crush release");
+        assert!(
+            releases
+                .iter()
+                .any(|r| r["version"] == format!("v{pinned}")),
+            "crush {pinned} is pinned in the justfile but has no entry in crush-http-api.json"
+        );
     }
 
     #[test]

@@ -1401,6 +1401,43 @@ mod crush_permission_posture {
         ModeRefusesWorkspace,
         /// A release serving neither route.
         Neither,
+        /// The release at this index of `tests/fixtures/crush-http-api.json`,
+        /// answering each permission route exactly as that real server did.
+        Recorded(usize),
+    }
+
+    /// The supported crush releases' recorded HTTP contract.
+    fn crush_releases() -> Vec<Value> {
+        let raw = include_str!("../../../../tests/fixtures/crush-http-api.json");
+        let fixture: Value = serde_json::from_str(raw).expect("crush-http-api.json is JSON");
+        fixture["releases"]
+            .as_array()
+            .expect("crush-http-api.json lists releases")
+            .clone()
+    }
+
+    /// What the recorded release `index` answered to `route` (crush's own
+    /// spelling, `POST /v1/workspaces/{id}/…`): status line, content type and
+    /// body. A route it recorded no answer for is one it does not serve, so it
+    /// gets Go's unrouted answer — which is what a wrong route meets for real.
+    fn recorded_answer(index: usize, route: &str) -> (String, &'static str, String) {
+        let release = &crush_releases()[index];
+        let Some(answer) = release["observed"].get(route) else {
+            return (
+                "404 Not Found".to_string(),
+                "text/plain",
+                "404 page not found\n".to_string(),
+            );
+        };
+        let status = answer["status"].as_u64().expect("recorded status");
+        let body = answer["body"].as_str().expect("recorded body").to_string();
+        let reason = if status == 200 { "OK" } else { "Not Found" };
+        let kind = if body.starts_with('{') {
+            "application/json"
+        } else {
+            "text/plain"
+        };
+        (format!("{status} {reason}"), kind, body)
     }
 
     /// Serve `api` until the test drops the listener's socket; every request's
@@ -1416,7 +1453,16 @@ mod crush_permission_posture {
             let route = path.split('?').next().unwrap().to_string();
             seen.lock().unwrap().push((route.clone(), body));
             let unrouted = ("404 Not Found", "text/plain", "404 page not found\n");
-            let (status, kind, reply) = if route == "/v1/workspaces" {
+            let recorded;
+            let (status, kind, reply) = if let (Api::Recorded(index), Some(tail)) =
+                (api, route.strip_prefix("/v1/workspaces/ws-1/permissions/"))
+            {
+                recorded = recorded_answer(
+                    index,
+                    &format!("POST /v1/workspaces/{{id}}/permissions/{tail}"),
+                );
+                (recorded.0.as_str(), recorded.1, recorded.2.as_str())
+            } else if route == "/v1/workspaces" {
                 ("200 OK", "application/json", r#"{"id":"ws-1"}"#)
             } else if route == "/v1/workspaces/ws-1/sessions" {
                 ("200 OK", "application/json", r#"{"id":"sid-1"}"#)
@@ -1428,7 +1474,7 @@ mod crush_permission_posture {
                         "application/json",
                         r#"{"message":"workspace not found"}"#,
                     ),
-                    Api::Skip | Api::Neither => unrouted,
+                    Api::Skip | Api::Neither | Api::Recorded(_) => unrouted,
                 }
             } else if route == "/v1/workspaces/ws-1/permissions/skip" && api == Api::Skip {
                 ("200 OK", "application/json", "")
@@ -1470,6 +1516,63 @@ mod crush_permission_posture {
         );
         let seen = seen.lock().unwrap().clone();
         (opened, seen)
+    }
+
+    /// The executable contract with every crush release this repository
+    /// supports, read from `tests/fixtures/crush-http-api.json` (each claim
+    /// pinned to crush's source at the release's tag, each answer captured from
+    /// that release's real server): a turn opened through [`open`] declares the
+    /// posture in the field that release reads, and ends up having sent the
+    /// permission route and body that release serves — the current route first,
+    /// the legacy one only after that release's own unrouted answer.
+    #[test]
+    fn every_supported_crush_release_is_put_in_the_runs_posture_the_way_it_reads_it() {
+        let releases = crush_releases();
+        assert!(!releases.is_empty());
+        for (index, release) in releases.iter().enumerate() {
+            let version = release["version"].as_str().unwrap();
+            let create = &release["workspace_create"];
+            assert_eq!(create["route"], "POST /v1/workspaces", "{version}");
+            let field = create["posture_field"].as_str().unwrap();
+            let expected = &release["permission_route"];
+
+            let (opened, seen) = open_against(Api::Recorded(index), PermissionDecision::Allow);
+            opened.unwrap_or_else(|err| panic!("{version}: {err}"));
+            assert_eq!(seen[0].0, "/v1/workspaces", "{version}");
+            assert_eq!(
+                seen[0].1[field], create["posture"]["allow"],
+                "{version}: {seen:?}"
+            );
+            let (route, body) = seen.last().unwrap();
+            let route = format!(
+                "POST {}",
+                route.replace("/v1/workspaces/ws-1/", "/v1/workspaces/{id}/")
+            );
+            assert_eq!(route, expected["route"].as_str().unwrap(), "{version}");
+            assert_eq!(body, &expected["body"], "{version}: {seen:?}");
+            // Nothing it does not serve is asked of it except the one probe of
+            // the current route that tells an older release apart.
+            for (sent, _) in &seen[2..seen.len() - 1] {
+                let sent = format!(
+                    "POST {}",
+                    sent.replace("/v1/workspaces/ws-1/", "/v1/workspaces/{id}/")
+                );
+                let unserved = release["unserved_routes"].as_array().unwrap();
+                assert!(unserved.iter().any(|r| r == &sent), "{version}: {sent}");
+            }
+
+            let (opened, seen) = open_against(Api::Recorded(index), PermissionDecision::Deny);
+            opened.unwrap_or_else(|err| panic!("{version}: {err}"));
+            assert_eq!(
+                seen[0].1[field], create["posture"]["deny"],
+                "{version}: {seen:?}"
+            );
+            assert_eq!(
+                seen.len(),
+                2,
+                "{version}: a restrictive turn sets nothing: {seen:?}"
+            );
+        }
     }
 
     fn routes(seen: &[(String, Value)]) -> Vec<&str> {

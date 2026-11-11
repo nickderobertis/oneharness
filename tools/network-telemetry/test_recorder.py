@@ -879,7 +879,7 @@ class ConfinedPasta(unittest.TestCase):
         seen = tmp / "init-environment"
         ran = tmp / "ran"
         real = tmp / "counting-double"
-        real.write_text(f'#!/usr/bin/env bash\necho run >>"{ran}"\n')
+        real.write_text(f"#!/usr/bin/env bash\necho run >>{shlex.quote(str(ran))}\n")
         real.chmod(0o755)
         file = tmp / "codex.jsonl"
         kept_library_path = str(tmp / "no-such-library-dir")
@@ -968,7 +968,7 @@ class Preflight(unittest.TestCase):
                     f"{write}"
                     "  exit 0\n"
                     "fi\n"
-                    f'exec "{sys.executable}" "$@"\n'
+                    f'exec {shlex.quote(sys.executable)} "$@"\n'
                 )
                 python.chmod(0o755)
                 run = subprocess.run(
@@ -1018,7 +1018,7 @@ class Unstarted(unittest.TestCase):
         tmp = scratch(self)
         ran = tmp / "ran"
         real = tmp / "counting-double"
-        real.write_text(f'#!/usr/bin/env bash\necho run >>"{ran}"\n')
+        real.write_text(f"#!/usr/bin/env bash\necho run >>{shlex.quote(str(ran))}\n")
         real.chmod(0o755)
         file = tmp / "codex.jsonl"
         run = run_shim(
@@ -1056,7 +1056,7 @@ class Unstarted(unittest.TestCase):
         (unspawnable / "pasta").chmod(0o755)
         ran = tmp / "ran"
         real = tmp / "counting-double"
-        real.write_text(f'#!/usr/bin/env bash\necho run >>"{ran}"\n')
+        real.write_text(f"#!/usr/bin/env bash\necho run >>{shlex.quote(str(ran))}\n")
         real.chmod(0o755)
         file = tmp / "codex.jsonl"
         env = {"PATH": f"{unspawnable}{os.pathsep}{os.environ['PATH']}", "TMPDIR": str(tmp)}

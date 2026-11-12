@@ -5968,13 +5968,12 @@ fn the_control_suite_s_pooled_phases_pass_and_fail_for_the_right_reason() {
 /// The suite's pooled-env dispatches share one server however late the
 /// second of them starts — here only once the first's command is already
 /// running, as a loaded host starts one: each dispatch's command waits for
-/// the other's, so both hold their leases at once. Before that rendezvous the
-/// first finished, its server was reclaimed after its linger, and the late
-/// one ran on its own, failing the phase with the message one CI failure
-/// showed ("ran on two servers"). A second that starts only after the
-/// first has finished fails the phase saying the two never ran at once,
-/// rather than on whichever server it happened to find; a dispatch that
-/// cannot mark its arrival stops before its probe, and the phase names that.
+/// the other's, so both hold their leases at once, and the first's server
+/// cannot be reclaimed before the late one leases it. A second that starts
+/// only after the first has finished fails the phase saying the two never ran
+/// at once, rather than on whichever server it happened to find; a dispatch
+/// that cannot mark its arrival stops before its probe, and the phase names
+/// that.
 #[test]
 fn the_control_suite_s_pooled_env_shares_one_server_when_one_dispatch_starts_late() {
     // Each case: the suite's temp directory (the host's, unless a scratch one

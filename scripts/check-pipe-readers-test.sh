@@ -6,9 +6,8 @@
 #
 # It proves the rule by the script's shape, never by running the hazard: whether
 # a writer takes SIGPIPE depends on whether the reader exits before the writer's
-# last write, which is scheduling. A pipefail script piping 256 KiB into an awk
-# that exits on its first line ended 141 locally and 0 on a Linux CI runner
-# (job 131151078773), so a test that runs it gives no verdict that holds.
+# last write, which is scheduling, so a test that runs it gives no verdict that
+# holds.
 #
 # Quiet on success, one line. On failure it names the case and what to change.
 set -euo pipefail

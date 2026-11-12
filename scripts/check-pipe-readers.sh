@@ -59,7 +59,7 @@ for f in "${files[@]}"; do
   }
   # grep exits 1 for no match; anything above that is a scan that did not finish.
   status=0
-  hits="$(grep -nE "$pattern" "$f")" || status=$?
+  hits="$(grep -nE -e "$pattern" -- "$f")" || status=$?
   [ "$status" -le 1 ] || {
     echo "check-pipe-readers: grep could not scan $f (exit $status, above); check that it is readable, then re-run" >&2
     exit 2

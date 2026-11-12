@@ -952,6 +952,76 @@ fn concurrent_dispatches_behind_a_slow_starting_server_share_it_each_with_its_ow
 }
 // llmlint: ignore-end[e2e_not_mocked]
 
+// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run --control` through the real pool and its production WebSocket deadline; only codex is the repository's subprocess double, whose initialization can be made to take a set time and to listen before or after it — real Codex cannot be slowed, or made to accept before it can serve, on demand within the gate.
+/// One dispatch alone can fail on a server that listens before it can
+/// serve: B starts the server and dials it at once, so its upgrade's deadline
+/// passes while the server is still initializing, and it fails as
+/// `spawn-error`, naming the unanswered upgrade, with no session id; A dials
+/// later, so its deadline falls after initialization ends, and it runs. With
+/// the server listening only once it is initialized, both wait for its
+/// socket instead and both run, on that one server.
+#[test]
+fn a_dispatch_dialing_a_server_still_initializing_fails_alone_unless_it_listens_once_ready() {
+    use oneharness_core::io::websocket::HANDSHAKE_DEADLINE;
+    // Initialization outlasts B's deadline, dialed at the server's start, by
+    // 3 s; A dials half a deadline after the server is recorded, so its own
+    // deadline ends 2 s or more after initialization does.
+    let startup = HANDSHAKE_DEADLINE + Duration::from_secs(3);
+    for listen_before_ready in [true, false] {
+        let mut pool = Pool::new("pool-early-dial")
+            .with_env("CODEX_MOCK_STARTUP_MS", &startup.as_millis().to_string());
+        if listen_before_ready {
+            pool = pool.with_env("CODEX_MOCK_LISTEN_BEFORE_READY", "1");
+        }
+        let dispatch = |session: &str| {
+            pool.spawn(pool.command(
+                session,
+                &["--mode", "bypass"],
+                &[("MOCK_CODEX_RUN_COMMAND", "true")],
+            ))
+        };
+        let b = dispatch("early-b");
+        let servers = pool.path("state/oneharness/servers");
+        wait_for("B's server to be recorded", Duration::from_secs(30), || {
+            std::fs::read_dir(&servers).is_ok_and(|entries| {
+                entries
+                    .flatten()
+                    .any(|e| e.path().join("server.json").is_file())
+            })
+        });
+        std::thread::sleep(HANDSHAKE_DEADLINE / 2);
+        let a = dispatch("early-a");
+        let (out_b, report_b) = Pool::finish(b);
+        let (out_a, report_a) = Pool::finish(a);
+        succeeded(&out_a, &report_a);
+        if listen_before_ready {
+            let stderr = String::from_utf8_lossy(&out_b.stderr);
+            assert!(!out_b.status.success(), "B ran: {stderr}");
+            assert_eq!(result(&report_b)["status"], "spawn-error", "{report_b}");
+            assert_eq!(
+                result(&report_b)["error"],
+                format!(
+                    "could not open a WebSocket to the shared codex app-server: the server did not answer the WebSocket upgrade within {}s",
+                    HANDSHAKE_DEADLINE.as_secs()
+                ),
+                "{report_b}"
+            );
+            assert!(
+                stderr.contains("harness `codex` exposed no session id, so `--session early-b` cannot be continued (nothing was stored)"),
+                "{stderr}"
+            );
+        } else {
+            succeeded(&out_b, &report_b);
+            assert_eq!(
+                reported_server(&report_a),
+                reported_server(&report_b),
+                "the two dispatches ran on two servers"
+            );
+        }
+    }
+}
+// llmlint: ignore-end[e2e_not_mocked]
+
 /// Two concurrent pooled dispatches with different values of one variable
 /// each see their own in a command the server runs for their thread; a
 /// variable only the starting dispatch has, and one the second removes

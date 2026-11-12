@@ -432,6 +432,9 @@ def private_resolver() -> None:
 
 # (uid_t)-1 is the kernel's "no id"; every id below it can be mapped.
 MAX_ID = 2**32 - 2
+# A user id and a group id: both numbers, never one for the other.
+Uid = NewType("Uid", int)
+Gid = NewType("Gid", int)
 
 
 def mappable_id(name: str, text: str) -> int:
@@ -443,8 +446,8 @@ def mappable_id(name: str, text: str) -> int:
 class Identity(NamedTuple):
     """The user and group the measurer runs as, which the launch must run as too."""
 
-    uid: int
-    gid: int
+    uid: Uid
+    gid: Gid
 
     @staticmethod
     def parse(text: str) -> Identity:
@@ -454,7 +457,7 @@ class Identity(NamedTuple):
         uid, colon, gid = text.partition(":")
         if not colon:
             raise ValueError(f"{text!r} is not UID:GID")
-        return Identity(mappable_id("uid", uid), mappable_id("gid", gid))
+        return Identity(Uid(mappable_id("uid", uid)), Gid(mappable_id("gid", gid)))
 
     def encode(self) -> str:
         return f"{self.uid}:{self.gid}"
@@ -696,7 +699,7 @@ def supervise(args: argparse.Namespace, pasta: str, scratch: Path, life: int) ->
             "--_init",
             str(scratch),
             "--_as",
-            Identity(os.getuid(), os.getgid()).encode(),
+            Identity(Uid(os.getuid()), Gid(os.getgid())).encode(),
             "--",
             *args.argv,
         ]

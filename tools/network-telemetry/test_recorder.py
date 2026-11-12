@@ -1058,6 +1058,75 @@ class InboundTcp(unittest.TestCase):
         )
 
 
+class InboundTcpThroughTheShim(unittest.TestCase):
+    """The same negotiation as InboundTcp, through the shim a suite runs, in
+    front of the real pasta: what a refused trial leaves the measured launch."""
+
+    def wrapping_pasta(self, tmp: Path, refuse: str) -> tuple[Path, Path]:
+        """A directory holding a pasta that logs each start's arguments and
+        refuses a trial (a start of `-- /bin/bash -c :`) matching the bash
+        pattern REFUSE, the way an older build refuses a spelling it does not
+        know; any other start is the real pasta's. And its log."""
+        real = shutil.which("pasta")
+        assert real is not None  # need_recorder found it
+        wrapper = tmp / "wrapping-pasta"
+        wrapper.mkdir()
+        log = tmp / "starts"
+        (wrapper / "pasta").write_text(
+            "#!/usr/bin/env bash\n"
+            f'printf "%s\\n" "$*" >>{shlex.quote(str(log))}\n'
+            'case "$*" in\n'
+            f"  {refuse}*' -- /bin/bash -c :')\n"
+            "    echo 'Invalid port specifier' >&2; exit 1 ;;\n"
+            "esac\n"
+            f'exec {shlex.quote(real)} "$@"\n'
+        )
+        (wrapper / "pasta").chmod(0o755)
+        return wrapper, log
+
+    def launch(self, refuse: str) -> tuple[list[str], str, Record]:
+        """One measured launch through the shim: the spellings its trials
+        tried, in order, the one its launch was given, and its line."""
+        need_recorder(self)
+        netmeasure = netmeasure_module(self)
+        tmp = scratch(self)
+        wrapper, log = self.wrapping_pasta(tmp, refuse)
+        env = {"PATH": f"{wrapper}{os.pathsep}{os.environ['PATH']}", "TMPDIR": str(tmp)}
+        run = run_shim(tmp, ["/bin/sh", "-c", "exit 0"], ["exec", "x"], env=env)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        others = " ".join(netmeasure.OTHER_PORTS)
+        spellings = [
+            line.split(" -4 ", 1)[1].split(f" {others} --", 1)[0]
+            for line in log.read_text().splitlines()
+        ]
+        records = lines(tmp / "codex.jsonl")
+        (start,) = starts(records)
+        (line,) = measurements(records, start["launch_id"])
+        return spellings[:-1], spellings[-1], line
+
+    def test_a_refused_newest_spelling_leaves_the_launch_the_next_one_pasta_starts_with(
+        self,
+    ) -> None:
+        netmeasure = netmeasure_module(self)
+        ordered = [" ".join(s) for s in netmeasure.INBOUND_TCP]
+        tried, given, line = self.launch(refuse=f"*{shlex.quote(ordered[0])}")
+        self.assertEqual(line["method"], "netns-pasta", line)
+        # Newest first, each refused one passed over, stopping at the first
+        # this pasta took: the one the launch then ran with.
+        self.assertEqual(tried, ordered[: len(tried)])
+        self.assertGreaterEqual(len(tried), 2, tried)
+        self.assertEqual(given, tried[-1])
+
+    def test_when_every_trial_is_refused_the_launch_is_given_the_oldest_spelling(self) -> None:
+        netmeasure = netmeasure_module(self)
+        ordered = [" ".join(s) for s in netmeasure.INBOUND_TCP]
+        tried, given, line = self.launch(refuse="*")
+        self.assertEqual(tried, ordered)
+        self.assertEqual(given, ordered[-1])
+        # The oldest spelling every pasta knows still measures the launch.
+        self.assertEqual(line["method"], "netns-pasta", line)
+
+
 class MalformedResult(unittest.TestCase):
     @unittest.skipUnless(
         sys.platform.startswith("linux"), "the recorder's namespace path is Linux's"

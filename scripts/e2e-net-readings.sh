@@ -3,34 +3,38 @@
 # recorder measured in its namespace (`netns-pasta`) and which it ran directly
 # (`unavailable`, with why), counted from the suite's telemetry FILE
 # (scripts/e2e-netshim.sh writes it): a turn that passes unmeasured would
-# otherwise look like one that passed under the recorder. One
-# `COUNT<TAB>METHOD<TAB>REASON` line per distinct reading, most frequent first;
-# a missing FILE (the suite stopped before its first launch) says so and
-# passes. The live workflows run it after their suite, pass or fail.
+# otherwise look like one that passed under the recorder. One line,
+# `network recorder: COUNT METHOD[: REASON]; ...`, most frequent first, a
+# reason's control characters shown as spaces; a missing FILE (the suite
+# stopped before its first launch) says so and passes. The live workflows run
+# it after their suite, pass or fail.
 set -euo pipefail
 
+fail() {
+  echo "e2e-net-readings: $*" >&2
+  exit 1
+}
 [ "$#" -eq 1 ] || {
   echo "usage: scripts/e2e-net-readings.sh FILE (a suite's target/e2e-telemetry/network/<suite>.jsonl)" >&2
   exit 2
 }
 file="$1"
 if [ ! -e "$file" ]; then
-  echo "no telemetry file at $file: the suite recorded no launch"
+  echo "network recorder: no telemetry file at $file; the suite recorded no launch"
   exit 0
 fi
-command -v jq >/dev/null || {
-  echo "e2e-net-readings: jq is not on PATH; install it to read $file" >&2
-  exit 1
-}
+command -v jq >/dev/null || fail "jq is not on PATH; install it to read $file"
 # Start lines carry the launch's argv and no method; each launch's one
 # measurement line carries its method, and an unmeasured one its reason.
-readings="$(jq -r 'select(.method) | "\(.method)\t\(.reason // "")"' "$file")" || {
-  echo "e2e-net-readings: $file holds a line that is not JSON; the recorder writes whole lines, so inspect it for another writer" >&2
-  exit 1
-}
-if [ -z "$readings" ]; then
-  echo "no launch in $file has a measurement line"
-  exit 0
-fi
-printf '%s\n' "$readings" | sort | uniq -c | sort -rn |
-  awk '{ count = $1; sub(/^ *[0-9]+ /, ""); print count "\t" $0 }'
+summary="$(jq -rs '
+  [.[] | select(has("method"))
+   | if (.method | type) != "string" or ((.reason // "") | type) != "string"
+     then error("a measurement line whose method or reason is not a string: \(tojson)")
+     else .method + (if .reason then ": " + (.reason | gsub("[[:cntrl:]]"; " ")) else "" end)
+     end]
+  | group_by(.) | map({reading: .[0], count: length})
+  | sort_by(-.count, .reading)
+  | if length == 0 then "none of its launches has a measurement line"
+    else map("\(.count) \(.reading)") | join("; ") end' "$file" 2>&1)" ||
+  fail "cannot read $file ($summary); the recorder writes one whole JSON object per line, so inspect it for another writer"
+echo "network recorder: $summary"

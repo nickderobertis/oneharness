@@ -64,7 +64,10 @@ class Readings(unittest.TestCase):
         (reason,) = [r["reason"] for r in lines(file) if r.get("method") == "unavailable"]
         run = readings(file)
         self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(run.stdout.splitlines(), ["2\tnetns-pasta\t", f"1\tunavailable\t{reason}"])
+        self.assertEqual(
+            run.stdout.splitlines(),
+            [f"network recorder: 2 netns-pasta; 1 unavailable: {reason}"],
+        )
 
     def test_an_unmeasured_launch_is_read_with_the_reason_its_line_gives(self) -> None:
         tmp = scratch(self)
@@ -77,7 +80,7 @@ class Readings(unittest.TestCase):
         self.assertIn("pasta", reason)
         run = readings(file)
         self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(run.stdout.splitlines(), [f"2\tunavailable\t{reason}"])
+        self.assertEqual(run.stdout.splitlines(), [f"network recorder: 2 unavailable: {reason}"])
 
     def test_a_suite_that_recorded_no_launch_says_so_and_passes(self) -> None:
         tmp = scratch(self)
@@ -85,7 +88,8 @@ class Readings(unittest.TestCase):
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertEqual(
             run.stdout.strip(),
-            f"no telemetry file at {tmp / 'opencode.jsonl'}: the suite recorded no launch",
+            f"network recorder: no telemetry file at {tmp / 'opencode.jsonl'}; "
+            "the suite recorded no launch",
         )
 
     def test_start_lines_without_a_measurement_say_none_was_measured(self) -> None:
@@ -94,7 +98,9 @@ class Readings(unittest.TestCase):
         file.write_text(json.dumps({"launch_id": "a", "argv": ["exec"]}) + "\n")
         run = readings(file)
         self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(run.stdout.strip(), f"no launch in {file} has a measurement line")
+        self.assertEqual(
+            run.stdout.strip(), "network recorder: none of its launches has a measurement line"
+        )
 
     def test_a_line_that_is_not_json_fails_naming_the_file(self) -> None:
         tmp = scratch(self)
@@ -102,7 +108,34 @@ class Readings(unittest.TestCase):
         file.write_text('{"launch_id": "a", "method": "netns-pasta"}\n{"cut\n')
         run = readings(file)
         self.assertEqual(run.returncode, 1, run.stdout)
-        self.assertIn(f"{file} holds a line that is not JSON", run.stderr)
+        self.assertIn(f"e2e-net-readings: cannot read {file} (", run.stderr)
+        self.assertIn("inspect it for another writer", run.stderr)
+        self.assertEqual(run.stdout, "")
+
+    def test_a_reason_s_control_characters_cannot_forge_another_reading(self) -> None:
+        tmp = scratch(self)
+        file = tmp / "claude.jsonl"
+        record = {"launch_id": "a", "method": "unavailable", "reason": "no pasta\n9 netns-pasta\t"}
+        file.write_text(json.dumps(record) + "\n")
+        run = readings(file)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(
+            run.stdout.splitlines(), ["network recorder: 1 unavailable: no pasta 9 netns-pasta "]
+        )
+
+    def test_a_method_or_reason_that_is_not_a_string_fails_naming_the_line(self) -> None:
+        for record in (
+            {"launch_id": "a", "method": 7},
+            {"launch_id": "a", "method": "unavailable", "reason": ["no", "pasta"]},
+        ):
+            with self.subTest(record=record):
+                tmp = scratch(self)
+                file = tmp / "claude.jsonl"
+                file.write_text(json.dumps(record) + "\n")
+                run = readings(file)
+                self.assertEqual(run.returncode, 1, run.stdout)
+                self.assertIn("whose method or reason is not a string", run.stderr)
+                self.assertEqual(run.stdout, "")
 
     def test_each_live_workflow_summarizes_its_own_suite_s_file_after_it_runs(self) -> None:
         for suite in WORKFLOWS:

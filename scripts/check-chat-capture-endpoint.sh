@@ -28,7 +28,7 @@ dir="$tmp/endpoint"
 mkdir "$dir" || fail "cannot create $dir; check permissions and disk space"
 "$py" "$root/scripts/chat-capture-endpoint.py" "$dir" 2>"$tmp/endpoint.log" &
 pid=$!
-for _ in $(seq 1 100); do
+for ((tries = 0; tries < 100; tries++)); do
   [ ! -s "$dir/port" ] || break
   kill -0 "$pid" 2>/dev/null || fail "the endpoint exited before reporting its port: $(cat "$tmp/endpoint.log")"
   sleep 0.1
@@ -50,12 +50,16 @@ request() {
     + (if $system == "absent" then {} else {system: ($system | fromjson)} end)'
 }
 # last_system: the newest system.jsonl record's text list, as compact JSON.
-last_system() { tail -n 1 "$dir/system.jsonl" | jq -c .system; }
+last_system() {
+  tail -n 1 "$dir/system.jsonl" | jq -c .system ||
+    fail "cannot read the last record of $dir/system.jsonl: $(cat "$dir/system.jsonl")"
+}
 expect_recorded() { # SYSTEM EXPECTED
-  local status
+  local status got
   status="$(post "$(request "$1" false)")"
   [ "$status" = 200 ] || fail "system $1 was answered $status: $(cat "$tmp/response")"
-  [ "$(last_system)" = "$2" ] || fail "system $1 was recorded as $(last_system), not $2"
+  got="$(last_system)"
+  [ "$got" = "$2" ] || fail "system $1 was recorded as $got, not $2"
 }
 
 expect_recorded absent '[]'
@@ -73,7 +77,8 @@ jq -e '.type == "message" and .role == "assistant" and .stop_reason == "end_turn
 # The streamed reply: Anthropic's event sequence, the marker in its one delta.
 status="$(post "$(request '"streamed"' true)")"
 [ "$status" = 200 ] || fail "a streamed request was answered $status: $(cat "$tmp/response")"
-events="$(sed -n 's/^event: //p' "$tmp/response" | tr '\n' ' ')"
+events="$(sed -n 's/^event: //p' "$tmp/response" | tr '\n' ' ')" ||
+  fail "cannot read the stream's event names from $tmp/response"
 [ "$events" = 'message_start content_block_start content_block_delta content_block_stop message_delta message_stop ' ] ||
   fail "the stream's events are $events"
 sed -n 's/^data: //p' "$tmp/response" | jq -se '
@@ -84,11 +89,12 @@ sed -n 's/^data: //p' "$tmp/response" | jq -se '
   fail "the stream's data does not carry the marker in Anthropic's shape: $(cat "$tmp/response")"
 
 # An invalid system is refused, and nothing of it is recorded.
-before="$(wc -l <"$dir/system.jsonl")"
+before="$(wc -l <"$dir/system.jsonl")" || fail "cannot count the records in $dir/system.jsonl"
 status="$(post "$(request 5 false)")"
 [ "$status" = 400 ] || fail "a numeric system was answered $status, not 400: $(cat "$tmp/response")"
 grep -qF 'system is neither text nor a list of blocks' "$tmp/response" || fail "the 400 does not say why: $(cat "$tmp/response")"
-[ "$(wc -l <"$dir/system.jsonl")" = "$before" ] || fail "a refused request was recorded"
+after="$(wc -l <"$dir/system.jsonl")" || fail "cannot count the records in $dir/system.jsonl"
+[ "$after" = "$before" ] || fail "a refused request was recorded"
 
 # A system record it cannot write fails the request rather than answering it.
 mv "$dir/system.jsonl" "$tmp/system.jsonl" || fail "cannot move $dir/system.jsonl aside"

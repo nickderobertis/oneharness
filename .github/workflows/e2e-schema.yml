@@ -105,3 +105,14 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           CLAUDE_E2E_MODEL: ${{ vars.CLAUDE_E2E_MODEL }}
         run: just live-schema
+
+      # Which launches the network recorder measured in its namespace
+      # (`netns-pasta`) and which it ran directly (`unavailable`, with why): a
+      # turn that passes unmeasured would otherwise look like one that passed
+      # under the recorder.
+      - name: Network recorder readings
+        if: always() && runner.os == 'Linux'
+        run: |
+          file=target/e2e-telemetry/network/schema.jsonl
+          [ -f "$file" ] || { echo "no telemetry file at $file"; exit 0; }
+          jq -r 'select(.method) | "\(.method)\t\(.reason // "")"' "$file" | sort | uniq -c

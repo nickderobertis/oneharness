@@ -3259,8 +3259,9 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 ///                         which a `-c` launch argument overrides.
 ///   CODEX_MOCK_SERVER_BYTES  allocate and touch this many bytes for the
 ///                         server's life, its own resident footprint.
-///   CODEX_MOCK_STARTUP_MS  the server's initialization — committing that
-///                         footprint, on a loaded host — takes this long.
+///   CODEX_MOCK_STARTUP_UNTIL  the server's initialization — committing that
+///                         footprint, on a loaded host — lasts until this path
+///                         exists.
 ///   CODEX_MOCK_LISTEN_BEFORE_READY  bind before initializing, as this double
 ///                         once did: a connection made meanwhile waits on its
 ///                         WebSocket upgrade until initialization ends.
@@ -3533,14 +3534,15 @@ mod listen_server {
             std::env::var("CODEX_MOCK_SERVER_BYTES")
                 .map_or(0, |n| whole("CODEX_MOCK_SERVER_BYTES", &n))
         ];
-        // llmlint: ignore-block[changed_behavior_has_e2e] Test-support code: this knob exists only so `concurrent_dispatches_behind_a_slow_starting_server_share_it_each_with_its_own_environment` can stage a slow start, which exercises it; a malformed value is refused by the same `whole` parser every numeric knob of this double shares, and no consumer of oneharness ever sets it.
-        if let Ok(ms) = std::env::var("CODEX_MOCK_STARTUP_MS") {
-            std::thread::sleep(std::time::Duration::from_millis(whole(
-                "CODEX_MOCK_STARTUP_MS",
-                &ms,
-            )));
+        // CODEX_MOCK_STARTUP_UNTIL: initialization — committing that footprint,
+        // on a loaded host — lasts until this path exists, so a journey ends it
+        // on something it has observed rather than after a guessed time.
+        if let Some(gate) = std::env::var_os("CODEX_MOCK_STARTUP_UNTIL") {
+            let gate = std::path::PathBuf::from(gate);
+            while !gate.exists() {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
         }
-        // llmlint: ignore-end[changed_behavior_has_e2e]
         let listener = early.unwrap_or_else(|| bind(&path));
         // Started once listening: a launch refused here — its socket already
         // in use — must leave no helper behind.

@@ -906,41 +906,64 @@ fn server_may_hold(name: &str) -> bool {
         || name.starts_with("__LLVM_PROFILE_")
 }
 
-// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run --control` through the real pool; only codex is the repository's subprocess double, whose initialization can be made to take a set time, as committing its footprint on a loaded host does — real Codex cannot be slowed on demand within the gate. Real Codex's sharing is held by scripts/e2e-control.sh's pooled-env phase.
-/// A shared server listens only once it has initialized, so two concurrent
-/// pooled dispatches behind one whose initialization outlasts the WebSocket
-/// handshake's deadline wait for its socket rather than for an upgrade it
-/// cannot yet answer: both run on that one server, each command seeing only
-/// its own dispatch's variable — the control suite's pooled-env assertions.
-/// The double once listened first, and every connection made while it was
-/// still committing its footprint timed out its upgrade as `spawn-error`.
-#[test]
-fn concurrent_dispatches_behind_a_slow_starting_server_share_it_each_with_its_own_environment() {
-    use oneharness_core::io::websocket::HANDSHAKE_DEADLINE;
-    let startup = HANDSHAKE_DEADLINE + Duration::from_secs(1);
-    let pool = Pool::new("pool-slow-start")
-        .with_env("CODEX_MOCK_STARTUP_MS", &startup.as_millis().to_string());
-    let dispatch = |session: &str, value: &str| {
-        pool.spawn(pool.command(
+/// Every pool lease a dispatch in `pool` holds now, across its servers: one is
+/// taken before the dispatch dials, and dropped when it ends.
+fn leases(pool: &Pool) -> usize {
+    std::fs::read_dir(pool.path("state/oneharness/servers"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| std::fs::read_dir(entry.path().join("leases")).ok())
+        .map(|leases| leases.flatten().count())
+        .sum()
+}
+
+/// A world whose shared server stays initializing until `release` is called.
+struct HeldPool {
+    pool: Pool,
+    gate: PathBuf,
+}
+
+impl HeldPool {
+    fn new(tag: &str, listen_before_ready: bool) -> Self {
+        let pool = Pool::new(tag);
+        let gate = pool.path("initialized");
+        let mut pool = pool.with_env("CODEX_MOCK_STARTUP_UNTIL", &gate.display().to_string());
+        if listen_before_ready {
+            pool = pool.with_env("CODEX_MOCK_LISTEN_BEFORE_READY", "1");
+        }
+        HeldPool { pool, gate }
+    }
+
+    fn dispatch(&self, session: &str, value: &str) -> Child {
+        self.pool.spawn(self.pool.command(
             session,
             &["--mode", "bypass"],
             &[("MOCK_CODEX_RUN_COMMAND", "env"), ("PER_DISPATCH", value)],
         ))
-    };
-    let first = dispatch("slow-a", "alpha");
-    let second = dispatch("slow-b", "beta");
-    let (out_a, report_a) = Pool::finish(first);
-    let (out_b, report_b) = Pool::finish(second);
-    succeeded(&out_a, &report_a);
-    succeeded(&out_b, &report_b);
+    }
+
+    fn await_leases(&self, label: &str, count: usize) {
+        wait_for(label, Duration::from_secs(30), || {
+            leases(&self.pool) == count
+        });
+    }
+
+    fn release(&self) {
+        std::fs::write(&self.gate, "").unwrap();
+    }
+}
+
+/// Both reports ran on one server, each command seeing only its own value.
+fn shared_each_with_its_own(report_a: &Value, report_b: &Value) {
     assert_eq!(
-        reported_server(&report_a),
-        reported_server(&report_b),
+        reported_server(report_a),
+        reported_server(report_b),
         "the two dispatches ran on two servers"
     );
     let has = |env: &str, pair: &str| env.lines().any(|line| line == pair);
-    let env_a = command_output(&report_a);
-    let env_b = command_output(&report_b);
+    let env_a = command_output(report_a);
+    let env_b = command_output(report_b);
     assert!(
         has(&env_a, "PER_DISPATCH=alpha") && !has(&env_a, "PER_DISPATCH=beta"),
         "{env_a}"
@@ -950,75 +973,104 @@ fn concurrent_dispatches_behind_a_slow_starting_server_share_it_each_with_its_ow
         "{env_b}"
     );
 }
+
+// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run --control` through the real pool; only codex is the repository's subprocess double, whose initialization can be held until the journey releases it, as committing its footprint on a loaded host holds it — real Codex cannot be held on demand within the gate. Real Codex's sharing is held by scripts/e2e-control.sh's pooled-env phase.
+/// Two concurrent pooled dispatches that both lease a shared server while it
+/// is still initializing run on that one server once it is ready, each
+/// command seeing only its own dispatch's variable — the control suite's
+/// pooled-env assertions. The server is released only once both hold their
+/// leases, so neither can find it reclaimed and start one of its own.
+#[test]
+fn concurrent_dispatches_behind_a_slow_starting_server_share_it_each_with_its_own_environment() {
+    let held = HeldPool::new("pool-slow-start", false);
+    let first = held.dispatch("slow-a", "alpha");
+    let second = held.dispatch("slow-b", "beta");
+    held.await_leases("both dispatches to lease the initializing server", 2);
+    held.release();
+    let (out_a, report_a) = Pool::finish_within(first, Duration::from_secs(60));
+    let (out_b, report_b) = Pool::finish_within(second, Duration::from_secs(60));
+    succeeded(&out_a, &report_a);
+    succeeded(&out_b, &report_b);
+    shared_each_with_its_own(&report_a, &report_b);
+}
 // llmlint: ignore-end[e2e_not_mocked]
 
-// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run --control` through the real pool and its production WebSocket deadline; only codex is the repository's subprocess double, whose initialization can be made to take a set time and to listen before or after it — real Codex cannot be slowed, or made to accept before it can serve, on demand within the gate.
-/// One dispatch alone can fail on a server that listens before it can
-/// serve: B starts the server and dials it at once, so its upgrade's deadline
-/// passes while the server is still initializing, and it fails as
-/// `spawn-error`, naming the unanswered upgrade, with no session id; A dials
-/// later, so its deadline falls after initialization ends, and it runs. With
-/// the server listening only once it is initialized, both wait for its
-/// socket instead and both run, on that one server.
+/// Fail naming `session`'s report and stderr when its dispatch has ended.
+fn still_running(session: &str, child: &mut Child) {
+    use std::io::Read;
+    if child.try_wait().unwrap().is_none() {
+        return;
+    }
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    if let Some(mut pipe) = child.stdout.take() {
+        let _ = pipe.read_to_string(&mut stdout);
+    }
+    if let Some(mut pipe) = child.stderr.take() {
+        let _ = pipe.read_to_string(&mut stderr);
+    }
+    panic!("{session} ended while its server was still initializing: {stdout}\n--- stderr ---\n{stderr}");
+}
+
+// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run --control` through the real pool and its production WebSocket deadline; only codex is the repository's subprocess double, whose initialization can be held until the journey releases it, and made to listen before or after it — real Codex cannot be held, or made to accept before it can serve, on demand within the gate.
+/// A dispatch dialing a shared server that listens before it can serve fails
+/// alone: B starts the server and dials it while it initializes, its
+/// upgrade's deadline passes, and it fails as `spawn-error`, naming the
+/// unanswered upgrade, with no session id — the control suite's pooled-env
+/// failure; A, dialing once the server is ready, runs. A server that listens
+/// only once it is initialized is waited out instead: B and A, both leased
+/// and dialing all the while, both run, on that one server, each seeing only
+/// its own variable.
+///
+/// Nothing here is timed. Both worlds' servers stay initializing until
+/// released, and are released only once the early-listening world's B has
+/// reported its failed upgrade: so initialization outlasted a whole handshake
+/// deadline, by that B's own clock, while the other world's B and A waited.
 #[test]
 fn a_dispatch_dialing_a_server_still_initializing_fails_alone_unless_it_listens_once_ready() {
     use oneharness_core::io::websocket::HANDSHAKE_DEADLINE;
-    // Initialization outlasts B's deadline, dialed at the server's start, by
-    // 3 s; A dials half a deadline after the server is recorded, so its own
-    // deadline ends 2 s or more after initialization does.
-    let startup = HANDSHAKE_DEADLINE + Duration::from_secs(3);
-    for listen_before_ready in [true, false] {
-        let mut pool = Pool::new("pool-early-dial")
-            .with_env("CODEX_MOCK_STARTUP_MS", &startup.as_millis().to_string());
-        if listen_before_ready {
-            pool = pool.with_env("CODEX_MOCK_LISTEN_BEFORE_READY", "1");
-        }
-        let dispatch = |session: &str| {
-            pool.spawn(pool.command(
-                session,
-                &["--mode", "bypass"],
-                &[("MOCK_CODEX_RUN_COMMAND", "true")],
-            ))
-        };
-        let b = dispatch("early-b");
-        let servers = pool.path("state/oneharness/servers");
-        wait_for("B's server to be recorded", Duration::from_secs(30), || {
-            std::fs::read_dir(&servers).is_ok_and(|entries| {
-                entries
-                    .flatten()
-                    .any(|e| e.path().join("server.json").is_file())
-            })
-        });
-        std::thread::sleep(HANDSHAKE_DEADLINE / 2);
-        let a = dispatch("early-a");
-        let (out_b, report_b) = Pool::finish(b);
-        let (out_a, report_a) = Pool::finish(a);
-        succeeded(&out_a, &report_a);
-        if listen_before_ready {
-            let stderr = String::from_utf8_lossy(&out_b.stderr);
-            assert!(!out_b.status.success(), "B ran: {stderr}");
-            assert_eq!(result(&report_b)["status"], "spawn-error", "{report_b}");
-            assert_eq!(
-                result(&report_b)["error"],
-                format!(
-                    "could not open a WebSocket to the shared codex app-server: the server did not answer the WebSocket upgrade within {}s",
-                    HANDSHAKE_DEADLINE.as_secs()
-                ),
-                "{report_b}"
-            );
-            assert!(
-                stderr.contains("harness `codex` exposed no session id, so `--session early-b` cannot be continued (nothing was stored)"),
-                "{stderr}"
-            );
-        } else {
-            succeeded(&out_b, &report_b);
-            assert_eq!(
-                reported_server(&report_a),
-                reported_server(&report_b),
-                "the two dispatches ran on two servers"
-            );
-        }
-    }
+    let early = HeldPool::new("pool-early-dial", true);
+    let ready = HeldPool::new("pool-ready-dial", false);
+    let early_b = early.dispatch("early-b", "beta");
+    let ready_b = ready.dispatch("ready-b", "beta");
+    let ready_a = ready.dispatch("ready-a", "alpha");
+    early.await_leases("the early world's B to lease the server it started", 1);
+    ready.await_leases("the ready world's B and A to lease its server", 2);
+
+    // The early server cannot answer until released, so B's upgrade can only
+    // time out; a generous bound keeps a hung dispatch from hanging the run.
+    let (out_b, report_b) = Pool::finish_within(early_b, HANDSHAKE_DEADLINE * 6);
+    let stderr = String::from_utf8_lossy(&out_b.stderr);
+    assert!(!out_b.status.success(), "B ran: {stderr}");
+    assert_eq!(result(&report_b)["status"], "spawn-error", "{report_b}");
+    assert_eq!(
+        result(&report_b)["error"],
+        format!(
+            "could not open a WebSocket to the shared codex app-server: the server did not answer the WebSocket upgrade within {}s",
+            HANDSHAKE_DEADLINE.as_secs()
+        ),
+        "{report_b}"
+    );
+    assert!(
+        stderr.contains("harness `codex` exposed no session id, so `--session early-b` cannot be continued (nothing was stored)"),
+        "{stderr}"
+    );
+    early.release();
+    let (out_a, report_a) =
+        Pool::finish_within(early.dispatch("early-a", "alpha"), Duration::from_secs(60));
+    succeeded(&out_a, &report_a);
+
+    // The ready world held through that same deadline and neither of its
+    // dispatches failed waiting.
+    let (mut ready_b, mut ready_a) = (ready_b, ready_a);
+    still_running("ready-b", &mut ready_b);
+    still_running("ready-a", &mut ready_a);
+    ready.release();
+    let (out_b, report_b) = Pool::finish_within(ready_b, Duration::from_secs(60));
+    let (out_a, report_a) = Pool::finish_within(ready_a, Duration::from_secs(60));
+    succeeded(&out_b, &report_b);
+    succeeded(&out_a, &report_a);
+    shared_each_with_its_own(&report_a, &report_b);
 }
 // llmlint: ignore-end[e2e_not_mocked]
 

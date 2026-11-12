@@ -15,7 +15,10 @@ measurement: a kill before the supervisor exists leaves neither.
 ARGV runs inside a fresh unprivileged user + network + mount + PID namespace
 whose only interface is a `pasta` TAP device; when the launch's whole process tree has exited (every descendant,
 detached and double-forked included, inherits the namespace and is reaped by
-its init), one measurement line is appended to FILE:
+its init), one measurement line is appended to FILE. The launch runs as the
+measurer's own uid and gid (`become`), not as the root pasta's namespace maps
+them to, and a TCP port it listens on answers on the host's loopback too, the
+way oneharness dials a control server it started:
 
     {"launch_id", "method": "netns-pasta", "rx_bytes", "tx_bytes",
      "payload_rx_estimate", "payload_tx_estimate",
@@ -82,6 +85,7 @@ REAP_WAIT = 2.0
 DEFAULT_DEADLINE = 1800.0
 CLONE_NEWNS = 0x00020000
 CLONE_NEWPID = 0x20000000
+CLONE_NEWUSER = 0x10000000
 # How long after the tree ends the counters are read, so the closing FIN/ACK
 # frames of its last connections are counted with it.
 SETTLE = 0.2
@@ -426,11 +430,65 @@ def private_resolver() -> None:
         subprocess.run(["mount", "--bind", str(upstream), "/etc/resolv.conf"], check=True)
 
 
-def namespace_init(scratch: Path, deadline: float, argv: list[str]) -> int:
+# (uid_t)-1 is the kernel's "no id"; every id below it can be mapped.
+MAX_ID = 2**32 - 2
+# A user id and a group id: both numbers, never one for the other.
+Uid = NewType("Uid", int)
+Gid = NewType("Gid", int)
+
+
+def mappable_id(name: str, text: str) -> int:
+    if not text.isascii() or not text.isdigit() or int(text) > MAX_ID:
+        raise ValueError(f"{name} {text!r} is not a decimal id from 0 to {MAX_ID}")
+    return int(text)
+
+
+class Identity(NamedTuple):
+    """The user and group the measurer runs as, which the launch must run as too."""
+
+    uid: Uid
+    gid: Gid
+
+    @staticmethod
+    def parse(text: str) -> Identity:
+        """`UID:GID`, each a decimal id a user namespace can map (0 to 2**32 - 2).
+
+        Raises ValueError naming what is wrong, for the caller to report."""
+        uid, colon, gid = text.partition(":")
+        if not colon:
+            raise ValueError(f"{text!r} is not UID:GID")
+        return Identity(Uid(mappable_id("uid", uid)), Gid(mappable_id("gid", gid)))
+
+    def encode(self) -> str:
+        return f"{self.uid}:{self.gid}"
+
+
+def become(identity: Identity, libc: ctypes.CDLL) -> None:
+    """In the launch's process, before its exec: be `identity` again.
+
+    pasta's user namespace maps the measurer's user to root, so a launch run
+    straight in it reads uid 0 — and a harness that refuses root then refuses
+    the run (claude: "--dangerously-skip-permissions cannot be used with
+    root/sudo privileges"). A nested user namespace mapping `identity` onto
+    that root gives the launch the uid and gid it would have had unmeasured,
+    and the same host identity for every file it touches. The namespace's init
+    stays root in pasta's namespace, so it can still signal the whole tree."""
+    if libc.unshare(CLONE_NEWUSER) != 0:
+        raise OSError(
+            ctypes.get_errno(), f"unshare(CLONE_NEWUSER): {os.strerror(ctypes.get_errno())}"
+        )
+    # An unprivileged gid_map needs setgroups denied first.
+    Path("/proc/self/setgroups").write_text("deny")
+    Path("/proc/self/uid_map").write_text(f"{identity.uid} 0 1\n")
+    Path("/proc/self/gid_map").write_text(f"{identity.gid} 0 1\n")
+
+
+def namespace_init(scratch: Path, deadline: float, identity: Identity, argv: list[str]) -> int:
     """Inside pasta's user and network namespace: run the launch as PID 1's child.
 
-    Writes `launched` just before the launch starts and `result.json` once the
-    whole tree has exited; the supervisor asks for a stop by creating `stop`."""
+    Writes `launched` just before the launch starts — once it runs as
+    `identity` — and `result.json` once the whole tree has exited; the
+    supervisor asks for a stop by creating `stop`."""
     observer = None
     observing = observer_argv()
     if observing is not None:
@@ -475,8 +533,27 @@ def namespace_init(scratch: Path, deadline: float, argv: list[str]) -> int:
     start = snapshot()
     retrans_start = tcp_retrans()
     t0 = time.monotonic()
-    (scratch / "launched").touch()
-    launch = subprocess.Popen(argv)
+
+    def as_identity() -> None:
+        try:
+            become(identity, libc)
+        except OSError as error:
+            # Held by the supervisor as the reason the launch ran unmeasured.
+            os.write(
+                2,
+                f"e2e-netmeasure: cannot run the launch as uid {identity.uid}: {error}\n".encode(),
+            )
+            raise
+        (scratch / "launched").touch()
+
+    try:
+        launch = subprocess.Popen(argv, preexec_fn=as_identity)
+    except subprocess.SubprocessError:
+        # Nothing ran, and `launched` was never written: the supervisor runs
+        # the launch directly, its line naming this init's stderr as the reason.
+        sys.exit(
+            f"e2e-netmeasure: the launch could not be given its own identity; {NAMESPACE_ADVICE}"
+        )
     launch_exit: Optional[int] = None
     stop_at = t0 + deadline if deadline > 0 else None
     kill_at: Optional[float] = None
@@ -563,13 +640,77 @@ def through_bash(argv: list[str]) -> list[bytes]:
     ]
 
 
+HOST_LO_TO_NS_LO = "--host-lo-to-ns-lo"
+# pasta's inbound TCP rule, one spelling per generation, newest first: each
+# makes a port the launch binds — any port — answer on host loopback, landing
+# on the namespace's loopback. Only the first that pasta starts with is used.
+#   * 20260728 on: `auto` alone leaves out the ephemeral range, where every
+#     port reserved by binding port 0 comes from (oneharness's control ports
+#     among them), so the range is named, host loopback only, still only once
+#     bound (`,auto`). Earlier ones refuse the spelling, or (2025's) take it as
+#     "bind every port now" and fail on port 1, which this user may not bind.
+#   * 2025 to 20260120 (Ubuntu 26.04's): `auto` covers every port, but a
+#     forward lands on the namespace's external address, where a server on
+#     127.0.0.1 (`opencode serve`) answers with a reset, unless told the flag.
+#   * Before (Ubuntu 24.04's): no such flag; `auto` already lands on loopback.
+INBOUND_TCP = (
+    ("-t", "127.0.0.1/1-65535,auto", HOST_LO_TO_NS_LO),
+    ("-t", "auto", HOST_LO_TO_NS_LO),
+    ("-t", "auto"),
+)
+OTHER_PORTS = ("-u", "none", "-T", "none", "-U", "none")
+TRIAL = ("/bin/bash", "-c", ":")
+# Far above the fraction of a second a namespace takes to start and run `:`.
+TRIAL_TIMEOUT = 10.0
+
+
+def inbound_tcp(pasta: str, timeout: float = TRIAL_TIMEOUT) -> list[str]:
+    """The first INBOUND_TCP spelling this pasta starts a namespace with.
+
+    Tried rather than read off `--help`, which does not list the flag on every
+    build that takes it. The trial runs bash, which 26.04's confined pasta may
+    start (`through_bash`). A trial that cannot be spawned, exits non-zero or
+    outlasts TIMEOUT seconds rules its spelling out. None starting leaves the
+    oldest, so the real launch fails on whatever stopped them and says so in
+    its line."""
+    for spelling in INBOUND_TCP:
+        try:
+            trial = subprocess.run(
+                [pasta, "--config-net", "--quiet", "-4", *spelling, *OTHER_PORTS, "--", *TRIAL],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=timeout,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if trial.returncode == 0:
+            return list(spelling)
+    return list(INBOUND_TCP[-1])
+
+
 def supervise(args: argparse.Namespace, pasta: str, scratch: Path, life: int) -> Outcome:
     """In its own session: run pasta, stop the namespace if the shim goes, write the line."""
     t0 = time.monotonic()
     inner = through_bash(
-        [sys.executable, os.path.abspath(__file__), "--_init", str(scratch), "--", *args.argv]
+        [
+            sys.executable,
+            os.path.abspath(__file__),
+            "--_init",
+            str(scratch),
+            "--_as",
+            Identity(Uid(os.getuid()), Gid(os.getgid())).encode(),
+            "--",
+            *args.argv,
+        ]
     )
-    no_ports = ["-t", "none", "-u", "none", "-T", "none", "-U", "none"]
+    # Inbound TCP (`inbound_tcp`): a port a launch listens on inside the
+    # namespace is forwarded from the host's, so a control server oneharness
+    # dials on loopback (opencode's `serve`) answers there. A host-loopback connection
+    # is spliced socket to socket, never through the TAP, so it adds nothing
+    # to the counters. Nothing else crosses: no UDP, nothing outbound to the
+    # host's own ports.
+    port_rules = [*inbound_tcp(pasta), *OTHER_PORTS]
     try:
         pasta_run = subprocess.Popen(
             [
@@ -577,7 +718,7 @@ def supervise(args: argparse.Namespace, pasta: str, scratch: Path, life: int) ->
                 b"--config-net",
                 b"--quiet",
                 b"-4",
-                *map(os.fsencode, no_ports),
+                *map(os.fsencode, port_rules),
                 b"--",
                 *inner,
             ],
@@ -980,6 +1121,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--start-line", help="the launch's start line, written before it runs")
     parser.add_argument("--unmeasured", help="run the launch directly, recording this reason")
     parser.add_argument("--_init", dest="init", help=argparse.SUPPRESS)
+    parser.add_argument("--_as", dest="identity", help=argparse.SUPPRESS)
     parser.add_argument("argv", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     if args.argv[:1] == ["--"]:
@@ -987,7 +1129,13 @@ def main(argv: list[str]) -> int:
     if not args.argv:
         parser.error("give the launch's argv after --")
     if args.init:
-        return namespace_init(Path(args.init), deadline_seconds(), args.argv)
+        if args.identity is None:
+            parser.error("--_init needs --_as UID:GID, the identity the launch runs as")
+        try:
+            identity = Identity.parse(args.identity)
+        except ValueError as error:
+            parser.error(f"--_as: {error}")
+        return namespace_init(Path(args.init), deadline_seconds(), identity, args.argv)
     if not args.line_file or not args.launch_id:
         parser.error("--line-file and --launch-id are required")
     if args.start_line is not None:

@@ -6,7 +6,7 @@
 # the paid live-claude suite runs the same phase against real claude.
 # llmlint: ignore-file[e2e_not_mocked] This hermetic helper test replaces only the paid CLI, as check-opencode-context-free.sh does. The live-claude suite drives real claude through this phase.
 set -euo pipefail
-case $(uname -s) in
+case "$(uname -s)" in
   MINGW* | MSYS* | CYGWIN*)
     echo "check-claude-multiline-system: skipped on Windows (extensionless executable double)" >&2
     exit 0

@@ -1310,17 +1310,21 @@ _oh_opencode_sent() {
     jq -s . "$sandbox/sent.jsonl"
     return
   fi
-  for sid in $(printf '%s' "$OH_REPORT" | jq -r '.results[].session_id // empty'); do
+  # Only opencode's own id shape is run as an argument; anything else is no
+  # session, so its turn adds nothing and fails closed.
+  printf '%s' "$OH_REPORT" | jq -r '.results[].session_id // empty | select(test("^ses_[A-Za-z0-9]+$"))' >"$sandbox/sids" || return 1
+  # A read loop, not mapfile: macOS's system bash is 3.2.
+  while IFS= read -r sid; do
     # llmlint: ignore[contracts_have_one_source_or_a_drift_gate] OpenCode owns this export shape (messages[].info.role, messages[].parts[] of type text), and this phase runs against real opencode in `just live-opencode`, which is its drift alarm: a changed shape leaves no marker found, failing the journey closed, never passing it.
     # To a file, not a pipe: opencode exits before a pipe drains, cutting a
     # long session's JSON off at the pipe's buffer.
-    if ! (cd "$sandbox/work" && "$exporter" export "$sid") >"$sandbox/export.json" 2>"$sandbox/export.err" ||
+    if ! (cd "$sandbox/work" && "$exporter" export "$sid") </dev/null >"$sandbox/export.json" 2>"$sandbox/export.err" ||
       ! jq -c '[.messages[]? | select(.info.role == "user")] | last |
         [.parts[]? | select(.type == "text") | .text] | join("\n")' "$sandbox/export.json" >>"$sandbox/sent.jsonl"; then
       cat "$sandbox/export.err" >&2 || true
       return 1
     fi
-  done
+  done <"$sandbox/sids"
   jq -s . "$sandbox/sent.jsonl"
 }
 

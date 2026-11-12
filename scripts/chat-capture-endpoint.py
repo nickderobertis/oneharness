@@ -1,21 +1,26 @@
 #!/usr/bin/env python3
-"""A local OpenAI chat-completions endpoint that records what a harness sends.
+"""A local model endpoint that records what a harness sends.
 
     chat-capture-endpoint.py DIR
 
-Serves `POST .../chat/completions` on 127.0.0.1, at a port it picks and writes
-to DIR/port. Every request's message text is appended to DIR/requests.txt under
-a `--- request N ---` line, with CRLF folded to LF, so a caller can grep it for
-what the harness put in the model's context. Each reply is the first
-`ONEHARNESS-LIVE-<digits>` marker in the request's last user message (or
-`no marker`), as one assistant message, streamed when the request asks for it.
+Serves OpenAI's `POST .../chat/completions` and Anthropic's `POST .../messages`
+on 127.0.0.1, at a port it picks and writes to DIR/port. Every request's
+message text is appended to DIR/requests.txt under a `--- request N ---` line,
+with CRLF folded to LF, so a caller can grep it for what the harness put in the
+model's context. A Messages request's `system` is also appended to
+DIR/system.jsonl verbatim, as one `{"system": [TEXT, ...]}` line, so a caller
+can hold it to exactly what it gave the harness, line breaks and all. Each
+reply is the first `ONEHARNESS-LIVE-<digits>` marker in the request's last user
+message (or `no marker`), as one assistant message, streamed when the request
+asks for it.
 
 It is the fixture of `oh_context_free_enforce` (scripts/e2e-lib.sh), which
-points the real qwen at it through OPENAI_BASE_URL, so no model call is made or
-billed.
+points the real qwen at it through OPENAI_BASE_URL, and of
+`oh_multiline_system_enforce`, which points the real claude at it through
+ANTHROPIC_BASE_URL, so no model call is made or billed.
 """
 
-# llmlint: ignore-file[contracts_have_one_source_or_a_drift_gate] The reply shapes below are the minimum of OpenAI's chat-completions response qwen needs to finish a turn, and real qwen is their drift alarm: `oh_context_free_enforce` fails if qwen stops accepting them, and the deterministic gate cannot run qwen.
+# llmlint: ignore-file[contracts_have_one_source_or_a_drift_gate] The reply shapes below are the minimum of OpenAI's chat-completions response qwen needs to finish a turn, and of Anthropic's Messages stream claude needs, and the real CLIs are their drift alarms: `oh_context_free_enforce` fails if qwen stops accepting them and `oh_multiline_system_enforce` if claude does, and the deterministic gate cannot run either.
 # llmlint: ignore-file[structural_pattern_matching] The repository's Python floor is 3.9 (python/oneharness-sdk/pyproject.toml), which has no `match` statement.
 
 from __future__ import annotations
@@ -93,6 +98,39 @@ class ChatRequest:
         return "no marker"
 
 
+def system_texts(system: object) -> list[str]:
+    """A Messages request's `system`: its string, or its text blocks in order."""
+    if system is None:
+        return []
+    if isinstance(system, str):
+        return [system]
+    if isinstance(system, list):
+        return [
+            block["text"]
+            for block in system
+            if isinstance(block, dict) and isinstance(block.get("text"), str)
+        ]
+    raise BadRequest("system is neither text nor a list of blocks")
+
+
+@dataclass(frozen=True)
+class MessagesRequest:
+    """Anthropic's Messages request, as far as this endpoint reads it."""
+
+    system: list[str]
+    chat: ChatRequest
+
+    @staticmethod
+    def parse(body: bytes) -> MessagesRequest:
+        chat = ChatRequest.parse(body)
+        return MessagesRequest(system_texts(json.loads(body).get("system")), chat)
+
+    def as_chat(self) -> ChatRequest:
+        """The whole context as chat messages, `system` first, for requests.txt."""
+        system = [Message("system", text) for text in self.system]
+        return ChatRequest(system + self.chat.messages, self.chat.stream)
+
+
 @dataclass(frozen=True)
 class Usage:
     prompt_tokens: int = 1
@@ -159,26 +197,67 @@ def encode(model: Completion | Chunk) -> bytes:
     return json.dumps(without_nulls(asdict(model))).encode()
 
 
+MESSAGE_USAGE = {"input_tokens": 1, "output_tokens": 1}
+
+
+def anthropic_message(text: str) -> dict[str, object]:
+    """A whole Messages response carrying one text block."""
+    return {
+        "id": "msg_capture",
+        "type": "message",
+        "role": "assistant",
+        "model": "capture",
+        "content": [{"type": "text", "text": text}],
+        "stop_reason": "end_turn",
+        "stop_sequence": None,
+        "usage": MESSAGE_USAGE,
+    }
+
+
+def anthropic_events(text: str) -> list[dict[str, object]]:
+    """The Messages stream of that response, event by event."""
+    start = {**anthropic_message(""), "content": [], "stop_reason": None}
+    return [
+        {"type": "message_start", "message": start},
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": text}},
+        {"type": "content_block_stop", "index": 0},
+        {
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+            "usage": {"output_tokens": 1},
+        },
+        {"type": "message_stop"},
+    ]
+
+
 class Recorder:
     def __init__(self, directory: Path) -> None:
         self.log = directory / "requests.txt"
+        self.systems = directory / "system.jsonl"
         self.count = 0
         self.lock = threading.Lock()
 
-    def record(self, request: ChatRequest) -> None:
+    def record(self, request: ChatRequest, system: Optional[list[str]] = None) -> None:
         text = "\n".join(m.text for m in request.messages).replace("\r\n", "\n")
         with self.lock:
             self.count += 1
-            try:
-                with self.log.open("a", encoding="utf-8", newline="\n") as out:
-                    out.write(f"--- request {self.count} ---\n{text}\n")
-            except OSError as error:
-                print(
-                    f"chat-capture-endpoint: could not append to {self.log}: {error}; "
-                    "check that its directory is writable and has free space",
-                    file=sys.stderr,
-                )
-                raise
+            self.append(self.log, f"--- request {self.count} ---\n{text}\n")
+            if system is not None:
+                self.append(self.systems, json.dumps({"system": system}) + "\n")
+
+    @staticmethod
+    def append(path: Path, text: str) -> None:
+        try:
+            with path.open("a", encoding="utf-8", newline="\n") as out:
+                out.write(text)
+        except OSError as error:
+            print(
+                f"chat-capture-endpoint: could not append to {path}: {error}; "
+                "check that its directory is writable and has free space",
+                file=sys.stderr,
+            )
+            raise
 
 
 def handler(recorder: Recorder) -> type[http.server.BaseHTTPRequestHandler]:
@@ -187,8 +266,10 @@ def handler(recorder: Recorder) -> type[http.server.BaseHTTPRequestHandler]:
             return
 
         def do_POST(self) -> None:
-            if not self.path.rstrip("/").endswith("/chat/completions"):
-                self.send_error(404, "only chat/completions is served")
+            route = self.path.split("?", 1)[0].rstrip("/")
+            messages = route.endswith("/messages")
+            if not messages and not route.endswith("/chat/completions"):
+                self.send_error(404, "only chat/completions and messages are served")
                 return
             try:
                 length = int(self.headers.get("Content-Length") or "0")
@@ -198,20 +279,44 @@ def handler(recorder: Recorder) -> type[http.server.BaseHTTPRequestHandler]:
             if not 0 <= length <= MAX_BODY:
                 self.send_error(413, f"Content-Length must be 0 to {MAX_BODY} bytes")
                 return
+            body = self.rfile.read(length)
             try:
-                request = ChatRequest.parse(self.rfile.read(length))
+                if messages:
+                    parsed = MessagesRequest.parse(body)
+                    request, system = parsed.as_chat(), parsed.system
+                else:
+                    request, system = ChatRequest.parse(body), None
             except BadRequest as error:
                 self.send_error(400, str(error))
                 return
             try:
-                recorder.record(request)
+                recorder.record(request, system)
             except OSError:
                 self.send_error(500, f"could not record the request in {recorder.log}")
                 return
-            if request.stream:
+            if messages:
+                self.anthropic(request.reply(), request.stream)
+            elif request.stream:
                 self.stream(request.reply())
             else:
                 self.whole(request.reply())
+
+        def anthropic(self, text: str, stream: bool) -> None:
+            if not stream:
+                body = json.dumps(anthropic_message(text)).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            for event in anthropic_events(text):
+                self.wfile.write(f"event: {event['type']}\ndata: {json.dumps(event)}\n\n".encode())
+            self.close_connection = True
 
         def whole(self, text: str) -> None:
             body = encode(Completion([Choice(AssistantMessage(text))]))
@@ -262,7 +367,10 @@ def main(argv: list[str]) -> int:
         return 2
     directory = Path(argv[1])
     if not directory.is_dir():
-        print(f"chat-capture-endpoint: {directory} is not a directory; create it first", file=sys.stderr)
+        print(
+            f"chat-capture-endpoint: {directory} is not a directory; create it first",
+            file=sys.stderr,
+        )
         return 2
     try:
         server = Server(("127.0.0.1", 0), handler(Recorder(directory)))

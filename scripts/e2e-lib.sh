@@ -1022,6 +1022,89 @@ oh_context_free_enforce() {
   note "PASS: $id context-free turn sends none of the checkout's or the machine's context, and a checkout turn sends both"
 }
 
+# A multi-line `--system` must reach claude's model request whole. On Windows
+# claude is an npm `.cmd` shim that std refuses to spawn with a newline-bearing
+# argument, which a one-line `--system` would never show. What proves the
+# delivery is the request claude sends, not what a model chooses to say back:
+# a model asked to echo a token from its system prompt once answered with a
+# mangled copy of it, failing a run whose system prompt had arrived intact.
+# So claude is pointed at scripts/chat-capture-endpoint.py through
+# ANTHROPIC_BASE_URL with a local key, the endpoint records each request's
+# `system` verbatim, and that record must hold the three lines exactly, in
+# order, joined by LF. The endpoint's reply is the user prompt's marker, which
+# must come back through oneharness's `json:result` extraction: the round trip.
+oh_claude_multiline_system_enforce() {
+  _oh_phase
+  local py sandbox pid="" port marker system status=0 bin_args=()
+  py="$(command -v python3 || command -v python)" ||
+    skip "neither python3 nor python is on PATH; the capture endpoint is a Python script"
+  # On Linux the measuring shim runs a launch in its own network namespace,
+  # whose loopback is not the endpoint's, so the turn starts the real
+  # executable past it; elsewhere the shim runs it directly and it stays, so
+  # Windows still spawns claude the way every other turn there does.
+  case "${OH_E2E_OS:-$(uname -s)}" in
+    Linux*)
+      local real
+      real="$(_oh_unshimmed claude)" || real="$(command -v claude)" ||
+        skip "claude is not on PATH; install it (the live-claude workflow does) to run this phase"
+      bin_args=(--bin "claude-code=$real")
+      ;;
+  esac
+  sandbox="$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX")" ||
+    fail "claude-code: could not create a scratch directory under ${TMPDIR:-/tmp}; check that it exists and is writable, or set TMPDIR to one that is"
+  mkdir -p "$sandbox/endpoint" "$sandbox/config" "$sandbox/work" ||
+    _oh_stall_abort "$sandbox" "$pid" "claude-code: could not create the phase's directories under $sandbox; check that the host temp dir is writable"
+  marker="$(oh_marker)"
+  # Not a marker the endpoint would answer with: only the user prompt's is.
+  system="$(printf 'You are a connectivity-check fixture.\nThis system prompt spans three lines.\nIts last line carries OHSYSTEM-%s%s.' "$RANDOM" "$RANDOM")"
+  local started=0
+  # llmlint: ignore-block[e2e_not_mocked] What this phase observes is the request the real claude sends its model, so a recorder must stand where the model is; the real model is driven by the paid echo turn e2e-claude.sh runs just before, and the long-prompt phase after it holds a system prompt's receipt to the real model.
+  _oh_endpoint_start chat-capture-endpoint.py "$py" "$sandbox/endpoint" "$sandbox/endpoint.log" || started=$?
+  pid="$_OH_ENDPOINT_PID"
+  if [ "$started" -ne 0 ]; then
+    sed 's/^/    /' "$sandbox/endpoint.log" >&2 || true
+    _oh_stall_abort "$sandbox" "$pid" "claude-code: the capture endpoint never reported its port (its output, with the stack it hung in, is above); run \`$py scripts/chat-capture-endpoint.py <an empty dir>\` by hand to see why it cannot start"
+  fi
+  port="$(_oh_port_in "$sandbox/endpoint/port")" ||
+    _oh_stall_abort "$sandbox" "$pid" "claude-code: the capture endpoint's port file does not hold one TCP port; run \`$py scripts/chat-capture-endpoint.py <an empty dir>\` by hand to see what it wrote"
+  (
+    local systems="$sandbox/endpoint/system.jsonl"
+    # The local key is the only credential: an OAuth token would outrank it,
+    # and a config dir of the phase's own keeps the machine's settings out.
+    unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_AUTH_TOKEN
+    ANTHROPIC_BASE_URL="http://127.0.0.1:$port" ANTHROPIC_API_KEY=sk-oneharness-local-only \
+      CLAUDE_CONFIG_DIR="$(oh_native_path "$sandbox/config")" CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+      oh_run claude-code "$(oh_prompt "$marker")" --system "$system" \
+      --cwd "$(oh_native_path "$sandbox/work")" "${bin_args[@]+"${bin_args[@]}"}"
+    oh_assert_echoed claude-code "$marker" json:result
+    if [ ! -s "$systems" ]; then
+      sed 's/^/    /' "$sandbox/endpoint.log" >&2 || true
+      fail "claude-code sent no Messages request to the capture endpoint, so nothing was proven about its system prompt; check that claude still honors ANTHROPIC_BASE_URL and read the endpoint's output above"
+    fi
+    if ! jq -e -s --arg want "$system" 'any(.[].system[]; contains($want))' "$systems" >/dev/null; then
+      note "  ── the tail of the system prompt claude sent, where --system lands ──"
+      jq -r '.system[-1] // "(none)"' "$systems" | tail -n 5 | sed 's/^/    /' >&2 || true
+      fail "claude-code: the three-line --system did not reach the model request intact (what arrived is above); check how oneharness delivers --system to claude (--append-system-prompt-file) and whether its line breaks survive"
+    fi
+  ) </dev/null >"$sandbox/turn.log" 2>&1 &
+  # llmlint: ignore-end[e2e_not_mocked]
+  wait "$!" || status=$?
+  # A skip exits its subshell 0: say it, rather than a PASS nothing earned.
+  local skipped=""
+  skipped="$(grep -m1 '^SKIP: ' "$sandbox/turn.log" 2>/dev/null)" || skipped=""
+  if [ "$status" -ne 0 ]; then
+    sed 's/^/    /' "$sandbox/turn.log" >&2 || true
+  fi
+  _oh_stall_cleanup "$sandbox" "$pid"
+  [ "$status" -eq 0 ] || exit "$status"
+  if [ -n "$skipped" ]; then
+    printf '%s\n' "$skipped" >&2
+    return 0
+  fi
+  # llmlint: ignore[tool_output_is_signal] This one line is the phase's verdict, the way every sibling oh_* phase in this library ends in PASS: a live run is read (and cited as proof) by that line.
+  note "PASS: claude-code delivered a three-line --system to its model request intact, and the reply round-tripped"
+}
+
 # Remove a scratch sandbox. A removal that fails names the path so it can be
 # deleted by hand; it does not mask the verdict of the turn that used it.
 oh_drop_sandbox() {

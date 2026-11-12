@@ -85,6 +85,76 @@ class MeasuredLaunch(unittest.TestCase):
         (line,) = measurements(records, start["launch_id"])
         self.assertEqual((line["method"], line["exit"]), ("netns-pasta", 7))
 
+    def test_the_launch_runs_as_the_measurer_s_own_user_not_the_namespace_s_root(self) -> None:
+        # pasta's user namespace maps this user to root; a launch that read
+        # uid 0 there was refused by claude ("--dangerously-skip-permissions
+        # cannot be used with root/sudo privileges").
+        need_recorder(self)
+        tmp = scratch(self)
+        run = run_shim(tmp, ["/bin/sh", "-c", "id -u; id -g"], ["exec", "probe"])
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stdout.decode().split(), [str(os.getuid()), str(os.getgid())])
+        records = lines(tmp / "codex.jsonl")
+        (start,) = starts(records)
+        (line,) = measurements(records, start["launch_id"])
+        self.assertEqual(line["method"], "netns-pasta", line)
+
+    def test_a_port_the_launch_listens_on_answers_on_host_loopback_and_is_not_counted(
+        self,
+    ) -> None:
+        # oneharness dials opencode's control server (`opencode serve`, which
+        # the shim measures) on 127.0.0.1; with no inbound forwarding that
+        # port existed only in the namespace and every dial was refused.
+        need_recorder(self)
+        tmp = scratch(self)
+        import socket
+
+        with socket.socket() as reserve:
+            reserve.bind(("127.0.0.1", 0))
+            port = reserve.getsockname()[1]
+        body = 4_000_000
+        listener = tmp / "listener.py"
+        listener.write_text(
+            "import socket, sys\n"
+            "with socket.socket() as s:\n"
+            "    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n"
+            "    s.bind(('127.0.0.1', int(sys.argv[1])))\n"
+            "    s.listen(1)\n"
+            "    s.settimeout(60)\n"
+            "    conn, _ = s.accept()\n"
+            f"    conn.sendall(b'x' * {body})\n"
+            "    conn.close()\n"
+        )
+        result: dict[str, subprocess.CompletedProcess[bytes]] = {}
+        launch = threading.Thread(
+            target=lambda: result.update(
+                run=run_shim(tmp, [sys.executable, str(listener), str(port)], ["serve", "probe"])
+            )
+        )
+        launch.start()
+        received = 0
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=5) as conn:
+                    while data := conn.recv(65536):
+                        received += len(data)
+                break
+            except ConnectionRefusedError:
+                if time.monotonic() > deadline:
+                    break
+                time.sleep(0.2)
+        launch.join()
+        run = result["run"]
+        self.assertEqual(received, body, "the launch's listener never answered on host loopback")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        records = lines(tmp / "codex.jsonl")
+        (start,) = starts(records)
+        (line,) = measurements(records, start["launch_id"])
+        self.assertEqual(line["method"], "netns-pasta", line)
+        # Spliced socket to socket, the served bytes never crossed the TAP.
+        self.assertLess(line["rx_bytes"] + line["tx_bytes"], body // 100, line)
+
     def test_counts_exactly_what_crossed_the_namespace_boundary_against_an_independent_capture(
         self,
     ) -> None:
@@ -821,7 +891,7 @@ class MalformedResult(unittest.TestCase):
         (fake / "pasta").write_text(
             "#!/usr/bin/env bash\n"
             'while [ "$1" != --_init ]; do shift; done\n'
-            'scratch="$2"; shift 3\n'
+            'scratch="$2"; while [ "$1" != -- ]; do shift; done; shift\n'
             ': >"$scratch/launched"\n'
             '"$@"\n'
             'printf \'{"moved": "garbage"}\' >"$scratch/result.json"\n'

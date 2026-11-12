@@ -623,30 +623,48 @@ def through_bash(argv: list[str]) -> list[bytes]:
 
 
 HOST_LO_TO_NS_LO = "--host-lo-to-ns-lo"
+# pasta's inbound TCP rule, one spelling per generation, newest first: each
+# makes a port the launch binds — any port — answer on host loopback, landing
+# on the namespace's loopback. Only the first that pasta starts with is used.
+#   * 20260728 on: `auto` alone leaves out the ephemeral range, where every
+#     port reserved by binding port 0 comes from (oneharness's control ports
+#     among them), so the range is named, host loopback only, still only once
+#     bound (`,auto`). Earlier ones refuse the spelling, or (2025's) take it as
+#     "bind every port now" and fail on port 1, which this user may not bind.
+#   * 2025 to 20260120 (Ubuntu 26.04's): `auto` covers every port, but a
+#     forward lands on the namespace's external address, where a server on
+#     127.0.0.1 (`opencode serve`) answers with a reset, unless told the flag.
+#   * Before (Ubuntu 24.04's): no such flag; `auto` already lands on loopback.
+INBOUND_TCP = (
+    ("-t", "127.0.0.1/1-65535,auto", HOST_LO_TO_NS_LO),
+    ("-t", "auto", HOST_LO_TO_NS_LO),
+    ("-t", "auto"),
+)
+OTHER_PORTS = ("-u", "none", "-T", "none", "-U", "none")
+TRIAL = ("/bin/bash", "-c", ":")
 
 
 def inbound_tcp(pasta: str) -> list[str]:
-    """pasta's inbound TCP rule: any port a launch binds answers on host loopback.
+    """The first INBOUND_TCP spelling this pasta starts a namespace with.
 
-    Two generations of pasta need two spellings, told apart by whether its
-    `--help` lists `--host-lo-to-ns-lo`. An older one (Ubuntu 24.04's) has no
-    such flag and refuses an address on `auto`; its `auto` covers every port
-    and lands a host-loopback forward on the namespace's loopback. A newer one
-    (26.04's) leaves the ephemeral range out of `auto` — where every port
-    reserved by binding port 0 comes from, oneharness's control ports among
-    them, so the dial was never forwarded — and lands the forward on the
-    namespace's external address, where a server on 127.0.0.1 (`opencode
-    serve`) answers with a reset. So it gets every port, host loopback only,
-    still only once bound, and the flag."""
-    try:
-        listed = subprocess.run(
-            [pasta, "--help"], stdin=subprocess.DEVNULL, capture_output=True, timeout=10
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return ["-t", "auto"]
-    if HOST_LO_TO_NS_LO.encode() not in listed.stdout + listed.stderr:
-        return ["-t", "auto"]
-    return ["-t", "127.0.0.1/1-65535,auto", HOST_LO_TO_NS_LO]
+    Tried rather than read off `--help`, which does not list the flag on every
+    build that takes it. The trial runs bash, which 26.04's confined pasta may
+    start (`through_bash`). None starting leaves the oldest, so the real launch
+    fails on whatever stopped them and says so in its line."""
+    for spelling in INBOUND_TCP:
+        try:
+            trial = subprocess.run(
+                [pasta, "--config-net", "--quiet", "-4", *spelling, *OTHER_PORTS, "--", *TRIAL],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if trial.returncode == 0:
+            return list(spelling)
+    return list(INBOUND_TCP[-1])
 
 
 def supervise(args: argparse.Namespace, pasta: str, scratch: Path, life: int) -> Outcome:
@@ -670,7 +688,7 @@ def supervise(args: argparse.Namespace, pasta: str, scratch: Path, life: int) ->
     # is spliced socket to socket, never through the TAP, so it adds nothing
     # to the counters. Nothing else crosses: no UDP, nothing outbound to the
     # host's own ports.
-    no_ports = [*inbound_tcp(pasta), "-u", "none", "-T", "none", "-U", "none"]
+    no_ports = [*inbound_tcp(pasta), *OTHER_PORTS]
     try:
         pasta_run = subprocess.Popen(
             [

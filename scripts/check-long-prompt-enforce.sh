@@ -51,7 +51,17 @@ for ((i=0; i<${#args[@]}; i++)); do
     jq -Rs . "${args[$((i + 1))]}" >>"$OH_LONG_SYSTEMS" || { echo "cannot capture system file; inspect jq and file permissions" >&2; exit 1; }
   fi
   if [ "${args[$i]}" = --batch-strategy ] && [ -n "${MOCK_LONG_BATCH_OMIT_SYSTEM:-}" ]; then export MOCK_LONG_OMIT_SYSTEM=1; fi
+  if [ "${args[$i]}" = --schema ] && [ -n "${MOCK_LONG_STRUCTURED_LOG_OMIT_SYSTEM:-}" ]; then export MOCK_LONG_LOG_OMIT_SYSTEM=1; fi
 done
+# Withhold the system file from oneharness itself: the turn is really undelivered.
+if [ -n "${MOCK_LONG_DROP_SYSTEM_FILE:-}" ]; then
+  kept=()
+  for ((i=0; i<${#args[@]}; i++)); do
+    if [ "${args[$i]}" = --system-file ]; then i=$((i + 1)); continue; fi
+    kept+=("${args[$i]}")
+  done
+  set -- "${kept[@]}"
+fi
 [ -n "$id" ] || { echo 'long helper wrapper: missing harness id; inspect the --harness argument in oh_long_prompt_enforce' >&2; exit 2; }
 if [ -n "${MOCK_LONG_REPEAT_BATCH_USER:-}" ] && [[ " ${args[*]} " == *" --batch-strategy "* ]]; then
   "$OH_REAL_BIN" "$verb" --bin "$id=$OH_MOCK_BIN" "$@" |
@@ -146,32 +156,58 @@ grep -q 'NOT-RUN: qwen resumed' "$tmp/unsupported.log" || {
   show "$tmp/unsupported.log"
   fail 'missing explicit resumed NOT-RUN; inspect the absent-handle branch'
 }
+# Qwen's verdict is read from the model request it records with
+# --openai-logging-dir, so every turn must ask it for that record.
+jq -se 'length == 3 and all(.[]; index("--openai-logging-dir") != null)' "$OH_LONG_RECORD" >/dev/null || {
+  show "$OH_LONG_RECORD"
+  fail 'expected every Qwen turn to record its model request with --openai-logging-dir; inspect request_args in oh_long_prompt_enforce'
+}
 # Reproduce the observed Qwen model answer while retaining real isolated child
 # requests: only the report text is changed after the built CLI completes.
 MOCK_LONG_REPEAT_BATCH_USER=1 bash -c 'set -euo pipefail; source "$1/scripts/e2e-lib.sh"; oh_long_prompt_enforce qwen' _ "$root" >"$tmp/qwen-repeat.log" 2>&1 || {
   show "$tmp/qwen-repeat.log"
   fail 'Qwen batch depended on its second model echo despite deterministic isolation proof'
 }
-# The structured answer Qwen gave on macOS CI restated the reference line
-# around the delivered system marker; that is receipt, not a delivery failure.
-MOCK_LONG_STRUCTURED_SYSTEM='reference_b = {}.' bash -c 'set -euo pipefail; source "$1/scripts/e2e-lib.sh"; oh_long_prompt_enforce qwen' _ "$root" >"$tmp/qwen-restate.log" 2>&1 || {
-  show "$tmp/qwen-restate.log"
-  fail 'Qwen structured answer restating the delivered system marker was rejected; match the marker, not the whole field'
+qwen_long() {
+  local log="$1"
+  shift
+  (
+    local pair
+    for pair in "$@"; do export "${pair?}"; done
+    bash -c 'set -euo pipefail; source "$1/scripts/e2e-lib.sh"; oh_long_prompt_enforce qwen' _ "$root" >"$log" 2>&1
+  )
 }
-grep -q 'PASS: qwen receipt in \[.*structured' "$tmp/qwen-restate.log" || {
-  show "$tmp/qwen-restate.log"
-  fail 'Qwen restated-marker case did not verify the structured journey'
+# Delivered turns pass whatever the reply restates: the answers Qwen gave on CI
+# ("reference_b = <marker>.", "reference_a reference_b", {"system":"reference_b"}).
+for answers in 'MOCK_LONG_STRUCTURED_SYSTEM=reference_b = {}.' 'MOCK_LONG_TEXT=reference_a reference_b'; do
+  qwen_long "$tmp/qwen-delivered.log" "$answers" 'MOCK_LONG_STRUCTURED_SYSTEM=reference_b' || {
+    show "$tmp/qwen-delivered.log"
+    fail "Qwen rejected a delivered system prompt because of how it answered ($answers); its verdict must come from the recorded request"
+  }
+  grep -q 'PASS: qwen receipt in \[ordinary batch structured\]' "$tmp/qwen-delivered.log" || {
+    show "$tmp/qwen-delivered.log"
+    fail "Qwen delivered case ($answers) did not verify all three journeys"
+  }
+done
+# A system prompt missing from the recorded request fails whatever the reply
+# says: restating the marker or omitting it, in ordinary and in structured.
+expect_qwen_failure() {
+  local journey="$1" problem="$2"
+  shift 2
+  if qwen_long "$tmp/qwen-undelivered.log" "$@"; then
+    show "$tmp/qwen-undelivered.log"
+    fail "Qwen accepted an undelivered system prompt ($*); restore the recorded-request receipt check"
+  fi
+  if ! grep -q "qwen/$journey: prompt/system receipt or off-argv delivery failed" "$tmp/qwen-undelivered.log" ||
+    ! grep -q "$problem" "$tmp/qwen-undelivered.log"; then
+    show "$tmp/qwen-undelivered.log"
+    fail "Qwen undelivered case ($*) failed outside qwen/$journey or for another reason than: $problem"
+  fi
 }
-# The same restatement without the marker is what an undelivered system
-# prompt yields, and must still fail the structured journey.
-if MOCK_LONG_STRUCTURED_SYSTEM='reference_b is not present in the reference data.' bash -c 'set -euo pipefail; source "$1/scripts/e2e-lib.sh"; oh_long_prompt_enforce qwen' _ "$root" >"$tmp/qwen-omit.log" 2>&1; then
-  show "$tmp/qwen-omit.log"
-  fail 'Qwen structured answer without the system marker was accepted; restore the structured system receipt check'
-fi
-grep -q 'qwen/structured: prompt/system receipt or off-argv delivery failed' "$tmp/qwen-omit.log" || {
-  show "$tmp/qwen-omit.log"
-  fail 'Qwen omitted-marker case failed outside the structured journey; inspect the error above'
-}
+expect_qwen_failure ordinary 'system marker missing from every recorded model request' MOCK_LONG_LOG_OMIT_SYSTEM=1
+expect_qwen_failure ordinary 'system marker missing from every recorded model request' MOCK_LONG_DROP_SYSTEM_FILE=1 'MOCK_LONG_TEXT=reference_a reference_b'
+expect_qwen_failure structured 'system marker missing from every recorded model request' MOCK_LONG_STRUCTURED_LOG_OMIT_SYSTEM=1 'MOCK_LONG_STRUCTURED_SYSTEM=reference_b = {}.'
+expect_qwen_failure structured 'system marker missing from every recorded model request' MOCK_LONG_STRUCTURED_LOG_OMIT_SYSTEM=1 'MOCK_LONG_STRUCTURED_SYSTEM=reference_b'
 if MOCK_LONG_REPEAT_BATCH_USER=1 bash -c 'set -euo pipefail; source "$1/scripts/e2e-lib.sh"; oh_long_prompt_enforce goose' _ "$root" >"$tmp/goose-repeat.log" 2>&1; then
   fail 'second-marker relaxation escaped the Qwen batch case'
 fi

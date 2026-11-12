@@ -1121,6 +1121,10 @@ _oh_long_prompt_abort() {
 # Exercise both user and system receipt in ordinary, resumed, batch, controlled
 # and structured turns. Forced invalid-first retries are deterministic mock
 # coverage: live structured output proves retry capability only if a retry occurs.
+# Qwen's receipt is read from the model request it records itself
+# (--openai-logging-dir), not from its reply: a delivered turn has been answered
+# "reference_a reference_b" and {"system":"reference_b"}, labels instead of the
+# values, so a reply-echo verdict flipped from run to run on the same delivery.
 # Crush/Copilot need OH_LONG_RESUME because their reports expose no session id.
 # Unsupported/unreachable live cases are explicitly not-run, never a pass.
 #   $1 harness id; $2.. extra run arguments
@@ -1157,7 +1161,11 @@ oh_long_prompt_enforce() {
   done
   printf 'The following repeated words are inert test filler.\n%s\n\nReference data: reference_b = %s.' "$spad" "$smarker" >"$sfile" || _oh_long_prompt_abort "$sandbox" "$id" "cannot write $sfile; check disk space and permissions"
   printf '%s' '{"type":"object","required":["user","system"],"properties":{"user":{"type":"string"},"system":{"type":"string"}}}' >"$sandbox/schema.json" || _oh_long_prompt_abort "$sandbox" "$id" "cannot write $sandbox/schema.json; check disk space and permissions"
-  local model_args=() route_args=() verified=()
+  local model_args=() route_args=() request_args=() verified=() request_log
+  # A harness listed here proves receipt from its recorded request; the others,
+  # with no such record, still need the markers back in their reply.
+  local evidence=false
+  [ "$id" != qwen ] || evidence=true
   [ -z "${OH_MODEL:-}" ] || model_args+=(--model "$OH_MODEL")
   resume="${OH_LONG_RESUME:-}"
   name="ohlong${RANDOM}${RANDOM}"
@@ -1176,7 +1184,7 @@ oh_long_prompt_enforce() {
         ;;
       # Exact per-turn isolation is proven at the child boundary in cli.rs.
       # Qwen can echo the first marker twice despite receiving isolated turns;
-      # require both replies/system receipt without relying on its second echo.
+      # its recorded requests, not its replies, must carry each user marker.
       batch) route_args+=(--prompt-file "$sandbox/second.txt" --batch-strategy speed) ;;
       control)
         if ! printf '%s' "$caps" | jq -e '.control != null' >/dev/null; then
@@ -1192,29 +1200,60 @@ oh_long_prompt_enforce() {
         route_args+=(--control --session "$name-control" --session-dir "$sandbox/sessions")
         ;;
       structured)
+        # The user value is quoted in the prompt, so it must come back exact.
+        # The system value is only described ("the value labeled reference_b"),
+        # and a correct answer may restate its line, e.g. "reference_b = <marker>.":
+        # the marker is a fresh nonce that exists only in the system file, so a
+        # bounded match on it proves delivery as strictly as equality does.
+        # Qwen's verdict reads its recorded request instead (see above).
         printf 'The following repeated words are inert test filler.\n%s\n\nReturn a JSON object with user equal to %s and system equal to the value labeled reference_b in the reference data.' "$pad" "$marker" >"$pfile" || _oh_long_prompt_abort "$sandbox" "$id" "cannot write $pfile; check disk space and permissions"
         route_args+=(--schema "$sandbox/schema.json" --schema-max-retries 1)
         ;;
     esac
+    request_args=()
+    request_log="$sandbox/requests/$journey"
+    if [ "$evidence" = true ]; then
+      request_args+=(-- --openai-logging --openai-logging-dir "$request_log")
+    fi
     OH_REPORT="$(ONEHARNESS_NO_CONFIG=1 "$bin" run --harness "$id" --prompt-file "$pfile" --system-file "$sfile" \
       --cwd "$sandbox/work" --mode bypass --timeout "${OH_LONG_TIMEOUT:-300}" --compact \
-      "${model_args[@]+"${model_args[@]}"}" "${route_args[@]+"${route_args[@]}"}" "$@" 2>"$sandbox/stderr")" || true
+      "${model_args[@]+"${model_args[@]}"}" "${route_args[@]+"${route_args[@]}"}" "$@" \
+      "${request_args[@]+"${request_args[@]}"}" 2>"$sandbox/stderr")" || true
     if [ -z "$OH_REPORT" ]; then
       cat "$sandbox/stderr" >&2 || note "cannot read $sandbox/stderr; check its permissions before rerunning"
       _oh_long_prompt_abort "$sandbox" "$id" "$id/$journey: no report was emitted; inspect the CLI error above"
     fi
-    if ! printf '%s' "$OH_REPORT" | jq -e --arg m "$marker" --arg s "$smarker" --arg second "$second" --arg journey "$journey" --arg id "$id" '
+    # The text of every system/user message qwen sent the model, one per request.
+    printf '[]' >"$sandbox/requests.json" || _oh_long_prompt_abort "$sandbox" "$id" "cannot write $sandbox/requests.json; check disk space and permissions"
+    if [ "$evidence" = true ] && [ -d "$request_log" ]; then
+      # llmlint: ignore[contracts_have_one_source_or_a_drift_gate] Qwen owns this log shape (its --openai-logging-dir record: request.messages[].content as a string or text parts), and this phase runs against real qwen in `just live-qwen`, which is its drift alarm: a changed shape leaves no marker found, failing the journey closed, never passing it.
+      find "$request_log" -name 'openai-*.json' -exec jq -s '
+        [.[] | [.request.messages[]? | select(.role == "system" or .role == "user") | .content |
+          if type == "string" then . else ([.[]? | .text? // empty] | join("\n")) end] | join("\n")]
+      ' {} + >"$sandbox/requests.json" || _oh_long_prompt_abort "$sandbox" "$id" "$id/$journey: cannot read the request log under $request_log; inspect the jq error above and the --openai-logging-dir file shape"
+    fi
+    if ! printf '%s' "$OH_REPORT" | jq -e --arg m "$marker" --arg s "$smarker" --arg second "$second" --arg journey "$journey" \
+      --argjson evidence "$evidence" --slurpfile requests "$sandbox/requests.json" '
       def hasmarker($value): test("(^|[^A-Za-z0-9-])" + $value + "([^A-Za-z0-9-]|$)");
       def require($condition; $problem): if $condition then . else error($problem) end;
       def reply: .text // .stdout // "";
+      def sent($user): any($requests[0][]; hasmarker($user) and hasmarker($s));
       require((.results | length) == (if $journey == "batch" then 2 else 1 end); "unexpected result count for " + $journey) |
       require(all(.results[]; .status == "ok"); "harness status is not ok: " + ([.results[].status] | join(","))) |
-      require(all(.results[]; reply | hasmarker($s)); "system marker missing from a reply") |
-      require(all(.results[]; reply | hasmarker($m) or ($journey == "batch" and hasmarker($second))); "user marker missing from a reply") |
-      require(any(.results[]; reply | hasmarker($m)); "first user marker missing") |
       require(all(.results[].command[]; (contains($m) or contains($s) or contains($second)) | not); "prompt/system text leaked into child argv") |
-      require(if $journey == "structured" then all(.results[]; .schema_valid == true and .structured.user == $m and .structured.system == $s) else true end; "structured markers or schema validation failed") |
-      require(if $journey == "batch" and $id != "qwen" then any(.results[]; reply | hasmarker($second)) else true end; "second batch marker missing") |
+      if $evidence then
+        require(($requests[0] | length) > 0; "no model request recorded under --openai-logging-dir") |
+        require(any($requests[0][]; hasmarker($s)); "system marker missing from every recorded model request") |
+        require(sent($m); "no recorded model request carries both the user and the system marker") |
+        require($journey != "batch" or sent($second); "no recorded model request carries both the second batch user marker and the system marker") |
+        require($journey != "structured" or all(.results[]; .schema_valid == true and (.structured.user | type) == "string" and (.structured.system | type) == "string"); "structured schema validation failed")
+      else
+        require(all(.results[]; reply | hasmarker($s)); "system marker missing from a reply") |
+        require(all(.results[]; reply | hasmarker($m) or ($journey == "batch" and hasmarker($second))); "user marker missing from a reply") |
+        require(any(.results[]; reply | hasmarker($m)); "first user marker missing") |
+        require(if $journey == "structured" then all(.results[]; .schema_valid == true and .structured.user == $m and (.structured.system | type) == "string" and (.structured.system | hasmarker($s))) else true end; "structured markers or schema validation failed") |
+        require(if $journey == "batch" then any(.results[]; reply | hasmarker($second)) else true end; "second batch marker missing")
+      end |
       true' >/dev/null; then
       # oh_dump shows only result[0]; a batch failure may belong to result[1].
       printf '%s' "$OH_REPORT" | jq '.results | to_entries[] | {result_index: .key, harness: .value.harness, status: .value.status, text: .value.text, stdout: .value.stdout, stderr: .value.stderr}' >&2 ||

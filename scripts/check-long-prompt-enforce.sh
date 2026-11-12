@@ -51,12 +51,28 @@ for ((i=0; i<${#args[@]}; i++)); do
     jq -Rs . "${args[$((i + 1))]}" >>"$OH_LONG_SYSTEMS" || { echo "cannot capture system file; inspect jq and file permissions" >&2; exit 1; }
   fi
   if [ "${args[$i]}" = --batch-strategy ] && [ -n "${MOCK_LONG_BATCH_OMIT_SYSTEM:-}" ]; then export MOCK_LONG_OMIT_SYSTEM=1; fi
+  if [ "${args[$i]}" = --schema ] && [ -n "${MOCK_LONG_STRUCTURED_LOG_OMIT_SYSTEM:-}" ]; then export MOCK_LONG_LOG_OMIT_SYSTEM=1; fi
 done
+# Withhold the system file from oneharness itself: the turn is really undelivered.
+if [ -n "${MOCK_LONG_DROP_SYSTEM_FILE:-}" ]; then
+  kept=()
+  for ((i=0; i<${#args[@]}; i++)); do
+    if [ "${args[$i]}" = --system-file ]; then i=$((i + 1)); continue; fi
+    kept+=("${args[$i]}")
+  done
+  set -- "${kept[@]}"
+fi
 [ -n "$id" ] || { echo 'long helper wrapper: missing harness id; inspect the --harness argument in oh_long_prompt_enforce' >&2; exit 2; }
 if [ -n "${MOCK_LONG_REPEAT_BATCH_USER:-}" ] && [[ " ${args[*]} " == *" --batch-strategy "* ]]; then
   "$OH_REAL_BIN" "$verb" --bin "$id=$OH_MOCK_BIN" "$@" |
     jq '.results[1].text = .results[0].text' || {
     echo "long helper wrapper: cannot run $OH_REAL_BIN or transform its report; rebuild oneharness through its Nx build target and check jq installation and the pipeline error above" >&2
+    exit 1
+  }
+elif [ -n "${OH_LONG_REPORTS:-}" ]; then
+  # Keep each report so a case can show which answer its verdict was given.
+  "$OH_REAL_BIN" "$verb" --bin "$id=$OH_MOCK_BIN" "$@" | tee -a "$OH_LONG_REPORTS" || {
+    echo "long helper wrapper: cannot run $OH_REAL_BIN or append $OH_LONG_REPORTS; rebuild oneharness through its Nx build target and check disk space and the pipeline error above" >&2
     exit 1
   }
 else
@@ -146,12 +162,81 @@ grep -q 'NOT-RUN: qwen resumed' "$tmp/unsupported.log" || {
   show "$tmp/unsupported.log"
   fail 'missing explicit resumed NOT-RUN; inspect the absent-handle branch'
 }
+# Qwen's verdict is read from the model request it records with
+# --openai-logging-dir, so every turn must ask it for that record.
+jq -se 'length == 3 and all(.[]; index("--openai-logging-dir") != null)' "$OH_LONG_RECORD" >/dev/null || {
+  show "$OH_LONG_RECORD"
+  fail 'expected every Qwen turn to record its model request with --openai-logging-dir; inspect request_args in oh_long_prompt_enforce'
+}
 # Reproduce the observed Qwen model answer while retaining real isolated child
 # requests: only the report text is changed after the built CLI completes.
 MOCK_LONG_REPEAT_BATCH_USER=1 bash -c 'set -euo pipefail; source "$1/scripts/e2e-lib.sh"; oh_long_prompt_enforce qwen' _ "$root" >"$tmp/qwen-repeat.log" 2>&1 || {
   show "$tmp/qwen-repeat.log"
   fail 'Qwen batch depended on its second model echo despite deterministic isolation proof'
 }
+qwen_long() {
+  local log="$1"
+  shift
+  local pair seen=" "
+  for pair in "$@"; do
+    # A repeated name would silently replace the earlier fixture.
+    [[ "$seen" != *" ${pair%%=*} "* ]] || fail "qwen_long given ${pair%%=*} twice; each case must set a fixture once"
+    seen+="${pair%%=*} "
+  done
+  (
+    for pair in "$@"; do export "${pair?}"; done
+    bash -c 'set -euo pipefail; source "$1/scripts/e2e-lib.sh"; oh_long_prompt_enforce qwen' _ "$root" >"$log" 2>&1
+  )
+}
+# Delivered turns pass whatever the reply restates or omits; the answers Qwen
+# gave on CI were "reference_b = <marker>.", "reference_a reference_b" and
+# {"system":"reference_b"}. Each case also proves its recorded answer is the one
+# the verdict was given: $1 matches the ordinary reply, $2 the structured system.
+expect_qwen_delivered() {
+  local ordinary="$1" structured="$2"
+  shift 2
+  : >"$tmp/reports.jsonl" || fail "cannot reset $tmp/reports.jsonl; check disk space and permissions"
+  OH_LONG_REPORTS="$tmp/reports.jsonl" qwen_long "$tmp/qwen-delivered.log" "$@" || {
+    show "$tmp/qwen-delivered.log"
+    fail "Qwen rejected a delivered system prompt because of how it answered ($*); its verdict must come from the recorded request"
+  }
+  grep -q 'PASS: qwen receipt in \[ordinary batch structured\]' "$tmp/qwen-delivered.log" || {
+    show "$tmp/qwen-delivered.log"
+    fail "Qwen delivered case ($*) did not verify all three journeys"
+  }
+  jq -se --arg ordinary "$ordinary" --arg structured "$structured" '
+    length == 3 and
+    (.[0].results[0].text | rtrimstr("\n") | test($ordinary)) and
+    (.[2].results[0].structured.system | test($structured))
+  ' "$tmp/reports.jsonl" >/dev/null || {
+    show "$tmp/reports.jsonl"
+    fail "Qwen delivered case ($*) was not given the answer it names (ordinary /$ordinary/, structured system /$structured/); inspect the mock fixture variables"
+  }
+}
+marker_re='ONEHARNESS-LIVE-[0-9]+'
+expect_qwen_delivered "^$marker_re SYSTEM$marker_re\$" "^reference_b = SYSTEM${marker_re}[.]\$" 'MOCK_LONG_STRUCTURED_SYSTEM=reference_b = {}.'
+expect_qwen_delivered "^$marker_re SYSTEM$marker_re\$" '^reference_b$' 'MOCK_LONG_STRUCTURED_SYSTEM=reference_b'
+expect_qwen_delivered "^reference_b = SYSTEM${marker_re}[.]\$" "^SYSTEM$marker_re\$" 'MOCK_LONG_TEXT=reference_b = {}.'
+expect_qwen_delivered '^reference_a reference_b$' "^SYSTEM$marker_re\$" 'MOCK_LONG_TEXT=reference_a reference_b'
+# A system prompt missing from the recorded request fails whatever the reply
+# says: restating the marker or omitting it, in ordinary and in structured.
+expect_qwen_failure() {
+  local journey="$1" problem="$2"
+  shift 2
+  if qwen_long "$tmp/qwen-undelivered.log" "$@"; then
+    show "$tmp/qwen-undelivered.log"
+    fail "Qwen accepted an undelivered system prompt ($*); restore the recorded-request receipt check"
+  fi
+  if ! grep -q "qwen/$journey: prompt/system receipt or off-argv delivery failed" "$tmp/qwen-undelivered.log" ||
+    ! grep -q "$problem" "$tmp/qwen-undelivered.log"; then
+    show "$tmp/qwen-undelivered.log"
+    fail "Qwen undelivered case ($*) failed outside qwen/$journey or for another reason than: $problem"
+  fi
+}
+expect_qwen_failure ordinary 'system marker missing from every recorded model request' MOCK_LONG_LOG_OMIT_SYSTEM=1
+expect_qwen_failure ordinary 'system marker missing from every recorded model request' MOCK_LONG_DROP_SYSTEM_FILE=1 'MOCK_LONG_TEXT=reference_a reference_b'
+expect_qwen_failure structured 'system marker missing from every recorded model request' MOCK_LONG_STRUCTURED_LOG_OMIT_SYSTEM=1 'MOCK_LONG_STRUCTURED_SYSTEM=reference_b = {}.'
+expect_qwen_failure structured 'system marker missing from every recorded model request' MOCK_LONG_STRUCTURED_LOG_OMIT_SYSTEM=1 'MOCK_LONG_STRUCTURED_SYSTEM=reference_b'
 if MOCK_LONG_REPEAT_BATCH_USER=1 bash -c 'set -euo pipefail; source "$1/scripts/e2e-lib.sh"; oh_long_prompt_enforce goose' _ "$root" >"$tmp/goose-repeat.log" 2>&1; then
   fail 'second-marker relaxation escaped the Qwen batch case'
 fi

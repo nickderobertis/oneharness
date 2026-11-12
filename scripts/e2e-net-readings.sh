@@ -25,12 +25,15 @@ if [ ! -e "$file" ]; then
 fi
 command -v jq >/dev/null || fail "jq is not on PATH; install it to read $file"
 # Start lines carry the launch's argv and no method; each launch's one
-# measurement line carries its method, and an unmeasured one its reason.
+# measurement line carries its method — one of the two the recorder writes —
+# and an unmeasured one its reason, a string.
 summary="$(jq -rs '
   [.[] | select(has("method"))
-   | if (.method | type) != "string" or ((.reason // "") | type) != "string"
-     then error("a measurement line whose method or reason is not a string: \(tojson)")
-     else .method + (if .reason then ": " + (.reason | gsub("[[:cntrl:]]"; " ")) else "" end)
+   | if .method != "netns-pasta" and .method != "unavailable"
+     then error("a measurement line whose method is neither netns-pasta nor unavailable: \(tojson)")
+     elif .reason != null and (.reason | type) != "string"
+     then error("a measurement line whose reason is not a string: \(tojson)")
+     else .method + (if .reason == null then "" else ": " + (.reason | gsub("[[:cntrl:]]"; " ")) end)
      end]
   | group_by(.) | map({reading: .[0], count: length})
   | sort_by(-.count, .reading)

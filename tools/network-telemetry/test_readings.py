@@ -123,10 +123,21 @@ class Readings(unittest.TestCase):
             run.stdout.splitlines(), ["network recorder: 1 unavailable: no pasta 9 netns-pasta "]
         )
 
-    def test_a_method_or_reason_that_is_not_a_string_fails_naming_the_line(self) -> None:
-        for record in (
-            {"launch_id": "a", "method": 7},
-            {"launch_id": "a", "method": "unavailable", "reason": ["no", "pasta"]},
+    def test_a_method_the_recorder_never_writes_or_a_reason_not_a_string_fails(self) -> None:
+        for record, said in (
+            ({"launch_id": "a", "method": 7}, "method is neither netns-pasta nor unavailable"),
+            (
+                {"launch_id": "a", "method": "netns-pasta\n9 unavailable"},
+                "method is neither netns-pasta nor unavailable",
+            ),
+            (
+                {"launch_id": "a", "method": "unavailable", "reason": ["no", "pasta"]},
+                "reason is not a string",
+            ),
+            (
+                {"launch_id": "a", "method": "unavailable", "reason": False},
+                "reason is not a string",
+            ),
         ):
             with self.subTest(record=record):
                 tmp = scratch(self)
@@ -134,7 +145,7 @@ class Readings(unittest.TestCase):
                 file.write_text(json.dumps(record) + "\n")
                 run = readings(file)
                 self.assertEqual(run.returncode, 1, run.stdout)
-                self.assertIn("whose method or reason is not a string", run.stderr)
+                self.assertIn(f"a measurement line whose {said}", run.stderr)
                 self.assertEqual(run.stdout, "")
 
     def test_each_live_workflow_summarizes_its_own_suite_s_file_after_it_runs(self) -> None:

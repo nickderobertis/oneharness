@@ -113,7 +113,7 @@ have_env() {
 #                 DEAD_LEASE_STOP_DEADLINE (5 s);
 #   pooled-reuse  (Linux) the sustained-reuse workload, then onebudgetspec's
 #                 check over live/control/budgets.yaml.
-# OH_POOLED_MEET_GUARD_S (default 120) bounds pooled-env's wait for a dispatch
+# OH_POOLED_MEET_GUARD_S (default 120, at most 86400) bounds pooled-env's wait for a dispatch
 # that never starts; it is a hang guard, never what orders the two.
 # OH_CONTROL_ONLY=pooled runs these alone (the gate's journeys drive them with
 # the mock harness standing for codex).
@@ -141,11 +141,16 @@ oh_pooled_env() {
   local a b report_a report_b value_a value_b digest_a digest_b out_a out_b pid_a pid_b home
   # A hang guard, not a window: the rendezvous ends on the other's arrival,
   # however long scheduling takes to bring it, and only a dispatch that never
-  # starts meets this bound. Whole seconds, under the dispatch's own timeout.
+  # starts meets this bound. Whole seconds from 1 to a day: the length test
+  # comes first, so no value too long for shell arithmetic is ever compared,
+  # and the bound keeps guard_s * 10 (the command's tick count) from wrapping.
   local guard_s="${OH_POOLED_MEET_GUARD_S:-120}"
   case "$guard_s" in
-    '' | *[!0-9]* | 0*) fail "pooled-env: OH_POOLED_MEET_GUARD_S must be whole seconds from 1, got '$guard_s'" ;;
+    '' | *[!0-9]* | 0*) fail "pooled-env: OH_POOLED_MEET_GUARD_S must be whole seconds from 1 to 86400, got '$guard_s'" ;;
   esac
+  if [ "${#guard_s}" -gt 5 ] || [ "$guard_s" -gt 86400 ]; then
+    fail "pooled-env: OH_POOLED_MEET_GUARD_S must be whole seconds from 1 to 86400, got '$guard_s'"
+  fi
   value_a="pooled-a-${RANDOM}${RANDOM}${RANDOM}"
   value_b="pooled-b-${RANDOM}${RANDOM}${RANDOM}"
   digest() { printf %s "$1" | cksum | cut -d' ' -f1; }

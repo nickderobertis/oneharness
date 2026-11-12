@@ -6030,7 +6030,24 @@ fn the_control_suite_s_pooled_env_shares_one_server_when_one_dispatch_starts_lat
             None,
             "",
             Some("2s"),
-            "FAIL: pooled-env: OH_POOLED_MEET_GUARD_S must be whole seconds from 1, got '2s'",
+            "FAIL: pooled-env: OH_POOLED_MEET_GUARD_S must be whole seconds from 1 to 86400, got '2s'",
+        ),
+        (
+            // Whole seconds past a day, here 2^64 that would wrap the
+            // command's tick count to zero, are refused the same way rather
+            // than ending the rendezvous at once.
+            "pool-suite-huge-guard",
+            None,
+            "",
+            Some("18446744073709551616"),
+            "FAIL: pooled-env: OH_POOLED_MEET_GUARD_S must be whole seconds from 1 to 86400, got '18446744073709551616'",
+        ),
+        (
+            "pool-suite-over-day-guard",
+            None,
+            "",
+            Some("86401"),
+            "FAIL: pooled-env: OH_POOLED_MEET_GUARD_S must be whole seconds from 1 to 86400, got '86401'",
         ),
     ];
     for (tag, tmp, prelude, guard, expected) in cases {

@@ -7,9 +7,11 @@ makes that a failure. The fallback and refusal cases run everywhere.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -17,6 +19,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from types import ModuleType
 from typing import Literal, NamedTuple
 
 from support import (
@@ -49,6 +52,9 @@ UNAVAILABLE_FIELDS = frozenset({"launch_id", "reason", "seconds", "exit", "metho
 DOWN = 5_000_000
 UP = 3_000_000
 UNRELATED = 7_777_777
+# The user namespaces Linux nests at most, the initial one's children included
+# (`parent_ns->level > 32` refuses a 34th level, kernel/user_namespace.c).
+USERNS_LEVELS = 33
 
 
 class Frame(NamedTuple):
@@ -99,6 +105,35 @@ class MeasuredLaunch(unittest.TestCase):
         (line,) = measurements(records, start["launch_id"])
         self.assertEqual(line["method"], "netns-pasta", line)
 
+    def test_a_launch_that_cannot_be_given_its_own_identity_runs_directly_once_saying_why(
+        self,
+    ) -> None:
+        # The shim runs USERNS_LEVELS - 1 user namespaces deep, so pasta's is
+        # the deepest the kernel allows and the nested one `become` asks for
+        # is refused (ENOSPC): the launch must not run as the namespace's root
+        # instead, nor twice, and its line must say why it went unmeasured.
+        need_recorder(self)
+        if shutil.which("unshare") is None:
+            self.fail("unshare (util-linux) is not on PATH; install it to nest user namespaces")
+        tmp = scratch(self)
+        ran = tmp / "ran"
+        real = tmp / "counting-double"
+        real.write_text(f"#!/usr/bin/env bash\nid -u >>{shlex.quote(str(ran))}\n")
+        real.chmod(0o755)
+        nest = ["unshare", "--user", "--map-current-user"] * (USERNS_LEVELS - 1)
+        run = run_shim(tmp, [str(real)], ["exec", "x"], prefix=nest, env={"TMPDIR": str(tmp)})
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(ran.read_text().split(), [str(os.getuid())], "not run once as this user")
+        records = lines(tmp / "codex.jsonl")
+        (start,) = starts(records)
+        (line,) = measurements(records, start["launch_id"])
+        self.assertEqual(line["method"], "unavailable", line)
+        self.assertIn(f"cannot run the launch as uid {os.getuid()}", line["reason"])
+        self.assertIn("unshare(CLONE_NEWUSER)", line["reason"])
+        self.assertNotIn(b"cannot run the launch as uid", run.stderr)
+        self.assertFalse(list((tmp / ".pending").glob("*")))
+        self.assertEqual(list(tmp.glob("oh-netmeasure-*")), [])
+
     def test_a_port_the_launch_listens_on_answers_on_host_loopback_and_is_not_counted(
         self,
     ) -> None:
@@ -135,6 +170,7 @@ class MeasuredLaunch(unittest.TestCase):
         launch.start()
         received = 0
         deadline = time.monotonic() + 30
+        # llmlint: ignore-block[async_typed_clients_at_boundaries] What is under test is that a raw TCP port the launch binds answers on host loopback, as oneharness's dial of a control server needs: the listener is the test's own byte source with no service API or response shape for a typed client to model, and a typed or async client would hide the refused or reset connect the loop retries on.
         while True:
             try:
                 with socket.create_connection(("127.0.0.1", port), timeout=5) as conn:
@@ -145,6 +181,7 @@ class MeasuredLaunch(unittest.TestCase):
                 if time.monotonic() > deadline:
                     break
                 time.sleep(0.2)
+        # llmlint: ignore-end[async_typed_clients_at_boundaries]
         launch.join()
         run = result["run"]
         self.assertEqual(received, body, "the launch's listener never answered on host loopback")
@@ -877,6 +914,148 @@ class Arguments(unittest.TestCase):
         self.assertFalse(ran.exists(), "the launch ran with no marker for its start")
         self.assertFalse((tmp / "codex.jsonl").exists(), "a start line was written")
         self.assertFalse((tmp / ".pending").exists(), "a marker was made")
+
+
+class IdentityArgument(unittest.TestCase):
+    """`--_as UID:GID`, which the supervisor hands the namespace's init."""
+
+    def test_an_identity_no_user_namespace_can_map_is_a_usage_error_before_anything_runs(
+        self,
+    ) -> None:
+        tmp = scratch(self)
+        ran = tmp / "ran"
+        for value, said in (
+            ("1000", "'1000' is not UID:GID"),
+            ("abc:1000", "uid 'abc' is not a decimal id"),
+            ("1000:-1", "gid '-1' is not a decimal id"),
+            ("1000:", "gid '' is not a decimal id"),
+            (f"{2**32 - 1}:1000", f"uid '{2**32 - 1}' is not a decimal id from 0 to {2**32 - 2}"),
+            ("\u0661:1000", "uid '\u0661' is not a decimal id"),
+        ):
+            with self.subTest(value=value):
+                run = subprocess.run(
+                    [
+                        sys.executable,
+                        str(NETMEASURE),
+                        "--_init",
+                        str(tmp),
+                        "--_as",
+                        value,
+                        "--",
+                        "touch",
+                        str(ran),
+                    ],
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    check=False,
+                )
+                self.assertEqual(run.returncode, 2, run.stderr)
+                self.assertIn(f"--_as: {said}", run.stderr)
+                self.assertNotIn("Traceback", run.stderr)
+                self.assertFalse(ran.exists(), "the launch ran on a bad identity")
+
+
+def netmeasure_module(test: unittest.TestCase) -> ModuleType:
+    """The recorder's own module, loaded from its script."""
+    spec = importlib.util.spec_from_file_location("netmeasure", NETMEASURE)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    # Its dataclasses resolve their annotations through sys.modules.
+    sys.modules["netmeasure"] = module
+    test.addCleanup(sys.modules.pop, "netmeasure", None)
+    spec.loader.exec_module(module)
+    return module
+
+
+class InboundTcp(unittest.TestCase):
+    """Which inbound TCP spelling the supervisor gives pasta: the newest that a
+    trial namespace starts with, tried in order (`inbound_tcp`)."""
+
+    def trial_pasta(self, plan: list[str]) -> tuple[Path, Path]:
+        """A stand-in pasta whose Nth start does plan[N] (`ok`, `refuse` or
+        `hang`), each logging its arguments as one line; and that log."""
+        tmp = scratch(self)
+        log = tmp / "trials"
+        pasta = tmp / "pasta"
+        does = {
+            "ok": "exit 0",
+            "refuse": "echo 'Invalid port specifier' >&2; exit 1",
+            "hang": "exec sleep 60",
+        }
+        cases = "".join(f"  {n}) {does[step]} ;;\n" for n, step in enumerate(plan))
+        pasta.write_text(
+            "#!/usr/bin/env bash\n"
+            f'printf "%s\\n" "$*" >>{shlex.quote(str(log))}\n'
+            f"n=$(($(wc -l <{shlex.quote(str(log))}) - 1))\n"
+            'case "$n" in\n'
+            f"{cases}"
+            "  *) echo 'more trials than planned' >&2; exit 99 ;;\n"
+            "esac\n"
+        )
+        pasta.chmod(0o755)
+        return pasta, log
+
+    def trials(self, netmeasure: ModuleType, spellings: list[tuple[str, ...]]) -> list[str]:
+        return [
+            " ".join(
+                [
+                    "--config-net",
+                    "--quiet",
+                    "-4",
+                    *s,
+                    *netmeasure.OTHER_PORTS,
+                    "--",
+                    *netmeasure.TRIAL,
+                ]
+            )
+            for s in spellings
+        ]
+
+    @unittest.skipIf(WINDOWS, "the recorder measures on Linux; its stand-in pasta is bash")
+    def test_the_newest_spelling_that_starts_is_taken_without_trying_older_ones(self) -> None:
+        netmeasure = netmeasure_module(self)
+        pasta, log = self.trial_pasta(["ok"])
+        got = netmeasure.inbound_tcp(str(pasta), timeout=5)
+        self.assertEqual(got, list(netmeasure.INBOUND_TCP[0]))
+        self.assertEqual(
+            log.read_text().splitlines(), self.trials(netmeasure, [netmeasure.INBOUND_TCP[0]])
+        )
+
+    @unittest.skipIf(WINDOWS, "the recorder measures on Linux; its stand-in pasta is bash")
+    def test_a_refused_or_hung_trial_falls_back_to_the_next_spelling_in_order(self) -> None:
+        netmeasure = netmeasure_module(self)
+        pasta, log = self.trial_pasta(["refuse", "hang", "ok"])
+        started = time.monotonic()
+        got = netmeasure.inbound_tcp(str(pasta), timeout=1)
+        self.assertLess(time.monotonic() - started, 30, "the hung trial was not cut off")
+        self.assertEqual(got, list(netmeasure.INBOUND_TCP[2]))
+        self.assertEqual(
+            log.read_text().splitlines(), self.trials(netmeasure, list(netmeasure.INBOUND_TCP))
+        )
+
+    @unittest.skipIf(WINDOWS, "the recorder measures on Linux; its stand-in pasta is bash")
+    def test_when_every_trial_is_refused_the_oldest_spelling_is_left(self) -> None:
+        netmeasure = netmeasure_module(self)
+        pasta, log = self.trial_pasta(["refuse"] * len(netmeasure.INBOUND_TCP))
+        self.assertEqual(
+            netmeasure.inbound_tcp(str(pasta), timeout=5), list(netmeasure.INBOUND_TCP[-1])
+        )
+        self.assertEqual(
+            log.read_text().splitlines(), self.trials(netmeasure, list(netmeasure.INBOUND_TCP))
+        )
+
+    @unittest.skipIf(WINDOWS, "the recorder measures on Linux; its stand-in pasta is bash")
+    def test_a_pasta_that_cannot_be_spawned_leaves_the_oldest_spelling(self) -> None:
+        netmeasure = netmeasure_module(self)
+        tmp = scratch(self)
+        unspawnable = tmp / "pasta"
+        unspawnable.write_text("#!/nonexistent/interpreter\n")
+        unspawnable.chmod(0o755)
+        self.assertEqual(
+            netmeasure.inbound_tcp(str(unspawnable), timeout=5), list(netmeasure.INBOUND_TCP[-1])
+        )
 
 
 class MalformedResult(unittest.TestCase):

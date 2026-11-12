@@ -430,6 +430,16 @@ def private_resolver() -> None:
         subprocess.run(["mount", "--bind", str(upstream), "/etc/resolv.conf"], check=True)
 
 
+# (uid_t)-1 is the kernel's "no id"; every id below it can be mapped.
+MAX_ID = 2**32 - 2
+
+
+def mappable_id(name: str, text: str) -> int:
+    if not text.isascii() or not text.isdigit() or int(text) > MAX_ID:
+        raise ValueError(f"{name} {text!r} is not a decimal id from 0 to {MAX_ID}")
+    return int(text)
+
+
 class Identity(NamedTuple):
     """The user and group the measurer runs as, which the launch must run as too."""
 
@@ -438,8 +448,13 @@ class Identity(NamedTuple):
 
     @staticmethod
     def parse(text: str) -> Identity:
-        uid, _, gid = text.partition(":")
-        return Identity(int(uid), int(gid))
+        """`UID:GID`, each a decimal id a user namespace can map (0 to 2**32 - 2).
+
+        Raises ValueError naming what is wrong, for the caller to report."""
+        uid, colon, gid = text.partition(":")
+        if not colon:
+            raise ValueError(f"{text!r} is not UID:GID")
+        return Identity(mappable_id("uid", uid), mappable_id("gid", gid))
 
     def encode(self) -> str:
         return f"{self.uid}:{self.gid}"
@@ -642,15 +657,19 @@ INBOUND_TCP = (
 )
 OTHER_PORTS = ("-u", "none", "-T", "none", "-U", "none")
 TRIAL = ("/bin/bash", "-c", ":")
+# Far above the fraction of a second a namespace takes to start and run `:`.
+TRIAL_TIMEOUT = 10.0
 
 
-def inbound_tcp(pasta: str) -> list[str]:
+def inbound_tcp(pasta: str, timeout: float = TRIAL_TIMEOUT) -> list[str]:
     """The first INBOUND_TCP spelling this pasta starts a namespace with.
 
     Tried rather than read off `--help`, which does not list the flag on every
     build that takes it. The trial runs bash, which 26.04's confined pasta may
-    start (`through_bash`). None starting leaves the oldest, so the real launch
-    fails on whatever stopped them and says so in its line."""
+    start (`through_bash`). A trial that cannot be spawned, exits non-zero or
+    outlasts TIMEOUT seconds rules its spelling out. None starting leaves the
+    oldest, so the real launch fails on whatever stopped them and says so in
+    its line."""
     for spelling in INBOUND_TCP:
         try:
             trial = subprocess.run(
@@ -658,7 +677,7 @@ def inbound_tcp(pasta: str) -> list[str]:
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                timeout=10,
+                timeout=timeout,
             )
         except (OSError, subprocess.TimeoutExpired):
             continue
@@ -688,7 +707,7 @@ def supervise(args: argparse.Namespace, pasta: str, scratch: Path, life: int) ->
     # is spliced socket to socket, never through the TAP, so it adds nothing
     # to the counters. Nothing else crosses: no UDP, nothing outbound to the
     # host's own ports.
-    no_ports = [*inbound_tcp(pasta), *OTHER_PORTS]
+    port_rules = [*inbound_tcp(pasta), *OTHER_PORTS]
     try:
         pasta_run = subprocess.Popen(
             [
@@ -696,7 +715,7 @@ def supervise(args: argparse.Namespace, pasta: str, scratch: Path, life: int) ->
                 b"--config-net",
                 b"--quiet",
                 b"-4",
-                *map(os.fsencode, no_ports),
+                *map(os.fsencode, port_rules),
                 b"--",
                 *inner,
             ],
@@ -1109,9 +1128,11 @@ def main(argv: list[str]) -> int:
     if args.init:
         if args.identity is None:
             parser.error("--_init needs --_as UID:GID, the identity the launch runs as")
-        return namespace_init(
-            Path(args.init), deadline_seconds(), Identity.parse(args.identity), args.argv
-        )
+        try:
+            identity = Identity.parse(args.identity)
+        except ValueError as error:
+            parser.error(f"--_as: {error}")
+        return namespace_init(Path(args.init), deadline_seconds(), identity, args.argv)
     if not args.line_file or not args.launch_id:
         parser.error("--line-file and --launch-id are required")
     if args.start_line is not None:

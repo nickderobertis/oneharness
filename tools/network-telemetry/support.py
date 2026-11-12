@@ -235,9 +235,11 @@ def run_shim(
     env: dict[str, str] | None = None,
     stdin: bytes = b"",
     timeout: float = 120,
+    prefix: list[str] | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     """One launch through the real shim. `real` is the executable it wraps;
-    an argv of more than one word is written to a script first."""
+    an argv of more than one word is written to a script first. `prefix` is
+    an argv the shim runs under, as `prefix... bash shim ...`."""
     executable = Path(real[0])
     if len(real) > 1:
         executable = tmp / f"real-{len(list(tmp.glob('real-*')))}"
@@ -247,6 +249,7 @@ def run_shim(
         executable.chmod(0o755)
     file = file or tmp / f"{suite}.jsonl"
     command = [
+        *(prefix or []),
         BASH,
         str(NETSHIM),
         "--suite",

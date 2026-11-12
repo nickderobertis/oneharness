@@ -183,69 +183,122 @@ test("every scratch directory made under the leak gate names its run", async () 
 	});
 });
 
+/**
+ * Churn `cycles` scratch directories in another process under a temp dir of
+ * this run's own, listing it throughout as a sibling run's gate would, and say
+ * what that watch found.
+ *
+ * The gate on node-sdk:e2e sweeps the same temp dir while node-sdk:test makes
+ * and removes its scratch. On Windows it cannot read that process's
+ * environment, so any swept directory it found unmarked counted as its own
+ * leak. So every swept name must hold the churner's marker while it exists.
+ *
+ * @param refuse a directory tag whose every rename off the sweep is refused
+ *   until a directory with the second tag is placed, injected at the churner's
+ *   `fs` boundary by `scratch-refusal.fixture.ts`
+ */
+async function watchSiblingChurn(
+	cycles: number,
+	refuse?: { tag: string; until: string },
+) {
+	const root = await scratch("observed");
+	const token = "4242.node-churn";
+	const preload = refuse
+		? ["--preload", resolve(here, "scratch-refusal.fixture.ts")]
+		: [];
+	const churner = spawn(
+		process.execPath,
+		[...preload, resolve(here, "scratch-churn.fixture.ts"), String(cycles)],
+		{
+			env: {
+				...process.env,
+				TMPDIR: root,
+				TEMP: root,
+				TMP: root,
+				[RUN_ENV]: token,
+				OH_SCRATCH_REFUSE_TAG: refuse?.tag,
+				OH_SCRATCH_REFUSE_UNTIL_TAG: refuse?.until,
+			},
+			stdio: ["ignore", "ignore", "pipe"],
+		},
+	);
+	let said = "";
+	churner.stderr.on("data", (chunk) => {
+		said += chunk;
+	});
+	const exited = new Promise<number | null>((done) =>
+		churner.on("close", done),
+	);
+	let running = true;
+	void exited.then(() => {
+		running = false;
+	});
+	let seen = 0;
+	const unmarked: string[] = [];
+	while (running) {
+		for (const name of readdirSync(root)) {
+			if (!name.startsWith(PREFIX)) continue;
+			seen++;
+			const directory = resolve(root, name);
+			let marker: string | undefined;
+			try {
+				marker = readFileSync(resolve(directory, RUN_MARKER), "utf8");
+			} catch {}
+			// Each cycle's name is its own, so a directory still there after a
+			// failed read is the one that was read.
+			if (marker !== token && existsSync(directory)) unmarked.push(name);
+		}
+		await new Promise((next) => setImmediate(next));
+	}
+	const status = await exited;
+	const left = readdirSync(root).filter((name) => name !== RUN_MARKER);
+	return { root, token, status, said, seen, unmarked, left };
+}
+
+/**
+ * What every watched churn must show: no unmarked directory was ever visible,
+ * and the one directory left at the end is the churner's deliberate leak,
+ * under its swept name and marked for its run, with nothing beside it.
+ */
+function expectOnlyTheMarkedLeak(
+	watch: Awaited<ReturnType<typeof watchSiblingChurn>>,
+) {
+	expect(watch.status, watch.said).toBe(0);
+	expect(watch.seen).toBeGreaterThan(0);
+	expect(watch.unmarked).toEqual([]);
+	const [leaked, ...beside] = watch.left;
+	expect(beside, watch.said).toEqual([]);
+	expect(leaked).toStartWith(`${PREFIX}leaked-`);
+	expect(
+		readFileSync(resolve(watch.root, `${leaked}`, RUN_MARKER), "utf8"),
+	).toBe(watch.token);
+}
+
 test(
 	"a sibling gate never sees a scratch directory without its marker",
 	async () => {
-		// The gate on node-sdk:e2e sweeps the same temp dir while node-sdk:test
-		// makes and removes its scratch. On Windows it cannot read that
-		// process's environment, so any swept directory it found unmarked counted
-		// as its own leak. So another process churns here while this one lists
-		// the root throughout, and every swept name must hold the churner's
-		// marker while it exists.
-		const root = await scratch("observed");
-		const token = "4242.node-churn";
-		const churner = spawn(
-			process.execPath,
-			[resolve(here, "scratch-churn.fixture.ts"), "500"],
-			{
-				env: {
-					...process.env,
-					TMPDIR: root,
-					TEMP: root,
-					TMP: root,
-					[RUN_ENV]: token,
-				},
-				stdio: ["ignore", "ignore", "inherit"],
-			},
-		);
-		const exited = new Promise<number | null>((done) =>
-			churner.on("exit", done),
-		);
-		let running = true;
-		void exited.then(() => {
-			running = false;
+		expectOnlyTheMarkedLeak(await watchSiblingChurn(500));
+	},
+	SLOW_FIXTURE_CASE_TIMEOUT_MS,
+);
+
+test(
+	"a scratch directory whose rename is refused past its patience is given back later",
+	async () => {
+		// The Windows CI failure this guards: a handle held inside one churned
+		// directory refused its rename off the sweep for longer than the
+		// rename's patience, so it was left in place, marked, and the run ended
+		// with it beside its one real leak. Held for the next removal, it is
+		// given back once the hold ends, and never unmarked meanwhile.
+		const watch = await watchSiblingChurn(8, {
+			tag: "churn-async-3",
+			until: "churn-async-4",
 		});
-		let seen = 0;
-		const unmarked: string[] = [];
-		while (running) {
-			for (const name of readdirSync(root)) {
-				if (!name.startsWith(PREFIX)) continue;
-				seen++;
-				const directory = resolve(root, name);
-				let marker: string | undefined;
-				try {
-					marker = readFileSync(resolve(directory, RUN_MARKER), "utf8");
-				} catch {}
-				// Each cycle's name is its own, so a directory still there after a
-				// failed read is the one that was read.
-				if (marker !== token && existsSync(directory)) unmarked.push(name);
-			}
-			await new Promise((next) => setImmediate(next));
-		}
-		expect(await exited).toBe(0);
-		expect(seen).toBeGreaterThan(0);
-		expect(unmarked).toEqual([]);
-		// A directory that really is left behind is still the churner's leak: it
-		// stands under the swept name, marked for its run, and nothing staged or
-		// retired is left beside it.
-		const [leaked, ...beside] = readdirSync(root).filter(
-			(name) => name !== RUN_MARKER,
+		// The refusal reached the retirement, or this proves nothing.
+		expect(watch.said).toMatch(
+			/scratch: left \S+churn-async-3-\S+ in place[^\n]*EPERM/u,
 		);
-		expect(beside).toEqual([]);
-		expect(leaked).toStartWith(`${PREFIX}leaked-`);
-		expect(readFileSync(resolve(root, `${leaked}`, RUN_MARKER), "utf8")).toBe(
-			token,
-		);
+		expectOnlyTheMarkedLeak(watch);
 	},
 	SLOW_FIXTURE_CASE_TIMEOUT_MS,
 );

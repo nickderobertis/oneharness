@@ -24,6 +24,8 @@
       "{workspaceRoot}/scripts/check-long-prompt-enforce.sh",
       "{workspaceRoot}/scripts/check-opencode-session-control.sh",
       "{workspaceRoot}/scripts/check-opencode-context-free.sh",
+      "{workspaceRoot}/scripts/check-claude-multiline-system.sh",
+      "{workspaceRoot}/scripts/check-chat-capture-endpoint.sh",
       "{workspaceRoot}/scripts/check-copilot-login-probe.sh",
       "{workspaceRoot}/scripts/check-codex-usage-schema.sh",
       "{workspaceRoot}/scripts/check-codex-usage-schema-test.sh",
@@ -83,6 +85,8 @@
           "bash scripts/shell-test.sh e2e-support scripts/with-portable-sed.sh scripts/check-long-prompt-enforce.sh",
           "bash scripts/shell-test.sh e2e-support scripts/with-portable-sed.sh scripts/check-opencode-session-control.sh",
           "bash scripts/shell-test.sh e2e-support scripts/with-portable-sed.sh scripts/check-opencode-context-free.sh",
+          "bash scripts/shell-test.sh e2e-support scripts/with-portable-sed.sh scripts/check-claude-multiline-system.sh",
+          "bash scripts/shell-test.sh e2e-support scripts/with-portable-sed.sh scripts/check-chat-capture-endpoint.sh",
           "bash scripts/shell-test.sh e2e-support scripts/with-portable-sed.sh scripts/check-copilot-login-probe.sh",
           "bash scripts/shell-test.sh e2e-support scripts/with-portable-sed.sh scripts/e2e-variants-test.sh"
         ],

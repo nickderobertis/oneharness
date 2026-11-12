@@ -62,6 +62,11 @@
 //!                   A delay above `MAX_REPLY_DELAY_MS` is refused.
 //!   MOCK_LONG_RECEIPT answers the live helper marker turns; MOCK_LONG_OMIT_SYSTEM
 //!                     or MOCK_LONG_OMIT_USER drops one marker to prove the helper fails.
+//!   MOCK_LONG_STRUCTURED_SYSTEM replaces the structured turn's system answer,
+//!                     `{}` standing for the delivered system marker; MOCK_LONG_TEXT
+//!                     replaces a plain turn's whole answer the same way.
+//!                     `--openai-logging-dir DIR` records the request as qwen does;
+//!                     MOCK_LONG_LOG_OMIT_SYSTEM drops the system marker from it.
 //!   MOCK_SYSTEM_FILE_RECORD records the native system file before control starts.
 //!   MOCK_CRUSH_HTTP_LOG serves the Crush Unix HTTP protocol and logs requests.
 //!   MOCK_DELIVERY_FILE appends delivery JSON before normal scripted output.
@@ -1122,10 +1127,48 @@ fn long_receipt_text(prompt: &str) -> String {
         marker("SYSTEMONEHARNESS-LIVE-")
     };
     if prompt.contains("Return a JSON object") {
+        // A recorded model answer for the system field, with `{}` standing for
+        // the delivered marker (empty when it was not delivered).
+        let system = match std::env::var("MOCK_LONG_STRUCTURED_SYSTEM") {
+            Ok(answer) => answer.replace("{}", &system),
+            Err(_) => system,
+        };
         serde_json::json!({"user":user,"system":system}).to_string()
+    } else if let Ok(answer) = std::env::var("MOCK_LONG_TEXT") {
+        // A recorded plain answer, `{}` standing for the delivered system marker.
+        answer.replace("{}", &system)
     } else {
         format!("{user} {system}")
     }
+}
+
+/// Record the model request the way real qwen's `--openai-logging-dir` does:
+/// one `openai-*.json` per request, the turn's text in its user message. With
+/// MOCK_LONG_LOG_OMIT_SYSTEM the system marker never reaches that request.
+fn write_qwen_request_log(dir: &str, prompt: &str) {
+    let mut text = prompt.to_string();
+    if std::env::var_os("MOCK_LONG_LOG_OMIT_SYSTEM").is_some() {
+        text = text
+            .split(' ')
+            .filter(|word| !word.starts_with("SYSTEMONEHARNESS-LIVE-"))
+            .collect::<Vec<_>>()
+            .join(" ");
+    }
+    // llmlint: ignore[contracts_have_one_source_or_a_drift_gate] This is the shape real qwen 0.21's --openai-logging-dir writes (OpenAILogger.logInteraction: request.messages, user content as text parts). Real qwen is its drift alarm: `just live-qwen` runs oh_long_prompt_enforce against the real CLI, and a reader that no longer finds the markers in qwen's own log fails that journey closed ("no model request recorded" / "system marker missing"), never a false pass.
+    let record = serde_json::json!({
+        "request": {"messages": [
+            {"role": "system", "content": "mock qwen system prompt"},
+            {"role": "user", "content": [{"type": "text", "text": text}]},
+        ]},
+        "response": null,
+    });
+    std::fs::create_dir_all(dir).expect("create qwen request log dir");
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let path =
+        std::path::Path::new(dir).join(format!("openai-{nanos}-{}.json", std::process::id()));
+    std::fs::write(path, record.to_string()).expect("write qwen request log");
 }
 
 /// Crush wire shapes are the same fixtures as io::http_turn::crush_redirects,
@@ -2807,6 +2850,13 @@ pub fn run() -> ! {
         let mut prompt = String::new();
         std::io::Read::read_to_string(&mut std::io::stdin(), &mut prompt)
             .expect("read long helper input");
+        if let Some(dir) = argv
+            .windows(2)
+            .find(|w| w[0] == "--openai-logging-dir")
+            .map(|w| w[1].as_str())
+        {
+            write_qwen_request_log(dir, &prompt);
+        }
         println!("{}", long_receipt_text(&prompt));
         std::process::exit(0);
     }

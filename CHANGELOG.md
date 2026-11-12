@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.28.3](https://github.com/nickderobertis/oneharness/compare/v0.28.2...v0.28.3) - 2026-11-12
+
+### Fixed
+
+- *(node-sdk)* keep the sibling scratch gate clean when Windows refuses a rename ([#1583](https://github.com/nickderobertis/oneharness/pull/1583))
+
 ## [0.28.2](https://github.com/nickderobertis/oneharness/compare/v0.28.1...v0.28.2) - 2026-11-12
 
 ### Fixed

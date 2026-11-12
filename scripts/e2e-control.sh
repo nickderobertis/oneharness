@@ -156,11 +156,19 @@ oh_pooled_env() {
   # The two paths are written into each command, not passed in its
   # environment: the environment is what this phase checks, and one dispatch
   # seeing the other's must fail as that, not as a missed rendezvous.
+  # An arrival it cannot write ends the command before its probe, saying so,
+  # which the own-variable checks below then name with that output.
+  # Each path is written as a single-quoted shell literal (any ' in it as
+  # '\''), so whatever TMPDIR holds is a path and never shell syntax.
+  literal() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
   # $1 this dispatch's arrival, $2 the other's
   meet() {
+    local here there
+    here="$(literal "$1")"
+    there="$(literal "$2")"
     # shellcheck disable=SC2016 # $n is the dispatch's own shell's counter
-    printf ': >"%s"; n=0; until [ -e "%s" ]; do if [ "$n" -ge %d ]; then echo rendezvous=missed; break; fi; sleep 0.1; n=$((n + 1)); done; ' \
-      "$1" "$2" "$((meet_s * 10))"
+    printf 'true >%s || { echo rendezvous=unwritable: cannot create %s; exit 1; }; n=0; until [ -e %s ]; do if [ "$n" -ge %d ]; then echo rendezvous=missed; break; fi; sleep 0.1; n=$((n + 1)); done; ' \
+      "$here" "$here" "$there" "$((meet_s * 10))"
   }
   report_a="$POOLED_DIR/env-a.json"
   report_b="$POOLED_DIR/env-b.json"

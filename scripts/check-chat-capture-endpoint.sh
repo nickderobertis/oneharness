@@ -102,6 +102,12 @@ mkdir "$dir/system.jsonl" || fail "cannot create $dir/system.jsonl as a director
 status="$(post "$(request '"unrecordable"' false)")"
 [ "$status" = 500 ] || fail "an unrecordable request was answered $status, not 500: $(cat "$tmp/response")"
 grep -qF 'system.jsonl' "$tmp/response" || fail "the 500 does not name the file it could not write: $(cat "$tmp/response")"
-grep -qF "could not append to $dir/system.jsonl" "$tmp/endpoint.log" ||
+# The endpoint names the file as Python spells the directory it was handed,
+# not as bash does: macOS's TMPDIR ends in '/', leaving a '//' in "$dir" that
+# pathlib collapses, and Git Bash converts the argument a native Python gets to
+# a drive path with backslashes.
+record="$("$py" -c 'import pathlib, sys; sys.stdout.write(str(pathlib.Path(sys.argv[1]) / "system.jsonl"))' "$dir")" ||
+  fail "cannot spell $dir/system.jsonl the way the endpoint's Python does"
+grep -qF "could not append to $record: " "$tmp/endpoint.log" ||
   fail "the endpoint's stderr does not name the file it could not write: $(cat "$tmp/endpoint.log")"
 echo 'check-chat-capture-endpoint: ok'

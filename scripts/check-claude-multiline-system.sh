@@ -43,8 +43,12 @@ import json, os, sys, urllib.request
 system = open(os.environ["SYSTEM_FILE"], encoding="utf-8", newline="").read()
 if os.environ.get("PROBE_MODE") == "fold":
     system = system.replace("\n", " ")
+blocks = [{"type": "text", "text": "You are the claude double."}]
+# Drop: the request is sent, but without the --system it was given.
+if os.environ.get("PROBE_MODE") != "drop":
+    blocks.append({"type": "text", "text": system})
 body = json.dumps({"model": "capture", "stream": True, "max_tokens": 64,
-    "system": [{"type": "text", "text": "You are the claude double."}, {"type": "text", "text": system}],
+    "system": blocks,
     "messages": [{"role": "user", "content": [{"type": "text", "text": sys.stdin.read()}]}]}).encode()
 request = urllib.request.Request(os.environ["ANTHROPIC_BASE_URL"] + "/v1/messages?beta=true", data=body,
     headers={"Content-Type": "application/json", "x-api-key": os.environ["ANTHROPIC_API_KEY"]})
@@ -63,7 +67,7 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
 DOUBLE
 chmod +x "$tmp/bin/claude" || fail "cannot make $tmp/bin/claude executable; check permissions"
 
-for mode in intact fold silent mute; do
+for mode in intact fold drop silent mute; do
   rc=0
   # shellcheck disable=SC2016 # expanded by the driven shell
   env PATH="$tmp/bin:$PATH" TMPDIR="$tmp/sandboxes" ONEHARNESS_BIN="$root/target/debug/oneharness" \
@@ -75,7 +79,7 @@ for mode in intact fold silent mute; do
       expected='PASS: claude-code delivered a three-line --system'
       ;;
     mute) expected='unique marker never surfaced' ;;
-    fold) expected='the three-line --system did not reach the model request intact' ;;
+    fold | drop) expected='the three-line --system did not reach the model request intact' ;;
     silent) expected='sent no Messages request to the capture endpoint' ;;
   esac
   [ "$mode" = intact ] || [ "$rc" -ne 0 ] || fail "$mode passed the phase: $(cat "$tmp/output")"

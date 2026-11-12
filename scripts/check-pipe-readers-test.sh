@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 #
-# Behavioral test of scripts/check-pipe-readers.sh. It first proves the hazard
-# the check exists for, deterministically: a writer larger than any pipe buffer
-# feeding an awk that exits at once ends a pipefail script with 141, while the
-# same awk fed a here-string does not. Then it runs the real check over
+# Behavioral test of scripts/check-pipe-readers.sh: it runs the real check over
 # fixtures — every early-exiting reader shape refused and named by line, every
 # rewrite it suggests accepted — and over a missing file, a usage refusal.
+#
+# It proves the rule by the script's shape, never by running the hazard: whether
+# a writer takes SIGPIPE depends on whether the reader exits before the writer's
+# last write, which is scheduling. A pipefail script piping 256 KiB into an awk
+# that exits on its first line ended 141 locally and 0 on a Linux CI runner
+# (job 131151078773), so a test that runs it gives no verdict that holds.
 #
 # Quiet on success, one line. On failure it names the case and what to change.
 set -euo pipefail
@@ -35,27 +38,6 @@ fail() {
   echo "  Next: restore that behaviour in scripts/check-pipe-readers.sh, then re-run 'bash scripts/check-pipe-readers-test.sh'." >&2
   exit 1
 }
-
-# The hazard itself. 256 KiB is past every platform's pipe buffer, so the
-# writer is still writing when awk exits after its first line. Written with
-# PIPE for the pipe, as the fixtures below are, so this source passes the check.
-awk 'BEGIN { for (i = 0; i < 131072; i++) print "x" }' >"$tmp/big" ||
-  fail "could not write the large input under $tmp; check that ${TMPDIR:-/tmp} is writable and has room"
-sed 's/ PIPE / | /' >"$tmp/piped.sh" <<'EOF' || fail "could not write the piped fixture under $tmp; check that ${TMPDIR:-/tmp} is writable and has room"
-set -euo pipefail
-out="$(cat "$1" PIPE awk '{ exit }')"
-: "$out"
-EOF
-cat >"$tmp/herestring.sh" <<'EOF' || fail "could not write the here-string fixture under $tmp; check that ${TMPDIR:-/tmp} is writable and has room"
-set -euo pipefail
-out="$(awk '{ exit }' <<<"$(cat "$1")")"
-: "$out"
-EOF
-status=0
-bash "$tmp/piped.sh" "$tmp/big" || status=$?
-[ "$status" -eq 141 ] || fail "a pipefail script piping 256 KiB into an exiting awk ended $status, not 141; the hazard this check names no longer reproduces"
-bash "$tmp/herestring.sh" "$tmp/big" ||
-  fail "a pipefail script feeding the exiting awk a here-string failed; the rewrite this check suggests does not hold"
 
 run() {
   status=0

@@ -5848,36 +5848,52 @@ fn the_control_suite_s_pooled_phases_pass_and_fail_for_the_right_reason() {
 /// turn and past the server's 1 s linger, as a loaded host starts one: each
 /// dispatch's command waits for the other's, so both hold their leases at
 /// once. Before that rendezvous the late one found the first's server
-/// reclaimed and ran on its own, failing the phase as CI saw it ("ran on two
-/// servers"). A second that starts later than the rendezvous waits fails the
+/// reclaimed and ran on its own, failing the phase with the message one CI
+/// failure showed ("ran on two servers"). A second that starts later than the rendezvous waits fails the
 /// phase saying the two never ran at once, rather than on whichever server
 /// it happened to find; a dispatch that cannot mark its arrival stops before
 /// its probe, and the phase names that.
 #[test]
 fn the_control_suite_s_pooled_env_shares_one_server_when_one_dispatch_starts_late() {
-    // Each case: what the wrapper does before exec'ing the real binary, and
-    // the line the suite's stderr must hold (a pass when it is the `ok:` one).
+    // Each case: the suite's temp directory (the host's, unless a scratch one
+    // under /tmp is tagged — short, as the suite's sockets need), what the
+    // wrapper does before exec'ing the real binary, and the line the suite's
+    // stderr must hold (a pass when it is the `ok:` one).
     let cases = [
         (
             "pool-suite-late",
+            None,
             r#"case " $* " in *" --session pooled-env-b "*) sleep 2.5 ;; esac"#,
             "ok: each pooled dispatch saw only its own variable, both on server",
         ),
         (
             "pool-suite-later",
+            None,
             r#"case " $* " in *" --session pooled-env-b "*) sleep 10 ;; esac"#,
             "FAIL: pooled-env: one dispatch's command waited 8 s for the other's to start and it never did, so the two never ran at once",
         ),
         (
+            // Arrival paths holding an apostrophe and a `$`: each is written
+            // into the command as a literal, so the two still meet.
+            "pool-suite-quoted",
+            Some("q'$x"),
+            r#"printf '%s\n' "$@" >>"$OH_STAGED_SEEN""#,
+            "ok: each pooled dispatch saw only its own variable, both on server",
+        ),
+        (
             "pool-suite-unwritable",
+            None,
             // A directory where dispatch A's arrival file goes, beside its
             // session store, which no `: >` can create.
             r#"case " $* " in *" --session pooled-env-a "*) set -- "$@"; for ((i = 1; i < $#; i++)); do [ "${!i}" = --session-dir ] && { j=$((i + 1)); mkdir -p "$(dirname "${!j}")/env-a.here"; }; done ;; esac"#,
             "FAIL: pooled-env: dispatch A's command did not see its own OH_POOLED_PROBE (output: rendezvous=unwritable: cannot create",
         ),
     ];
-    for (tag, prelude, expected) in cases {
+    for (tag, tmp, prelude, expected) in cases {
         let suite = ControlSuite::new(tag);
+        let seen = suite.pool.path("seen");
+        let scratch = tmp.map(|tag| ScratchDir::under(Path::new("/tmp"), tag).unwrap());
+        let tmpdir = scratch.as_ref().map(|dir| dir.display().to_string());
         let wrapper = suite.pool.path("bin/oneharness-staged");
         // The real binary arrives in the wrapper's environment, so no path is
         // ever spelled as shell source.
@@ -5891,13 +5907,16 @@ fn the_control_suite_s_pooled_env_shares_one_server_when_one_dispatch_starts_lat
             std::os::unix::fs::PermissionsExt::from_mode(0o755),
         )
         .unwrap();
-        let out = suite.run(&[
-            ("ONEHARNESS_BIN", &wrapper.display().to_string()),
-            (
-                "OH_STAGED_REAL_BIN",
-                &oneharness_bin().display().to_string(),
-            ),
-        ]);
+        let mut envs = vec![
+            ("ONEHARNESS_BIN", wrapper.display().to_string()),
+            ("OH_STAGED_REAL_BIN", oneharness_bin().display().to_string()),
+            ("OH_STAGED_SEEN", seen.display().to_string()),
+        ];
+        if let Some(dir) = &tmpdir {
+            envs.push(("TMPDIR", dir.clone()));
+        }
+        let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        let out = suite.run(&envs);
         let said = String::from_utf8_lossy(&out.stderr);
         let passes = expected.starts_with("ok:");
         assert_eq!(out.status.success(), passes, "{tag}: {said}");
@@ -5905,6 +5924,16 @@ fn the_control_suite_s_pooled_env_shares_one_server_when_one_dispatch_starts_lat
             said.contains(expected),
             "{tag}: expected `{expected}` in: {said}"
         );
+        if let Some(dir) = &tmpdir {
+            // The dispatches' session store, so their arrival paths too, sat
+            // in the quoted directory rather than a fallback.
+            let args = std::fs::read_to_string(&seen).unwrap();
+            assert!(
+                args.lines()
+                    .any(|arg| arg.starts_with(&format!("{dir}/")) && arg.ends_with("/s")),
+                "{tag}: no session store under {dir}: {args}"
+            );
+        }
     }
 }
 // llmlint: ignore-end[e2e_not_mocked]

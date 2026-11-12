@@ -67,6 +67,13 @@
 //!                     replaces a plain turn's whole answer the same way.
 //!                     `--openai-logging-dir DIR` records the request as qwen does;
 //!                     MOCK_LONG_LOG_OMIT_SYSTEM drops the system marker from it.
+//!   MOCK_OPENCODE_STORE with MOCK_LONG_RECEIPT, act like opencode's session store
+//!                     in DIR: a `run --format json` turn answers as opencode JSON
+//!                     events under a session id and records its user message
+//!                     there; `export SID` prints that session as opencode does.
+//!                     With MOCK_HTTP_CONTROL_LOG, MOCK_LONG_RECEIPT alone makes the
+//!                     controlled turn announce the prompt it admitted and answer it.
+//!                     MOCK_LONG_LOG_OMIT_SYSTEM drops the system marker from both.
 //!   MOCK_SYSTEM_FILE_RECORD records the native system file before control starts.
 //!   MOCK_CRUSH_HTTP_LOG serves the Crush Unix HTTP protocol and logs requests.
 //!   MOCK_DELIVERY_FILE appends delivery JSON before normal scripted output.
@@ -1146,14 +1153,7 @@ fn long_receipt_text(prompt: &str) -> String {
 /// one `openai-*.json` per request, the turn's text in its user message. With
 /// MOCK_LONG_LOG_OMIT_SYSTEM the system marker never reaches that request.
 fn write_qwen_request_log(dir: &str, prompt: &str) {
-    let mut text = prompt.to_string();
-    if std::env::var_os("MOCK_LONG_LOG_OMIT_SYSTEM").is_some() {
-        text = text
-            .split(' ')
-            .filter(|word| !word.starts_with("SYSTEMONEHARNESS-LIVE-"))
-            .collect::<Vec<_>>()
-            .join(" ");
-    }
+    let text = long_request_text(prompt);
     // llmlint: ignore[contracts_have_one_source_or_a_drift_gate] This is the shape real qwen 0.21's --openai-logging-dir writes (OpenAILogger.logInteraction: request.messages, user content as text parts). Real qwen is its drift alarm: `just live-qwen` runs oh_long_prompt_enforce against the real CLI, and a reader that no longer finds the markers in qwen's own log fails that journey closed ("no model request recorded" / "system marker missing"), never a false pass.
     let record = serde_json::json!({
         "request": {"messages": [
@@ -1169,6 +1169,71 @@ fn write_qwen_request_log(dir: &str, prompt: &str) {
     let path =
         std::path::Path::new(dir).join(format!("openai-{nanos}-{}.json", std::process::id()));
     std::fs::write(path, record.to_string()).expect("write qwen request log");
+}
+
+/// The turn's text as the harness's own record holds it: with
+/// MOCK_LONG_LOG_OMIT_SYSTEM the system marker never reached the model request.
+fn long_request_text(prompt: &str) -> String {
+    if std::env::var_os("MOCK_LONG_LOG_OMIT_SYSTEM").is_none() {
+        return prompt.to_string();
+    }
+    prompt
+        .split(' ')
+        .filter(|word| !word.starts_with("SYSTEMONEHARNESS-LIVE-"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Where the opencode session store keeps `sid`. A session id comes off an argv
+/// or a URL, so anything but a plain id is refused rather than joined as a path.
+fn opencode_session_path(store: &str, sid: &str) -> std::path::PathBuf {
+    assert!(
+        !sid.is_empty() && sid.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+        "mock harness: `{sid}` is not an opencode session id"
+    );
+    std::path::Path::new(store).join(format!("{sid}.json"))
+}
+
+/// Record one answered turn in session `sid` the way opencode's store does: a
+/// user message holding the text sent to the model, then the assistant's reply.
+fn record_opencode_turn(store: &str, sid: &str, prompt: &str, reply: &str) {
+    let path = opencode_session_path(store, sid);
+    let mut session = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .unwrap_or_else(|| serde_json::json!({"info": {"id": sid}, "messages": []}));
+    // llmlint: ignore[contracts_have_one_source_or_a_drift_gate] This is the shape real opencode 1.18's `export SID` prints (messages[].info.role, messages[].parts[] of type text). Real opencode is its drift alarm: `just live-opencode` runs oh_long_prompt_enforce against the real CLI, and a reader that no longer finds the markers in that export fails the journey closed ("system marker missing from every recorded model request"), never a false pass.
+    let turn = [
+        serde_json::json!({"info": {"role": "user", "sessionID": sid},
+            "parts": [{"type": "text", "text": long_request_text(prompt)}]}),
+        serde_json::json!({"info": {"role": "assistant", "sessionID": sid},
+            "parts": [{"type": "text", "text": reply}]}),
+    ];
+    session["messages"]
+        .as_array_mut()
+        .expect("the mock opencode session holds a message list")
+        .extend(turn);
+    std::fs::create_dir_all(store).expect("create the mock opencode session store");
+    std::fs::write(path, session.to_string()).expect("write the mock opencode session");
+}
+
+/// `opencode export SID`: the stored session on stdout, or opencode's refusal.
+fn export_opencode_session(store: &str, sid: Option<&str>) -> ! {
+    let Some(sid) = sid else {
+        let _ = writeln!(std::io::stderr(), "mock harness: export names no session");
+        std::process::exit(1);
+    };
+    match std::fs::read_to_string(opencode_session_path(store, sid)) {
+        Ok(session) => {
+            let _ = writeln!(std::io::stderr(), "Exporting session: {sid}");
+            println!("{session}");
+            std::process::exit(0);
+        }
+        Err(_) => {
+            let _ = writeln!(std::io::stderr(), "Session not found: {sid}");
+            std::process::exit(1);
+        }
+    }
 }
 
 /// Crush wire shapes are the same fixtures as io::http_turn::crush_redirects,
@@ -1443,6 +1508,10 @@ fn run_http_control_server(log_path: &str) -> ! {
     // How many prompts this session has taken. A redirection makes a SECOND
     // one, which is the whole thing the redirect fault exercises.
     let prompts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    // Under MOCK_LONG_RECEIPT the turn answers the live helper the way the CLI
+    // fixture does, from the prompt it was submitted, then ends on its own.
+    let long_receipt = std::env::var_os("MOCK_LONG_RECEIPT").is_some();
+    let received = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
 
     for connection in listener.incoming() {
         let Ok(mut socket) = connection else { continue };
@@ -1462,6 +1531,7 @@ fn run_http_control_server(log_path: &str) -> ! {
         let aborted = std::sync::Arc::clone(&aborted);
         let stream_gone = std::sync::Arc::clone(&stream_gone);
         let prompts = std::sync::Arc::clone(&prompts);
+        let received = std::sync::Arc::clone(&received);
         std::thread::spawn(move || {
             let mut reader = std::io::BufReader::new(socket.try_clone().expect("clone"));
             let mut request_line = String::new();
@@ -1563,6 +1633,19 @@ fn run_http_control_server(log_path: &str) -> ! {
                 loop {
                     if admitted.load(std::sync::atomic::Ordering::SeqCst) && !asked {
                         asked = true;
+                        if long_receipt {
+                            // Opencode announces the prompt it admitted, text and all.
+                            let prompt = received.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                            let admitted = serde_json::json!({"type": "session.next.prompt.admitted",
+                                "data": {"sessionID": "ses_mock", "prompt": {"text": long_request_text(&prompt)}}});
+                            send(&mut socket, &admitted.to_string());
+                            let text = serde_json::json!({"type": "session.next.text.ended",
+                                "data": {"text": long_receipt_text(&prompt)}});
+                            send(&mut socket, &text.to_string());
+                            send(&mut socket, "{\"type\":\"session.idle\",\"data\":{}}");
+                            exit_shortly();
+                            return;
+                        }
                         send(
                             &mut socket,
                             "{\"type\":\"session.next.prompt.admitted\",\"data\":{}}",
@@ -1792,6 +1875,15 @@ fn run_http_control_server(log_path: &str) -> ! {
                         }
                     }
                     _ => {
+                        if long_receipt {
+                            let prompt = serde_json::from_slice::<serde_json::Value>(&body)
+                                .ok()
+                                .and_then(|v| {
+                                    v.pointer("/prompt/text")?.as_str().map(str::to_string)
+                                })
+                                .expect("mock harness: the controlled prompt carries no text");
+                            *received.lock().unwrap_or_else(|e| e.into_inner()) = prompt;
+                        }
                         prompts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                         admitted.store(true, std::sync::atomic::Ordering::SeqCst);
                         reply(&mut socket, "200 OK", "{\"data\":{\"admittedSeq\":1}}");
@@ -2847,9 +2939,36 @@ pub fn run() -> ! {
     }
 
     if std::env::var_os("MOCK_LONG_RECEIPT").is_some() {
+        let store = std::env::var("MOCK_OPENCODE_STORE").ok();
+        if let (Some(store), Some("export")) = (&store, argv.first().map(String::as_str)) {
+            export_opencode_session(store, argv.get(1).map(String::as_str));
+        }
         let mut prompt = String::new();
         std::io::Read::read_to_string(&mut std::io::stdin(), &mut prompt)
             .expect("read long helper input");
+        let opencode_run = argv.first().is_some_and(|arg| arg == "run")
+            && arg_value_after(&argv, "--format") == Some("json");
+        if let (Some(store), true) = (&store, opencode_run) {
+            let sid = arg_value_after(&argv, "--session").map_or_else(
+                || {
+                    let nanos = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_nanos());
+                    format!("ses_mock{nanos}x{}", std::process::id())
+                },
+                str::to_string,
+            );
+            let reply = long_receipt_text(&prompt);
+            record_opencode_turn(store, &sid, &prompt, &reply);
+            for event in [
+                serde_json::json!({"type": "step_start", "sessionID": sid, "part": {"type": "step-start"}}),
+                serde_json::json!({"type": "text", "sessionID": sid, "part": {"type": "text", "text": reply}}),
+                serde_json::json!({"type": "step_finish", "sessionID": sid, "part": {"type": "step-finish", "reason": "stop", "tokens": {"input": 1, "output": 1}}}),
+            ] {
+                println!("{event}");
+            }
+            std::process::exit(0);
+        }
         if let Some(dir) = argv
             .windows(2)
             .find(|w| w[0] == "--openai-logging-dir")

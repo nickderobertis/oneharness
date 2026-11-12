@@ -1125,6 +1125,11 @@ _oh_long_prompt_abort() {
 # (--openai-logging-dir), not from its reply: a delivered turn has been answered
 # "reference_a reference_b" and {"system":"reference_b"}, labels instead of the
 # values, so a reply-echo verdict flipped from run to run on the same delivery.
+# OpenCode's receipt is read from its own record of the turn: the session it
+# stores (`opencode export`), or for a controlled turn the prompt its server
+# announces admitting (`session.next.prompt.admitted`). A delivered batch turn once
+# answered "I won't extract and return those reference values" while its
+# sibling restated both, so the reply decided a verdict delivery had not.
 # Crush/Copilot need OH_LONG_RESUME because their reports expose no session id.
 # Unsupported/unreachable live cases are explicitly not-run, never a pass.
 #   $1 harness id; $2.. extra run arguments
@@ -1164,8 +1169,16 @@ oh_long_prompt_enforce() {
   local model_args=() route_args=() request_args=() verified=() request_log
   # A harness listed here proves receipt from its recorded request; the others,
   # with no such record, still need the markers back in their reply.
-  local evidence=false
-  [ "$id" != qwen ] || evidence=true
+  local evidence=false exporter=""
+  case "$id" in
+    qwen) evidence=true ;;
+    opencode)
+      evidence=true
+      # The real CLI past the measuring shim: an export reads only local state.
+      exporter="$(_oh_unshimmed opencode)" || exporter="$(command -v opencode)" ||
+        _oh_long_prompt_abort "$sandbox" "$id" "opencode is not on PATH, so the sessions it stored cannot be exported; install it (npm install -g opencode-ai)"
+      ;;
+  esac
   [ -z "${OH_MODEL:-}" ] || model_args+=(--model "$OH_MODEL")
   resume="${OH_LONG_RESUME:-}"
   name="ohlong${RANDOM}${RANDOM}"
@@ -1212,7 +1225,7 @@ oh_long_prompt_enforce() {
     esac
     request_args=()
     request_log="$sandbox/requests/$journey"
-    if [ "$evidence" = true ]; then
+    if [ "$id" = qwen ]; then
       request_args+=(-- --openai-logging --openai-logging-dir "$request_log")
     fi
     OH_REPORT="$(ONEHARNESS_NO_CONFIG=1 "$bin" run --harness "$id" --prompt-file "$pfile" --system-file "$sfile" \
@@ -1225,12 +1238,16 @@ oh_long_prompt_enforce() {
     fi
     # The text of every system/user message qwen sent the model, one per request.
     printf '[]' >"$sandbox/requests.json" || _oh_long_prompt_abort "$sandbox" "$id" "cannot write $sandbox/requests.json; check disk space and permissions"
-    if [ "$evidence" = true ] && [ -d "$request_log" ]; then
+    if [ "$id" = qwen ] && [ -d "$request_log" ]; then
       # llmlint: ignore[contracts_have_one_source_or_a_drift_gate] Qwen owns this log shape (its --openai-logging-dir record: request.messages[].content as a string or text parts), and this phase runs against real qwen in `just live-qwen`, which is its drift alarm: a changed shape leaves no marker found, failing the journey closed, never passing it.
       find "$request_log" -name 'openai-*.json' -exec jq -s '
         [.[] | [.request.messages[]? | select(.role == "system" or .role == "user") | .content |
           if type == "string" then . else ([.[]? | .text? // empty] | join("\n")) end] | join("\n")]
       ' {} + >"$sandbox/requests.json" || _oh_long_prompt_abort "$sandbox" "$id" "$id/$journey: cannot read the request log under $request_log; inspect the jq error above and the --openai-logging-dir file shape"
+    fi
+    if [ -n "$exporter" ]; then
+      _oh_opencode_sent "$exporter" "$sandbox" "$journey" >"$sandbox/requests.json" ||
+        _oh_long_prompt_abort "$sandbox" "$id" "$id/$journey: cannot export the sessions this turn stored (the error is above); run \`opencode export <session_id>\` from $sandbox/work by hand"
     fi
     if ! printf '%s' "$OH_REPORT" | jq -e --arg m "$marker" --arg s "$smarker" --arg second "$second" --arg journey "$journey" \
       --argjson evidence "$evidence" --slurpfile requests "$sandbox/requests.json" '
@@ -1242,7 +1259,7 @@ oh_long_prompt_enforce() {
       require(all(.results[]; .status == "ok"); "harness status is not ok: " + ([.results[].status] | join(","))) |
       require(all(.results[].command[]; (contains($m) or contains($s) or contains($second)) | not); "prompt/system text leaked into child argv") |
       if $evidence then
-        require(($requests[0] | length) > 0; "no model request recorded under --openai-logging-dir") |
+        require(($requests[0] | length) > 0; "no model request recorded for this turn") |
         require(any($requests[0][]; hasmarker($s)); "system marker missing from every recorded model request") |
         require(sent($m); "no recorded model request carries both the user and the system marker") |
         require($journey != "batch" or sent($second); "no recorded model request carries both the second batch user marker and the system marker") |
@@ -1273,6 +1290,38 @@ oh_long_prompt_enforce() {
   done
   oh_drop_sandbox "$sandbox"
   note "PASS: $id receipt in [${verified[*]}]$not_run"
+}
+
+# What opencode put before its model on each of $OH_REPORT's turns, as a JSON
+# array of strings, read from opencode's own record. A controlled turn's is the
+# prompt its server announces admitting on the event stream the report keeps;
+# `opencode export` does not see a session that server holds. Any other turn's
+# is the last user message of the session its result names, exported from the
+# turn's checkout, whose project owns it. A turn with no record adds nothing,
+# so its markers are missing and the verdict fails closed.
+#   $1 opencode executable; $2 the phase's sandbox; $3 the journey
+_oh_opencode_sent() {
+  local exporter="$1" sandbox="$2" journey="$3" sid
+  : >"$sandbox/sent.jsonl" || return 1
+  if [ "$journey" = control ]; then
+    # llmlint: ignore[contracts_have_one_source_or_a_drift_gate] OpenCode owns this event shape (session.next.prompt.admitted's data.prompt.text), and this phase runs against real opencode in `just live-opencode`, which is its drift alarm: a changed shape leaves no marker found, failing the journey closed, never passing it.
+    printf '%s' "$OH_REPORT" | jq -c '.results[].stdout // "" | split("\n")[] | fromjson? |
+      select(.type? == "session.next.prompt.admitted") | .data.prompt.text? // empty' >"$sandbox/sent.jsonl" || return 1
+    jq -s . "$sandbox/sent.jsonl"
+    return
+  fi
+  for sid in $(printf '%s' "$OH_REPORT" | jq -r '.results[].session_id // empty'); do
+    # llmlint: ignore[contracts_have_one_source_or_a_drift_gate] OpenCode owns this export shape (messages[].info.role, messages[].parts[] of type text), and this phase runs against real opencode in `just live-opencode`, which is its drift alarm: a changed shape leaves no marker found, failing the journey closed, never passing it.
+    # To a file, not a pipe: opencode exits before a pipe drains, cutting a
+    # long session's JSON off at the pipe's buffer.
+    if ! (cd "$sandbox/work" && "$exporter" export "$sid") >"$sandbox/export.json" 2>"$sandbox/export.err" ||
+      ! jq -c '[.messages[]? | select(.info.role == "user")] | last |
+        [.parts[]? | select(.type == "text") | .text] | join("\n")' "$sandbox/export.json" >>"$sandbox/sent.jsonl"; then
+      cat "$sandbox/export.err" >&2 || true
+      return 1
+    fi
+  done
+  jq -s . "$sandbox/sent.jsonl"
 }
 
 # --- usage / cache-token reporting -------------------------------------------

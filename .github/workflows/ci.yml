@@ -159,6 +159,13 @@ jobs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           pasta --config-net --quiet -- true
       # llmlint: ignore-end[least_privilege_grants, changed_behavior_has_e2e]
+      # A pasta that starts `true` can still refuse the recorder: Ubuntu
+      # 26.04's passt confines pasta to starting programs under /usr/bin and
+      # /bin, and refused the toolcache python the recorder runs in its
+      # namespace. So the recorder itself must measure one launch here.
+      - name: Prove the network recorder measures in pasta's namespace
+        if: (matrix.os != 'macos-latest' || needs.macos-policy.outputs.macos_required == 'true') && (runner.os == 'Linux')
+        run: bash scripts/network-recorder-preflight.sh
       - name: Bootstrap
         if: matrix.os != 'macos-latest' || needs.macos-policy.outputs.macos_required == 'true'
         run: just bootstrap

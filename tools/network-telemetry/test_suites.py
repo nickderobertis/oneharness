@@ -737,6 +737,7 @@ class ImportsOnWindows(unittest.TestCase):
 
 class Legs(unittest.TestCase):
     PREPARE = "Permit unprivileged namespaces for pasta"
+    PREFLIGHT = "Prove the network recorder measures in pasta's namespace"
 
     def test_only_the_linux_leg_prepares_pasta_and_does_so_before_measuring(self) -> None:
         for workflow, job, measured in (
@@ -762,9 +763,25 @@ class Legs(unittest.TestCase):
                         self.assertIn(lift, run[prepare].run)
                         self.assertIn(probe, run[prepare].run)
                         self.assertLess(run[prepare].run.index(lift), run[prepare].run.index(probe))
+                        # That probe passed on 26.04 while its confined pasta
+                        # refused the recorder's python: the recorder itself
+                        # must measure a launch before anything relies on it.
+                        preflight = named(run, self.PREFLIGHT)
+                        self.assertGreater(
+                            preflight, prepare, "the recorder is never proven, or before the lift"
+                        )
+                        self.assertLess(
+                            preflight, measure, "the recorder is proven after it is needed"
+                        )
+                        self.assertEqual(
+                            run[preflight].run.strip(), "bash scripts/network-recorder-preflight.sh"
+                        )
                     else:
                         self.assertEqual(
                             prepare, -1, f"{runner_os} has no AppArmor userns restriction to lift"
+                        )
+                        self.assertEqual(
+                            named(run, self.PREFLIGHT), -1, f"{runner_os} measures nothing"
                         )
         gate = [
             s for s in steps(ROOT / ".github/workflows/ci.yml", "check") if "just check" in s.run

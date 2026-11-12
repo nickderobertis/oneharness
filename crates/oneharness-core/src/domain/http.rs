@@ -473,6 +473,10 @@ pub fn open_request(opening: &TurnOpening) -> HttpRequest {
         // workspace never exists in a posture this run did not choose. Sent
         // either way, because `false` is a decision too and leaving it to the
         // server's default would make a restrictive run's posture implicit.
+        // Declared in both of crush's spellings: through v0.99 it reads the
+        // boolean `yolo`; from v0.100 it reads `permission_mode` and ignores
+        // `yolo`. Each release ignores the field it does not know, so one body
+        // declares the same posture to either.
         TurnOpening::Crush {
             cwd,
             client,
@@ -484,6 +488,7 @@ pub fn open_request(opening: &TurnOpening) -> HttpRequest {
                 "client_id": client.as_str(),
                 "path": cwd.to_string(),
                 "yolo": decision.allows(),
+                "permission_mode": crush_permission_mode(*decision),
             })),
         ),
     }
@@ -567,11 +572,49 @@ pub fn interrupt_request(address: &TurnAddress) -> HttpRequest {
     }
 }
 
+/// Crush's name for the posture `decision` asks for, as its v0.100+ workspace
+/// API spells it. `yolo` is what `--yolo` (and the older `permissions/skip`)
+/// always meant: approve every request while crush keeps its exec-time block
+/// list armed. `sysadmin`, which drops that list too, is never asked for.
+fn crush_permission_mode(decision: PermissionDecision) -> &'static str {
+    if decision.allows() {
+        "yolo"
+    } else {
+        "normal"
+    }
+}
+
 /// The blanket "stop asking" request a permissive run makes once, where the
-/// server has one. Crush's `permissions/skip` is its `--yolo`; opencode has no
-/// equivalent route, so it answers each request as it arrives.
+/// server has one. Crush's `permissions/mode` set to `yolo` is its `--yolo`;
+/// opencode has no equivalent route, so it answers each request as it arrives.
+///
+/// This is the route crush serves from v0.100. A crush that answers it with
+/// [`is_unrouted`] predates it and is told through
+/// [`legacy_skip_permissions_request`] instead.
 #[must_use]
 pub fn skip_permissions_request(
+    address: &TurnAddress,
+    decision: PermissionDecision,
+) -> Option<HttpRequest> {
+    match address {
+        TurnAddress::Opencode { .. } => None,
+        TurnAddress::Crush {
+            workspace, client, ..
+        } => decision.allows().then(|| {
+            HttpRequest::new(
+                Method::Post,
+                crush_path(workspace, client, "/permissions/mode"),
+                Some(json!({"mode": crush_permission_mode(decision)})),
+            )
+        }),
+    }
+}
+
+/// The same "stop asking" request as [`skip_permissions_request`], in the
+/// shape crush served through v0.99 (`permissions/skip`) and removed in v0.100.
+/// Sent only to a server that did not route the current one.
+#[must_use]
+pub fn legacy_skip_permissions_request(
     address: &TurnAddress,
     decision: PermissionDecision,
 ) -> Option<HttpRequest> {
@@ -587,6 +630,16 @@ pub fn skip_permissions_request(
             )
         }),
     }
+}
+
+/// Whether a response says the server has no such ROUTE, as opposed to a
+/// routed handler refusing the request: Go's mux answers an unrouted path with
+/// a bare-text `404 page not found`, while crush's own handlers answer a 404
+/// as a JSON `{"message": ...}` (an unknown workspace, say). Only the first
+/// means "this release speaks an older API".
+#[must_use]
+pub fn is_unrouted(status: StatusCode, body: &str) -> bool {
+    status.get() == 404 && body.trim() == "404 page not found"
 }
 
 /// The request that answers one permission ask, or `None` when the ask is not
@@ -1389,6 +1442,7 @@ mod tests {
             interrupt_request(&address),
             event_stream_request(&address),
             skip_permissions_request(&address, PermissionDecision::Allow).unwrap(),
+            legacy_skip_permissions_request(&address, PermissionDecision::Allow).unwrap(),
         ] {
             assert!(
                 request.path().contains("client_id=client-9"),
@@ -1412,7 +1466,10 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
+        // In both of crush's spellings: v0.99 and older read `yolo`, v0.100
+        // reads `permission_mode` and silently ignores `yolo`.
         assert_eq!(permissive["yolo"], true);
+        assert_eq!(permissive["permission_mode"], "yolo");
 
         // And a restrictive run says so rather than leaving it to the server's
         // default: an absent field is not a decision.
@@ -1423,6 +1480,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(restrictive["yolo"], false);
+        assert_eq!(restrictive["permission_mode"], "normal");
 
         // Opencode has no such field — nor a posture, nor a client identity, so
         // its opening carries none of them and inventing one would be a key its
@@ -1437,6 +1495,7 @@ mod tests {
         )
         .unwrap();
         assert!(opencode.get("yolo").is_none(), "{opencode}");
+        assert!(opencode.get("permission_mode").is_none(), "{opencode}");
         assert!(opencode.get("client_id").is_none(), "{opencode}");
     }
 
@@ -1704,6 +1763,147 @@ mod tests {
         assert!(skip_permissions_request(&crush_address(), PermissionDecision::Allow).is_some());
         assert!(skip_permissions_request(&crush_address(), PermissionDecision::Deny).is_none());
         assert!(skip_permissions_request(&opencode_address(), PermissionDecision::Allow).is_none());
+        assert!(
+            legacy_skip_permissions_request(&crush_address(), PermissionDecision::Deny).is_none()
+        );
+        assert!(
+            legacy_skip_permissions_request(&opencode_address(), PermissionDecision::Allow)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn crush_is_told_to_stop_asking_in_the_api_its_release_serves() {
+        // v0.100 and later: `permissions/mode`, naming the `--yolo` posture —
+        // not `sysadmin`, which would also drop crush's exec-time block list.
+        let current =
+            skip_permissions_request(&crush_address(), PermissionDecision::Allow).unwrap();
+        assert_eq!(current.method(), Method::Post);
+        assert!(
+            current
+                .path()
+                .starts_with("/v1/workspaces/ws-1/permissions/mode?"),
+            "{}",
+            current.path()
+        );
+        let body: Value = serde_json::from_str(current.body().unwrap()).unwrap();
+        assert_eq!(body, json!({"mode": "yolo"}));
+
+        // v0.99 and earlier: the `permissions/skip` switch v0.100 removed.
+        let legacy =
+            legacy_skip_permissions_request(&crush_address(), PermissionDecision::Allow).unwrap();
+        assert_eq!(legacy.method(), Method::Post);
+        assert!(
+            legacy
+                .path()
+                .starts_with("/v1/workspaces/ws-1/permissions/skip?"),
+            "{}",
+            legacy.path()
+        );
+        let body: Value = serde_json::from_str(legacy.body().unwrap()).unwrap();
+        assert_eq!(body, json!({"skip": true}));
+    }
+
+    /// The pinned half of the crush HTTP contract
+    /// (`tests/fixtures/crush-http-api.json`; `io::http_turn` replays its
+    /// recorded answers through the real turn opener): every claim a release
+    /// makes is one of the source lines pinned at its tag, its recorded answers
+    /// agree with the claims, and the crush release this repository pins is
+    /// one it covers.
+    #[test]
+    fn the_crush_http_api_fixture_is_backed_by_its_pinned_source_and_covers_the_pinned_release() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../tests/fixtures/crush-http-api.json"
+        ))
+        .unwrap();
+        let releases = fixture["releases"].as_array().unwrap();
+        let unrouted_path = |route: &str| route.split_once(' ').unwrap().1.to_string();
+        for release in releases {
+            let version = release["version"].as_str().unwrap();
+            let commit = release["commit"].as_str().unwrap();
+            assert!(
+                commit.len() == 40 && commit.bytes().all(|b| b.is_ascii_hexdigit()),
+                "{version}: `commit` pins a full SHA"
+            );
+            let source: Vec<&str> = release["source"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|line| line.as_str().unwrap())
+                .collect();
+            let cites = |needle: &str| source.iter().any(|line| line.contains(needle));
+            let create = &release["workspace_create"];
+            let wanted = &release["permission_route"];
+            for route in [&create["route"], &wanted["route"]] {
+                let route = route.as_str().unwrap();
+                let path = unrouted_path(route);
+                assert!(
+                    cites(&format!("\"{route}\"")) || cites(&format!("apigen.Post(\"{path}\")")),
+                    "{version}: no pinned source line serves {route}"
+                );
+            }
+            let field = create["posture_field"].as_str().unwrap();
+            assert!(cites(&format!("json:\"{field}")), "{version}: {field}");
+            for value in create["posture"].as_object().unwrap().values() {
+                if let Some(value) = value.as_str() {
+                    assert!(cites(&format!("= \"{value}\"")), "{version}: {value}");
+                }
+            }
+            for key in wanted["body"].as_object().unwrap().keys() {
+                assert!(cites(&format!("json:\"{key}\"")), "{version}: {key}");
+            }
+            for route in release["unserved_routes"].as_array().unwrap() {
+                let route = route.as_str().unwrap();
+                assert!(
+                    !cites(&unrouted_path(route)),
+                    "{version}: {route} is both cited and unserved"
+                );
+                let answer = &release["observed"][route];
+                let status =
+                    StatusCode::new(u16::try_from(answer["status"].as_u64().unwrap()).unwrap())
+                        .unwrap();
+                assert!(
+                    is_unrouted(status, answer["body"].as_str().unwrap()),
+                    "{version}: {route} answered {answer}"
+                );
+            }
+            let served = &release["observed"][wanted["route"].as_str().unwrap()];
+            assert_eq!(served["status"], 200, "{version}");
+            assert_eq!(
+                release["observed"]["workspace_create"][field], create["posture"]["allow"],
+                "{version}: the created workspace reported another posture"
+            );
+        }
+        // The release `just live-variants-tools` pins, which the variants live
+        // suite installs; the unpinned live suites run the newest, which the
+        // fixture's latest entry was captured from.
+        let justfile = include_str!("../../../../justfile");
+        let pinned = justfile
+            .split("@charmland/crush@")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .expect("the justfile pins a crush release");
+        assert!(
+            releases
+                .iter()
+                .any(|r| r["version"] == format!("v{pinned}")),
+            "crush {pinned} is pinned in the justfile but has no entry in crush-http-api.json"
+        );
+    }
+
+    #[test]
+    fn only_an_unrouted_path_reads_as_an_older_api() {
+        let status = |raw| StatusCode::new(raw).unwrap();
+        // What Go's mux answers for a route the release does not serve — the
+        // answer crush v0.100 gives `permissions/skip`, verbatim with its newline.
+        assert!(is_unrouted(status(404), "404 page not found\n"));
+        // A routed handler's own 404 is a refusal, not an older API.
+        assert!(!is_unrouted(
+            status(404),
+            r#"{"message":"workspace not found"}"#
+        ));
+        assert!(!is_unrouted(status(500), "404 page not found"));
+        assert!(!is_unrouted(status(200), "404 page not found"));
     }
 
     #[test]
@@ -1998,6 +2198,10 @@ mod tests {
             routes.push(interrupt_request(address));
             routes.push(event_stream_request(address));
             routes.extend(skip_permissions_request(address, PermissionDecision::Allow));
+            routes.extend(legacy_skip_permissions_request(
+                address,
+                PermissionDecision::Allow,
+            ));
             routes.extend(permission_reply_request(
                 address,
                 &ask,

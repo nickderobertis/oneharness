@@ -1213,6 +1213,12 @@ fn run_crush_http_server(log: &str, argv: &[String]) -> ! {
                 write!(stream, "data: {{\"type\":\"message\",\"payload\":{{\"type\":\"created\",\"payload\":{{}}}}}}\n\ndata: {{\"type\":\"run_complete\",\"payload\":{{\"type\":\"created\",\"payload\":{{}}}}}}\n\n").expect("completion event");
                 stream.flush().expect("flush completion");
                 exit_shortly();
+            } else if path.contains("/permissions/skip") {
+                // The route crush v0.100 removed in favor of
+                // `permissions/mode`, answered as that release's mux does.
+                let response = "404 page not found\n";
+                write!(stream, "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).expect("HTTP reply");
+                stream.flush().expect("flush reply");
             } else {
                 let response = if path == "/v1/workspaces" {
                     r#"{"id":"ws-1"}"#

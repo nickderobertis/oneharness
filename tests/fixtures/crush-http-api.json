@@ -1,0 +1,88 @@
+{
+  "//": "Crush's HTTP server contract for the requests oneharness's crush-http control mechanism sends to declare and set a turn's permission posture, per supported release. `source` pins each claim to crush's own code at the release's tagged commit (https://github.com/charmbracelet/crush, `path:line` then the line verbatim). `observed` is the real server's answer (`crush server -H unix://…`, HTTP/1.0, workspace created with client_id 0f0e0d0c-0b0a-4908-8706-050403020100, then each route POSTed with the body this file names), byte for byte. Read by domain::http's `crush_http_api_contract` tests. When a crush release changes any of this, add it here with its evidence rather than editing an older release.",
+  "releases": [
+    {
+      "version": "v0.87.0",
+      "commit": "7a4b46a7fece9634b06c4709f104fc3d0ab878f4",
+      "workspace_create": {
+        "route": "POST /v1/workspaces",
+        "posture_field": "yolo",
+        "posture": { "allow": true, "deny": false }
+      },
+      "permission_route": {
+        "route": "POST /v1/workspaces/{id}/permissions/skip",
+        "body": { "skip": true }
+      },
+      "unserved_routes": ["POST /v1/workspaces/{id}/permissions/mode"],
+      "source": [
+        "internal/server/server.go:156 \tmux.HandleFunc(\"POST /v1/workspaces\", c.handlePostWorkspaces)",
+        "internal/server/proto.go:122 \tvar args proto.Workspace",
+        "internal/proto/proto.go:18 \tYOLO     bool           `json:\"yolo,omitempty\"`",
+        "internal/server/server.go:180 \tmux.HandleFunc(\"POST /v1/workspaces/{id}/permissions/skip\", c.handlePostWorkspacePermissionsSkip)",
+        "internal/server/proto.go:1103 \tvar req proto.PermissionSkipRequest",
+        "internal/proto/proto.go:268 \tSkip bool `json:\"skip\"`"
+      ],
+      "observed": {
+        "workspace_create": { "status": 200, "yolo": true, "permission_mode": null },
+        "POST /v1/workspaces/{id}/permissions/skip": { "status": 200, "body": "" },
+        "POST /v1/workspaces/{id}/permissions/mode": { "status": 404, "body": "404 page not found\n" }
+      }
+    },
+    {
+      "version": "v0.99.0",
+      "commit": "e38655aac84ab3704a1a96928017e1d9ef1d0043",
+      "workspace_create": {
+        "route": "POST /v1/workspaces",
+        "posture_field": "yolo",
+        "posture": { "allow": true, "deny": false }
+      },
+      "permission_route": {
+        "route": "POST /v1/workspaces/{id}/permissions/skip",
+        "body": { "skip": true }
+      },
+      "unserved_routes": ["POST /v1/workspaces/{id}/permissions/mode"],
+      "source": [
+        "internal/server/endpoints.go:53 \t\tapigen.Post(\"/v1/workspaces\").",
+        "internal/server/endpoints.go:56 \t\t\tAccepts(proto.Workspace{}).",
+        "internal/proto/proto.go:18 \tYOLO     bool           `json:\"yolo,omitempty\"`",
+        "internal/server/endpoints.go:313 \t\tapigen.Post(\"/v1/workspaces/{id}/permissions/skip\").",
+        "internal/server/endpoints.go:317 \t\t\tAccepts(proto.PermissionSkipRequest{}).",
+        "internal/proto/proto.go:297 \tSkip bool `json:\"skip\"`"
+      ],
+      "observed": {
+        "workspace_create": { "status": 200, "yolo": true, "permission_mode": null },
+        "POST /v1/workspaces/{id}/permissions/skip": { "status": 200, "body": "" },
+        "POST /v1/workspaces/{id}/permissions/mode": { "status": 404, "body": "404 page not found\n" }
+      }
+    },
+    {
+      "version": "v0.100.0",
+      "commit": "c7854d54a8fc2eef37f5c31ee4e829318b1ea13c",
+      "workspace_create": {
+        "route": "POST /v1/workspaces",
+        "posture_field": "permission_mode",
+        "posture": { "allow": "yolo", "deny": "normal" }
+      },
+      "permission_route": {
+        "route": "POST /v1/workspaces/{id}/permissions/mode",
+        "body": { "mode": "yolo" }
+      },
+      "unserved_routes": ["POST /v1/workspaces/{id}/permissions/skip"],
+      "source": [
+        "internal/server/endpoints.go:53 \t\tapigen.Post(\"/v1/workspaces\").",
+        "internal/server/endpoints.go:56 \t\t\tAccepts(proto.Workspace{}).",
+        "internal/proto/proto.go:33 \tPermissionMode WorkspacePermissionMode `json:\"permission_mode,omitempty\"`",
+        "internal/proto/proto.go:19 \tWorkspacePermissionModeNormal WorkspacePermissionMode = \"normal\"",
+        "internal/proto/proto.go:22 \tWorkspacePermissionModeYolo WorkspacePermissionMode = \"yolo\"",
+        "internal/server/endpoints.go:305 \t\tapigen.Post(\"/v1/workspaces/{id}/permissions/mode\").",
+        "internal/server/endpoints.go:309 \t\t\tAccepts(proto.PermissionSetModeRequest{}).",
+        "internal/proto/proto.go:393 \tMode WorkspacePermissionMode `json:\"mode\"`"
+      ],
+      "observed": {
+        "workspace_create": { "status": 200, "yolo": null, "permission_mode": "yolo" },
+        "POST /v1/workspaces/{id}/permissions/skip": { "status": 404, "body": "404 page not found\n" },
+        "POST /v1/workspaces/{id}/permissions/mode": { "status": 200, "body": "" }
+      }
+    }
+  ]
+}

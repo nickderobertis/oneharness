@@ -13,3 +13,10 @@ UTC instants `scripts/e2e-lib.sh` and `UtcInstant` must agree on
   project (`type:contract`): a project whose code or tests read a file here
   declares `harness-captures` in its `implicitDependencies`, so a changed capture
   re-runs exactly its readers and the boundary check sees the dependency.
+- **`crush-http-api.json` is crush's server contract per supported release**:
+  each claim cites crush's source at the release's tagged commit
+  (`path:line` + the line verbatim), and `observed` is that release's real
+  server answering. A new crush release that changes the posture routes or
+  fields gets a NEW entry with both, never an edit to an older one
+  (`the_crush_http_api_fixture_is_backed_by_its_pinned_source_and_covers_the_pinned_release`
+  in `crates/oneharness-core/src/domain/http.rs` holds the pin to it).

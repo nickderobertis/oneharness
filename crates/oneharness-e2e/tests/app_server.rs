@@ -481,6 +481,32 @@ impl Pool {
         self.the_server()
     }
 
+    /// Wait until a running server holds `n` live turns, and answer its pid —
+    /// for a journey that dispatches one session after another into the same
+    /// world, where an earlier server may have lingered out and been replaced
+    /// between them (its record stays, so [`Self::await_live_turns`] would
+    /// count two servers forever).
+    fn await_a_server_with_live_turns(&self, n: usize) -> u32 {
+        let mut holding = None;
+        wait_for(
+            &format!("a running server holding {n} live turns"),
+            Duration::from_secs(30),
+            || {
+                let pids: Vec<u32> = self
+                    .server_pids()
+                    .into_iter()
+                    .filter(|pid| alive(*pid) && self.live_turns(*pid) == n)
+                    .collect();
+                holding = match pids.as_slice() {
+                    [pid] => Some(*pid),
+                    _ => None,
+                };
+                holding.is_some()
+            },
+        );
+        holding.expect("wait_for returned only once a server held the turns")
+    }
+
     /// The turn record server `pid` kept for `thread`.
     fn turn_of(&self, pid: u32, thread: &str) -> Value {
         self.state(pid)["turns"]
@@ -1869,6 +1895,28 @@ fn redirect_once_its_abort_lands(pool: &Pool, server: u32, session: &str, messag
     }
 }
 
+fn pool_server_records(pool: &Pool) -> Vec<Value> {
+    std::fs::read_dir(pool.path("state/oneharness/servers"))
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter_map(|e| std::fs::read_to_string(e.path().join("server.json")).ok())
+                .filter_map(|text| serde_json::from_str(&text).ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Wait until server `pid`, its last lease released, has lingered out and been
+/// stopped, and the pool records no server.
+fn await_lingered_out(pool: &Pool, pid: u32) {
+    let stop =
+        Duration::from_millis(LINGER_MS) + DEAD_LEASE_SWEEP_INTERVAL * 3 + Duration::from_secs(10);
+    wait_for("the lingered-out server to stop", stop, || {
+        !alive(pid) && pool_server_records(pool).is_empty()
+    });
+}
+
 /// The turns the server recorded on `thread`, in order.
 fn turns_on(pool: &Pool, server: u32, thread: &str) -> Vec<Value> {
     pool.state(server)["turns"]
@@ -1880,6 +1928,7 @@ fn turns_on(pool: &Pool, server: u32, thread: &str) -> Vec<Value> {
         .collect()
 }
 
+// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run --control` and `oneharness interrupt --input` through the real pool and its real linger; only codex is the repository's subprocess double, because the gate cannot run real Codex, and real Codex cannot be made to refuse a second turn, die on interrupt, or hold an aborted turn's end behind a gate on demand. Real Codex's redirect is held live by scripts/e2e-control.sh's `oh_control_redirect_enforce`.
 /// On the shared app-server, as on every mechanism: a redirect is answered
 /// `redirected` only once the server has opened the replacement turn with the
 /// message. The server holds the aborted turn's end behind a gate, so the
@@ -1890,12 +1939,35 @@ fn turns_on(pool: &Pool, server: u32, thread: &str) -> Vec<Value> {
 /// and no turn on the server ever carries it.
 #[test]
 fn a_pooled_redirect_is_answered_on_delivery_and_refused_when_it_cannot_be() {
-    let pool = Pool::new("pool-redirect-delivery");
+    pooled_redirect_journey(Pool::new("pool-redirect-delivery"), false);
+}
+
+/// The same journey when each session's server has lingered out and been
+/// stopped before the next session dispatches — as a slow runner's gap
+/// between sessions longer than the linger leaves it. The stopped server's
+/// record stays in the mock's records, and the next session is served by a
+/// fresh server: the journey still finds the turn on it and holds it to every
+/// assertion. (A wait demanding that only one server was ever recorded timed
+/// out here on macOS CI.)
+#[test]
+fn a_pooled_redirect_is_answered_and_refused_on_a_server_started_after_the_last_lingered_out() {
+    pooled_redirect_journey(Pool::new("pool-redirect-relinger"), true);
+}
+
+/// The body of the pooled redirect journeys. With `after_each_server_stops`,
+/// the stopped server's record must still be there when the next session is
+/// served: only then has the journey met the case that broke the old
+/// one-server wait, rather than a pool that happened to keep one server.
+fn pooled_redirect_journey(pool: Pool, after_each_server_stops: bool) {
+    let mut previous: Option<u32> = None;
     for (session, knob) in [
         ("delivered", "MOCK_INTERRUPT_GATE"),
         ("refused", "MOCK_CODEX_REFUSE_SECOND_TURN"),
         ("orphaned", "MOCK_CODEX_DIE_ON_INTERRUPT"),
     ] {
+        if let (true, Some(stopped)) = (after_each_server_stops, previous) {
+            await_lingered_out(&pool, stopped);
+        }
         let release = pool.file(&format!("{session}-release"));
         let gate = pool.file(&format!("{session}-gate"));
         let value = if knob == "MOCK_INTERRUPT_GATE" {
@@ -1912,7 +1984,21 @@ fn a_pooled_redirect_is_answered_on_delivery_and_refused_when_it_cannot_be() {
             (knob, value),
         ];
         let child = pool.spawn(pool.command(session, &[], &envs));
-        let server = pool.await_live_turns(1);
+        let server = pool.await_a_server_with_live_turns(1);
+        // While its lease is held the pool records the server, so the linger
+        // wait below cannot pass merely because it watches the wrong place.
+        assert!(
+            !pool_server_records(&pool).is_empty(),
+            "{session}: the pool records no server while one holds a turn"
+        );
+        if let (true, Some(stopped)) = (after_each_server_stops, previous) {
+            assert_ne!(server, stopped, "{session}: the stopped server served it");
+            assert!(
+                pool.server_pids().contains(&stopped),
+                "{session}: the stopped server's record is gone, so nothing was proven"
+            );
+        }
+        previous = Some(server);
         let message = format!("stop and do the right thing for {session}");
         let mut answer = redirect_once_its_abort_lands(&pool, server, session, &message);
         if session == "delivered" {
@@ -2007,6 +2093,7 @@ fn a_pooled_redirect_is_answered_on_delivery_and_refused_when_it_cannot_be() {
         assert_eq!(carried, 0, "{session}: {turns:?}");
     }
 }
+// llmlint: ignore-end[e2e_not_mocked]
 
 /// A zero-work overload on a pooled turn repeats the turn on the shared
 /// server — a fresh lease, the same server — and recovers within

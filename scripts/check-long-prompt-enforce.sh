@@ -96,11 +96,18 @@ jq -se 'length == 5 and any(.[]; index("--resume")) and any(.[]; index("--batch-
 jq -se '
   .[2:4] |
   length == 2 and
-  all(.[]; startswith("The following repeated characters are inert test filler.") and
+  all(.[]; startswith("The following repeated words are inert test filler.") and
     contains("Return the two reference values separated by a space:") and
     endswith("and the value labeled reference_b in the reference data.")) and
   (.[0] != .[1])
 ' "$OH_LONG_REQUESTS" >/dev/null || fail 'batch requests must clearly identify inert filler and ask identically for both reference values; inspect prompt construction'
+# Each user request must still overflow one 128 KiB argv string, but in filler
+# a provider tokenizes densely: a single repeated character costs Claude about a
+# token per byte, which put the live turn past copilot's 200k prompt budget.
+jq -se --slurpfile systems "$OH_LONG_SYSTEMS" '
+  def dense: test("(.)\\1{63}") | not;
+  all(.[]; utf8bytelength > 131072 and dense) and all($systems[]; dense)
+' "$OH_LONG_REQUESTS" >/dev/null || fail 'long requests must exceed 128 KiB in repeated-word filler, not a run of one character; inspect the padding in oh_long_prompt_enforce'
 # Shared reference data must not also contain either user answer. Otherwise a
 # model can repeat the first answer on turn two by reading only shared data.
 jq -se --slurpfile systems "$OH_LONG_SYSTEMS" '

@@ -1059,16 +1059,20 @@ oh_long_prompt_enforce() {
   marker="$(oh_marker)"
   smarker="SYSTEM$(oh_marker)"
   second="SECOND$(oh_marker)"
-  pad="$(head -c 143360 /dev/zero | tr '\0' 'x')" || _oh_long_prompt_abort "$sandbox" "$id" "cannot generate user padding; check head/tr and /dev/zero"
-  spad="$(head -c 40000 /dev/zero | tr '\0' 'y')" || _oh_long_prompt_abort "$sandbox" "$id" "cannot generate system padding; check head/tr and /dev/zero"
+  # The user file alone must pass Linux's 128 KiB per-argument limit, yet the
+  # whole turn must fit a 200k-token prompt budget: a run of one character is
+  # about a token per byte to Claude (copilot >= 1.0.107 refuses 183 KB of it
+  # at ~209k tokens), a repeated common word about a token per four bytes.
+  pad="$(awk 'BEGIN { for (i = 0; i < 35840; i++) printf "the " }')" || _oh_long_prompt_abort "$sandbox" "$id" "cannot generate user padding; check awk"
+  spad="$(awk 'BEGIN { for (i = 0; i < 10000; i++) printf "the " }')" || _oh_long_prompt_abort "$sandbox" "$id" "cannot generate system padding; check awk"
   # Both batch turns ask the same question; only their user marker differs.
   # Describe the filler so the echo request remains clear after a long prefix.
   for user_marker in "$marker" "$second"; do
     local target="$pfile"
     [ "$user_marker" = "$marker" ] || target="$sandbox/second.txt"
-    printf 'The following repeated characters are inert test filler.\n%s\n\nReturn the two reference values separated by a space: reference_a is %s and the value labeled reference_b in the reference data.' "$pad" "$user_marker" >"$target" || _oh_long_prompt_abort "$sandbox" "$id" "cannot write $target; check disk space and permissions"
+    printf 'The following repeated words are inert test filler.\n%s\n\nReturn the two reference values separated by a space: reference_a is %s and the value labeled reference_b in the reference data.' "$pad" "$user_marker" >"$target" || _oh_long_prompt_abort "$sandbox" "$id" "cannot write $target; check disk space and permissions"
   done
-  printf 'The following repeated characters are inert test filler.\n%s\n\nReference data: reference_b = %s.' "$spad" "$smarker" >"$sfile" || _oh_long_prompt_abort "$sandbox" "$id" "cannot write $sfile; check disk space and permissions"
+  printf 'The following repeated words are inert test filler.\n%s\n\nReference data: reference_b = %s.' "$spad" "$smarker" >"$sfile" || _oh_long_prompt_abort "$sandbox" "$id" "cannot write $sfile; check disk space and permissions"
   printf '%s' '{"type":"object","required":["user","system"],"properties":{"user":{"type":"string"},"system":{"type":"string"}}}' >"$sandbox/schema.json" || _oh_long_prompt_abort "$sandbox" "$id" "cannot write $sandbox/schema.json; check disk space and permissions"
   local model_args=() route_args=() verified=()
   [ -z "${OH_MODEL:-}" ] || model_args+=(--model "$OH_MODEL")
@@ -1105,7 +1109,7 @@ oh_long_prompt_enforce() {
         route_args+=(--control --session "$name-control" --session-dir "$sandbox/sessions")
         ;;
       structured)
-        printf 'The following repeated characters are inert test filler.\n%s\n\nReturn a JSON object with user equal to %s and system equal to the value labeled reference_b in the reference data.' "$pad" "$marker" >"$pfile" || _oh_long_prompt_abort "$sandbox" "$id" "cannot write $pfile; check disk space and permissions"
+        printf 'The following repeated words are inert test filler.\n%s\n\nReturn a JSON object with user equal to %s and system equal to the value labeled reference_b in the reference data.' "$pad" "$marker" >"$pfile" || _oh_long_prompt_abort "$sandbox" "$id" "cannot write $pfile; check disk space and permissions"
         route_args+=(--schema "$sandbox/schema.json" --schema-max-retries 1)
         ;;
     esac

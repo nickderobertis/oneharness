@@ -968,7 +968,11 @@ class IdentityArgument(unittest.TestCase):
                     ],
                     stdin=subprocess.DEVNULL,
                     capture_output=True,
-                    text=True,
+                    # The non-ASCII digit must reach this test as itself: pin
+                    # the child's stdio and this side's decoding to UTF-8, or
+                    # a Windows leg's console code page writes it as \u0661.
+                    env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+                    encoding="utf-8",
                     timeout=60,
                     check=False,
                 )

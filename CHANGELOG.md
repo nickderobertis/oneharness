@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.28.2](https://github.com/nickderobertis/oneharness/compare/v0.28.1...v0.28.2) - 2026-11-12
+
+### Fixed
+
+- *(qwen)* tell a delivered system prompt from an undelivered one in the live structured journey ([#1578](https://github.com/nickderobertis/oneharness/pull/1578))
+
 ## [0.28.1](https://github.com/nickderobertis/oneharness/compare/v0.28.0...v0.28.1) - 2026-11-11
 
 ### Fixed

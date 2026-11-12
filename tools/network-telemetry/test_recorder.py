@@ -1058,15 +1058,19 @@ class InboundTcp(unittest.TestCase):
         )
 
 
+REFUSED = "echo 'Invalid port specifier' >&2; exit 1"
+
+
 class InboundTcpThroughTheShim(unittest.TestCase):
     """The same negotiation as InboundTcp, through the shim a suite runs, in
     front of the real pasta: what a refused trial leaves the measured launch."""
 
-    def wrapping_pasta(self, tmp: Path, refuse: str) -> tuple[Path, Path]:
+    def wrapping_pasta(self, tmp: Path, refuse: str, does: str) -> tuple[Path, Path]:
         """A directory holding a pasta that logs each start's arguments and
-        refuses a trial (a start of `-- /bin/bash -c :`) matching the bash
-        pattern REFUSE, the way an older build refuses a spelling it does not
-        know; any other start is the real pasta's. And its log."""
+        runs the bash DOES for a trial (a start of `-- /bin/bash -c :`)
+        matching the bash pattern REFUSE — refusing it, the way an older build
+        refuses a spelling it does not know, or hanging; any other start is
+        the real pasta's. And its log."""
         real = shutil.which("pasta")
         assert real is not None  # need_recorder found it
         wrapper = tmp / "wrapping-pasta"
@@ -1076,21 +1080,20 @@ class InboundTcpThroughTheShim(unittest.TestCase):
             "#!/usr/bin/env bash\n"
             f'printf "%s\\n" "$*" >>{shlex.quote(str(log))}\n'
             'case "$*" in\n'
-            f"  {refuse}*' -- /bin/bash -c :')\n"
-            "    echo 'Invalid port specifier' >&2; exit 1 ;;\n"
+            f"  {refuse}*' -- /bin/bash -c :') {does} ;;\n"
             "esac\n"
             f'exec {shlex.quote(real)} "$@"\n'
         )
         (wrapper / "pasta").chmod(0o755)
         return wrapper, log
 
-    def launch(self, refuse: str) -> tuple[list[str], str, Record]:
+    def launch(self, refuse: str, does: str = REFUSED) -> tuple[list[str], str, Record]:
         """One measured launch through the shim: the spellings its trials
         tried, in order, the one its launch was given, and its line."""
         need_recorder(self)
         netmeasure = netmeasure_module(self)
         tmp = scratch(self)
-        wrapper, log = self.wrapping_pasta(tmp, refuse)
+        wrapper, log = self.wrapping_pasta(tmp, refuse, does)
         env = {"PATH": f"{wrapper}{os.pathsep}{os.environ['PATH']}", "TMPDIR": str(tmp)}
         run = run_shim(tmp, ["/bin/sh", "-c", "exit 0"], ["exec", "x"], env=env)
         self.assertEqual(run.returncode, 0, run.stderr)
@@ -1113,6 +1116,20 @@ class InboundTcpThroughTheShim(unittest.TestCase):
         self.assertEqual(line["method"], "netns-pasta", line)
         # Newest first, each refused one passed over, stopping at the first
         # this pasta took: the one the launch then ran with.
+        self.assertEqual(tried, ordered[: len(tried)])
+        self.assertGreaterEqual(len(tried), 2, tried)
+        self.assertEqual(given, tried[-1])
+
+    def test_a_hung_trial_is_cut_off_and_the_launch_is_given_the_next_spelling(self) -> None:
+        netmeasure = netmeasure_module(self)
+        ordered = [" ".join(s) for s in netmeasure.INBOUND_TCP]
+        started = time.monotonic()
+        tried, given, line = self.launch(
+            refuse=f"*{shlex.quote(ordered[0])}", does="exec sleep 600"
+        )
+        # One trial's timeout, not the hang's length.
+        self.assertLess(time.monotonic() - started, netmeasure.TRIAL_TIMEOUT + 60)
+        self.assertEqual(line["method"], "netns-pasta", line)
         self.assertEqual(tried, ordered[: len(tried)])
         self.assertGreaterEqual(len(tried), 2, tried)
         self.assertEqual(given, tried[-1])
@@ -1457,6 +1474,9 @@ class Unstarted(unittest.TestCase):
         sys.platform.startswith("linux"), "the recorder's namespace path is Linux's"
     )
     def test_a_pasta_that_cannot_be_spawned_falls_back_to_running_the_launch_once(self) -> None:
+        # Every inbound-TCP trial (`inbound_tcp`) fails to spawn first, so this
+        # is also the supervisor's recovery from unspawnable trials: it goes on
+        # to the launch, whose own spawn failure runs it directly, once.
         tmp = scratch(self)
         unspawnable = tmp / "unspawnable-pasta"
         unspawnable.mkdir()

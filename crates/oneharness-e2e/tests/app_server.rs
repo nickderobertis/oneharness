@@ -5967,8 +5967,9 @@ fn the_control_suite_s_pooled_phases_pass_and_fail_for_the_right_reason() {
 // llmlint: ignore-block[e2e_not_mocked] The control suite's pooled-env phase runs for real — scripts/e2e-control.sh, the built oneharness behind a wrapper that only starts dispatch B late (or once dispatch A has ended) or occupies dispatch A's arrival path before exec'ing it, and oneharness-core's pool; only codex is the repository's subprocess double, as in every ControlSuite journey, because the gate cannot run real Codex. The same phase against real Codex is scripts/e2e-control.sh's live run.
 /// The suite's pooled-env dispatches share one server however late the
 /// second of them starts — here only once the first's command is already
-/// running, as a loaded host starts one: each dispatch's command waits for
-/// the other's, so both hold their leases at once, and the first's server
+/// running, and then later than the old fixed eight-second rendezvous allowed,
+/// as a loaded host starts one: each dispatch's command waits for the other's
+/// arrival itself, so both hold their leases at once, and the first's server
 /// cannot be reclaimed before the late one leases it. A second that starts
 /// only after the first has finished fails the phase saying the two never ran
 /// at once, rather than on whichever server it happened to find; a dispatch
@@ -5978,28 +5979,31 @@ fn the_control_suite_s_pooled_phases_pass_and_fail_for_the_right_reason() {
 fn the_control_suite_s_pooled_env_shares_one_server_when_one_dispatch_starts_late() {
     // Each case: the suite's temp directory (the host's, unless a scratch one
     // under /tmp is tagged — short, as the suite's sockets need), what the
-    // wrapper does before exec'ing the real binary, and the line the suite's
+    // wrapper does before exec'ing the real binary, the suite's rendezvous
+    // hang guard (its 120 s default unless set), and the line the suite's
     // stderr must hold (a pass when it is the `ok:` one).
     let cases = [
         (
             // B starts only once A's command is running and has marked its
             // arrival, or — with no rendezvous to mark — once A's dispatch has
-            // ended and the pool has reclaimed its server: late by what it
-            // observed, never by a guessed delay.
+            // ended and the pool has reclaimed its server; then it holds back
+            // 12 s more, past the 8 s A's command once waited before giving
+            // up, as a starved scheduler can. The verdict is the same pass.
             "pool-suite-late",
             None,
-            r#"case " $* " in *" --session pooled-env-a "*) "$OH_STAGED_REAL_BIN" "$@" >"$OH_STAGED_SEEN.a-report"; s=$?; cat "$OH_STAGED_SEEN.a-report"; : >"$OH_STAGED_SEEN.a-done"; exit "$s" ;; *" --session pooled-env-b "*) for ((i = 1; i < $#; i++)); do [ "${!i}" = --session-dir ] && { j=$((i + 1)); here="$(dirname "${!j}")/env-a.here"; }; done; gone() { [ -e "$OH_STAGED_SEEN.a-done" ] && pid="$(jq -r '.control.app_server.pid // empty' "$OH_STAGED_SEEN.a-report")" && ! { [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; }; }; n=0; until [ -e "$here" ] || gone; do [ "$n" -lt 1200 ] || { echo "dispatch A neither arrived nor ended with its server reclaimed" >&2; exit 1; }; sleep 0.1; n=$((n + 1)); done ;; esac"#,
+            r#"case " $* " in *" --session pooled-env-a "*) "$OH_STAGED_REAL_BIN" "$@" >"$OH_STAGED_SEEN.a-report"; s=$?; cat "$OH_STAGED_SEEN.a-report"; : >"$OH_STAGED_SEEN.a-done"; exit "$s" ;; *" --session pooled-env-b "*) for ((i = 1; i < $#; i++)); do [ "${!i}" = --session-dir ] && { j=$((i + 1)); here="$(dirname "${!j}")/env-a.here"; }; done; gone() { [ -e "$OH_STAGED_SEEN.a-done" ] && pid="$(jq -r '.control.app_server.pid // empty' "$OH_STAGED_SEEN.a-report")" && ! { [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; }; }; n=0; until [ -e "$here" ] || gone; do [ "$n" -lt 1200 ] || { echo "dispatch A neither arrived nor ended with its server reclaimed" >&2; exit 1; }; sleep 0.1; n=$((n + 1)); done; sleep 12 ;; esac"#,
+            None,
             "ok: each pooled dispatch saw only its own variable, both on server",
         ),
         (
             // B starts only once A's whole dispatch has ended, so A's command
-            // has waited out the rendezvous unmet however slowly A's server
-            // started: a delay counted from launch is not, as a cold server
-            // on a slow host can take most of it before A's command runs.
+            // can only have ended on its hang guard, unmet: by construction,
+            // not by timing, so a guard of 2 s keeps the case short.
             "pool-suite-later",
             None,
             r#"case " $* " in *" --session pooled-env-a "*) "$OH_STAGED_REAL_BIN" "$@"; s=$?; : >"$OH_STAGED_SEEN.a-done"; exit "$s" ;; *" --session pooled-env-b "*) n=0; until [ -e "$OH_STAGED_SEEN.a-done" ]; do [ "$n" -lt 1200 ] || { echo "dispatch A never ended" >&2; exit 1; }; sleep 0.1; n=$((n + 1)); done ;; esac"#,
-            "FAIL: pooled-env: one dispatch's command waited 8 s for the other's to start and it never did, so the two never ran at once",
+            Some("2"),
+            "FAIL: pooled-env: one dispatch's command waited 2 s for the other's to start and it never did, so the two never ran at once",
         ),
         (
             // Arrival paths holding an apostrophe and a `$`: each is written
@@ -6007,6 +6011,7 @@ fn the_control_suite_s_pooled_env_shares_one_server_when_one_dispatch_starts_lat
             "pool-suite-quoted",
             Some("q'$x"),
             r#"printf '%s\n' "$@" >>"$OH_STAGED_SEEN""#,
+            None,
             "ok: each pooled dispatch saw only its own variable, both on server",
         ),
         (
@@ -6015,10 +6020,20 @@ fn the_control_suite_s_pooled_env_shares_one_server_when_one_dispatch_starts_lat
             // A directory where dispatch A's arrival file goes, beside its
             // session store, which no `: >` can create.
             r#"case " $* " in *" --session pooled-env-a "*) set -- "$@"; for ((i = 1; i < $#; i++)); do [ "${!i}" = --session-dir ] && { j=$((i + 1)); mkdir -p "$(dirname "${!j}")/env-a.here"; }; done ;; esac"#,
+            None,
             "FAIL: pooled-env: dispatch A's command did not see its own OH_POOLED_PROBE (output: rendezvous=unwritable: cannot create",
         ),
+        (
+            // A guard that is not whole seconds is refused before either
+            // dispatch starts, never read as some other bound.
+            "pool-suite-bad-guard",
+            None,
+            "",
+            Some("2s"),
+            "FAIL: pooled-env: OH_POOLED_MEET_GUARD_S must be whole seconds from 1, got '2s'",
+        ),
     ];
-    for (tag, tmp, prelude, expected) in cases {
+    for (tag, tmp, prelude, guard, expected) in cases {
         let suite = ControlSuite::new(tag);
         let seen = suite.pool.path("seen");
         let scratch = tmp.map(|tag| ScratchDir::under(Path::new("/tmp"), tag).unwrap());
@@ -6043,6 +6058,9 @@ fn the_control_suite_s_pooled_env_shares_one_server_when_one_dispatch_starts_lat
         ];
         if let Some(dir) = &tmpdir {
             envs.push(("TMPDIR", dir.clone()));
+        }
+        if let Some(guard) = guard {
+            envs.push(("OH_POOLED_MEET_GUARD_S", guard.to_string()));
         }
         let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
         let out = suite.run(&envs);

@@ -113,6 +113,8 @@ have_env() {
 #                 DEAD_LEASE_STOP_DEADLINE (5 s);
 #   pooled-reuse  (Linux) the sustained-reuse workload, then onebudgetspec's
 #                 check over live/control/budgets.yaml.
+# OH_POOLED_MEET_GUARD_S (default 120) bounds pooled-env's wait for a dispatch
+# that never starts; it is a hang guard, never what orders the two.
 # OH_CONTROL_ONLY=pooled runs these alone (the gate's journeys drive them with
 # the mock harness standing for codex).
 
@@ -136,7 +138,14 @@ _oh_pooled_start() {
 
 oh_pooled_env() {
   _oh_phase pooled-env
-  local a b report_a report_b value_a value_b digest_a digest_b out_a out_b pid_a pid_b home meet_s=8
+  local a b report_a report_b value_a value_b digest_a digest_b out_a out_b pid_a pid_b home
+  # A hang guard, not a window: the rendezvous ends on the other's arrival,
+  # however long scheduling takes to bring it, and only a dispatch that never
+  # starts meets this bound. Whole seconds, under the dispatch's own timeout.
+  local guard_s="${OH_POOLED_MEET_GUARD_S:-120}"
+  case "$guard_s" in
+    '' | *[!0-9]* | 0*) fail "pooled-env: OH_POOLED_MEET_GUARD_S must be whole seconds from 1, got '$guard_s'" ;;
+  esac
   value_a="pooled-a-${RANDOM}${RANDOM}${RANDOM}"
   value_b="pooled-b-${RANDOM}${RANDOM}${RANDOM}"
   digest() { printf %s "$1" | cksum | cut -d' ' -f1; }
@@ -151,8 +160,9 @@ oh_pooled_env() {
   # started late (a loaded host starts one late) would otherwise find the
   # first's server already released, reclaimed after its linger, and run on a
   # server of its own. So each command marks its arrival and waits for the
-  # other's before it probes. meet_s bounds that wait, short enough that a
-  # model-run command is never held long; a miss says so and fails the phase.
+  # other's before it probes: their order comes from those two events, so a
+  # slow host only makes the phase slower. guard_s ends a wait for a dispatch
+  # that never starts; that miss says so and fails the phase.
   # The two paths are written into each command, not passed in its
   # environment: the environment is what this phase checks, and one dispatch
   # seeing the other's must fail as that, not as a missed rendezvous.
@@ -168,7 +178,7 @@ oh_pooled_env() {
     there="$(literal "$2")"
     # shellcheck disable=SC2016 # $n is the dispatch's own shell's counter
     printf 'true >%s || { echo rendezvous=unwritable: cannot create %s; exit 1; }; n=0; until [ -e %s ]; do if [ "$n" -ge %d ]; then echo rendezvous=missed; break; fi; sleep 0.1; n=$((n + 1)); done; ' \
-      "$here" "$here" "$there" "$((meet_s * 10))"
+      "$here" "$here" "$there" "$((guard_s * 10))"
   }
   report_a="$POOLED_DIR/env-a.json"
   report_b="$POOLED_DIR/env-b.json"
@@ -193,7 +203,7 @@ oh_pooled_env() {
   case "$out_b" in *"probe=$digest_b"*) ;; *) fail "pooled-env: dispatch B's command did not see its own OH_POOLED_PROBE (output: ${out_b:-none})" ;; esac
   # After the environment checks: one dispatch running in the other's
   # environment can miss the rendezvous too, and must fail as the leak.
-  case "$out_a$out_b" in *rendezvous=missed*) fail "pooled-env: one dispatch's command waited ${meet_s} s for the other's to start and it never did, so the two never ran at once (see $report_a.err and $report_b.err)" ;; esac
+  case "$out_a$out_b" in *rendezvous=missed*) fail "pooled-env: one dispatch's command waited ${guard_s} s for the other's to start and it never did, so the two never ran at once (see $report_a.err and $report_b.err)" ;; esac
   pid_a="$(jq -r '.control.app_server.pid // empty' "$report_a")" ||
     fail "pooled-env: cannot read the server pid from dispatch A's report $report_a"
   pid_b="$(jq -r '.control.app_server.pid // empty' "$report_b")" ||

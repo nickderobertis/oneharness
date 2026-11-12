@@ -156,6 +156,15 @@ class Readings(unittest.TestCase):
                 self.assertIsNotNone(step, f"e2e-{suite}.yml has no readings step")
                 assert step is not None
                 body = step.group(1)
+                # The suite's own step writes the file, so the summary must
+                # come after it, and `always()` keeps it when the suite fails.
+                suite_run = text.find(f"        run: just live-{suite}\n")
+                self.assertNotEqual(suite_run, -1, f"e2e-{suite}.yml never runs just live-{suite}")
+                self.assertLess(
+                    suite_run,
+                    step.start(),
+                    f"e2e-{suite}.yml summarizes its readings before its suite runs",
+                )
                 self.assertIn("if: always() && runner.os == 'Linux'", body)
                 self.assertIn(
                     f"run: scripts/e2e-net-readings.sh target/e2e-telemetry/network/{suite}.jsonl",

@@ -622,6 +622,33 @@ def through_bash(argv: list[str]) -> list[bytes]:
     ]
 
 
+HOST_LO_TO_NS_LO = "--host-lo-to-ns-lo"
+
+
+def inbound_tcp(pasta: str) -> list[str]:
+    """pasta's inbound TCP rule: any port a launch binds answers on host loopback.
+
+    Two generations of pasta need two spellings, told apart by whether its
+    `--help` lists `--host-lo-to-ns-lo`. An older one (Ubuntu 24.04's) has no
+    such flag and refuses an address on `auto`; its `auto` covers every port
+    and lands a host-loopback forward on the namespace's loopback. A newer one
+    (26.04's) leaves the ephemeral range out of `auto` — where every port
+    reserved by binding port 0 comes from, oneharness's control ports among
+    them, so the dial was never forwarded — and lands the forward on the
+    namespace's external address, where a server on 127.0.0.1 (`opencode
+    serve`) answers with a reset. So it gets every port, host loopback only,
+    still only once bound, and the flag."""
+    try:
+        listed = subprocess.run(
+            [pasta, "--help"], stdin=subprocess.DEVNULL, capture_output=True, timeout=10
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ["-t", "auto"]
+    if HOST_LO_TO_NS_LO.encode() not in listed.stdout + listed.stderr:
+        return ["-t", "auto"]
+    return ["-t", "127.0.0.1/1-65535,auto", HOST_LO_TO_NS_LO]
+
+
 def supervise(args: argparse.Namespace, pasta: str, scratch: Path, life: int) -> Outcome:
     """In its own session: run pasta, stop the namespace if the shim goes, write the line."""
     t0 = time.monotonic()
@@ -637,13 +664,13 @@ def supervise(args: argparse.Namespace, pasta: str, scratch: Path, life: int) ->
             *args.argv,
         ]
     )
-    # Inbound TCP is `auto`: a port a launch listens on inside the namespace is
-    # forwarded from the host's, so a control server oneharness dials on
-    # loopback (opencode's `serve`) answers there. A host-loopback connection
+    # Inbound TCP (`inbound_tcp`): a port a launch listens on inside the
+    # namespace is forwarded from the host's, so a control server oneharness
+    # dials on loopback (opencode's `serve`) answers there. A host-loopback connection
     # is spliced socket to socket, never through the TAP, so it adds nothing
     # to the counters. Nothing else crosses: no UDP, nothing outbound to the
     # host's own ports.
-    no_ports = ["-t", "auto", "-u", "none", "-T", "none", "-U", "none"]
+    no_ports = [*inbound_tcp(pasta), "-u", "none", "-T", "none", "-U", "none"]
     try:
         pasta_run = subprocess.Popen(
             [

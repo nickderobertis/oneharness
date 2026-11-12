@@ -104,7 +104,8 @@ class MeasuredLaunch(unittest.TestCase):
     ) -> None:
         # oneharness dials opencode's control server (`opencode serve`, which
         # the shim measures) on 127.0.0.1; with no inbound forwarding that
-        # port existed only in the namespace and every dial was refused.
+        # port existed only in the namespace and every dial was refused, and a
+        # newer pasta forwarding to the namespace's external address reset it.
         need_recorder(self)
         tmp = scratch(self)
         import socket
@@ -140,7 +141,7 @@ class MeasuredLaunch(unittest.TestCase):
                     while data := conn.recv(65536):
                         received += len(data)
                 break
-            except ConnectionRefusedError:
+            except (ConnectionRefusedError, ConnectionResetError):
                 if time.monotonic() > deadline:
                     break
                 time.sleep(0.2)

@@ -33,7 +33,7 @@ import sys
 import threading
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional, Union
 
 MARKER = re.compile(r"ONEHARNESS-LIVE-[0-9]+")
 # Far above any prompt a live phase sends; a larger body is refused unread.
@@ -197,38 +197,111 @@ def encode(model: Completion | Chunk) -> bytes:
     return json.dumps(without_nulls(asdict(model))).encode()
 
 
-MESSAGE_USAGE = {"input_tokens": 1, "output_tokens": 1}
+@dataclass(frozen=True)
+class MessagesUsage:
+    input_tokens: int = 1
+    output_tokens: int = 1
 
 
-def anthropic_message(text: str) -> dict[str, object]:
-    """A whole Messages response carrying one text block."""
-    return {
-        "id": "msg_capture",
-        "type": "message",
-        "role": "assistant",
-        "model": "capture",
-        "content": [{"type": "text", "text": text}],
-        "stop_reason": "end_turn",
-        "stop_sequence": None,
-        "usage": MESSAGE_USAGE,
-    }
+@dataclass(frozen=True)
+class TextBlock:
+    text: str
+    type: Literal["text"] = "text"
 
 
-def anthropic_events(text: str) -> list[dict[str, object]]:
-    """The Messages stream of that response, event by event."""
-    start = {**anthropic_message(""), "content": [], "stop_reason": None}
+@dataclass(frozen=True)
+class AnthropicMessage:
+    """A Messages response; Anthropic writes its unset fields as null."""
+
+    content: list[TextBlock]
+    stop_reason: Optional[Literal["end_turn"]]
+    usage: MessagesUsage = field(default_factory=MessagesUsage)
+    stop_sequence: Optional[str] = None
+    id: str = "msg_capture"
+    type: Literal["message"] = "message"
+    role: Literal["assistant"] = "assistant"
+    model: str = "capture"
+
+    @staticmethod
+    def of(text: str) -> AnthropicMessage:
+        """The whole response carrying TEXT as its one block."""
+        return AnthropicMessage([TextBlock(text)], "end_turn")
+
+
+@dataclass(frozen=True)
+class MessageStart:
+    message: AnthropicMessage
+    type: Literal["message_start"] = "message_start"
+
+
+@dataclass(frozen=True)
+class ContentBlockStart:
+    content_block: TextBlock
+    index: int = 0
+    type: Literal["content_block_start"] = "content_block_start"
+
+
+@dataclass(frozen=True)
+class TextDelta:
+    text: str
+    type: Literal["text_delta"] = "text_delta"
+
+
+@dataclass(frozen=True)
+class ContentBlockDelta:
+    delta: TextDelta
+    index: int = 0
+    type: Literal["content_block_delta"] = "content_block_delta"
+
+
+@dataclass(frozen=True)
+class ContentBlockStop:
+    index: int = 0
+    type: Literal["content_block_stop"] = "content_block_stop"
+
+
+@dataclass(frozen=True)
+class StopDelta:
+    stop_reason: Literal["end_turn"] = "end_turn"
+    stop_sequence: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class OutputUsage:
+    output_tokens: int = 1
+
+
+@dataclass(frozen=True)
+class MessageDelta:
+    delta: StopDelta = field(default_factory=StopDelta)
+    usage: OutputUsage = field(default_factory=OutputUsage)
+    type: Literal["message_delta"] = "message_delta"
+
+
+@dataclass(frozen=True)
+class MessageStop:
+    type: Literal["message_stop"] = "message_stop"
+
+
+StreamEvent = Union[
+    MessageStart, ContentBlockStart, ContentBlockDelta, ContentBlockStop, MessageDelta, MessageStop
+]
+
+
+def anthropic_events(text: str) -> list[StreamEvent]:
+    """The Messages stream of `AnthropicMessage.of(text)`, event by event."""
     return [
-        {"type": "message_start", "message": start},
-        {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
-        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": text}},
-        {"type": "content_block_stop", "index": 0},
-        {
-            "type": "message_delta",
-            "delta": {"stop_reason": "end_turn", "stop_sequence": None},
-            "usage": {"output_tokens": 1},
-        },
-        {"type": "message_stop"},
+        MessageStart(AnthropicMessage([], None)),
+        ContentBlockStart(TextBlock("")),
+        ContentBlockDelta(TextDelta(text)),
+        ContentBlockStop(),
+        MessageDelta(),
+        MessageStop(),
     ]
+
+
+def encode_anthropic(model: AnthropicMessage | StreamEvent) -> str:
+    return json.dumps(asdict(model))
 
 
 class Recorder:
@@ -291,8 +364,8 @@ def handler(recorder: Recorder) -> type[http.server.BaseHTTPRequestHandler]:
                 return
             try:
                 recorder.record(request, system)
-            except OSError:
-                self.send_error(500, f"could not record the request in {recorder.log}")
+            except OSError as error:
+                self.send_error(500, f"could not record the request: {error}")
                 return
             if messages:
                 self.anthropic(request.reply(), request.stream)
@@ -303,7 +376,7 @@ def handler(recorder: Recorder) -> type[http.server.BaseHTTPRequestHandler]:
 
         def anthropic(self, text: str, stream: bool) -> None:
             if not stream:
-                body = json.dumps(anthropic_message(text)).encode()
+                body = encode_anthropic(AnthropicMessage.of(text)).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
@@ -315,7 +388,7 @@ def handler(recorder: Recorder) -> type[http.server.BaseHTTPRequestHandler]:
             self.send_header("Connection", "close")
             self.end_headers()
             for event in anthropic_events(text):
-                self.wfile.write(f"event: {event['type']}\ndata: {json.dumps(event)}\n\n".encode())
+                self.wfile.write(f"event: {event.type}\ndata: {encode_anthropic(event)}\n\n".encode())
             self.close_connection = True
 
         def whole(self, text: str) -> None:

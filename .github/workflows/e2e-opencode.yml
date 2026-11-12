@@ -105,13 +105,8 @@ jobs:
           OPENCODE_E2E_MODEL: ${{ vars.OPENCODE_E2E_MODEL }}
         run: just live-opencode
 
-      # Which launches the network recorder measured in its namespace
-      # (`netns-pasta`) and which it ran directly (`unavailable`, with why): a
-      # turn that passes unmeasured would otherwise look like one that passed
-      # under the recorder.
+      # Which launches the network recorder measured and which it ran
+      # directly, saying why (scripts/e2e-net-readings.sh).
       - name: Network recorder readings
         if: always() && runner.os == 'Linux'
-        run: |
-          file=target/e2e-telemetry/network/opencode.jsonl
-          [ -f "$file" ] || { echo "no telemetry file at $file"; exit 0; }
-          jq -r 'select(.method) | "\(.method)\t\(.reason // "")"' "$file" | sort | uniq -c
+        run: scripts/e2e-net-readings.sh target/e2e-telemetry/network/opencode.jsonl

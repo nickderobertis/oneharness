@@ -6,7 +6,7 @@
     "type:tooling",
     "lang:bash"
   ],
-  "//": "llmlint: ignore-file[shell_test_tiers_stay_split] check-ci-gate-tier.sh and check-local-gate.sh build a scratch git history or call the real justfile locally, measured at 0 to 1 s each, offline, with no installs or network, so the cost the rule guards against (every unrelated script edit paying for a slow or networked suite) does not arise; a suite here that becomes slower or networked belongs in an -integration project like workspace-integration. The CI and local-gate contracts: the workflow drift gates, the PR-title lint, the CI tier selection, the setup-just action and the manual llmlint gate. Selected by a change under .github/ or scripts/ (or a file one of these gates reads, listed in its inputs); a product change reaches none of them.",
+  "//": "llmlint: ignore-file[shell_test_tiers_stay_split] check-ci-gate-tier.sh and check-local-gate.sh build a scratch git history or call the real justfile locally, measured at 0 to 1 s each, offline, with no installs or network, so the cost the rule guards against (every unrelated script edit paying for a slow or networked suite) does not arise; a suite here that becomes slower or networked belongs in an -integration project like workspace-integration. The CI and local-gate contracts: the workflow drift gates, the PR-title lint, the CI tier selection, the setup-just action, the manual llmlint gate, and the pipe-reader check that keeps every script here free of an early-exiting reader pipefail turns into exit 141. Selected by a change under .github/ or scripts/ (or a file one of these gates reads, listed in its inputs); a product change reaches none of them.",
   "namedInputs": {
     "default": [
       "{projectRoot}/**/*",
@@ -25,6 +25,8 @@
       "{workspaceRoot}/scripts/ci-gate-tier.sh",
       "{workspaceRoot}/scripts/check-ci-gate-tier.sh",
       "{workspaceRoot}/scripts/check-local-gate.sh",
+      "{workspaceRoot}/scripts/check-pipe-readers.sh",
+      "{workspaceRoot}/scripts/check-pipe-readers-test.sh",
       "{workspaceRoot}/scripts/local-llmlint-gate.sh",
       "{workspaceRoot}/scripts/local-llmlint-gate-lib.sh",
       "{workspaceRoot}/scripts/comparison-base.sh",
@@ -67,7 +69,9 @@
           "bash scripts/shell-test.sh ci-contracts scripts/with-portable-sed.sh scripts/check-workflows-portable-test.sh",
           "bash scripts/shell-test.sh ci-contracts scripts/with-portable-sed.sh scripts/check-setup-just.sh",
           "bash scripts/shell-test.sh ci-contracts scripts/with-portable-sed.sh scripts/check-ci-gate-tier.sh",
-          "bash scripts/shell-test.sh ci-contracts scripts/with-portable-sed.sh scripts/check-local-gate.sh"
+          "bash scripts/shell-test.sh ci-contracts scripts/with-portable-sed.sh scripts/check-local-gate.sh",
+          "bash scripts/shell-test.sh ci-contracts scripts/with-portable-sed.sh scripts/check-pipe-readers.sh",
+          "bash scripts/shell-test.sh ci-contracts scripts/with-portable-sed.sh scripts/check-pipe-readers-test.sh"
         ],
         "parallel": false
       },

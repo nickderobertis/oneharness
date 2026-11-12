@@ -77,7 +77,7 @@ check_common() {
   # $1 = workflow file
   local f="$1"
   # The `on:` trigger block ends at `permissions:`; no `push` may appear in it.
-  if awk '/^on:/{a=1} /^permissions:/{a=0} a' "$f" | grep -qE '^\s*push:'; then
+  if awk '/^on:/{a=1} /^permissions:/{a=0} a' "$f" | grep -E '^\s*push:' >/dev/null; then
     fail "$f still triggers on push (must be pull_request + workflow_dispatch only)"
   fi
   grep -qE '^\s*workflow_dispatch:' "$f" || fail "$f missing workflow_dispatch trigger"
@@ -114,9 +114,9 @@ check_matrix() {
     fail "$f has no fromJSON matrix expression"
     return
   }
-  printf '%s' "$line" | grep -qF "|| '$prd') }}" ||
+  grep -qF "|| '$prd') }}" <<<"$line" ||
     fail "$f PR-default matrix is not $prd"
-  printf '%s' "$line" | grep -qF "'all' && '$all'" ||
+  grep -qF "'all' && '$all'" <<<"$line" ||
     fail "$f dispatch 'all' matrix is not $all"
 }
 
@@ -210,7 +210,7 @@ check_control() {
   fi
   # shellcheck disable=SC2016  # a GitHub expression to match, not a shell one
   line="$(grep -F 'os: ${{ fromJSON(' "$f" || true)"
-  printf '%s' "$line" | grep -qF "|| '$LINUX'" ||
+  grep -qF "|| '$LINUX'" <<<"$line" ||
     fail "$f automatic runs must use Linux; Mac turn-control proof is consolidated in ci.yml"
   grep -q 'run: just live-control' .github/workflows/ci.yml ||
     fail "ci.yml must retain the consolidated Mac turn-control proof"
@@ -239,13 +239,13 @@ check_control() {
     detail=""
     for v in $accepted; do
       case "$v" in *_E2E_AUTH) continue ;; esac
-      if printf '%s\n' "$preflight" | grep -qx "$v"; then
-        if printf '%s\n' "$live" | grep -qx "$v"; then
+      if grep -qx "$v" <<<"$preflight"; then
+        if grep -qx "$v" <<<"$live"; then
           satisfied=1
           break
         fi
         detail="$detail; $v is checked up front but never reaches the live step"
-      elif printf '%s\n' "$live" | grep -qx "$v"; then
+      elif grep -qx "$v" <<<"$live"; then
         detail="$detail; $v reaches the live step but is not checked up front"
       fi
     done

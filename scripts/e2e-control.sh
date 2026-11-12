@@ -104,9 +104,10 @@ have_env() {
 # phases prove what pooling must never cost, each failing the suite naming its
 # phase and assertion:
 #   pooled-env    two concurrent pooled dispatches each run one command printing
-#                 a digest of its own per-dispatch variable: each sees its own
-#                 and not the other's, both ran on one server, and no
-#                 per-dispatch value reached any thread rollout under the home;
+#                 a digest of its own per-dispatch variable, once both are
+#                 running theirs: each sees its own and not the other's, both
+#                 ran on one server, and no per-dispatch value reached any
+#                 thread rollout under the home;
 #   pooled-kill   a pooled dispatch killed while its turn runs a heartbeat: the
 #                 heartbeat stops within DEAD_LEASE_SWEEP_INTERVAL (2 s) plus
 #                 DEAD_LEASE_STOP_DEADLINE (5 s);
@@ -135,7 +136,7 @@ _oh_pooled_start() {
 
 oh_pooled_env() {
   _oh_phase pooled-env
-  local a b report_a report_b value_a value_b digest_a digest_b out_a out_b pid_a pid_b home
+  local a b report_a report_b value_a value_b digest_a digest_b out_a out_b pid_a pid_b home meet_s=8
   value_a="pooled-a-${RANDOM}${RANDOM}${RANDOM}"
   value_b="pooled-b-${RANDOM}${RANDOM}${RANDOM}"
   digest() { printf %s "$1" | cksum | cut -d' ' -f1; }
@@ -146,13 +147,30 @@ oh_pooled_env() {
   # for a leak of the environment itself.
   # shellcheck disable=SC2016 # expanded by the dispatch's own shell, in its own environment
   local probe='printf "probe=%s\n" "$(printf %s "$OH_POOLED_PROBE" | cksum | cut -d" " -f1)"'
+  # Both dispatches hold their leases at once only while both are running: one
+  # started late (a loaded host starts one late) would otherwise find the
+  # first's server already released, reclaimed after its linger, and run on a
+  # server of its own. So each command marks its arrival and waits for the
+  # other's before it probes. meet_s bounds that wait, short enough that a
+  # model-run command is never held long; a miss says so and fails the phase.
+  # The two paths are written into each command, not passed in its
+  # environment: the environment is what this phase checks, and one dispatch
+  # seeing the other's must fail as that, not as a missed rendezvous.
+  # $1 this dispatch's arrival, $2 the other's
+  meet() {
+    # shellcheck disable=SC2016 # $n is the dispatch's own shell's counter
+    printf ': >"%s"; n=0; until [ -e "%s" ]; do if [ "$n" -ge %d ]; then echo rendezvous=missed; break; fi; sleep 0.1; n=$((n + 1)); done; ' \
+      "$1" "$2" "$((meet_s * 10))"
+  }
   report_a="$POOLED_DIR/env-a.json"
   report_b="$POOLED_DIR/env-b.json"
   mkdir -p "$POOLED_DIR/wa" "$POOLED_DIR/wb" ||
     fail "pooled-env: cannot create the dispatches' working directories under $POOLED_DIR; check that it is writable"
-  OH_POOLED_PROBE="$value_a" _oh_pooled_start pooled-env-a "$report_a" "$POOLED_DIR/wa" "$probe"
+  OH_POOLED_PROBE="$value_a" _oh_pooled_start pooled-env-a "$report_a" "$POOLED_DIR/wa" \
+    "$(meet "$POOLED_DIR/env-a.here" "$POOLED_DIR/env-b.here")$probe"
   a=$POOLED_PID
-  OH_POOLED_PROBE="$value_b" _oh_pooled_start pooled-env-b "$report_b" "$POOLED_DIR/wb" "$probe"
+  OH_POOLED_PROBE="$value_b" _oh_pooled_start pooled-env-b "$report_b" "$POOLED_DIR/wb" \
+    "$(meet "$POOLED_DIR/env-b.here" "$POOLED_DIR/env-a.here")$probe"
   b=$POOLED_PID
   wait "$a" || fail "pooled-env: dispatch A failed: $(cat "$report_a.err")"
   wait "$b" || fail "pooled-env: dispatch B failed: $(cat "$report_b.err")"
@@ -165,6 +183,9 @@ oh_pooled_env() {
   case "$out_b" in *"probe=$digest_a"*) fail "pooled-env: dispatch B's command saw dispatch A's OH_POOLED_PROBE" ;; esac
   case "$out_a" in *"probe=$digest_a"*) ;; *) fail "pooled-env: dispatch A's command did not see its own OH_POOLED_PROBE (output: ${out_a:-none})" ;; esac
   case "$out_b" in *"probe=$digest_b"*) ;; *) fail "pooled-env: dispatch B's command did not see its own OH_POOLED_PROBE (output: ${out_b:-none})" ;; esac
+  # After the environment checks: one dispatch running in the other's
+  # environment can miss the rendezvous too, and must fail as the leak.
+  case "$out_a$out_b" in *rendezvous=missed*) fail "pooled-env: one dispatch's command waited ${meet_s} s for the other's to start and it never did, so the two never ran at once (see $report_a.err and $report_b.err)" ;; esac
   pid_a="$(jq -r '.control.app_server.pid // empty' "$report_a")" ||
     fail "pooled-env: cannot read the server pid from dispatch A's report $report_a"
   pid_b="$(jq -r '.control.app_server.pid // empty' "$report_b")" ||

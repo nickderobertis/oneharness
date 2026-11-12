@@ -5912,17 +5912,17 @@ fn the_control_suite_s_pooled_phases_pass_and_fail_for_the_right_reason() {
     }
 }
 
-// llmlint: ignore-block[e2e_not_mocked] The control suite's pooled-env phase runs for real — scripts/e2e-control.sh, the built oneharness behind a wrapper that only starts dispatch B late or occupies dispatch A's arrival path before exec'ing it, and oneharness-core's pool; only codex is the repository's subprocess double, as in every ControlSuite journey, because the gate cannot run real Codex. The same phase against real Codex is scripts/e2e-control.sh's live run.
+// llmlint: ignore-block[e2e_not_mocked] The control suite's pooled-env phase runs for real — scripts/e2e-control.sh, the built oneharness behind a wrapper that only starts dispatch B late (or once dispatch A has ended) or occupies dispatch A's arrival path before exec'ing it, and oneharness-core's pool; only codex is the repository's subprocess double, as in every ControlSuite journey, because the gate cannot run real Codex. The same phase against real Codex is scripts/e2e-control.sh's live run.
 /// The suite's pooled-env dispatches share one server however late the
 /// second of them starts — here later than the first takes to finish its
 /// turn and past the server's 1 s linger, as a loaded host starts one: each
 /// dispatch's command waits for the other's, so both hold their leases at
 /// once. Before that rendezvous the late one found the first's server
 /// reclaimed and ran on its own, failing the phase with the message one CI
-/// failure showed ("ran on two servers"). A second that starts later than the rendezvous waits fails the
-/// phase saying the two never ran at once, rather than on whichever server
-/// it happened to find; a dispatch that cannot mark its arrival stops before
-/// its probe, and the phase names that.
+/// failure showed ("ran on two servers"). A second that starts only after the
+/// first has finished fails the phase saying the two never ran at once,
+/// rather than on whichever server it happened to find; a dispatch that
+/// cannot mark its arrival stops before its probe, and the phase names that.
 #[test]
 fn the_control_suite_s_pooled_env_shares_one_server_when_one_dispatch_starts_late() {
     // Each case: the suite's temp directory (the host's, unless a scratch one
@@ -5937,9 +5937,13 @@ fn the_control_suite_s_pooled_env_shares_one_server_when_one_dispatch_starts_lat
             "ok: each pooled dispatch saw only its own variable, both on server",
         ),
         (
+            // B starts only once A's whole dispatch has ended, so A's command
+            // has waited out the rendezvous unmet however slowly A's server
+            // started: a delay counted from launch is not, as a cold server
+            // on a slow host can take most of it before A's command runs.
             "pool-suite-later",
             None,
-            r#"case " $* " in *" --session pooled-env-b "*) sleep 10 ;; esac"#,
+            r#"case " $* " in *" --session pooled-env-a "*) "$OH_STAGED_REAL_BIN" "$@"; s=$?; : >"$OH_STAGED_SEEN.a-done"; exit "$s" ;; *" --session pooled-env-b "*) n=0; until [ -e "$OH_STAGED_SEEN.a-done" ]; do [ "$n" -lt 1200 ] || { echo "dispatch A never ended" >&2; exit 1; }; sleep 0.1; n=$((n + 1)); done ;; esac"#,
             "FAIL: pooled-env: one dispatch's command waited 8 s for the other's to start and it never did, so the two never ran at once",
         ),
         (

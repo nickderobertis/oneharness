@@ -69,6 +69,12 @@ if [ -n "${MOCK_LONG_REPEAT_BATCH_USER:-}" ] && [[ " ${args[*]} " == *" --batch-
     echo "long helper wrapper: cannot run $OH_REAL_BIN or transform its report; rebuild oneharness through its Nx build target and check jq installation and the pipeline error above" >&2
     exit 1
   }
+elif [ -n "${OH_LONG_REPORTS:-}" ]; then
+  # Keep each report so a case can show which answer its verdict was given.
+  "$OH_REAL_BIN" "$verb" --bin "$id=$OH_MOCK_BIN" "$@" | tee -a "$OH_LONG_REPORTS" || {
+    echo "long helper wrapper: cannot run $OH_REAL_BIN or append $OH_LONG_REPORTS; rebuild oneharness through its Nx build target and check disk space and the pipeline error above" >&2
+    exit 1
+  }
 else
   launch "$verb" --bin "$id=$OH_MOCK_BIN" "$@"
 fi
@@ -171,24 +177,47 @@ MOCK_LONG_REPEAT_BATCH_USER=1 bash -c 'set -euo pipefail; source "$1/scripts/e2e
 qwen_long() {
   local log="$1"
   shift
+  local pair seen=" "
+  for pair in "$@"; do
+    # A repeated name would silently replace the earlier fixture.
+    [[ "$seen" != *" ${pair%%=*} "* ]] || fail "qwen_long given ${pair%%=*} twice; each case must set a fixture once"
+    seen+="${pair%%=*} "
+  done
   (
-    local pair
     for pair in "$@"; do export "${pair?}"; done
     bash -c 'set -euo pipefail; source "$1/scripts/e2e-lib.sh"; oh_long_prompt_enforce qwen' _ "$root" >"$log" 2>&1
   )
 }
-# Delivered turns pass whatever the reply restates: the answers Qwen gave on CI
-# ("reference_b = <marker>.", "reference_a reference_b", {"system":"reference_b"}).
-for answers in 'MOCK_LONG_STRUCTURED_SYSTEM=reference_b = {}.' 'MOCK_LONG_TEXT=reference_a reference_b'; do
-  qwen_long "$tmp/qwen-delivered.log" "$answers" 'MOCK_LONG_STRUCTURED_SYSTEM=reference_b' || {
+# Delivered turns pass whatever the reply restates or omits; the answers Qwen
+# gave on CI were "reference_b = <marker>.", "reference_a reference_b" and
+# {"system":"reference_b"}. Each case also proves its recorded answer is the one
+# the verdict was given: $1 matches the ordinary reply, $2 the structured system.
+expect_qwen_delivered() {
+  local ordinary="$1" structured="$2"
+  shift 2
+  : >"$tmp/reports.jsonl" || fail "cannot reset $tmp/reports.jsonl; check disk space and permissions"
+  OH_LONG_REPORTS="$tmp/reports.jsonl" qwen_long "$tmp/qwen-delivered.log" "$@" || {
     show "$tmp/qwen-delivered.log"
-    fail "Qwen rejected a delivered system prompt because of how it answered ($answers); its verdict must come from the recorded request"
+    fail "Qwen rejected a delivered system prompt because of how it answered ($*); its verdict must come from the recorded request"
   }
   grep -q 'PASS: qwen receipt in \[ordinary batch structured\]' "$tmp/qwen-delivered.log" || {
     show "$tmp/qwen-delivered.log"
-    fail "Qwen delivered case ($answers) did not verify all three journeys"
+    fail "Qwen delivered case ($*) did not verify all three journeys"
   }
-done
+  jq -se --arg ordinary "$ordinary" --arg structured "$structured" '
+    length == 3 and
+    (.[0].results[0].text | rtrimstr("\n") | test($ordinary)) and
+    (.[2].results[0].structured.system | test($structured))
+  ' "$tmp/reports.jsonl" >/dev/null || {
+    show "$tmp/reports.jsonl"
+    fail "Qwen delivered case ($*) was not given the answer it names (ordinary /$ordinary/, structured system /$structured/); inspect the mock fixture variables"
+  }
+}
+marker_re='ONEHARNESS-LIVE-[0-9]+'
+expect_qwen_delivered "^$marker_re SYSTEM$marker_re\$" "^reference_b = SYSTEM${marker_re}[.]\$" 'MOCK_LONG_STRUCTURED_SYSTEM=reference_b = {}.'
+expect_qwen_delivered "^$marker_re SYSTEM$marker_re\$" '^reference_b$' 'MOCK_LONG_STRUCTURED_SYSTEM=reference_b'
+expect_qwen_delivered "^reference_b = SYSTEM${marker_re}[.]\$" "^SYSTEM$marker_re\$" 'MOCK_LONG_TEXT=reference_b = {}.'
+expect_qwen_delivered '^reference_a reference_b$' "^SYSTEM$marker_re\$" 'MOCK_LONG_TEXT=reference_a reference_b'
 # A system prompt missing from the recorded request fails whatever the reply
 # says: restating the marker or omitting it, in ordinary and in structured.
 expect_qwen_failure() {

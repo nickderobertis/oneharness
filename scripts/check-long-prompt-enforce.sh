@@ -321,9 +321,9 @@ expect_opencode_failure structured MOCK_LONG_STRUCTURED_LOG_OMIT_SYSTEM=1
 # stderr, and gives its scratch space back: no record is never a delivery.
 #   $1 the verdict's reason; $2 a diagnostic it must also carry ("" for none)
 expect_opencode_unread() {
-  local reason="$1" detail="$2"
+  local reason="$1" detail="$2" left
   shift 2
-  rm -rf "$tmp/opencode-tmp" && mkdir "$tmp/opencode-tmp" || fail "cannot reset $tmp/opencode-tmp; check its permissions"
+  { rm -rf "$tmp/opencode-tmp" && mkdir "$tmp/opencode-tmp"; } || fail "cannot reset $tmp/opencode-tmp; check its permissions"
   if opencode_long "$tmp/opencode-unread.log" "TMPDIR=$tmp/opencode-tmp" "$@"; then
     show "$tmp/opencode-unread.log"
     fail "OpenCode accepted a turn whose stored session it could not read ($*); its receipt must fail closed"
@@ -333,7 +333,8 @@ expect_opencode_unread() {
     show "$tmp/opencode-unread.log"
     fail "OpenCode unread-session case ($*) failed without its reason ($reason; $detail) on opencode/ordinary"
   fi
-  if [ -n "$(ls -A "$tmp/opencode-tmp")" ]; then
+  left="$(ls -A "$tmp/opencode-tmp")" || fail "cannot list $tmp/opencode-tmp; check its permissions"
+  if [ -n "$left" ]; then
     ls -AR "$tmp/opencode-tmp" >&2 || true
     fail "OpenCode unread-session case ($*) left its scratch space behind; drop the sandbox before aborting"
   fi

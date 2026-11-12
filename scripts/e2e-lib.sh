@@ -1324,7 +1324,7 @@ _oh_opencode_sent() {
       cat "$sandbox/export.err" >&2 || true
       return 1
     fi
-  done <"$sandbox/sids"
+  done <"$sandbox/sids" || return 1
   jq -s . "$sandbox/sent.jsonl"
 }
 

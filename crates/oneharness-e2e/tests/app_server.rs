@@ -5966,12 +5966,12 @@ fn the_control_suite_s_pooled_phases_pass_and_fail_for_the_right_reason() {
 
 // llmlint: ignore-block[e2e_not_mocked] The control suite's pooled-env phase runs for real — scripts/e2e-control.sh, the built oneharness behind a wrapper that only starts dispatch B late (or once dispatch A has ended) or occupies dispatch A's arrival path before exec'ing it, and oneharness-core's pool; only codex is the repository's subprocess double, as in every ControlSuite journey, because the gate cannot run real Codex. The same phase against real Codex is scripts/e2e-control.sh's live run.
 /// The suite's pooled-env dispatches share one server however late the
-/// second of them starts — here later than the first takes to finish its
-/// turn and past the server's 1 s linger, as a loaded host starts one: each
-/// dispatch's command waits for the other's, so both hold their leases at
-/// once. Before that rendezvous the late one found the first's server
-/// reclaimed and ran on its own, failing the phase with the message one CI
-/// failure showed ("ran on two servers"). A second that starts only after the
+/// second of them starts — here only once the first's command is already
+/// running, as a loaded host starts one: each dispatch's command waits for
+/// the other's, so both hold their leases at once. Before that rendezvous the
+/// first finished, its server was reclaimed after its linger, and the late
+/// one ran on its own, failing the phase with the message one CI failure
+/// showed ("ran on two servers"). A second that starts only after the
 /// first has finished fails the phase saying the two never ran at once,
 /// rather than on whichever server it happened to find; a dispatch that
 /// cannot mark its arrival stops before its probe, and the phase names that.
@@ -5983,9 +5983,13 @@ fn the_control_suite_s_pooled_env_shares_one_server_when_one_dispatch_starts_lat
     // stderr must hold (a pass when it is the `ok:` one).
     let cases = [
         (
+            // B starts only once A's command is running and has marked its
+            // arrival, or — with no rendezvous to mark — once A's dispatch has
+            // ended and the pool has reclaimed its server: late by what it
+            // observed, never by a guessed delay.
             "pool-suite-late",
             None,
-            r#"case " $* " in *" --session pooled-env-b "*) sleep 2.5 ;; esac"#,
+            r#"case " $* " in *" --session pooled-env-a "*) "$OH_STAGED_REAL_BIN" "$@" >"$OH_STAGED_SEEN.a-report"; s=$?; cat "$OH_STAGED_SEEN.a-report"; : >"$OH_STAGED_SEEN.a-done"; exit "$s" ;; *" --session pooled-env-b "*) for ((i = 1; i < $#; i++)); do [ "${!i}" = --session-dir ] && { j=$((i + 1)); here="$(dirname "${!j}")/env-a.here"; }; done; gone() { [ -e "$OH_STAGED_SEEN.a-done" ] && pid="$(jq -r '.control.app_server.pid // empty' "$OH_STAGED_SEEN.a-report")" && ! { [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; }; }; n=0; until [ -e "$here" ] || gone; do [ "$n" -lt 1200 ] || { echo "dispatch A neither arrived nor ended with its server reclaimed" >&2; exit 1; }; sleep 0.1; n=$((n + 1)); done ;; esac"#,
             "ok: each pooled dispatch saw only its own variable, both on server",
         ),
         (

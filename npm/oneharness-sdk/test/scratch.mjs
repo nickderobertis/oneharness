@@ -320,14 +320,17 @@ function returnToSweep(gone, directory, marker) {
  *
  * It is renamed off the sweep first, and only then emptied. A marked directory
  * that cannot be renamed (Windows refuses while a handle stays open inside
- * past `renamePatiently`'s retries) is left whole and marked, a leak its own
- * run's gate still reports. An unmarked one has no ownership to lose and is
- * removed in place. Its marker is removed first, so whatever a failed removal leaves is the same in every order the
- * filesystem lists entries. That remainder gets its original marker back while
- * still hidden, then returns to the swept name.
+ * past `renamePatiently`'s retries) is left whole and marked, and the result
+ * is `false`: `removeScratch` and `removeScratchAsync` hold it for the next
+ * removal to try again, and whatever is still refused when its run ends is a
+ * leak that run's gate reports. An unmarked one has no ownership to lose and is
+ * removed in place. Its marker is removed first, so whatever a failed removal
+ * leaves is the same in every order the filesystem lists entries. That
+ * remainder gets its original marker back while still hidden, then returns to
+ * the swept name.
  *
  * @param {string} directory
- * @returns {Promise<void>}
+ * @returns {Promise<boolean>} whether the directory is no longer in place
  */
 export async function retireScratch(directory) {
 	const marker = markerOf(directory);
@@ -337,10 +340,10 @@ export async function retireScratch(directory) {
 	} catch (error) {
 		if (marker !== undefined) {
 			leftInPlace(directory, error);
-		} else {
-			await rm(directory, { recursive: true, force: true });
+			return false;
 		}
-		return;
+		await rm(directory, { recursive: true, force: true });
+		return true;
 	}
 	try {
 		await rm(resolve(gone, RUN_MARKER), { force: true });
@@ -348,12 +351,14 @@ export async function retireScratch(directory) {
 	} finally {
 		returnToSweep(gone, directory, marker);
 	}
+	return true;
 }
 
 /**
  * The same as `retireScratch`, for a caller with no `await` to spend.
  *
  * @param {string} directory
+ * @returns {boolean} whether the directory is no longer in place
  */
 export function retireScratchSync(directory) {
 	const marker = markerOf(directory);
@@ -363,10 +368,10 @@ export function retireScratchSync(directory) {
 	} catch (error) {
 		if (marker !== undefined) {
 			leftInPlace(directory, error);
-		} else {
-			rmSync(directory, { recursive: true, force: true });
+			return false;
 		}
-		return;
+		rmSync(directory, { recursive: true, force: true });
+		return true;
 	}
 	try {
 		rmSync(resolve(gone, RUN_MARKER), { force: true });
@@ -374,17 +379,28 @@ export function retireScratchSync(directory) {
 	} finally {
 		returnToSweep(gone, directory, marker);
 	}
+	return true;
 }
 
 /**
- * Remove every scratch directory taken since the last call.
+ * Remove every scratch directory taken since the last call, and try again on
+ * any a previous call had to leave in place.
+ *
+ * A marked directory whose rename off the sweep is refused stays held rather
+ * than given up on. The refusal is a handle open inside it, such as a sibling
+ * run's gate reading its marker or a scanner opening what was just written,
+ * and it can outlast one rename's patience: Windows CI once refused one of a
+ * churn's 1000 retirements for all two seconds of it while a sibling swept in
+ * a loop, and the directory it left became that run's leak. Held, it costs a
+ * retry at the next removal, and stays a leak only if its run ends refused.
  *
  * Best-effort per directory, and synchronous for the one caller that cannot
  * await: a `process.on("exit")` handler. Every hook a test framework runs uses
  * `removeScratchAsync` instead, so a slow disk blocks nothing.
  */
 export function removeScratch() {
-	for (const directory of held.splice(0)) retireScratchSync(directory);
+	const taken = held.splice(0);
+	held.push(...taken.filter((directory) => !retireScratchSync(directory)));
 }
 
 /**
@@ -397,5 +413,7 @@ export function removeScratch() {
  * @returns {Promise<void>}
  */
 export async function removeScratchAsync() {
-	await Promise.all(held.splice(0).map(retireScratch));
+	const taken = held.splice(0);
+	const retired = await Promise.all(taken.map(retireScratch));
+	held.push(...taken.filter((_, index) => !retired[index]));
 }

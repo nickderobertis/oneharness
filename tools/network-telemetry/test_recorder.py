@@ -7,6 +7,8 @@ makes that a failure. The fallback and refusal cases run everywhere.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import importlib.util
 import json
 import os
@@ -67,6 +69,38 @@ class Frame(NamedTuple):
 
 def frame_sums(frames: list[Frame], direction: str, low: int, high: int) -> int:
     return sum(f.length for f in frames if f.direction == direction and low <= f.stamp_ns <= high)
+
+
+async def read_from_loopback(port: int, *, deadline: float) -> int:
+    """Every byte a listener on host loopback PORT sends, dialing it until it
+    answers: a refused or reset dial is retried every 0.2 s until DEADLINE (a
+    `time.monotonic()` reading), when what was read so far is returned. Each
+    dial and read is held to 5 s, and each connection is closed before the
+    next is opened."""
+    received = 0
+    while True:
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection("127.0.0.1", port), timeout=5
+            )
+        except (ConnectionRefusedError, ConnectionResetError):
+            if time.monotonic() > deadline:
+                return received
+            await asyncio.sleep(0.2)
+            continue
+        try:
+            while data := await asyncio.wait_for(reader.read(65536), timeout=5):
+                received += len(data)
+            return received
+        except ConnectionResetError:
+            if time.monotonic() > deadline:
+                return received
+        finally:
+            writer.close()
+            # A peer that reset the connection has nothing left to flush.
+            with contextlib.suppress(ConnectionError):
+                await writer.wait_closed()
+        await asyncio.sleep(0.2)
 
 
 class MeasuredLaunch(unittest.TestCase):
@@ -168,20 +202,7 @@ class MeasuredLaunch(unittest.TestCase):
             )
         )
         launch.start()
-        received = 0
-        deadline = time.monotonic() + 30
-        # llmlint: ignore-block[async_typed_clients_at_boundaries] What is under test is that a raw TCP port the launch binds answers on host loopback, as oneharness's dial of a control server needs: the listener is the test's own byte source with no service API or response shape for a typed client to model, and a typed or async client would hide the refused or reset connect the loop retries on.
-        while True:
-            try:
-                with socket.create_connection(("127.0.0.1", port), timeout=5) as conn:
-                    while data := conn.recv(65536):
-                        received += len(data)
-                break
-            except (ConnectionRefusedError, ConnectionResetError):
-                if time.monotonic() > deadline:
-                    break
-                time.sleep(0.2)
-        # llmlint: ignore-end[async_typed_clients_at_boundaries]
+        received = asyncio.run(read_from_loopback(port, deadline=time.monotonic() + 30))
         launch.join()
         run = result["run"]
         self.assertEqual(received, body, "the launch's listener never answered on host loopback")

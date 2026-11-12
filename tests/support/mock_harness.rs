@@ -74,6 +74,9 @@
 //!                     With MOCK_HTTP_CONTROL_LOG, MOCK_LONG_RECEIPT alone makes the
 //!                     controlled turn announce the prompt it admitted and answer it.
 //!                     MOCK_LONG_LOG_OMIT_SYSTEM drops the system marker from both.
+//!                     MOCK_OPENCODE_EXPORT=fail makes `export` refuse the session,
+//!                     =malformed print it cut off mid-JSON; MOCK_OPENCODE_SESSION_ID
+//!                     replaces the id a turn's events name (empty: none at all).
 //!   MOCK_SYSTEM_FILE_RECORD records the native system file before control starts.
 //!   MOCK_CRUSH_HTTP_LOG serves the Crush Unix HTTP protocol and logs requests.
 //!   MOCK_DELIVERY_FILE appends delivery JSON before normal scripted output.
@@ -1223,9 +1226,20 @@ fn export_opencode_session(store: &str, sid: Option<&str>) -> ! {
         let _ = writeln!(std::io::stderr(), "mock harness: export names no session");
         std::process::exit(1);
     };
+    let export = std::env::var("MOCK_OPENCODE_EXPORT").ok();
+    if export.as_deref() == Some("fail") {
+        let _ = writeln!(std::io::stderr(), "Error: mock export refused {sid}");
+        std::process::exit(1);
+    }
     match std::fs::read_to_string(opencode_session_path(store, sid)) {
         Ok(session) => {
             let _ = writeln!(std::io::stderr(), "Exporting session: {sid}");
+            if export.as_deref() == Some("malformed") {
+                // A session cut off mid-JSON, as a drained pipe once delivered it.
+                let half = session.chars().count() / 2;
+                print!("{}", session.chars().take(half).collect::<String>());
+                std::process::exit(0);
+            }
             println!("{session}");
             std::process::exit(0);
         }
@@ -2960,11 +2974,16 @@ pub fn run() -> ! {
             );
             let reply = long_receipt_text(&prompt);
             record_opencode_turn(store, &sid, &prompt, &reply);
-            for event in [
-                serde_json::json!({"type": "step_start", "sessionID": sid, "part": {"type": "step-start"}}),
-                serde_json::json!({"type": "text", "sessionID": sid, "part": {"type": "text", "text": reply}}),
-                serde_json::json!({"type": "step_finish", "sessionID": sid, "part": {"type": "step-finish", "reason": "stop", "tokens": {"input": 1, "output": 1}}}),
+            // The turn is stored under `sid`; its events may name another id, or none.
+            let named = std::env::var("MOCK_OPENCODE_SESSION_ID").unwrap_or(sid);
+            for mut event in [
+                serde_json::json!({"type": "step_start", "part": {"type": "step-start"}}),
+                serde_json::json!({"type": "text", "part": {"type": "text", "text": reply}}),
+                serde_json::json!({"type": "step_finish", "part": {"type": "step-finish", "reason": "stop", "tokens": {"input": 1, "output": 1}}}),
             ] {
+                if !named.is_empty() {
+                    event["sessionID"] = serde_json::Value::String(named.clone());
+                }
                 println!("{event}");
             }
             std::process::exit(0);

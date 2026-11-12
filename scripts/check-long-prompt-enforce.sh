@@ -317,6 +317,33 @@ expect_opencode_failure ordinary MOCK_LONG_DROP_SYSTEM_FILE=1 'MOCK_LONG_TEXT=re
 expect_opencode_failure batch MOCK_LONG_BATCH_LOG_OMIT_SYSTEM=1
 expect_opencode_failure control MOCK_LONG_CONTROL_LOG_OMIT_SYSTEM=1
 expect_opencode_failure structured MOCK_LONG_STRUCTURED_LOG_OMIT_SYSTEM=1
+# A turn whose stored session cannot be read fails closed with the reason on
+# stderr, and gives its scratch space back: no record is never a delivery.
+#   $1 the verdict's reason; $2 a diagnostic it must also carry ("" for none)
+expect_opencode_unread() {
+  local reason="$1" detail="$2"
+  shift 2
+  rm -rf "$tmp/opencode-tmp" && mkdir "$tmp/opencode-tmp" || fail "cannot reset $tmp/opencode-tmp; check its permissions"
+  if opencode_long "$tmp/opencode-unread.log" "TMPDIR=$tmp/opencode-tmp" "$@"; then
+    show "$tmp/opencode-unread.log"
+    fail "OpenCode accepted a turn whose stored session it could not read ($*); its receipt must fail closed"
+  fi
+  if ! grep -q 'opencode/ordinary: ' "$tmp/opencode-unread.log" || ! grep -qF -- "$reason" "$tmp/opencode-unread.log" ||
+    ! grep -qF -- "$detail" "$tmp/opencode-unread.log"; then
+    show "$tmp/opencode-unread.log"
+    fail "OpenCode unread-session case ($*) failed without its reason ($reason; $detail) on opencode/ordinary"
+  fi
+  if [ -n "$(ls -A "$tmp/opencode-tmp")" ]; then
+    ls -AR "$tmp/opencode-tmp" >&2 || true
+    fail "OpenCode unread-session case ($*) left its scratch space behind; drop the sandbox before aborting"
+  fi
+}
+export_failed='cannot export the sessions this turn stored'
+expect_opencode_unread 'no model request recorded for this turn' '' MOCK_OPENCODE_SESSION_ID=
+expect_opencode_unread 'no model request recorded for this turn' '' 'MOCK_OPENCODE_SESSION_ID=../ses_x; rm'
+expect_opencode_unread "$export_failed" 'Error: mock export refused ses_' MOCK_OPENCODE_EXPORT=fail
+expect_opencode_unread "$export_failed" 'parse error: ' MOCK_OPENCODE_EXPORT=malformed
+expect_opencode_unread "$export_failed" 'Session not found: ses_elsewhere' MOCK_OPENCODE_SESSION_ID=ses_elsewhere
 if MOCK_LONG_REPEAT_BATCH_USER=1 bash -c 'set -euo pipefail; source "$1/scripts/e2e-lib.sh"; oh_long_prompt_enforce goose' _ "$root" >"$tmp/goose-repeat.log" 2>&1; then
   fail 'second-marker relaxation escaped the Qwen batch case'
 fi

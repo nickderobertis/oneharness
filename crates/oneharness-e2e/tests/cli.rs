@@ -14311,7 +14311,7 @@ fn drive_policy_verb(
     if verb[0] == "run" {
         args.extend(["--prompt", "hi"]);
     }
-    let bin = bin_override("claude-code");
+    let bin = bin_override("claude-code"); // llmlint: ignore[e2e_not_mocked] The task requires the real oneharness binary with the harness CLI doubled only by the repository's mock harness at its existing --bin seam where a run spawns one; the layer under test is config parsing, the [sync] refusals and argv/env construction, and the paid claude CLI cannot run in the deterministic gate.
     if verb[0] == "run" {
         args.extend(["--bin", bin.as_str()]);
     }
@@ -14934,7 +14934,7 @@ fn a_config_without_sync_policy_runs_and_syncs_as_before_under_every_mode() {
         let configured_env = fx.dir.join(format!("{mode}.config.env"));
         let flagged_argv = fx.dir.join(format!("{mode}.flags.argv"));
         let flagged_env = fx.dir.join(format!("{mode}.flags.env"));
-        let bin = bin_override("claude-code");
+        let bin = bin_override("claude-code"); // llmlint: ignore[e2e_not_mocked] The task requires the real oneharness binary with the harness CLI doubled only by the repository's mock harness at its existing --bin seam where a run spawns one; the layer under test is config parsing, the [sync] refusals and argv/env construction, and the paid claude CLI cannot run in the deterministic gate.
         let cwd = fx.cwd();
         let config_arg = config.display().to_string();
         let before = tree_bytes(&fx.dir);
@@ -15064,7 +15064,7 @@ fn a_variant_declared_only_under_sync_is_one_identity_on_every_verb() {
     let project = std::path::Path::new(&fx.cwd()).join("oneharness.toml");
     let cwd = fx.cwd();
     let config_arg = project.display().to_string();
-    let bin = bin_override("claude-code");
+    let bin = bin_override("claude-code"); // llmlint: ignore[e2e_not_mocked] The task requires the real oneharness binary with the harness CLI doubled only by the repository's mock harness at its existing --bin seam where a run spawns one; the layer under test is config parsing, the [sync] refusals and argv/env construction, and the paid claude CLI cannot run in the deterministic gate.
 
     let config = run_with_config(&["config", "--cwd", &cwd], &[], &fx.user_config());
     assert!(config.status.success(), "{config:?}");

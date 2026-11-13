@@ -2393,7 +2393,7 @@ oh_codex_rules_match() {
   cfg="$scratch/oneharness.toml"
   printf '[sync.harness.codex]\nallowed_tools = ["Bash(rm -f %s:*)", "Bash(Remove-Item -Force %s:*)"]\ndenied_tools = ["Bash(mkdir %s:*)"]\n' \
     "$file" "$file" "$dir" >"$cfg" || {
-    rm -rf "$scratch"
+    rm -rf "$scratch" || printf 'codex: could not remove the scratch dir %s; delete it by hand\n' "$scratch" >&2
     fail "codex: could not write the sync config $cfg; check that the host temp dir is writable"
   }
   if ! out="$(ONEHARNESS_NO_CONFIG='' "$bin" sync --harness codex --cwd "$(oh_native_path "$scratch")" \
@@ -2523,7 +2523,7 @@ oh_codex_rules_enforce() {
   # Each rule names only the scratch path its half needs.
   printf '[sync.harness.codex]\nallowed_tools = ["Bash(%s:*)"]\ndenied_tools = ["Bash(mkdir %s:*)"]\n' \
     "$del" "$dir" >"$cfg" || {
-    rm -rf "$scratch"
+    rm -rf "$scratch" || printf 'codex: could not remove the scratch dir %s; delete it by hand\n' "$scratch" >&2
     fail "codex: could not write the sync config $cfg; check that the host temp dir is writable"
   }
   if ! out="$(ONEHARNESS_NO_CONFIG='' "$bin" sync --harness codex --cwd "$proj" \

@@ -2361,7 +2361,7 @@ _OH_CODEX_OUT=""
 # `exec`'s cwd itself, which 0.169.0 (openai/codex#60041) no longer does.
 _oh_codex_trust_config() {
   local proj="$1" real path native spellings=()
-  real="$(cd "$proj" && pwd -P)" || fail "codex: cannot resolve the scratch project $proj (cd's error above)"
+  real="$(cd "$proj" && pwd -P)" || fail "codex: cannot resolve the scratch project $proj (cd's error above); check that the host temp dir is readable, then rerun \`just live-codex\`"
   for path in "$proj" "$real"; do
     native="$(oh_native_path "$path")" && [ -n "$native" ] ||
       fail "codex: could not convert $path to a native path to trust; check cygpath on this host"

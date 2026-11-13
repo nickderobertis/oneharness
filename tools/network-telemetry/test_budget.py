@@ -16,8 +16,10 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Callable, NamedTuple, Optional
@@ -746,6 +748,84 @@ class CodexSuite(BudgetCase):
         )
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertIn("» usage:", run.stderr)
+
+    def short_state(self) -> Path:
+        """A state directory short enough that the pool's --listen path fits
+        `sun_path`, so the mock binds it directly and leaves no link to read,
+        as a Codex that stopped linking its rendezvous would."""
+        state = Path(tempfile.mkdtemp(prefix="oh-", dir="/tmp"))
+        self.addCleanup(shutil.rmtree, state, True)
+        listen = state / "oneharness/servers/codex-app-server-0123456789abcdef/sock/app-server.sock"
+        self.assertLess(len(str(listen)), 100, listen)
+        return state
+
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "the suite's controlled turn runs hermetically on the Linux leg alone",
+    )
+    def test_the_rendezvous_reading_holds_a_server_whose_turn_ends_under_it(self) -> None:
+        tmp = scratch(self)
+        # A `jq` that reads a pool record 3 s late: the reading starts with
+        # that read, under the entry's lock, early in the turn (whose thread
+        # opens 1.5 s late), so the turn ends meanwhile, and with a zero linger
+        # its lease's end would stop the server under the reading if the lock
+        # did not hold that stop back.
+        slow = tmp / "slow-jq"
+        slow.mkdir()
+        real = shutil.which("jq")
+        (slow / "jq").write_text(
+            '#!/usr/bin/env bash\ncase " $* " in *"/server.json "*) sleep 3 ;; esac\n'
+            f'exec "{real}" "$@"\n'
+        )
+        (slow / "jq").chmod(0o755)
+        env = suite_env(
+            tmp,
+            "codex",
+            OH_E2E_PHASE_LIMIT="3",
+            ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS="0",
+            CODEX_MOCK_OPEN_DELAYS_MS="1500",
+        )
+        first, rest = env["PATH"].split(os.pathsep, 1)
+        env["PATH"] = os.pathsep.join((first, str(slow), rest))
+        need_builds(self)
+        run = run_suite("codex", env)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("» usage:", run.stderr)
+
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "the suite's controlled turn runs hermetically on the Linux leg alone",
+    )
+    def test_the_rendezvous_check_fails_a_turn_whose_server_left_no_link(self) -> None:
+        tmp = scratch(self)
+        state = self.short_state()
+        run = self.run_codex(tmp, XDG_STATE_HOME=str(state))
+        self.assertNotEqual(run.returncode, 0, run.stderr)
+        self.assertIn("PASS: codex live e2e\n» controlled turn:", run.stderr)
+        self.assertIn(
+            f"FAIL: codex rendezvous: no pooled codex server under {state}/oneharness/servers"
+            " was running with its --listen path linked to a socket while the controlled turn ran",
+            run.stderr,
+        )
+
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "the suite's controlled turn runs hermetically on the Linux leg alone",
+    )
+    def test_a_suite_that_dies_in_its_controlled_turn_takes_the_rendezvous_watch_with_it(
+        self,
+    ) -> None:
+        tmp = scratch(self)
+        # No link to read, so the watch is still waiting when the turn, whose
+        # thread the server refuses, ends the suite.
+        run = self.run_codex(
+            tmp, XDG_STATE_HOME=str(self.short_state()), CODEX_MOCK_FAULT="refuse-thread-start"
+        )
+        self.assertNotEqual(run.returncode, 0, run.stderr)
+        self.assertIn("» controlled turn:", run.stderr)
+        self.assertNotIn("codex rendezvous:", run.stderr)
+        # The watch's scratch directory went with it.
+        self.assertEqual(list((tmp / "live-tmp").glob("oh-codex-rendezvous.*")), [])
 
     @unittest.skipUnless(
         sys.platform.startswith("linux"),

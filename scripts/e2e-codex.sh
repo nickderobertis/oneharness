@@ -101,10 +101,18 @@ _oh_pool_entry_locked() {
   shift
   exec 9>>"$entry/.lock" || fail "codex rendezvous: cannot open the pool entry's lock $entry/.lock (the error above); check that entry's permissions with \`ls -la $entry\`"
   perl -MFcntl=:flock -e 'open(my $lock, ">>&=", 9) or die "cannot reopen fd 9: $!\n"; flock($lock, LOCK_EX) or die "cannot lock it: $!\n"' ||
-    fail "codex rendezvous: cannot take the pool entry's lock $entry/.lock (perl's error above)"
+    fail "codex rendezvous: cannot take the pool entry's lock $entry/.lock (perl's error above); check that \`perl -MFcntl=:flock -e 1\` runs and that the state directory's filesystem supports flock"
   "$@" || status=$?
   exec 9>&-
   return "$status"
+}
+
+# Whether process $1 is running: a zombie is not. The suite's own parent reaps
+# it only once every holder of its output, this watch included, has let go.
+_oh_alive() {
+  local stat
+  stat="$(ps -o stat= -p "$1" 2>/dev/null)" || return 1
+  case "$stat" in *Z*) return 1 ;; esac
 }
 
 # Watch the pool through the controlled turn until one running, bound server
@@ -126,24 +134,25 @@ oh_codex_rendezvous_check() {
     done
     [ "$checked" -eq 0 ] || return 0
     [ "$ended" -eq 0 ] ||
-      fail "codex rendezvous: no pooled codex server under $state/oneharness/servers was running and bound while the controlled turn ran, so nothing could be checked; read its entry's server.log for why the server never bound"
-    if ! kill -0 "$main" 2>/dev/null; then
-      rm -rf "$(dirname "$over")"
+      fail "codex rendezvous: no pooled codex server under $state/oneharness/servers was running with its --listen path linked to a socket while the controlled turn ran, so nothing could be checked; if the turn passed, list the entry's sock/ directory to see how Codex now binds that path"
+    if ! _oh_alive "$main"; then
+      rm -rf "$(dirname "$over")" ||
+        fail "codex rendezvous: could not remove the scratch directory $(dirname "$over") (rm's error above); delete it by hand"
       return 0
     fi
     sleep 0.05
   done
 }
 
-# The controlled turn, with the rendezvous witness watching its server.
 oh_codex_controlled_turn() {
   local flags witness status=0
   need perl
-  flags="$(mktemp -d)" || fail "codex rendezvous: could not create a scratch directory — check that the host temp dir is writable"
+  flags="$(mktemp -d "${TMPDIR:-/tmp}/oh-codex-rendezvous.XXXXXX")" || fail "codex rendezvous: could not create a scratch directory — check that the host temp dir is writable"
   oh_codex_rendezvous_check "$flags/turn-over" "$$" &
   witness=$!
   oh_controlled_turn codex
-  : >"$flags/turn-over"
+  : >"$flags/turn-over" ||
+    fail "codex rendezvous: cannot mark the controlled turn over in $flags (the error above); check that the host temp dir is writable"
   wait "$witness" || status=$?
   rm -rf "$flags" || note "  could not remove the scratch directory $flags — delete it by hand"
   [ "$status" -eq 0 ] || exit "$status"

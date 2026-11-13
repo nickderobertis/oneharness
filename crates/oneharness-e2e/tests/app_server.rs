@@ -481,6 +481,32 @@ impl Pool {
         self.the_server()
     }
 
+    /// Wait until a running server holds `n` live turns, and answer its pid —
+    /// for a journey that dispatches one session after another into the same
+    /// world, where an earlier server may have lingered out and been replaced
+    /// between them (its record stays, so [`Self::await_live_turns`] would
+    /// count two servers forever).
+    fn await_a_server_with_live_turns(&self, n: usize) -> u32 {
+        let mut holding = None;
+        wait_for(
+            &format!("a running server holding {n} live turns"),
+            Duration::from_secs(30),
+            || {
+                let pids: Vec<u32> = self
+                    .server_pids()
+                    .into_iter()
+                    .filter(|pid| alive(*pid) && self.live_turns(*pid) == n)
+                    .collect();
+                holding = match pids.as_slice() {
+                    [pid] => Some(*pid),
+                    _ => None,
+                };
+                holding.is_some()
+            },
+        );
+        holding.expect("wait_for returned only once a server held the turns")
+    }
+
     /// The turn record server `pid` kept for `thread`.
     fn turn_of(&self, pid: u32, thread: &str) -> Value {
         self.state(pid)["turns"]
@@ -733,12 +759,32 @@ fn a_successor_server_is_never_dialled_through_its_stopped_predecessor_s_socket(
     );
 }
 
-/// Run two dispatches one after the other — the second while the first's
-/// server is still lingering — and answer the servers each ran on.
-fn servers_of(pool: &Pool, first: Command, second: Command) -> (u32, u32) {
-    let (out_a, report_a) = pool.run(first);
-    succeeded(&out_a, &report_a);
+/// Run two dispatches — the second while the first is held live, so the
+/// first's server is certainly up whenever the second starts — and answer the
+/// servers each ran on. Sharing (or not) is then the pool key's verdict alone:
+/// running the second after the first had ended left it to arrive inside the
+/// linger, and a runner slow to start it saw a fresh server for one key.
+fn servers_of(pool: &Pool, mut first: Command, second: Command) -> (u32, u32) {
+    static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let release = pool.path(&format!("servers-of-release-{call}"));
+    first
+        .env_remove("MOCK_CODEX_COMPLETE_TURN")
+        .env("MOCK_CODEX_HOLD_UNTIL", &release);
+    let held = pool.spawn(first);
+    wait_for(
+        "the first dispatch's turn to be live",
+        Duration::from_secs(30),
+        || {
+            pool.server_pids()
+                .into_iter()
+                .any(|pid| pool.live_turns(pid) == 1)
+        },
+    );
     let (out_b, report_b) = pool.run(second);
+    std::fs::write(&release, "").unwrap();
+    let (out_a, report_a) = Pool::finish(held);
+    succeeded(&out_a, &report_a);
     succeeded(&out_b, &report_b);
     (reported_server(&report_a), reported_server(&report_b))
 }
@@ -879,6 +925,174 @@ fn server_may_hold(name: &str) -> bool {
         // process (the coverage run), never passed in by oneharness.
         || name.starts_with("__LLVM_PROFILE_")
 }
+
+/// Every pool lease a dispatch in `pool` holds now, across its servers: one is
+/// taken before the dispatch dials, and dropped when it ends.
+fn leases(pool: &Pool) -> usize {
+    std::fs::read_dir(pool.path("state/oneharness/servers"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| std::fs::read_dir(entry.path().join("leases")).ok())
+        .map(|leases| leases.flatten().count())
+        .sum()
+}
+
+/// A world whose shared server stays initializing until `release` is called.
+struct HeldPool {
+    pool: Pool,
+    gate: PathBuf,
+}
+
+impl HeldPool {
+    fn new(tag: &str, listen_before_ready: bool) -> Self {
+        let pool = Pool::new(tag);
+        let gate = pool.path("initialized");
+        let mut pool = pool.with_env("CODEX_MOCK_STARTUP_UNTIL", &gate.display().to_string());
+        if listen_before_ready {
+            pool = pool.with_env("CODEX_MOCK_LISTEN_BEFORE_READY", "1");
+        }
+        HeldPool { pool, gate }
+    }
+
+    fn dispatch(&self, session: &str, value: &str) -> Child {
+        self.pool.spawn(self.pool.command(
+            session,
+            &["--mode", "bypass"],
+            &[("MOCK_CODEX_RUN_COMMAND", "env"), ("PER_DISPATCH", value)],
+        ))
+    }
+
+    fn await_leases(&self, label: &str, count: usize) {
+        wait_for(label, Duration::from_secs(30), || {
+            leases(&self.pool) == count
+        });
+    }
+
+    fn release(&self) {
+        std::fs::write(&self.gate, "").unwrap();
+    }
+}
+
+/// Both reports ran on one server, each command seeing only its own value.
+fn shared_each_with_its_own(report_a: &Value, report_b: &Value) {
+    assert_eq!(
+        reported_server(report_a),
+        reported_server(report_b),
+        "the two dispatches ran on two servers"
+    );
+    let has = |env: &str, pair: &str| env.lines().any(|line| line == pair);
+    let env_a = command_output(report_a);
+    let env_b = command_output(report_b);
+    assert!(
+        has(&env_a, "PER_DISPATCH=alpha") && !has(&env_a, "PER_DISPATCH=beta"),
+        "{env_a}"
+    );
+    assert!(
+        has(&env_b, "PER_DISPATCH=beta") && !has(&env_b, "PER_DISPATCH=alpha"),
+        "{env_b}"
+    );
+}
+
+// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run --control` through the real pool; only codex is the repository's subprocess double, whose initialization can be held until the journey releases it, as committing its footprint on a loaded host holds it — real Codex cannot be held on demand within the gate. Real Codex's sharing is held by scripts/e2e-control.sh's pooled-env phase.
+/// Two concurrent pooled dispatches that both lease a shared server while it
+/// is still initializing run on that one server once it is ready, each
+/// command seeing only its own dispatch's variable — the control suite's
+/// pooled-env assertions. The server is released only once both hold their
+/// leases, so neither can find it reclaimed and start one of its own.
+#[test]
+fn concurrent_dispatches_behind_a_slow_starting_server_share_it_each_with_its_own_environment() {
+    let held = HeldPool::new("pool-slow-start", false);
+    let first = held.dispatch("slow-a", "alpha");
+    let second = held.dispatch("slow-b", "beta");
+    held.await_leases("both dispatches to lease the initializing server", 2);
+    held.release();
+    let (out_a, report_a) = Pool::finish_within(first, Duration::from_secs(60));
+    let (out_b, report_b) = Pool::finish_within(second, Duration::from_secs(60));
+    succeeded(&out_a, &report_a);
+    succeeded(&out_b, &report_b);
+    shared_each_with_its_own(&report_a, &report_b);
+}
+// llmlint: ignore-end[e2e_not_mocked]
+
+/// Fail naming `session`'s report and stderr when its dispatch has ended.
+fn still_running(session: &str, child: &mut Child) {
+    use std::io::Read;
+    if child.try_wait().unwrap().is_none() {
+        return;
+    }
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    if let Some(mut pipe) = child.stdout.take() {
+        let _ = pipe.read_to_string(&mut stdout);
+    }
+    if let Some(mut pipe) = child.stderr.take() {
+        let _ = pipe.read_to_string(&mut stderr);
+    }
+    panic!("{session} ended while its server was still initializing: {stdout}\n--- stderr ---\n{stderr}");
+}
+
+// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run --control` through the real pool and its production WebSocket deadline; only codex is the repository's subprocess double, whose initialization can be held until the journey releases it, and made to listen before or after it — real Codex cannot be held, or made to accept before it can serve, on demand within the gate.
+/// A dispatch dialing a shared server that listens before it can serve fails
+/// alone: B starts the server and dials it while it initializes, its
+/// upgrade's deadline passes, and it fails as `spawn-error`, naming the
+/// unanswered upgrade, with no session id — the control suite's pooled-env
+/// failure; A, dialing once the server is ready, runs. A server that listens
+/// only once it is initialized is waited out instead: B and A, both leased
+/// and dialing all the while, both run, on that one server, each seeing only
+/// its own variable.
+///
+/// Nothing here is timed. Both worlds' servers stay initializing until
+/// released, and are released only once the early-listening world's B has
+/// reported its failed upgrade: so initialization outlasted a whole handshake
+/// deadline, by that B's own clock, while the other world's B and A waited.
+#[test]
+fn a_dispatch_dialing_a_server_still_initializing_fails_alone_unless_it_listens_once_ready() {
+    use oneharness_core::io::websocket::HANDSHAKE_DEADLINE;
+    let early = HeldPool::new("pool-early-dial", true);
+    let ready = HeldPool::new("pool-ready-dial", false);
+    let early_b = early.dispatch("early-b", "beta");
+    let ready_b = ready.dispatch("ready-b", "beta");
+    let ready_a = ready.dispatch("ready-a", "alpha");
+    early.await_leases("the early world's B to lease the server it started", 1);
+    ready.await_leases("the ready world's B and A to lease its server", 2);
+
+    // The early server cannot answer until released, so B's upgrade can only
+    // time out; a generous bound keeps a hung dispatch from hanging the run.
+    let (out_b, report_b) = Pool::finish_within(early_b, HANDSHAKE_DEADLINE * 6);
+    let stderr = String::from_utf8_lossy(&out_b.stderr);
+    assert!(!out_b.status.success(), "B ran: {stderr}");
+    assert_eq!(result(&report_b)["status"], "spawn-error", "{report_b}");
+    assert_eq!(
+        result(&report_b)["error"],
+        format!(
+            "could not open a WebSocket to the shared codex app-server: the server did not answer the WebSocket upgrade within {}s",
+            HANDSHAKE_DEADLINE.as_secs()
+        ),
+        "{report_b}"
+    );
+    assert!(
+        stderr.contains("harness `codex` exposed no session id, so `--session early-b` cannot be continued (nothing was stored)"),
+        "{stderr}"
+    );
+    early.release();
+    let (out_a, report_a) =
+        Pool::finish_within(early.dispatch("early-a", "alpha"), Duration::from_secs(60));
+    succeeded(&out_a, &report_a);
+
+    // The ready world held through that same deadline and neither of its
+    // dispatches failed waiting.
+    let (mut ready_b, mut ready_a) = (ready_b, ready_a);
+    still_running("ready-b", &mut ready_b);
+    still_running("ready-a", &mut ready_a);
+    ready.release();
+    let (out_b, report_b) = Pool::finish_within(ready_b, Duration::from_secs(60));
+    let (out_a, report_a) = Pool::finish_within(ready_a, Duration::from_secs(60));
+    succeeded(&out_b, &report_b);
+    succeeded(&out_a, &report_a);
+    shared_each_with_its_own(&report_a, &report_b);
+}
+// llmlint: ignore-end[e2e_not_mocked]
 
 /// Two concurrent pooled dispatches with different values of one variable
 /// each see their own in a command the server runs for their thread; a
@@ -1823,6 +2037,28 @@ fn redirect_once_its_abort_lands(pool: &Pool, server: u32, session: &str, messag
     }
 }
 
+fn pool_server_records(pool: &Pool) -> Vec<Value> {
+    std::fs::read_dir(pool.path("state/oneharness/servers"))
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter_map(|e| std::fs::read_to_string(e.path().join("server.json")).ok())
+                .filter_map(|text| serde_json::from_str(&text).ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Wait until server `pid`, its last lease released, has lingered out and been
+/// stopped, and the pool records no server.
+fn await_lingered_out(pool: &Pool, pid: u32) {
+    let stop =
+        Duration::from_millis(LINGER_MS) + DEAD_LEASE_SWEEP_INTERVAL * 3 + Duration::from_secs(10);
+    wait_for("the lingered-out server to stop", stop, || {
+        !alive(pid) && pool_server_records(pool).is_empty()
+    });
+}
+
 /// The turns the server recorded on `thread`, in order.
 fn turns_on(pool: &Pool, server: u32, thread: &str) -> Vec<Value> {
     pool.state(server)["turns"]
@@ -1834,6 +2070,7 @@ fn turns_on(pool: &Pool, server: u32, thread: &str) -> Vec<Value> {
         .collect()
 }
 
+// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run --control` and `oneharness interrupt --input` through the real pool and its real linger; only codex is the repository's subprocess double, because the gate cannot run real Codex, and real Codex cannot be made to refuse a second turn, die on interrupt, or hold an aborted turn's end behind a gate on demand. Real Codex's redirect is held live by scripts/e2e-control.sh's `oh_control_redirect_enforce`.
 /// On the shared app-server, as on every mechanism: a redirect is answered
 /// `redirected` only once the server has opened the replacement turn with the
 /// message. The server holds the aborted turn's end behind a gate, so the
@@ -1844,12 +2081,35 @@ fn turns_on(pool: &Pool, server: u32, thread: &str) -> Vec<Value> {
 /// and no turn on the server ever carries it.
 #[test]
 fn a_pooled_redirect_is_answered_on_delivery_and_refused_when_it_cannot_be() {
-    let pool = Pool::new("pool-redirect-delivery");
+    pooled_redirect_journey(Pool::new("pool-redirect-delivery"), false);
+}
+
+/// The same journey when each session's server has lingered out and been
+/// stopped before the next session dispatches — as a slow runner's gap
+/// between sessions longer than the linger leaves it. The stopped server's
+/// record stays in the mock's records, and the next session is served by a
+/// fresh server: the journey still finds the turn on it and holds it to every
+/// assertion. (A wait demanding that only one server was ever recorded timed
+/// out here on macOS CI.)
+#[test]
+fn a_pooled_redirect_is_answered_and_refused_on_a_server_started_after_the_last_lingered_out() {
+    pooled_redirect_journey(Pool::new("pool-redirect-relinger"), true);
+}
+
+/// The body of the pooled redirect journeys. With `after_each_server_stops`,
+/// the stopped server's record must still be there when the next session is
+/// served: only then has the journey met the case that broke the old
+/// one-server wait, rather than a pool that happened to keep one server.
+fn pooled_redirect_journey(pool: Pool, after_each_server_stops: bool) {
+    let mut previous: Option<u32> = None;
     for (session, knob) in [
         ("delivered", "MOCK_INTERRUPT_GATE"),
         ("refused", "MOCK_CODEX_REFUSE_SECOND_TURN"),
         ("orphaned", "MOCK_CODEX_DIE_ON_INTERRUPT"),
     ] {
+        if let (true, Some(stopped)) = (after_each_server_stops, previous) {
+            await_lingered_out(&pool, stopped);
+        }
         let release = pool.file(&format!("{session}-release"));
         let gate = pool.file(&format!("{session}-gate"));
         let value = if knob == "MOCK_INTERRUPT_GATE" {
@@ -1866,7 +2126,21 @@ fn a_pooled_redirect_is_answered_on_delivery_and_refused_when_it_cannot_be() {
             (knob, value),
         ];
         let child = pool.spawn(pool.command(session, &[], &envs));
-        let server = pool.await_live_turns(1);
+        let server = pool.await_a_server_with_live_turns(1);
+        // While its lease is held the pool records the server, so the linger
+        // wait below cannot pass merely because it watches the wrong place.
+        assert!(
+            !pool_server_records(&pool).is_empty(),
+            "{session}: the pool records no server while one holds a turn"
+        );
+        if let (true, Some(stopped)) = (after_each_server_stops, previous) {
+            assert_ne!(server, stopped, "{session}: the stopped server served it");
+            assert!(
+                pool.server_pids().contains(&stopped),
+                "{session}: the stopped server's record is gone, so nothing was proven"
+            );
+        }
+        previous = Some(server);
         let message = format!("stop and do the right thing for {session}");
         let mut answer = redirect_once_its_abort_lands(&pool, server, session, &message);
         if session == "delivered" {
@@ -1961,6 +2235,7 @@ fn a_pooled_redirect_is_answered_on_delivery_and_refused_when_it_cannot_be() {
         assert_eq!(carried, 0, "{session}: {turns:?}");
     }
 }
+// llmlint: ignore-end[e2e_not_mocked]
 
 /// A zero-work overload on a pooled turn repeats the turn on the shared
 /// server — a fresh lease, the same server — and recovers within
@@ -5565,6 +5840,41 @@ impl ControlSuite {
         ControlSuite { pool }
     }
 
+    /// The suite's environment for running `oneharness` behind a wrapper
+    /// that runs `prelude` before exec'ing the real binary. The binary and
+    /// the wrapper's own scratch path (`OH_STAGED_SEEN`) arrive in the
+    /// wrapper's environment, so no path is ever spelled as shell source.
+    fn staged(&self, prelude: &str) -> Vec<(&'static str, String)> {
+        let wrapper = self.pool.path("bin/oneharness-staged");
+        std::fs::write(
+            &wrapper,
+            format!("#!/usr/bin/env bash\n{prelude}\nexec \"$OH_STAGED_REAL_BIN\" \"$@\"\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            &wrapper,
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        vec![
+            ("ONEHARNESS_BIN", wrapper.display().to_string()),
+            ("OH_STAGED_REAL_BIN", oneharness_bin().display().to_string()),
+            (
+                "OH_STAGED_SEEN",
+                self.pool.path("seen").display().to_string(),
+            ),
+        ]
+    }
+
+    /// Installs `body` as the executable `name` first on the suite's PATH,
+    /// where the suite and every dispatch's command find their tools.
+    fn tool(&self, name: &str, body: &str) {
+        let tool = self.pool.path(&format!("bin/{name}"));
+        std::fs::write(&tool, format!("#!/usr/bin/env bash\n{body}\n")).unwrap();
+        std::fs::set_permissions(&tool, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+    }
+
     fn run(&self, envs: &[(&str, &str)]) -> Output {
         let pool = &self.pool;
         let path = format!(
@@ -5708,6 +6018,216 @@ fn the_control_suite_s_pooled_phases_pass_and_fail_for_the_right_reason() {
         );
     }
 }
+
+// llmlint: ignore-block[e2e_not_mocked] The control suite's pooled-env phase runs for real — scripts/e2e-control.sh, the built oneharness behind a wrapper that only starts dispatch B late or ends it before it runs, and a host mktemp on PATH that cannot create a file, and oneharness-core's pool; only codex is the repository's subprocess double, as in every ControlSuite journey, because the gate cannot run real Codex. The same phase against real Codex is scripts/e2e-control.sh's live run.
+/// The suite's pooled-env dispatches share one server however late the
+/// second of them starts — here only once the first's command is already
+/// running, and then later than the old fixed eight-second rendezvous allowed,
+/// as a loaded host starts one: each dispatch's command waits for the other's
+/// arrival itself, so both hold their leases at once, and the first's server
+/// cannot be reclaimed before the late one leases it. A second dispatch that
+/// ends without its command ever arriving releases the first's command, which
+/// waits on that end, not a clock, and the phase fails naming the dispatch
+/// that ended; on a host where no arrival can be created, each command stops
+/// before its probe, and the phase names that.
+#[test]
+fn the_control_suite_s_pooled_env_shares_one_server_when_one_dispatch_starts_late() {
+    // Each case: the suite's temp directory (the host's, unless a scratch one
+    // under /tmp is tagged — short, as the suite's sockets need), what the
+    // wrapper does before exec'ing the real binary, and the line the suite's
+    // stderr must hold (a pass when it is the `ok:` one).
+    let cases = [
+        (
+            // B starts only once A's command is running and has marked its
+            // arrival, or — with no rendezvous to mark — once A's dispatch has
+            // ended and the pool has reclaimed its server; then it holds back
+            // 12 s more, past the 8 s A's command once waited before giving
+            // up, as a starved scheduler can. The verdict is the same pass.
+            "pool-suite-late",
+            None,
+            r#"case " $* " in *" --session pooled-env-a "*) "$OH_STAGED_REAL_BIN" "$@" >"$OH_STAGED_SEEN.a-report"; s=$?; cat "$OH_STAGED_SEEN.a-report"; : >"$OH_STAGED_SEEN.a-done"; exit "$s" ;; *" --session pooled-env-b "*) for ((i = 1; i < $#; i++)); do [ "${!i}" = --session-dir ] && { j=$((i + 1)); meet="$(dirname "${!j}")/meet"; }; done; gone() { [ -e "$OH_STAGED_SEEN.a-done" ] && pid="$(jq -r '.control.app_server.pid // empty' "$OH_STAGED_SEEN.a-report")" && ! { [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; }; }; n=0; until [ -n "$(ls -A "$meet")" ] || gone; do [ "$n" -lt 1200 ] || { echo "dispatch A neither arrived nor ended with its server reclaimed" >&2; exit 1; }; sleep 0.1; n=$((n + 1)); done; sleep 12 ;; esac"#,
+            "ok: each pooled dispatch saw only its own variable, both on server",
+        ),
+        (
+            // B ends, failing, once A's command has arrived and before B's
+            // own could: A's command is waiting for an arrival that will
+            // never come. It ends on B's end, so A's dispatch succeeds and
+            // the phase names B's failure; were A's wait ended by nothing but
+            // a clock, A would sit out its dispatch's own timeout instead.
+            "pool-suite-gone",
+            None,
+            r#"case " $* " in *" --session pooled-env-b "*) for ((i = 1; i < $#; i++)); do [ "${!i}" = --session-dir ] && { j=$((i + 1)); meet="$(dirname "${!j}")/meet"; }; done; n=0; until [ -n "$(ls -A "$meet")" ]; do [ "$n" -lt 1200 ] || { echo "dispatch A never arrived" >&2; exit 1; }; sleep 0.1; n=$((n + 1)); done; echo "staged: dispatch B ends before its command arrives" >&2; exit 3 ;; esac"#,
+            "FAIL: pooled-env: dispatch B failed: staged: dispatch B ends before its command arrives",
+        ),
+        (
+            // Arrival paths holding an apostrophe and a `$`: each is written
+            // into the command as a literal, so the two still meet.
+            "pool-suite-quoted",
+            Some("q'$x"),
+            r#"printf '%s\n' "$@" >>"$OH_STAGED_SEEN""#,
+            "ok: each pooled dispatch saw only its own variable, both on server",
+        ),
+    ];
+    for (tag, tmp, prelude, expected) in cases {
+        run_late_case(tag, tmp, prelude, None, expected);
+    }
+    // A host whose mktemp cannot create a file (directories it still makes,
+    // so the suite's own scratch is set up): neither command can mark its
+    // arrival, each stops before its probe saying so, and the phase names
+    // that rather than waiting for an arrival that cannot come.
+    run_late_case(
+        "pool-suite-unwritable",
+        None,
+        "",
+        Some((
+            "mktemp",
+            r#"case " $* " in *" -d "*) command -p mktemp "$@"; exit ;; esac; echo "mktemp: staged: this host cannot create a temporary file" >&2; exit 1"#,
+        )),
+        "FAIL: pooled-env: dispatch A's command did not see its own OH_POOLED_PROBE (output: rendezvous=unwritable: cannot create",
+    );
+}
+
+/// One case of the late-start journey: `tool`, when given, is installed on
+/// the suite's PATH before it runs.
+fn run_late_case(
+    tag: &str,
+    tmp: Option<&str>,
+    prelude: &str,
+    tool: Option<(&str, &str)>,
+    expected: &str,
+) {
+    let suite = ControlSuite::new(tag);
+    if let Some((name, body)) = tool {
+        suite.tool(name, body);
+    }
+    let seen = suite.pool.path("seen");
+    let scratch = tmp.map(|tag| ScratchDir::under(Path::new("/tmp"), tag).unwrap());
+    let tmpdir = scratch.as_ref().map(|dir| dir.display().to_string());
+    let mut envs = suite.staged(prelude);
+    if let Some(dir) = &tmpdir {
+        envs.push(("TMPDIR", dir.clone()));
+    }
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let out = suite.run(&envs);
+    let said = String::from_utf8_lossy(&out.stderr);
+    let passes = expected.starts_with("ok:");
+    assert_eq!(out.status.success(), passes, "{tag}: {said}");
+    assert!(
+        said.contains(expected),
+        "{tag}: expected `{expected}` in: {said}"
+    );
+    if let Some(dir) = &tmpdir {
+        // The dispatches' session store, so their arrival paths too, sat
+        // in the quoted directory rather than a fallback.
+        let args = std::fs::read_to_string(&seen).unwrap();
+        assert!(
+            args.lines()
+                .any(|arg| arg.starts_with(&format!("{dir}/")) && arg.ends_with("/s")),
+            "{tag}: no session store under {dir}: {args}"
+        );
+    }
+}
+// llmlint: ignore-end[e2e_not_mocked]
+
+// llmlint: ignore-block[e2e_not_mocked] The control suite's pooled-env phase runs for real — scripts/e2e-control.sh, the built oneharness behind a wrapper that only keeps a copy of each dispatch's report, and oneharness-core's pool; only codex is the repository's subprocess double, whose `leak-env` fault is the one way to make a server run one dispatch's command in the other's environment on demand. The same phase against real Codex is scripts/e2e-control.sh's live run.
+/// A server that runs one dispatch's command in the other's environment fails
+/// the suite as that leak, and the two commands still met: the rendezvous is
+/// the same for both commands, so one running the other's — as the mock's
+/// does, its command text being the environment's — counts as an arrival
+/// rather than waiting for one that never comes. When it waited on a 120 s
+/// hang guard instead, that wait outlasted the test runner's own timeout on
+/// CI. Which dispatch leaks into which is the order the server
+/// opened their threads in, so either is the leak.
+#[test]
+fn the_control_suite_s_pooled_env_meets_when_a_leak_runs_one_dispatch_s_command_as_the_other_s() {
+    let suite = ControlSuite::new("pool-suite-leak-meet");
+    let mut envs = suite.staged(
+        r#"for s in a b; do case " $* " in *" --session pooled-env-$s "*) "$OH_STAGED_REAL_BIN" "$@" | tee "$OH_STAGED_SEEN.$s-report"; exit "${PIPESTATUS[0]}" ;; esac; done"#,
+    );
+    envs.push(("CODEX_MOCK_FAULT", "leak-env".to_string()));
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let out = suite.run(&envs);
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "the suite passed: {said}");
+    assert!(
+        said.contains("FAIL: pooled-env: dispatch A's command saw dispatch B's OH_POOLED_PROBE")
+            || said.contains(
+                "FAIL: pooled-env: dispatch B's command saw dispatch A's OH_POOLED_PROBE"
+            ),
+        "{said}"
+    );
+    for dispatch in ["a", "b"] {
+        let copy = suite.pool.path(&format!("seen.{dispatch}-report"));
+        let report = std::fs::read_to_string(&copy)
+            .unwrap_or_else(|err| panic!("no copy of {dispatch}'s report ({err}): {said}"));
+        let report: Value = serde_json::from_str(&report).unwrap();
+        let output = command_output(&report);
+        assert!(
+            output.contains("probe="),
+            "{dispatch}'s command never probed: {output}"
+        );
+        assert!(
+            !output.contains("rendezvous=missed"),
+            "{dispatch}'s command never met the other's: {output}"
+        );
+    }
+}
+// llmlint: ignore-end[e2e_not_mocked]
+
+// llmlint: ignore-block[e2e_not_mocked] The control suite's pooled-env phase runs for real — scripts/e2e-control.sh, the built oneharness behind a wrapper that only holds dispatch B back, and keeps a copy of A's report, before exec'ing it, and oneharness-core's pool; only codex is the repository's subprocess double, as in every ControlSuite journey, because the gate cannot run real Codex. The same phase against real Codex is scripts/e2e-control.sh's live run.
+/// A dispatch held back past the point the suite's former rendezvous guard
+/// gave up still meets the other: nothing timed ends a command's wait, so
+/// however long a host takes to start B, A's command waits for it and the
+/// verdict is the same pass, both on one server, each seeing only its own
+/// variable.
+///
+/// B is released on what A's command is observed doing, never on a clock of
+/// its own: a `sleep` on the suite's PATH counts each of the commands' polls,
+/// and B (whose wrapper sleeps through `command -p`, uncounted) waits, once
+/// A's command has arrived, until A has polled 11 more times or A's dispatch
+/// has ended. `OH_POOLED_MEET_GUARD_S=1` is the former guard at its least,
+/// which the suite no longer reads: the script that read it polled at most
+/// 10 times before giving up, so there A's dispatch always ends first and B
+/// runs alone; here A cannot end before B arrives, so B is always released by
+/// A's 11th poll with A still running. Which of the two released B is
+/// asserted, so neither outcome turns on how either was scheduled.
+#[test]
+fn the_control_suite_s_pooled_env_meets_a_dispatch_held_past_its_former_guard() {
+    let suite = ControlSuite::new("pool-suite-held");
+    suite.tool(
+        "sleep",
+        r#"printf '.\n' >>"$OH_STAGED_SEEN.polls" || exit 1; command -p sleep "$@""#,
+    );
+    let mut envs = suite.staged(
+        r#"polls() { if [ -e "$OH_STAGED_SEEN.polls" ]; then wc -l <"$OH_STAGED_SEEN.polls"; else echo 0; fi; }; case " $* " in *" --session pooled-env-a "*) "$OH_STAGED_REAL_BIN" "$@" | tee "$OH_STAGED_SEEN.a-report"; s="${PIPESTATUS[0]}"; : >"$OH_STAGED_SEEN.a-done"; exit "$s" ;; *" --session pooled-env-b "*) for ((i = 1; i < $#; i++)); do [ "${!i}" = --session-dir ] && { j=$((i + 1)); meet="$(dirname "${!j}")/meet"; }; done; n=0; until [ -n "$(ls -A "$meet")" ] || [ -e "$OH_STAGED_SEEN.a-done" ]; do [ "$n" -lt 1200 ] || { echo "dispatch A neither arrived nor ended" >&2; exit 1; }; command -p sleep 0.1; n=$((n + 1)); done; base="$(polls)"; until [ -e "$OH_STAGED_SEEN.a-done" ] || [ "$(($(polls) - base))" -ge 11 ]; do command -p sleep 0.1; done; [ -e "$OH_STAGED_SEEN.a-done" ] || : >"$OH_STAGED_SEEN.b-held" ;; esac"#,
+    );
+    envs.push(("OH_POOLED_MEET_GUARD_S", "1".to_string()));
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let out = suite.run(&envs);
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        suite.pool.path("seen.b-held").exists(),
+        "A's dispatch ended before held B was released: {said}"
+    );
+    assert!(out.status.success(), "{said}");
+    assert!(
+        said.contains("ok: each pooled dispatch saw only its own variable, both on server"),
+        "{said}"
+    );
+    let report = std::fs::read_to_string(suite.pool.path("seen.a-report"))
+        .unwrap_or_else(|err| panic!("no copy of A's report ({err}): {said}"));
+    let report: Value = serde_json::from_str(&report).unwrap();
+    let output = command_output(&report);
+    assert!(
+        output.contains("probe="),
+        "A's command never probed: {output}"
+    );
+    assert!(
+        !output.contains("rendezvous=missed"),
+        "A's command stopped waiting for held B: {output}"
+    );
+}
+// llmlint: ignore-end[e2e_not_mocked]
 
 // llmlint: ignore-block[e2e_not_mocked] The control suite's reuse phase runs for real — scripts/e2e-control.sh, the workload and oneharness-core's pool; only codex is the repository's subprocess double, because real Codex cannot be made to keep a released thread for 30 minutes, or forever, on demand within the gate. The same phase against real codex-cli 0.163.0 is scripts/e2e-control.sh's live pooled-reuse run.
 /// The suite's reuse phase runs the workload and the memory budget's check,

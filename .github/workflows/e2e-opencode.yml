@@ -104,3 +104,9 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENCODE_E2E_MODEL: ${{ vars.OPENCODE_E2E_MODEL }}
         run: just live-opencode
+
+      # Which launches the network recorder measured and which it ran
+      # directly, saying why (scripts/e2e-net-readings.sh).
+      - name: Network recorder readings
+        if: always() && runner.os == 'Linux'
+        run: scripts/e2e-net-readings.sh target/e2e-telemetry/network/opencode.jsonl

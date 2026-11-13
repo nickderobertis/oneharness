@@ -2,7 +2,9 @@
 // `scratch.test.ts` can watch them from another process the way a sibling
 // run's leak gate does. Named `.fixture.ts` so bun's own test glob leaves it to
 // that one caller. The temp dir and run token come from its environment, and
-// one directory is left behind at the end, as a real leak would be.
+// one directory is left behind at the end, as a real leak would be. A last
+// removal before it gives back any directory a refused rename made the cycles
+// leave in place, as a suite's next teardown would.
 import {
 	removeScratch,
 	removeScratchAsync,
@@ -22,4 +24,5 @@ for (let cycle = 0; cycle < cycles; cycle++) {
 	await scratch(`churn-async-${cycle}`);
 	await removeScratchAsync();
 }
+await removeScratchAsync();
 scratchSync("leaked");

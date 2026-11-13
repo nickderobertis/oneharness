@@ -1022,6 +1022,89 @@ oh_context_free_enforce() {
   note "PASS: $id context-free turn sends none of the checkout's or the machine's context, and a checkout turn sends both"
 }
 
+# A multi-line `--system` must reach claude's model request whole. On Windows
+# claude is an npm `.cmd` shim that std refuses to spawn with a newline-bearing
+# argument, which a one-line `--system` would never show. What proves the
+# delivery is the request claude sends, not what a model chooses to say back:
+# a model asked to echo a token from its system prompt once answered with a
+# mangled copy of it, failing a run whose system prompt had arrived intact.
+# So claude is pointed at scripts/chat-capture-endpoint.py through
+# ANTHROPIC_BASE_URL with a local key, the endpoint records each request's
+# `system` verbatim, and that record must hold the three lines exactly, in
+# order, joined by LF. The endpoint's reply is the user prompt's marker, which
+# must come back through oneharness's `json:result` extraction: the round trip.
+oh_claude_multiline_system_enforce() {
+  _oh_phase
+  local py sandbox pid="" port marker system status=0 bin_args=()
+  py="$(command -v python3 || command -v python)" ||
+    skip "neither python3 nor python is on PATH; the capture endpoint is a Python script"
+  # On Linux the measuring shim runs a launch in its own network namespace,
+  # whose loopback is not the endpoint's, so the turn starts the real
+  # executable past it; elsewhere the shim runs it directly and it stays, so
+  # Windows still spawns claude the way every other turn there does.
+  case "${OH_E2E_OS:-$(uname -s)}" in
+    Linux*)
+      local real
+      real="$(_oh_unshimmed claude)" || real="$(command -v claude)" ||
+        skip "claude is not on PATH; install it (the live-claude workflow does) to run this phase"
+      bin_args=(--bin "claude-code=$real")
+      ;;
+  esac
+  sandbox="$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX")" ||
+    fail "claude-code: could not create a scratch directory under ${TMPDIR:-/tmp}; check that it exists and is writable, or set TMPDIR to one that is"
+  mkdir -p "$sandbox/endpoint" "$sandbox/config" "$sandbox/work" ||
+    _oh_stall_abort "$sandbox" "$pid" "claude-code: could not create the phase's directories under $sandbox; check that the host temp dir is writable"
+  marker="$(oh_marker)"
+  # Not a marker the endpoint would answer with: only the user prompt's is.
+  system="$(printf 'You are a connectivity-check fixture.\nThis system prompt spans three lines.\nIts last line carries OHSYSTEM-%s%s.' "$RANDOM" "$RANDOM")"
+  local started=0
+  # llmlint: ignore-block[e2e_not_mocked] What this phase observes is the request the real claude sends its model, so a recorder must stand where the model is; the real model is driven by the paid echo turn e2e-claude.sh runs just before, and the long-prompt phase after it holds a system prompt's receipt to the real model.
+  _oh_endpoint_start chat-capture-endpoint.py "$py" "$sandbox/endpoint" "$sandbox/endpoint.log" || started=$?
+  pid="$_OH_ENDPOINT_PID"
+  if [ "$started" -ne 0 ]; then
+    sed 's/^/    /' "$sandbox/endpoint.log" >&2 || true
+    _oh_stall_abort "$sandbox" "$pid" "claude-code: the capture endpoint never reported its port (its output, with the stack it hung in, is above); run \`$py scripts/chat-capture-endpoint.py <an empty dir>\` by hand to see why it cannot start"
+  fi
+  port="$(_oh_port_in "$sandbox/endpoint/port")" ||
+    _oh_stall_abort "$sandbox" "$pid" "claude-code: the capture endpoint's port file does not hold one TCP port; run \`$py scripts/chat-capture-endpoint.py <an empty dir>\` by hand to see what it wrote"
+  (
+    local systems="$sandbox/endpoint/system.jsonl"
+    # The local key is the only credential: an OAuth token would outrank it,
+    # and a config dir of the phase's own keeps the machine's settings out.
+    unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_AUTH_TOKEN
+    ANTHROPIC_BASE_URL="http://127.0.0.1:$port" ANTHROPIC_API_KEY=sk-oneharness-local-only \
+      CLAUDE_CONFIG_DIR="$(oh_native_path "$sandbox/config")" CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+      oh_run claude-code "$(oh_prompt "$marker")" --system "$system" \
+      --cwd "$(oh_native_path "$sandbox/work")" "${bin_args[@]+"${bin_args[@]}"}"
+    oh_assert_echoed claude-code "$marker" json:result
+    if [ ! -s "$systems" ]; then
+      sed 's/^/    /' "$sandbox/endpoint.log" >&2 || true
+      fail "claude-code sent no Messages request to the capture endpoint, so nothing was proven about its system prompt; check that claude still honors ANTHROPIC_BASE_URL and read the endpoint's output above"
+    fi
+    if ! jq -e -s --arg want "$system" 'any(.[].system[]; contains($want))' "$systems" >/dev/null; then
+      note "  ── the tail of the system prompt claude sent, where --system lands ──"
+      jq -r '.system[-1] // "(none)"' "$systems" | tail -n 5 | sed 's/^/    /' >&2 || true
+      fail "claude-code: the three-line --system did not reach the model request intact (what arrived is above); check how oneharness delivers --system to claude (--append-system-prompt-file) and whether its line breaks survive"
+    fi
+  ) </dev/null >"$sandbox/turn.log" 2>&1 &
+  # llmlint: ignore-end[e2e_not_mocked]
+  wait "$!" || status=$?
+  # A skip exits its subshell 0: say it, rather than a PASS nothing earned.
+  local skipped=""
+  skipped="$(grep -m1 '^SKIP: ' "$sandbox/turn.log" 2>/dev/null)" || skipped=""
+  if [ "$status" -ne 0 ]; then
+    sed 's/^/    /' "$sandbox/turn.log" >&2 || true
+  fi
+  _oh_stall_cleanup "$sandbox" "$pid"
+  [ "$status" -eq 0 ] || exit "$status"
+  if [ -n "$skipped" ]; then
+    printf '%s\n' "$skipped" >&2
+    return 0
+  fi
+  # llmlint: ignore[tool_output_is_signal] This one line is the phase's verdict, the way every sibling oh_* phase in this library ends in PASS: a live run is read (and cited as proof) by that line.
+  note "PASS: claude-code delivered a three-line --system to its model request intact, and the reply round-tripped"
+}
+
 # Remove a scratch sandbox. A removal that fails names the path so it can be
 # deleted by hand; it does not mask the verdict of the turn that used it.
 oh_drop_sandbox() {
@@ -1038,6 +1121,15 @@ _oh_long_prompt_abort() {
 # Exercise both user and system receipt in ordinary, resumed, batch, controlled
 # and structured turns. Forced invalid-first retries are deterministic mock
 # coverage: live structured output proves retry capability only if a retry occurs.
+# Qwen's receipt is read from the model request it records itself
+# (--openai-logging-dir), not from its reply: a delivered turn has been answered
+# "reference_a reference_b" and {"system":"reference_b"}, labels instead of the
+# values, so a reply-echo verdict flipped from run to run on the same delivery.
+# OpenCode's receipt is read from its own record of the turn: the session it
+# stores (`opencode export`), or for a controlled turn the prompt its server
+# announces admitting (`session.next.prompt.admitted`). A delivered batch turn once
+# answered "I won't extract and return those reference values" while its
+# sibling restated both, so the reply decided a verdict delivery had not.
 # Crush/Copilot need OH_LONG_RESUME because their reports expose no session id.
 # Unsupported/unreachable live cases are explicitly not-run, never a pass.
 #   $1 harness id; $2.. extra run arguments
@@ -1059,18 +1151,34 @@ oh_long_prompt_enforce() {
   marker="$(oh_marker)"
   smarker="SYSTEM$(oh_marker)"
   second="SECOND$(oh_marker)"
-  pad="$(head -c 143360 /dev/zero | tr '\0' 'x')" || _oh_long_prompt_abort "$sandbox" "$id" "cannot generate user padding; check head/tr and /dev/zero"
-  spad="$(head -c 40000 /dev/zero | tr '\0' 'y')" || _oh_long_prompt_abort "$sandbox" "$id" "cannot generate system padding; check head/tr and /dev/zero"
+  # The user file alone must pass Linux's 128 KiB per-argument limit, yet the
+  # whole turn must fit a 200k-token prompt budget: a run of one character is
+  # about a token per byte to Claude (copilot >= 1.0.107 refuses 183 KB of it
+  # at ~209k tokens), a repeated common word about a token per four bytes.
+  pad="$(awk 'BEGIN { for (i = 0; i < 35840; i++) printf "the " }')" || _oh_long_prompt_abort "$sandbox" "$id" "cannot generate user padding; check awk"
+  spad="$(awk 'BEGIN { for (i = 0; i < 10000; i++) printf "the " }')" || _oh_long_prompt_abort "$sandbox" "$id" "cannot generate system padding; check awk"
   # Both batch turns ask the same question; only their user marker differs.
   # Describe the filler so the echo request remains clear after a long prefix.
   for user_marker in "$marker" "$second"; do
     local target="$pfile"
     [ "$user_marker" = "$marker" ] || target="$sandbox/second.txt"
-    printf 'The following repeated characters are inert test filler.\n%s\n\nReturn the two reference values separated by a space: reference_a is %s and the value labeled reference_b in the reference data.' "$pad" "$user_marker" >"$target" || _oh_long_prompt_abort "$sandbox" "$id" "cannot write $target; check disk space and permissions"
+    printf 'The following repeated words are inert test filler.\n%s\n\nReturn the two reference values separated by a space: reference_a is %s and the value labeled reference_b in the reference data.' "$pad" "$user_marker" >"$target" || _oh_long_prompt_abort "$sandbox" "$id" "cannot write $target; check disk space and permissions"
   done
-  printf 'The following repeated characters are inert test filler.\n%s\n\nReference data: reference_b = %s.' "$spad" "$smarker" >"$sfile" || _oh_long_prompt_abort "$sandbox" "$id" "cannot write $sfile; check disk space and permissions"
+  printf 'The following repeated words are inert test filler.\n%s\n\nReference data: reference_b = %s.' "$spad" "$smarker" >"$sfile" || _oh_long_prompt_abort "$sandbox" "$id" "cannot write $sfile; check disk space and permissions"
   printf '%s' '{"type":"object","required":["user","system"],"properties":{"user":{"type":"string"},"system":{"type":"string"}}}' >"$sandbox/schema.json" || _oh_long_prompt_abort "$sandbox" "$id" "cannot write $sandbox/schema.json; check disk space and permissions"
-  local model_args=() route_args=() verified=()
+  local model_args=() route_args=() request_args=() verified=() request_log
+  # A harness listed here proves receipt from its recorded request; the others,
+  # with no such record, still need the markers back in their reply.
+  local evidence=false exporter=""
+  case "$id" in
+    qwen) evidence=true ;;
+    opencode)
+      evidence=true
+      # The real CLI past the measuring shim: an export reads only local state.
+      exporter="$(_oh_unshimmed opencode)" || exporter="$(command -v opencode)" ||
+        _oh_long_prompt_abort "$sandbox" "$id" "opencode is not on PATH, so the sessions it stored cannot be exported; install it (npm install -g opencode-ai)"
+      ;;
+  esac
   [ -z "${OH_MODEL:-}" ] || model_args+=(--model "$OH_MODEL")
   resume="${OH_LONG_RESUME:-}"
   name="ohlong${RANDOM}${RANDOM}"
@@ -1089,7 +1197,7 @@ oh_long_prompt_enforce() {
         ;;
       # Exact per-turn isolation is proven at the child boundary in cli.rs.
       # Qwen can echo the first marker twice despite receiving isolated turns;
-      # require both replies/system receipt without relying on its second echo.
+      # its recorded requests, not its replies, must carry each user marker.
       batch) route_args+=(--prompt-file "$sandbox/second.txt" --batch-strategy speed) ;;
       control)
         if ! printf '%s' "$caps" | jq -e '.control != null' >/dev/null; then
@@ -1105,29 +1213,64 @@ oh_long_prompt_enforce() {
         route_args+=(--control --session "$name-control" --session-dir "$sandbox/sessions")
         ;;
       structured)
-        printf 'The following repeated characters are inert test filler.\n%s\n\nReturn a JSON object with user equal to %s and system equal to the value labeled reference_b in the reference data.' "$pad" "$marker" >"$pfile" || _oh_long_prompt_abort "$sandbox" "$id" "cannot write $pfile; check disk space and permissions"
+        # The user value is quoted in the prompt, so it must come back exact.
+        # The system value is only described ("the value labeled reference_b"),
+        # and a correct answer may restate its line, e.g. "reference_b = <marker>.":
+        # the marker is a fresh nonce that exists only in the system file, so a
+        # bounded match on it proves delivery as strictly as equality does.
+        # Qwen's verdict reads its recorded request instead (see above).
+        printf 'The following repeated words are inert test filler.\n%s\n\nReturn a JSON object with user equal to %s and system equal to the value labeled reference_b in the reference data.' "$pad" "$marker" >"$pfile" || _oh_long_prompt_abort "$sandbox" "$id" "cannot write $pfile; check disk space and permissions"
         route_args+=(--schema "$sandbox/schema.json" --schema-max-retries 1)
         ;;
     esac
+    request_args=()
+    request_log="$sandbox/requests/$journey"
+    if [ "$id" = qwen ]; then
+      request_args+=(-- --openai-logging --openai-logging-dir "$request_log")
+    fi
     OH_REPORT="$(ONEHARNESS_NO_CONFIG=1 "$bin" run --harness "$id" --prompt-file "$pfile" --system-file "$sfile" \
       --cwd "$sandbox/work" --mode bypass --timeout "${OH_LONG_TIMEOUT:-300}" --compact \
-      "${model_args[@]+"${model_args[@]}"}" "${route_args[@]+"${route_args[@]}"}" "$@" 2>"$sandbox/stderr")" || true
+      "${model_args[@]+"${model_args[@]}"}" "${route_args[@]+"${route_args[@]}"}" "$@" \
+      "${request_args[@]+"${request_args[@]}"}" 2>"$sandbox/stderr")" || true
     if [ -z "$OH_REPORT" ]; then
       cat "$sandbox/stderr" >&2 || note "cannot read $sandbox/stderr; check its permissions before rerunning"
       _oh_long_prompt_abort "$sandbox" "$id" "$id/$journey: no report was emitted; inspect the CLI error above"
     fi
-    if ! printf '%s' "$OH_REPORT" | jq -e --arg m "$marker" --arg s "$smarker" --arg second "$second" --arg journey "$journey" --arg id "$id" '
+    # The text of every system/user message qwen sent the model, one per request.
+    printf '[]' >"$sandbox/requests.json" || _oh_long_prompt_abort "$sandbox" "$id" "cannot write $sandbox/requests.json; check disk space and permissions"
+    if [ "$id" = qwen ] && [ -d "$request_log" ]; then
+      # llmlint: ignore[contracts_have_one_source_or_a_drift_gate] Qwen owns this log shape (its --openai-logging-dir record: request.messages[].content as a string or text parts), and this phase runs against real qwen in `just live-qwen`, which is its drift alarm: a changed shape leaves no marker found, failing the journey closed, never passing it.
+      find "$request_log" -name 'openai-*.json' -exec jq -s '
+        [.[] | [.request.messages[]? | select(.role == "system" or .role == "user") | .content |
+          if type == "string" then . else ([.[]? | .text? // empty] | join("\n")) end] | join("\n")]
+      ' {} + >"$sandbox/requests.json" || _oh_long_prompt_abort "$sandbox" "$id" "$id/$journey: cannot read the request log under $request_log; inspect the jq error above and the --openai-logging-dir file shape"
+    fi
+    if [ -n "$exporter" ]; then
+      _oh_opencode_sent "$exporter" "$sandbox" "$journey" >"$sandbox/requests.json" ||
+        _oh_long_prompt_abort "$sandbox" "$id" "$id/$journey: cannot export the sessions this turn stored (the error is above); run \`opencode export <session_id>\` from $sandbox/work by hand"
+    fi
+    if ! printf '%s' "$OH_REPORT" | jq -e --arg m "$marker" --arg s "$smarker" --arg second "$second" --arg journey "$journey" \
+      --argjson evidence "$evidence" --slurpfile requests "$sandbox/requests.json" '
       def hasmarker($value): test("(^|[^A-Za-z0-9-])" + $value + "([^A-Za-z0-9-]|$)");
       def require($condition; $problem): if $condition then . else error($problem) end;
       def reply: .text // .stdout // "";
+      def sent($user): any($requests[0][]; hasmarker($user) and hasmarker($s));
       require((.results | length) == (if $journey == "batch" then 2 else 1 end); "unexpected result count for " + $journey) |
       require(all(.results[]; .status == "ok"); "harness status is not ok: " + ([.results[].status] | join(","))) |
-      require(all(.results[]; reply | hasmarker($s)); "system marker missing from a reply") |
-      require(all(.results[]; reply | hasmarker($m) or ($journey == "batch" and hasmarker($second))); "user marker missing from a reply") |
-      require(any(.results[]; reply | hasmarker($m)); "first user marker missing") |
       require(all(.results[].command[]; (contains($m) or contains($s) or contains($second)) | not); "prompt/system text leaked into child argv") |
-      require(if $journey == "structured" then all(.results[]; .schema_valid == true and .structured.user == $m and .structured.system == $s) else true end; "structured markers or schema validation failed") |
-      require(if $journey == "batch" and $id != "qwen" then any(.results[]; reply | hasmarker($second)) else true end; "second batch marker missing") |
+      if $evidence then
+        require(($requests[0] | length) > 0; "no model request recorded for this turn") |
+        require(any($requests[0][]; hasmarker($s)); "system marker missing from every recorded model request") |
+        require(sent($m); "no recorded model request carries both the user and the system marker") |
+        require($journey != "batch" or sent($second); "no recorded model request carries both the second batch user marker and the system marker") |
+        require($journey != "structured" or all(.results[]; .schema_valid == true and (.structured.user | type) == "string" and (.structured.system | type) == "string"); "structured schema validation failed")
+      else
+        require(all(.results[]; reply | hasmarker($s)); "system marker missing from a reply") |
+        require(all(.results[]; reply | hasmarker($m) or ($journey == "batch" and hasmarker($second))); "user marker missing from a reply") |
+        require(any(.results[]; reply | hasmarker($m)); "first user marker missing") |
+        require(if $journey == "structured" then all(.results[]; .schema_valid == true and .structured.user == $m and (.structured.system | type) == "string" and (.structured.system | hasmarker($s))) else true end; "structured markers or schema validation failed") |
+        require(if $journey == "batch" then any(.results[]; reply | hasmarker($second)) else true end; "second batch marker missing")
+      end |
       true' >/dev/null; then
       # oh_dump shows only result[0]; a batch failure may belong to result[1].
       printf '%s' "$OH_REPORT" | jq '.results | to_entries[] | {result_index: .key, harness: .value.harness, status: .value.status, text: .value.text, stdout: .value.stdout, stderr: .value.stderr}' >&2 ||
@@ -1147,6 +1290,42 @@ oh_long_prompt_enforce() {
   done
   oh_drop_sandbox "$sandbox"
   note "PASS: $id receipt in [${verified[*]}]$not_run"
+}
+
+# What opencode put before its model on each of $OH_REPORT's turns, as a JSON
+# array of strings, read from opencode's own record. A controlled turn's is the
+# prompt its server announces admitting on the event stream the report keeps;
+# `opencode export` does not see a session that server holds. Any other turn's
+# is the last user message of the session its result names, exported from the
+# turn's checkout, whose project owns it. A turn with no record adds nothing,
+# so its markers are missing and the verdict fails closed.
+#   $1 opencode executable; $2 the phase's sandbox; $3 the journey
+_oh_opencode_sent() {
+  local exporter="$1" sandbox="$2" journey="$3" sid
+  : >"$sandbox/sent.jsonl" || return 1
+  if [ "$journey" = control ]; then
+    # llmlint: ignore[contracts_have_one_source_or_a_drift_gate] OpenCode owns this event shape (session.next.prompt.admitted's data.prompt.text), and this phase runs against real opencode in `just live-opencode`, which is its drift alarm: a changed shape leaves no marker found, failing the journey closed, never passing it.
+    printf '%s' "$OH_REPORT" | jq -c '.results[].stdout // "" | split("\n")[] | fromjson? |
+      select(.type? == "session.next.prompt.admitted") | .data.prompt.text? // empty' >"$sandbox/sent.jsonl" || return 1
+    jq -s . "$sandbox/sent.jsonl"
+    return
+  fi
+  # Only opencode's own id shape is run as an argument; anything else is no
+  # session, so its turn adds nothing and fails closed.
+  printf '%s' "$OH_REPORT" | jq -r '.results[].session_id // empty | select(test("^ses_[A-Za-z0-9]+$"))' >"$sandbox/sids" || return 1
+  # A read loop, not mapfile: macOS's system bash is 3.2.
+  while IFS= read -r sid; do
+    # llmlint: ignore[contracts_have_one_source_or_a_drift_gate] OpenCode owns this export shape (messages[].info.role, messages[].parts[] of type text), and this phase runs against real opencode in `just live-opencode`, which is its drift alarm: a changed shape leaves no marker found, failing the journey closed, never passing it.
+    # To a file, not a pipe: opencode exits before a pipe drains, cutting a
+    # long session's JSON off at the pipe's buffer.
+    if ! (cd "$sandbox/work" && "$exporter" export "$sid") </dev/null >"$sandbox/export.json" 2>"$sandbox/export.err" ||
+      ! jq -c '[.messages[]? | select(.info.role == "user")] | last |
+        [.parts[]? | select(.type == "text") | .text] | join("\n")' "$sandbox/export.json" >>"$sandbox/sent.jsonl"; then
+      cat "$sandbox/export.err" >&2 || true
+      return 1
+    fi
+  done <"$sandbox/sids" || return 1
+  jq -s . "$sandbox/sent.jsonl"
 }
 
 # --- usage / cache-token reporting -------------------------------------------

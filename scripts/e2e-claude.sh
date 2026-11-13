@@ -20,14 +20,12 @@ oh_assert_echoed claude-code "$marker"
 # Multi-line argument: a rendered `--system` spans several lines. On Windows the
 # harness is a `claude.cmd` npm shim, and std refuses to spawn a `.cmd` with a
 # newline-bearing argument ("batch file arguments are invalid") unless oneharness
-# bypasses the shim — so a one-line `--prompt` masks the bug. Drive the marker
-# through a genuinely multi-line `--system` (the echo instruction lives there)
-# and assert it still round-trips, proving the multi-line spawn path on every OS.
-note "» multi-line --system must spawn and round-trip (Windows .cmd-shim regression)"
-sysmarker="$(oh_marker)"
-multiline_system="$(printf 'You are a connectivity-check fixture.\nFollow the next instruction exactly.\nReply with this single token verbatim and nothing else: %s' "$sysmarker")"
-oh_run claude-code "Follow your system instructions." --system "$multiline_system"
-oh_assert_echoed claude-code "$sysmarker"
+# bypasses the shim — so a one-line `--prompt` masks the bug. The phase holds
+# the model REQUEST claude sends to the three lines exactly, against a local
+# capture endpoint, rather than asking a model to echo a token from its system
+# prompt: haiku once answered that with a mangled copy of the token.
+note "» multi-line --system must spawn and arrive intact (Windows .cmd-shim regression)"
+oh_claude_multiline_system_enforce
 
 # Cache-token reporting: Claude Code auto-caches its tools+system prefix, so a
 # second run within the TTL reads it back. Assert oneharness surfaces the

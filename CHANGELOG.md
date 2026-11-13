@@ -6,6 +6,30 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.28.4](https://github.com/nickderobertis/oneharness/compare/v0.28.3...v0.28.4) - 2026-11-12
+
+### Fixed
+
+- *(e2e)* prove multi-line --system round-trips without depending on the model's echo ([#1581](https://github.com/nickderobertis/oneharness/pull/1581))
+
+## [0.28.3](https://github.com/nickderobertis/oneharness/compare/v0.28.2...v0.28.3) - 2026-11-12
+
+### Fixed
+
+- *(node-sdk)* keep the sibling scratch gate clean when Windows refuses a rename ([#1583](https://github.com/nickderobertis/oneharness/pull/1583))
+
+## [0.28.2](https://github.com/nickderobertis/oneharness/compare/v0.28.1...v0.28.2) - 2026-11-12
+
+### Fixed
+
+- *(qwen)* tell a delivered system prompt from an undelivered one in the live structured journey ([#1578](https://github.com/nickderobertis/oneharness/pull/1578))
+
+## [0.28.1](https://github.com/nickderobertis/oneharness/compare/v0.28.0...v0.28.1) - 2026-11-11
+
+### Fixed
+
+- crush permissions via current API, telemetry namespace on Ubuntu 26.04, copilot prompt budget ([#1573](https://github.com/nickderobertis/oneharness/pull/1573))
+
 ## [0.28.0](https://github.com/nickderobertis/oneharness/compare/v0.27.2...v0.28.0) - 2026-11-05
 
 ### Fixed

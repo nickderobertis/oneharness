@@ -26,7 +26,11 @@ each runs from its own `.github/workflows/e2e-*.yml` (and `just live-<id>`).
   installing `passt` alone does not admit the namespace of the pasta the
   recorder resolves (`Couldn't write to /proc/self/uid_map`), so a Linux runner
   must lift `kernel.apparmor_restrict_unprivileged_userns` before the recorder
-  tests and the suite. The macOS and Windows legs, or a
+  tests and the suite. Ubuntu 26.04's passt also confines pasta itself, which
+  limits what pasta may start (`through_bash` in `scripts/e2e-netmeasure.py`).
+  A pasta that starts `true` proves nothing about the recorder: CI's preflight
+  is `scripts/network-recorder-preflight.sh`, which measures one launch through
+  the recorder itself. The macOS and Windows legs, or a
   Linux host without them, record `"method": "unavailable"` and the budgets are
   unsupported there: the check runs on Linux alone, where an unmeasured launch
   fails every budget, naming it. The gate never checks real telemetry.

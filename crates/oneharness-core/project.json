@@ -76,6 +76,7 @@
         "{workspaceRoot}/docs/history-index.md",
         "{workspaceRoot}/docs/harness-usage.md",
         "{workspaceRoot}/docs/sdk-parity.md",
+        "{workspaceRoot}/justfile",
         "{workspaceRoot}/scripts/e2e-codex.sh",
         "{workspaceRoot}/scripts/e2e-lib.sh",
         "{workspaceRoot}/src/cli.rs"

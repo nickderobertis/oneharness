@@ -271,7 +271,7 @@ install_one() {
     shellcheck)
       extract "$work/$name" "$work/x" ||
         die "could not unpack $name (above)" "fix: delete $tools_dir/downloads/$name, then rerun 'just bootstrap'"
-      found="$(find "$work/x" -type f -name "shellcheck$exe" | head -n 1)" ||
+      found="$(find "$work/x" -type f -name "shellcheck$exe" | sed -n 1p)" ||
         die "could not search the unpacked $name (above)" "fix: check that ${TMPDIR:-/tmp} is readable, then rerun 'just bootstrap'"
       [ -n "$found" ] || die "$name holds no shellcheck$exe to install" "fix: check the asset recorded for shellcheck in scripts/shell-tools.sh"
       cp "$found" "$stage/bin/shellcheck$exe" ||

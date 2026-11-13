@@ -104,9 +104,10 @@ have_env() {
 # phases prove what pooling must never cost, each failing the suite naming its
 # phase and assertion:
 #   pooled-env    two concurrent pooled dispatches each run one command printing
-#                 a digest of its own per-dispatch variable: each sees its own
-#                 and not the other's, both ran on one server, and no
-#                 per-dispatch value reached any thread rollout under the home;
+#                 a digest of its own per-dispatch variable, once both are
+#                 running theirs: each sees its own and not the other's, both
+#                 ran on one server, and no per-dispatch value reached any
+#                 thread rollout under the home;
 #   pooled-kill   a pooled dispatch killed while its turn runs a heartbeat: the
 #                 heartbeat stops within DEAD_LEASE_SWEEP_INTERVAL (2 s) plus
 #                 DEAD_LEASE_STOP_DEADLINE (5 s);
@@ -119,17 +120,31 @@ have_env() {
 # Its session store is "$POOLED_DIR/s", one letter so the control socket's path
 # stays under macOS's 104-byte sun_path limit beneath its long temp dir.
 #   $1 session, $2 its report file, $3 its working directory, $4 the command
-#   the prompt asks it to run (also exported as OH_POOLED_COMMAND)
+#   the prompt asks it to run (also exported as OH_POOLED_COMMAND), and
+#   optionally $5, a file created once the dispatch has ended, however it
+#   ended; POOLED_PID is then the subshell that creates it, not oneharness.
 _oh_pooled_start() {
-  local session="$1" report="$2" cwd="$3" command="$4"
+  local session="$1" report="$2" cwd="$3" command="$4" ended="${5:-}"
   if ! { : >"$report" && : >"$report.err"; }; then
     fail "$session: cannot create its report files $report and $report.err; check that $POOLED_DIR is writable"
   fi
-  OH_POOLED_COMMAND="$command" ONEHARNESS_NO_CONFIG=1 "$BIN" run --harness codex --control \
-    --session "$session" --session-dir "$POOLED_DIR/s" --cwd "$cwd" --mode bypass \
-    --timeout "${OH_TIMEOUT:-180}" --compact \
-    --prompt "Run this shell command exactly once, as written, then reply with the single word done: $command" \
-    >"$report" 2>"$report.err" &
+  local -a argv=(run --harness codex --control
+    --session "$session" --session-dir "$POOLED_DIR/s" --cwd "$cwd" --mode bypass
+    --timeout "${OH_TIMEOUT:-180}" --compact
+    --prompt "Run this shell command exactly once, as written, then reply with the single word done: $command")
+  if [ -z "$ended" ]; then
+    OH_POOLED_COMMAND="$command" ONEHARNESS_NO_CONFIG=1 "$BIN" "${argv[@]}" >"$report" 2>"$report.err" &
+  else
+    {
+      local s=0
+      OH_POOLED_COMMAND="$command" ONEHARNESS_NO_CONFIG=1 "$BIN" "${argv[@]}" >"$report" 2>"$report.err" || s=$?
+      if ! : >"$ended"; then
+        echo "$session: ended, but cannot create $ended to say so; check that $POOLED_DIR is writable" >>"$report.err"
+        s=1
+      fi
+      exit "$s"
+    } &
+  fi
   POOLED_PID=$!
 }
 
@@ -146,13 +161,49 @@ oh_pooled_env() {
   # for a leak of the environment itself.
   # shellcheck disable=SC2016 # expanded by the dispatch's own shell, in its own environment
   local probe='printf "probe=%s\n" "$(printf %s "$OH_POOLED_PROBE" | cksum | cut -d" " -f1)"'
+  # Both dispatches hold their leases at once only while both are running: one
+  # started late (a loaded host starts one late) would otherwise find the
+  # first's server already released, reclaimed after its linger, and run on a
+  # server of its own. So each command marks its arrival and waits for the
+  # other's before it probes: their order comes from those two events, so a
+  # slow host only makes the phase slower. Nothing timed ends the wait: it
+  # ends on the other's arrival, or once the other's dispatch has ended (each
+  # dispatch's end creates one file, "ended") without its command arriving —
+  # it failed to start, its turn failed, or it never ran the command. The
+  # command then says rendezvous=missed and probes; the other's own failure
+  # (its wait, or its own-variable check below) is what fails the phase.
+  # The rendezvous is the same text in both commands — an arrival is a fresh
+  # file in one shared directory, the meeting two of them — so a command run
+  # as the other dispatch's (a server leaking A's environment into B's
+  # command, where the mock's command is that environment's) still arrives,
+  # and fails as the leak, not on the other's end.
+  # The directory is written into each command, not passed in its
+  # environment: the environment is what this phase checks, and one dispatch
+  # seeing the other's must fail as that, not as a missed rendezvous.
+  # An arrival it cannot write ends the command before its probe, saying so,
+  # which the own-variable checks below then name with that output.
+  # The path is written as a single-quoted shell literal (any ' in it as
+  # '\''), so whatever TMPDIR holds is a path and never shell syntax; its
+  # glob always matches the command's own arrival, so no shell's no-match
+  # rule applies; the end is one fixed name, tested with -e, never a glob.
+  literal() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
+  local meet_dir="$POOLED_DIR/meet" ended="$POOLED_DIR/ended" meet end
+  mkdir -p "$meet_dir" ||
+    fail "pooled-env: cannot create the rendezvous directory $meet_dir; check that $POOLED_DIR is writable"
+  rm -f "$ended" ||
+    fail "pooled-env: cannot clear the dispatches' end marker $ended; check that $POOLED_DIR is writable"
+  meet="$(literal "$meet_dir")"
+  end="$(literal "$ended")"
+  # shellcheck disable=SC2016 # $# is the dispatch's own shell's
+  meet="$(printf 'mktemp %s/here.XXXXXX >/dev/null || { echo rendezvous=unwritable: cannot create an arrival in %s; exit 1; }; until set -- %s/*; [ "$#" -ge 2 ]; do if [ -e %s ]; then echo rendezvous=missed; break; fi; sleep 0.1; done; ' \
+    "$meet" "$meet" "$meet" "$end")"
   report_a="$POOLED_DIR/env-a.json"
   report_b="$POOLED_DIR/env-b.json"
   mkdir -p "$POOLED_DIR/wa" "$POOLED_DIR/wb" ||
     fail "pooled-env: cannot create the dispatches' working directories under $POOLED_DIR; check that it is writable"
-  OH_POOLED_PROBE="$value_a" _oh_pooled_start pooled-env-a "$report_a" "$POOLED_DIR/wa" "$probe"
+  OH_POOLED_PROBE="$value_a" _oh_pooled_start pooled-env-a "$report_a" "$POOLED_DIR/wa" "$meet$probe" "$ended"
   a=$POOLED_PID
-  OH_POOLED_PROBE="$value_b" _oh_pooled_start pooled-env-b "$report_b" "$POOLED_DIR/wb" "$probe"
+  OH_POOLED_PROBE="$value_b" _oh_pooled_start pooled-env-b "$report_b" "$POOLED_DIR/wb" "$meet$probe" "$ended"
   b=$POOLED_PID
   wait "$a" || fail "pooled-env: dispatch A failed: $(cat "$report_a.err")"
   wait "$b" || fail "pooled-env: dispatch B failed: $(cat "$report_b.err")"

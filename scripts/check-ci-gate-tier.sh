@@ -145,14 +145,17 @@ for var in 'EVENT_NAME: ${{ github.event_name }}' 'HEAD_REF: ${{ github.head_ref
   printf '%s\n' "$job" | grep -xF "          $var" >/dev/null ||
     fail "$ci tier step lacks '$var', so the script cannot see what this run is for"
 done
-affected="$(printf '%s\n' "$job" | awk '/- name: Affected tier \(just check\)$/ { on = 1; next } on && /- (name|uses):/ { exit } on')"
-sweep="$(printf '%s\n' "$job" | awk '/- name: Full sweep \(just check all\)$/ { on = 1; next } on && /- (name|uses):/ { exit } on')"
+# Each step is cut out of the job by an awk that exits at the next step, so it
+# reads a here-string: piped, the writer could take SIGPIPE and pipefail would
+# end this check with a silent 141 (scripts/check-pipe-readers.sh).
+affected="$(awk '/- name: Affected tier \(just check\)$/ { on = 1; next } on && /- (name|uses):/ { exit } on' <<<"$job")"
+sweep="$(awk '/- name: Full sweep \(just check all\)$/ { on = 1; next } on && /- (name|uses):/ { exit } on' <<<"$job")"
 [ -n "$affected" ] || fail "$ci check job has no step named 'Affected tier (just check)'"
 [ -n "$sweep" ] || fail "$ci check job has no step named 'Full sweep (just check all)'; scripts/ci-verdict.sh reads that name"
 printf '%s\n' "$affected" | grep -F "steps.tier.outputs.tier == 'affected'" >/dev/null ||
   fail "$ci affected step does not run exactly when the tier is 'affected'"
 # shellcheck disable=SC2016 # A GitHub expression, matched as literal workflow text.
-printf '%s\n' "$affected" | grep -qxF '          NX_BASE: ${{ steps.tier.outputs.base }}' ||
+grep -qxF '          NX_BASE: ${{ steps.tier.outputs.base }}' <<<"$affected" ||
   fail "$ci affected step does not hand the derived base to the recipe as NX_BASE"
 printf '%s\n' "$affected" | grep -x '        run: just check' >/dev/null ||
   fail "$ci affected step does not run 'just check'"
@@ -169,12 +172,16 @@ grep -qF '"Full sweep (just check all)"' scripts/ci-verdict.sh ||
 prefix_of() { sed -n 's/^readonly RELEASE_BRANCH_PREFIX="\(.*\)"$/\1/p' "$1"; }
 tier_prefix="$(prefix_of scripts/ci-gate-tier.sh)"
 verdict_prefix="$(prefix_of scripts/ci-verdict.sh)"
-plz_prefix="$(sed -n 's/.*startswith("\([^"]*\)").*/\1/p' .github/workflows/release-plz.yml | head -n 1)"
+plz=".github/workflows/release-plz.yml"
+# Read on its own so a missing workflow says so, never as an empty prefix.
+plz_text="$(cat -- "$plz")" ||
+  fail "cannot read $plz; restore it (git checkout -- $plz) so its release pull request's branch prefix can be compared"
+plz_prefix="$(sed -n 's/.*startswith("\([^"]*\)").*/\1/p' <<<"$plz_text" | sed -n 1p)"
 [ -n "$tier_prefix" ] || fail "scripts/ci-gate-tier.sh declares no 'readonly RELEASE_BRANCH_PREFIX=\"...\"'"
 [ "$verdict_prefix" = "$tier_prefix" ] ||
   fail "scripts/ci-verdict.sh recognizes release pull requests by '$verdict_prefix' but scripts/ci-gate-tier.sh sweeps '$tier_prefix'; the release would read a run that never swept, or none"
 [ "$plz_prefix" = "$tier_prefix" ] ||
-  fail ".github/workflows/release-plz.yml finds its release pull request by '$plz_prefix' but scripts/ci-gate-tier.sh sweeps '$tier_prefix'"
+  fail "$plz finds its release pull request by '$plz_prefix' but scripts/ci-gate-tier.sh sweeps '$tier_prefix'"
 
 omission="$(sed -n 's/^readonly MACOS_OMISSION_STEP="\([^"]*\)"$/\1/p' scripts/ci-verdict.sh)"
 [ -n "$omission" ] || fail "scripts/ci-verdict.sh declares no 'readonly MACOS_OMISSION_STEP=\"...\"'; restore it with the name of ci.yml's authorized Mac omission step"

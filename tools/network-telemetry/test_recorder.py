@@ -7,8 +7,13 @@ makes that a failure. The fallback and refusal cases run everywhere.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import importlib.util
 import json
 import os
+import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -16,6 +21,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from types import ModuleType
 from typing import Literal, NamedTuple
 
 from support import (
@@ -23,6 +29,7 @@ from support import (
     NETMEASURE,
     NETSHIM,
     OBSERVER,
+    SCRIPTS,
     WINDOWS,
     LaunchId,
     Record,
@@ -47,6 +54,9 @@ UNAVAILABLE_FIELDS = frozenset({"launch_id", "reason", "seconds", "exit", "metho
 DOWN = 5_000_000
 UP = 3_000_000
 UNRELATED = 7_777_777
+# The user namespaces Linux nests at most, the initial one's children included
+# (`parent_ns->level > 32` refuses a 34th level, kernel/user_namespace.c).
+USERNS_LEVELS = 33
 
 
 class Frame(NamedTuple):
@@ -59,6 +69,38 @@ class Frame(NamedTuple):
 
 def frame_sums(frames: list[Frame], direction: str, low: int, high: int) -> int:
     return sum(f.length for f in frames if f.direction == direction and low <= f.stamp_ns <= high)
+
+
+async def read_from_loopback(port: int, *, deadline: float) -> int:
+    """Every byte a listener on host loopback PORT sends, dialing it until it
+    answers: a refused or reset dial is retried every 0.2 s until DEADLINE (a
+    `time.monotonic()` reading), when what was read so far is returned. Each
+    dial and read is held to 5 s, and each connection is closed before the
+    next is opened."""
+    received = 0
+    while True:
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection("127.0.0.1", port), timeout=5
+            )
+        except (ConnectionRefusedError, ConnectionResetError):
+            if time.monotonic() > deadline:
+                return received
+            await asyncio.sleep(0.2)
+            continue
+        try:
+            while data := await asyncio.wait_for(reader.read(65536), timeout=5):
+                received += len(data)
+            return received
+        except ConnectionResetError:
+            if time.monotonic() > deadline:
+                return received
+        finally:
+            writer.close()
+            # A peer that reset the connection has nothing left to flush.
+            with contextlib.suppress(ConnectionError):
+                await writer.wait_closed()
+        await asyncio.sleep(0.2)
 
 
 class MeasuredLaunch(unittest.TestCase):
@@ -82,6 +124,95 @@ class MeasuredLaunch(unittest.TestCase):
         (start,) = starts(records)
         (line,) = measurements(records, start["launch_id"])
         self.assertEqual((line["method"], line["exit"]), ("netns-pasta", 7))
+
+    def test_the_launch_runs_as_the_measurer_s_own_user_not_the_namespace_s_root(self) -> None:
+        # pasta's user namespace maps this user to root; a launch that read
+        # uid 0 there was refused by claude ("--dangerously-skip-permissions
+        # cannot be used with root/sudo privileges").
+        need_recorder(self)
+        tmp = scratch(self)
+        run = run_shim(tmp, ["/bin/sh", "-c", "id -u; id -g"], ["exec", "probe"])
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stdout.decode().split(), [str(os.getuid()), str(os.getgid())])
+        records = lines(tmp / "codex.jsonl")
+        (start,) = starts(records)
+        (line,) = measurements(records, start["launch_id"])
+        self.assertEqual(line["method"], "netns-pasta", line)
+
+    def test_a_launch_that_cannot_be_given_its_own_identity_runs_directly_once_saying_why(
+        self,
+    ) -> None:
+        # The shim runs USERNS_LEVELS - 1 user namespaces deep, so pasta's is
+        # the deepest the kernel allows and the nested one `become` asks for
+        # is refused (ENOSPC): the launch must not run as the namespace's root
+        # instead, nor twice, and its line must say why it went unmeasured.
+        need_recorder(self)
+        if shutil.which("unshare") is None:
+            self.fail("unshare (util-linux) is not on PATH; install it to nest user namespaces")
+        tmp = scratch(self)
+        ran = tmp / "ran"
+        real = tmp / "counting-double"
+        real.write_text(f"#!/usr/bin/env bash\nid -u >>{shlex.quote(str(ran))}\n")
+        real.chmod(0o755)
+        nest = ["unshare", "--user", "--map-current-user"] * (USERNS_LEVELS - 1)
+        run = run_shim(tmp, [str(real)], ["exec", "x"], prefix=nest, env={"TMPDIR": str(tmp)})
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(ran.read_text().split(), [str(os.getuid())], "not run once as this user")
+        records = lines(tmp / "codex.jsonl")
+        (start,) = starts(records)
+        (line,) = measurements(records, start["launch_id"])
+        self.assertEqual(line["method"], "unavailable", line)
+        self.assertIn(f"cannot run the launch as uid {os.getuid()}", line["reason"])
+        self.assertIn("unshare(CLONE_NEWUSER)", line["reason"])
+        self.assertNotIn(b"cannot run the launch as uid", run.stderr)
+        self.assertFalse(list((tmp / ".pending").glob("*")))
+        self.assertEqual(list(tmp.glob("oh-netmeasure-*")), [])
+
+    def test_a_port_the_launch_listens_on_answers_on_host_loopback_and_is_not_counted(
+        self,
+    ) -> None:
+        # oneharness dials opencode's control server (`opencode serve`, which
+        # the shim measures) on 127.0.0.1; with no inbound forwarding that
+        # port existed only in the namespace and every dial was refused, and a
+        # newer pasta forwarding to the namespace's external address reset it.
+        need_recorder(self)
+        tmp = scratch(self)
+        import socket
+
+        with socket.socket() as reserve:
+            reserve.bind(("127.0.0.1", 0))
+            port = reserve.getsockname()[1]
+        body = 4_000_000
+        listener = tmp / "listener.py"
+        listener.write_text(
+            "import socket, sys\n"
+            "with socket.socket() as s:\n"
+            "    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n"
+            "    s.bind(('127.0.0.1', int(sys.argv[1])))\n"
+            "    s.listen(1)\n"
+            "    s.settimeout(60)\n"
+            "    conn, _ = s.accept()\n"
+            f"    conn.sendall(b'x' * {body})\n"
+            "    conn.close()\n"
+        )
+        result: dict[str, subprocess.CompletedProcess[bytes]] = {}
+        launch = threading.Thread(
+            target=lambda: result.update(
+                run=run_shim(tmp, [sys.executable, str(listener), str(port)], ["serve", "probe"])
+            )
+        )
+        launch.start()
+        received = asyncio.run(read_from_loopback(port, deadline=time.monotonic() + 30))
+        launch.join()
+        run = result["run"]
+        self.assertEqual(received, body, "the launch's listener never answered on host loopback")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        records = lines(tmp / "codex.jsonl")
+        (start,) = starts(records)
+        (line,) = measurements(records, start["launch_id"])
+        self.assertEqual(line["method"], "netns-pasta", line)
+        # Spliced socket to socket, the served bytes never crossed the TAP.
+        self.assertLess(line["rx_bytes"] + line["tx_bytes"], body // 100, line)
 
     def test_counts_exactly_what_crossed_the_namespace_boundary_against_an_independent_capture(
         self,
@@ -806,6 +937,238 @@ class Arguments(unittest.TestCase):
         self.assertFalse((tmp / ".pending").exists(), "a marker was made")
 
 
+class IdentityArgument(unittest.TestCase):
+    """`--_as UID:GID`, which the supervisor hands the namespace's init."""
+
+    def test_an_identity_no_user_namespace_can_map_is_a_usage_error_before_anything_runs(
+        self,
+    ) -> None:
+        tmp = scratch(self)
+        ran = tmp / "ran"
+        for value, said in (
+            ("1000", "'1000' is not UID:GID"),
+            ("abc:1000", "uid 'abc' is not a decimal id"),
+            ("1000:-1", "gid '-1' is not a decimal id"),
+            ("1000:", "gid '' is not a decimal id"),
+            (f"{2**32 - 1}:1000", f"uid '{2**32 - 1}' is not a decimal id from 0 to {2**32 - 2}"),
+            ("\u0661:1000", "uid '\u0661' is not a decimal id"),
+        ):
+            with self.subTest(value=value):
+                run = subprocess.run(
+                    [
+                        sys.executable,
+                        str(NETMEASURE),
+                        "--_init",
+                        str(tmp),
+                        "--_as",
+                        value,
+                        "--",
+                        "touch",
+                        str(ran),
+                    ],
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    # The non-ASCII digit must reach this test as itself: pin
+                    # the child's stdio and this side's decoding to UTF-8, or
+                    # a Windows leg's console code page writes it as \u0661.
+                    env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+                    encoding="utf-8",
+                    timeout=60,
+                    check=False,
+                )
+                self.assertEqual(run.returncode, 2, run.stderr)
+                self.assertIn(f"--_as: {said}", run.stderr)
+                self.assertNotIn("Traceback", run.stderr)
+                self.assertFalse(ran.exists(), "the launch ran on a bad identity")
+
+
+def netmeasure_module(test: unittest.TestCase) -> ModuleType:
+    """The recorder's own module, loaded from its script."""
+    spec = importlib.util.spec_from_file_location("netmeasure", NETMEASURE)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    # Its dataclasses resolve their annotations through sys.modules.
+    sys.modules["netmeasure"] = module
+    test.addCleanup(sys.modules.pop, "netmeasure", None)
+    spec.loader.exec_module(module)
+    return module
+
+
+class InboundTcp(unittest.TestCase):
+    """Which inbound TCP spelling the supervisor gives pasta: the newest that a
+    trial namespace starts with, tried in order (`inbound_tcp`)."""
+
+    def trial_pasta(self, plan: list[str]) -> tuple[Path, Path]:
+        """A stand-in pasta whose Nth start does plan[N] (`ok`, `refuse` or
+        `hang`), each logging its arguments as one line; and that log."""
+        tmp = scratch(self)
+        log = tmp / "trials"
+        pasta = tmp / "pasta"
+        does = {
+            "ok": "exit 0",
+            "refuse": "echo 'Invalid port specifier' >&2; exit 1",
+            "hang": "exec sleep 60",
+        }
+        cases = "".join(f"  {n}) {does[step]} ;;\n" for n, step in enumerate(plan))
+        pasta.write_text(
+            "#!/usr/bin/env bash\n"
+            f'printf "%s\\n" "$*" >>{shlex.quote(str(log))}\n'
+            f"n=$(($(wc -l <{shlex.quote(str(log))}) - 1))\n"
+            'case "$n" in\n'
+            f"{cases}"
+            "  *) echo 'more trials than planned' >&2; exit 99 ;;\n"
+            "esac\n"
+        )
+        pasta.chmod(0o755)
+        return pasta, log
+
+    def trials(self, netmeasure: ModuleType, spellings: list[tuple[str, ...]]) -> list[str]:
+        return [
+            " ".join(
+                [
+                    "--config-net",
+                    "--quiet",
+                    "-4",
+                    *s,
+                    *netmeasure.OTHER_PORTS,
+                    "--",
+                    *netmeasure.TRIAL,
+                ]
+            )
+            for s in spellings
+        ]
+
+    @unittest.skipIf(WINDOWS, "the recorder measures on Linux; its stand-in pasta is bash")
+    def test_the_newest_spelling_that_starts_is_taken_without_trying_older_ones(self) -> None:
+        netmeasure = netmeasure_module(self)
+        pasta, log = self.trial_pasta(["ok"])
+        got = netmeasure.inbound_tcp(str(pasta), timeout=5)
+        self.assertEqual(got, list(netmeasure.INBOUND_TCP[0]))
+        self.assertEqual(
+            log.read_text().splitlines(), self.trials(netmeasure, [netmeasure.INBOUND_TCP[0]])
+        )
+
+    @unittest.skipIf(WINDOWS, "the recorder measures on Linux; its stand-in pasta is bash")
+    def test_a_refused_or_hung_trial_falls_back_to_the_next_spelling_in_order(self) -> None:
+        netmeasure = netmeasure_module(self)
+        pasta, log = self.trial_pasta(["refuse", "hang", "ok"])
+        started = time.monotonic()
+        got = netmeasure.inbound_tcp(str(pasta), timeout=1)
+        self.assertLess(time.monotonic() - started, 30, "the hung trial was not cut off")
+        self.assertEqual(got, list(netmeasure.INBOUND_TCP[2]))
+        self.assertEqual(
+            log.read_text().splitlines(), self.trials(netmeasure, list(netmeasure.INBOUND_TCP))
+        )
+
+    @unittest.skipIf(WINDOWS, "the recorder measures on Linux; its stand-in pasta is bash")
+    def test_when_every_trial_is_refused_the_oldest_spelling_is_left(self) -> None:
+        netmeasure = netmeasure_module(self)
+        pasta, log = self.trial_pasta(["refuse"] * len(netmeasure.INBOUND_TCP))
+        self.assertEqual(
+            netmeasure.inbound_tcp(str(pasta), timeout=5), list(netmeasure.INBOUND_TCP[-1])
+        )
+        self.assertEqual(
+            log.read_text().splitlines(), self.trials(netmeasure, list(netmeasure.INBOUND_TCP))
+        )
+
+    @unittest.skipIf(WINDOWS, "the recorder measures on Linux; its stand-in pasta is bash")
+    def test_a_pasta_that_cannot_be_spawned_leaves_the_oldest_spelling(self) -> None:
+        netmeasure = netmeasure_module(self)
+        tmp = scratch(self)
+        unspawnable = tmp / "pasta"
+        unspawnable.write_text("#!/nonexistent/interpreter\n")
+        unspawnable.chmod(0o755)
+        self.assertEqual(
+            netmeasure.inbound_tcp(str(unspawnable), timeout=5), list(netmeasure.INBOUND_TCP[-1])
+        )
+
+
+REFUSED = "echo 'Invalid port specifier' >&2; exit 1"
+
+
+class InboundTcpThroughTheShim(unittest.TestCase):
+    """The same negotiation as InboundTcp, through the shim a suite runs, in
+    front of the real pasta: what a refused trial leaves the measured launch."""
+
+    def wrapping_pasta(self, tmp: Path, refuse: str, does: str) -> tuple[Path, Path]:
+        """A directory holding a pasta that logs each start's arguments and
+        runs the bash DOES for a trial (a start of `-- /bin/bash -c :`)
+        matching the bash pattern REFUSE — refusing it, the way an older build
+        refuses a spelling it does not know, or hanging; any other start is
+        the real pasta's. And its log."""
+        real = shutil.which("pasta")
+        assert real is not None  # need_recorder found it
+        wrapper = tmp / "wrapping-pasta"
+        wrapper.mkdir()
+        log = tmp / "starts"
+        (wrapper / "pasta").write_text(
+            "#!/usr/bin/env bash\n"
+            f'printf "%s\\n" "$*" >>{shlex.quote(str(log))}\n'
+            'case "$*" in\n'
+            f"  {refuse}*' -- /bin/bash -c :') {does} ;;\n"
+            "esac\n"
+            f'exec {shlex.quote(real)} "$@"\n'
+        )
+        (wrapper / "pasta").chmod(0o755)
+        return wrapper, log
+
+    def launch(self, refuse: str, does: str = REFUSED) -> tuple[list[str], str, Record]:
+        """One measured launch through the shim: the spellings its trials
+        tried, in order, the one its launch was given, and its line."""
+        need_recorder(self)
+        netmeasure = netmeasure_module(self)
+        tmp = scratch(self)
+        wrapper, log = self.wrapping_pasta(tmp, refuse, does)
+        env = {"PATH": f"{wrapper}{os.pathsep}{os.environ['PATH']}", "TMPDIR": str(tmp)}
+        run = run_shim(tmp, ["/bin/sh", "-c", "exit 0"], ["exec", "x"], env=env)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        others = " ".join(netmeasure.OTHER_PORTS)
+        spellings = [
+            line.split(" -4 ", 1)[1].split(f" {others} --", 1)[0]
+            for line in log.read_text().splitlines()
+        ]
+        records = lines(tmp / "codex.jsonl")
+        (start,) = starts(records)
+        (line,) = measurements(records, start["launch_id"])
+        return spellings[:-1], spellings[-1], line
+
+    def test_a_refused_newest_spelling_leaves_the_launch_the_next_one_pasta_starts_with(
+        self,
+    ) -> None:
+        netmeasure = netmeasure_module(self)
+        ordered = [" ".join(s) for s in netmeasure.INBOUND_TCP]
+        tried, given, line = self.launch(refuse=f"*{shlex.quote(ordered[0])}")
+        self.assertEqual(line["method"], "netns-pasta", line)
+        # Newest first, each refused one passed over, stopping at the first
+        # this pasta took: the one the launch then ran with.
+        self.assertEqual(tried, ordered[: len(tried)])
+        self.assertGreaterEqual(len(tried), 2, tried)
+        self.assertEqual(given, tried[-1])
+
+    def test_a_hung_trial_is_cut_off_and_the_launch_is_given_the_next_spelling(self) -> None:
+        netmeasure = netmeasure_module(self)
+        ordered = [" ".join(s) for s in netmeasure.INBOUND_TCP]
+        started = time.monotonic()
+        tried, given, line = self.launch(
+            refuse=f"*{shlex.quote(ordered[0])}", does="exec sleep 600"
+        )
+        # One trial's timeout, not the hang's length.
+        self.assertLess(time.monotonic() - started, netmeasure.TRIAL_TIMEOUT + 60)
+        self.assertEqual(line["method"], "netns-pasta", line)
+        self.assertEqual(tried, ordered[: len(tried)])
+        self.assertGreaterEqual(len(tried), 2, tried)
+        self.assertEqual(given, tried[-1])
+
+    def test_when_every_trial_is_refused_the_launch_is_given_the_oldest_spelling(self) -> None:
+        netmeasure = netmeasure_module(self)
+        ordered = [" ".join(s) for s in netmeasure.INBOUND_TCP]
+        tried, given, line = self.launch(refuse="*")
+        self.assertEqual(tried, ordered)
+        self.assertEqual(given, ordered[-1])
+        # The oldest spelling every pasta knows still measures the launch.
+        self.assertEqual(line["method"], "netns-pasta", line)
+
+
 class MalformedResult(unittest.TestCase):
     @unittest.skipUnless(
         sys.platform.startswith("linux"), "the recorder's namespace path is Linux's"
@@ -819,7 +1182,7 @@ class MalformedResult(unittest.TestCase):
         (fake / "pasta").write_text(
             "#!/usr/bin/env bash\n"
             'while [ "$1" != --_init ]; do shift; done\n'
-            'scratch="$2"; shift 3\n'
+            'scratch="$2"; while [ "$1" != -- ]; do shift; done; shift\n'
             ': >"$scratch/launched"\n'
             '"$@"\n'
             'printf \'{"moved": "garbage"}\' >"$scratch/result.json"\n'
@@ -841,6 +1204,260 @@ class MalformedResult(unittest.TestCase):
         self.assertEqual(list(tmp.glob("oh-netmeasure-*")), [])
 
 
+def confined_pasta(tmp: Path) -> Path:
+    """A directory holding a stand-in for Ubuntu 26.04's confined pasta: it
+    starts only a program whose resolved path is under /usr/bin or /bin
+    (26.04's /usr/bin/env resolves into uutils' /usr/lib/cargo/bin), and drops
+    what a secure exec drops."""
+    confined = tmp / "confined-pasta"
+    confined.mkdir()
+    (confined / "pasta").write_text(
+        "#!/usr/bin/env bash\n"
+        'while [ "$1" != -- ]; do shift; done\n'
+        "shift\n"
+        'case "$1" in\n'
+        "  /usr/bin/env | /bin/env) target=/usr/lib/cargo/bin/coreutils/env ;;\n"
+        '  *) target=$(realpath -- "$(command -v -- "$1")") ;;\n'
+        "esac\n"
+        'case "$target" in\n'
+        "  /usr/bin/* | /bin/*) ;;\n"
+        '  *) echo "Failed to start command or shell: Permission denied" >&2; exit 1 ;;\n'
+        "esac\n"
+        'exec env -u TMPDIR -u LD_LIBRARY_PATH "$@"\n'
+    )
+    (confined / "pasta").chmod(0o755)
+    return confined
+
+
+class ConfinedPasta(unittest.TestCase):
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"), "the recorder's namespace path is Linux's"
+    )
+    def test_a_pasta_confined_to_starting_system_binaries_reaches_the_init_with_its_environment(
+        self,
+    ) -> None:
+        # Ubuntu 26.04's passt confines pasta (`usr.bin.pasta`): it may start
+        # only a program whose resolved path is under /usr/bin or /bin
+        # (`/{usr/,}bin/** Ux`), and that secure exec drops TMPDIR,
+        # LD_LIBRARY_PATH and the like. 26.04's /usr/bin/env is a symlink to
+        # uutils' /usr/lib/cargo/bin/coreutils/env (coreutils-from-uutils), so
+        # pasta refuses it there as it refuses a toolcache python. A stand-in
+        # pasta enforcing all of that must still reach the namespace's init,
+        # which then sees the caller's environment whole.
+        tmp = scratch(self)
+        confined = confined_pasta(tmp)
+        seen = tmp / "init-environment"
+        ran = tmp / "ran"
+        real = tmp / "counting-double"
+        real.write_text(f"#!/usr/bin/env bash\necho run >>{shlex.quote(str(ran))}\n")
+        real.chmod(0o755)
+        file = tmp / "codex.jsonl"
+        kept_library_path = str(tmp / "no-such-library-dir")
+        env = {
+            "PATH": f"{confined}{os.pathsep}{os.environ['PATH']}",
+            "TMPDIR": str(tmp),
+            "LD_LIBRARY_PATH": kept_library_path,
+            # No shell can export this name; it must cross in the environment.
+            "OH_NET.NOT_AN_IDENTIFIER": "kept",
+            # Started by the init before anything needs privilege: what it
+            # sees is the init's own environment.
+            "OH_E2E_NET_OBSERVER": json.dumps(["bash", "-c", 'env >"$0"; echo ready', str(seen)]),
+        }
+        run = run_shim(tmp, [str(real)], ["exec", "x"], file=file, env=env)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(ran.read_text().splitlines(), ["run"], "the launch ran other than once")
+        (start,) = starts(lines(file))
+        (line,) = measurements(lines(file), start["launch_id"])
+        self.assertNotIn("Permission denied", line.get("reason", ""), line)
+        self.assertTrue(seen.exists(), f"pasta never started the namespace's init: {line}")
+        environment = dict(
+            entry.split("=", 1) for entry in seen.read_text().splitlines() if "=" in entry
+        )
+        self.assertEqual(environment.get("TMPDIR"), str(tmp))
+        self.assertEqual(environment.get("LD_LIBRARY_PATH"), kept_library_path)
+        self.assertEqual(environment.get("OH_NET.NOT_AN_IDENTIFIER"), "kept")
+        self.assertFalse(list((tmp / ".pending").glob("*")))
+        self.assertEqual(list(tmp.glob("oh-netmeasure-*")), [])
+
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"), "the recorder's namespace path is Linux's"
+    )
+    def test_the_namespace_bash_runs_no_startup_file_or_inherited_function(self) -> None:
+        # The bash pasta starts runs only the recorder's restore-and-exec: a
+        # caller's $BASH_ENV, or an exported function shadowing the `exec` it
+        # ends in, must not run there. Each acts only in that bash (its -c
+        # string), since every other bash on the way legitimately reads it.
+        for channel in ("BASH_ENV", "BASH_FUNC_exec%%"):
+            with self.subTest(channel):
+                tmp = scratch(self)
+                hijacked = tmp / "hijacked"
+                caller_code = (
+                    "case ${BASH_EXECUTION_STRING:-} in *'export \"$1\"'*) "
+                    f"echo ran >>{shlex.quote(str(hijacked))} ;; esac"
+                )
+                if channel == "BASH_ENV":
+                    startup = tmp / "bash-env"
+                    startup.write_text(caller_code + "\n")
+                    planted = str(startup)
+                else:
+                    planted = "() { " + caller_code + '; builtin exec "$@"; }'
+                real = tmp / "true-double"
+                real.write_text("#!/usr/bin/env bash\nbuiltin exit 0\n")
+                real.chmod(0o755)
+                file = tmp / "codex.jsonl"
+                env = {
+                    "PATH": f"{confined_pasta(tmp)}{os.pathsep}{os.environ['PATH']}",
+                    "TMPDIR": str(tmp),
+                    channel: planted,
+                }
+                run = run_shim(tmp, [str(real)], ["exec", "x"], file=file, env=env)
+                self.assertEqual(run.returncode, 0, run.stderr)
+                (start,) = starts(lines(file))
+                (line,) = measurements(lines(file), start["launch_id"])
+                self.assertNotIn("Permission denied", line.get("reason", ""), line)
+                self.assertFalse(hijacked.exists(), f"the namespace bash ran {channel}'s code")
+
+
+PREFLIGHT = SCRIPTS / "network-recorder-preflight.sh"
+
+
+class LineCase(NamedTuple):
+    """A recorder line file the preflight must refuse, and what it must say."""
+
+    name: str
+    content: str | None  # None: the recorder wrote no file at all
+    expected: str
+
+
+@unittest.skipIf(WINDOWS, "the preflight guards CI's Linux runners")
+class Preflight(unittest.TestCase):
+    def run_preflight(self, path: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [BASH, str(PREFLIGHT), sys.executable],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PATH": path},
+            check=False,
+        )
+
+    def test_it_fails_naming_the_refusal_when_pasta_cannot_start_the_recorder(self) -> None:
+        # What 26.04's confined pasta said to the recorder's toolcache python,
+        # while it still started the bare `true` the old preflight ran.
+        tmp = scratch(self)
+        refusing = tmp / "refusing-pasta"
+        refusing.mkdir()
+        (refusing / "pasta").write_text(
+            "#!/usr/bin/env bash\n"
+            'echo "Failed to start command or shell: Permission denied" >&2\n'
+            "exit 1\n"
+        )
+        (refusing / "pasta").chmod(0o755)
+        run = self.run_preflight(f"{refusing}{os.pathsep}{os.environ['PATH']}")
+        self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+        self.assertIn("the network recorder cannot measure here", run.stderr)
+        self.assertIn("Failed to start command or shell: Permission denied", run.stderr)
+
+    def test_it_fails_naming_each_line_the_recorder_should_never_write(self) -> None:
+        # A python standing in for the recorder's alone, writing CONTENT (or no
+        # file) as its line file: the preflight's own check of that line runs
+        # under the real python, and must name the fault and the next step.
+        by_hand = "by hand and read its stderr"
+        for name, content, expected in (
+            LineCase("no file", None, "left no readable JSON lines"),
+            LineCase("not JSON", "{not json\n", "left no readable JSON lines"),
+            LineCase("no line", "", "wrote 0 lines for one launch, not 1"),
+            LineCase("two lines", '{"a": 1}\n{"a": 2}\n', "wrote 2 lines for one launch, not 1"),
+            LineCase("not an object", '["netns-pasta"]\n', "is not a JSON object: ['netns-pasta']"),
+            LineCase(
+                "no reason",
+                '{"method": "unavailable"}\n',
+                "cannot measure here: it recorded method 'unavailable' without a reason",
+            ),
+        ):
+            with self.subTest(name):
+                tmp = scratch(self)
+                write = "" if content is None else f"  printf '%s' {shlex.quote(content)} >\"$4\"\n"
+                python = tmp / "python"
+                python.write_text(
+                    "#!/usr/bin/env bash\n"
+                    'if [ "${2##*/}" = e2e-netmeasure.py ]; then  # -I SCRIPT --line-file FILE\n'
+                    f"{write}"
+                    "  exit 0\n"
+                    "fi\n"
+                    f'exec {shlex.quote(sys.executable)} "$@"\n'
+                )
+                python.chmod(0o755)
+                run = subprocess.run(
+                    [BASH, str(PREFLIGHT), str(python)],
+                    capture_output=True,
+                    text=True,
+                    env={**os.environ, "TMPDIR": str(tmp)},
+                    check=False,
+                )
+                self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+                self.assertIn(expected, run.stderr)
+                self.assertIn(by_hand, run.stderr)
+                self.assertNotIn("Traceback", run.stderr)
+                self.assertEqual(list(tmp.glob("oh-net-preflight-*")), [], "scratch was left")
+
+    def test_it_fails_naming_scratch_space_it_cannot_create(self) -> None:
+        tmp = scratch(self)
+        run = subprocess.run(
+            [BASH, str(PREFLIGHT), sys.executable],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "TMPDIR": str(tmp / "missing")},
+            check=False,
+        )
+        self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+        self.assertIn(f"cannot create scratch space under {tmp / 'missing'}", run.stderr)
+
+    def test_it_fails_naming_an_interpreter_it_cannot_run(self) -> None:
+        missing = scratch(self) / "no-such-python"
+        run = subprocess.run(
+            [BASH, str(PREFLIGHT), str(missing)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+        self.assertIn(f"cannot run the interpreter `{missing}`", run.stderr)
+        self.assertIn("pass a working one as the first argument", run.stderr)
+
+    def test_it_fails_naming_the_exit_of_a_recorder_that_does_not_finish(self) -> None:
+        tmp = scratch(self)
+        python = tmp / "python"
+        python.write_text(
+            "#!/usr/bin/env bash\n"
+            'if [ "${2##*/}" = e2e-netmeasure.py ]; then echo "recorder broke" >&2; exit 3; fi\n'
+            f'exec {shlex.quote(sys.executable)} "$@"\n'
+        )
+        python.chmod(0o755)
+        run = subprocess.run(
+            [BASH, str(PREFLIGHT), str(python)],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "TMPDIR": str(tmp)},
+            check=False,
+        )
+        self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+        self.assertIn("recorder broke", run.stderr)
+        self.assertIn("the recorder launch of `true` exited 3", run.stderr)
+        self.assertIn("by hand and read its stderr", run.stderr)
+        self.assertEqual(list(tmp.glob("oh-net-preflight-*")), [], "scratch was left")
+
+    def test_it_fails_where_there_is_no_pasta(self) -> None:
+        run = self.run_preflight(path_without(scratch(self), "pasta"))
+        self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+        self.assertIn("the network recorder cannot measure here: no pasta on PATH", run.stderr)
+
+    def test_it_passes_where_the_recorder_measures_a_launch_in_the_namespace(self) -> None:
+        need_recorder(self)
+        run = self.run_preflight(os.environ["PATH"])
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIn("measured a launch in pasta's namespace", run.stdout)
+
+
 class Unstarted(unittest.TestCase):
     def test_an_observer_that_never_reports_ready_falls_back_to_running_the_launch_once(
         self,
@@ -851,7 +1468,7 @@ class Unstarted(unittest.TestCase):
         tmp = scratch(self)
         ran = tmp / "ran"
         real = tmp / "counting-double"
-        real.write_text(f'#!/usr/bin/env bash\necho run >>"{ran}"\n')
+        real.write_text(f"#!/usr/bin/env bash\necho run >>{shlex.quote(str(ran))}\n")
         real.chmod(0o755)
         file = tmp / "codex.jsonl"
         run = run_shim(
@@ -882,6 +1499,9 @@ class Unstarted(unittest.TestCase):
         sys.platform.startswith("linux"), "the recorder's namespace path is Linux's"
     )
     def test_a_pasta_that_cannot_be_spawned_falls_back_to_running_the_launch_once(self) -> None:
+        # Every inbound-TCP trial (`inbound_tcp`) fails to spawn first, so this
+        # is also the supervisor's recovery from unspawnable trials: it goes on
+        # to the launch, whose own spawn failure runs it directly, once.
         tmp = scratch(self)
         unspawnable = tmp / "unspawnable-pasta"
         unspawnable.mkdir()
@@ -889,7 +1509,7 @@ class Unstarted(unittest.TestCase):
         (unspawnable / "pasta").chmod(0o755)
         ran = tmp / "ran"
         real = tmp / "counting-double"
-        real.write_text(f'#!/usr/bin/env bash\necho run >>"{ran}"\n')
+        real.write_text(f"#!/usr/bin/env bash\necho run >>{shlex.quote(str(ran))}\n")
         real.chmod(0o755)
         file = tmp / "codex.jsonl"
         env = {"PATH": f"{unspawnable}{os.pathsep}{os.environ['PATH']}", "TMPDIR": str(tmp)}

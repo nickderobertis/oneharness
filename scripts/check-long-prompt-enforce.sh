@@ -35,8 +35,9 @@ launch() {
 }
 if [ "$1" = list ]; then launch "$@"; fi
 jq -cn --args '$ARGS.positional' -- "$@" >>"$OH_LONG_RECORD" || { echo "cannot append $OH_LONG_RECORD; check jq, disk space and permissions" >&2; exit 1; }
+control=""
 for arg in "$@"; do
-  if [ "$arg" = --control ]; then export MOCK_ACP_LOG="$OH_LONG_WIRE" MOCK_ACP_COMPLETE_TURN=1; fi
+  if [ "$arg" = --control ]; then control=1; fi
 done
 verb="$1"
 shift
@@ -51,12 +52,36 @@ for ((i=0; i<${#args[@]}; i++)); do
     jq -Rs . "${args[$((i + 1))]}" >>"$OH_LONG_SYSTEMS" || { echo "cannot capture system file; inspect jq and file permissions" >&2; exit 1; }
   fi
   if [ "${args[$i]}" = --batch-strategy ] && [ -n "${MOCK_LONG_BATCH_OMIT_SYSTEM:-}" ]; then export MOCK_LONG_OMIT_SYSTEM=1; fi
+  if [ "${args[$i]}" = --schema ] && [ -n "${MOCK_LONG_STRUCTURED_LOG_OMIT_SYSTEM:-}" ]; then export MOCK_LONG_LOG_OMIT_SYSTEM=1; fi
+  if [ "${args[$i]}" = --batch-strategy ] && [ -n "${MOCK_LONG_BATCH_LOG_OMIT_SYSTEM:-}" ]; then export MOCK_LONG_LOG_OMIT_SYSTEM=1; fi
 done
+# OpenCode is controlled over HTTP; the others in these cases over ACP.
+if [ -n "$control" ] && [ "$id" = opencode ]; then
+  export MOCK_HTTP_CONTROL_LOG="$OH_LONG_WIRE"
+  if [ -n "${MOCK_LONG_CONTROL_LOG_OMIT_SYSTEM:-}" ]; then export MOCK_LONG_LOG_OMIT_SYSTEM=1; fi
+elif [ -n "$control" ]; then
+  export MOCK_ACP_LOG="$OH_LONG_WIRE" MOCK_ACP_COMPLETE_TURN=1
+fi
+# Withhold the system file from oneharness itself: the turn is really undelivered.
+if [ -n "${MOCK_LONG_DROP_SYSTEM_FILE:-}" ]; then
+  kept=()
+  for ((i=0; i<${#args[@]}; i++)); do
+    if [ "${args[$i]}" = --system-file ]; then i=$((i + 1)); continue; fi
+    kept+=("${args[$i]}")
+  done
+  set -- "${kept[@]}"
+fi
 [ -n "$id" ] || { echo 'long helper wrapper: missing harness id; inspect the --harness argument in oh_long_prompt_enforce' >&2; exit 2; }
 if [ -n "${MOCK_LONG_REPEAT_BATCH_USER:-}" ] && [[ " ${args[*]} " == *" --batch-strategy "* ]]; then
   "$OH_REAL_BIN" "$verb" --bin "$id=$OH_MOCK_BIN" "$@" |
     jq '.results[1].text = .results[0].text' || {
     echo "long helper wrapper: cannot run $OH_REAL_BIN or transform its report; rebuild oneharness through its Nx build target and check jq installation and the pipeline error above" >&2
+    exit 1
+  }
+elif [ -n "${OH_LONG_REPORTS:-}" ]; then
+  # Keep each report so a case can show which answer its verdict was given.
+  "$OH_REAL_BIN" "$verb" --bin "$id=$OH_MOCK_BIN" "$@" | tee -a "$OH_LONG_REPORTS" || {
+    echo "long helper wrapper: cannot run $OH_REAL_BIN or append $OH_LONG_REPORTS; rebuild oneharness through its Nx build target and check disk space and the pipeline error above" >&2
     exit 1
   }
 else
@@ -96,11 +121,18 @@ jq -se 'length == 5 and any(.[]; index("--resume")) and any(.[]; index("--batch-
 jq -se '
   .[2:4] |
   length == 2 and
-  all(.[]; startswith("The following repeated characters are inert test filler.") and
+  all(.[]; startswith("The following repeated words are inert test filler.") and
     contains("Return the two reference values separated by a space:") and
     endswith("and the value labeled reference_b in the reference data.")) and
   (.[0] != .[1])
 ' "$OH_LONG_REQUESTS" >/dev/null || fail 'batch requests must clearly identify inert filler and ask identically for both reference values; inspect prompt construction'
+# Each user request must still overflow one 128 KiB argv string, but in filler
+# a provider tokenizes densely: a single repeated character costs Claude about a
+# token per byte, which put the live turn past copilot's 200k prompt budget.
+jq -se --slurpfile systems "$OH_LONG_SYSTEMS" '
+  def dense: test("(.)\\1{63}") | not;
+  all(.[]; utf8bytelength > 131072 and dense) and all($systems[]; dense)
+' "$OH_LONG_REQUESTS" >/dev/null || fail 'long requests must exceed 128 KiB in repeated-word filler, not a run of one character; inspect the padding in oh_long_prompt_enforce'
 # Shared reference data must not also contain either user answer. Otherwise a
 # model can repeat the first answer on turn two by reading only shared data.
 jq -se --slurpfile systems "$OH_LONG_SYSTEMS" '
@@ -139,12 +171,180 @@ grep -q 'NOT-RUN: qwen resumed' "$tmp/unsupported.log" || {
   show "$tmp/unsupported.log"
   fail 'missing explicit resumed NOT-RUN; inspect the absent-handle branch'
 }
+# Qwen's verdict is read from the model request it records with
+# --openai-logging-dir, so every turn must ask it for that record.
+jq -se 'length == 3 and all(.[]; index("--openai-logging-dir") != null)' "$OH_LONG_RECORD" >/dev/null || {
+  show "$OH_LONG_RECORD"
+  fail 'expected every Qwen turn to record its model request with --openai-logging-dir; inspect request_args in oh_long_prompt_enforce'
+}
 # Reproduce the observed Qwen model answer while retaining real isolated child
 # requests: only the report text is changed after the built CLI completes.
 MOCK_LONG_REPEAT_BATCH_USER=1 bash -c 'set -euo pipefail; source "$1/scripts/e2e-lib.sh"; oh_long_prompt_enforce qwen' _ "$root" >"$tmp/qwen-repeat.log" 2>&1 || {
   show "$tmp/qwen-repeat.log"
   fail 'Qwen batch depended on its second model echo despite deterministic isolation proof'
 }
+qwen_long() {
+  local log="$1"
+  shift
+  local pair seen=" "
+  for pair in "$@"; do
+    # A repeated name would silently replace the earlier fixture.
+    [[ "$seen" != *" ${pair%%=*} "* ]] || fail "qwen_long given ${pair%%=*} twice; each case must set a fixture once"
+    seen+="${pair%%=*} "
+  done
+  (
+    for pair in "$@"; do export "${pair?}"; done
+    bash -c 'set -euo pipefail; source "$1/scripts/e2e-lib.sh"; oh_long_prompt_enforce qwen' _ "$root" >"$log" 2>&1
+  )
+}
+# Delivered turns pass whatever the reply restates or omits; the answers Qwen
+# gave on CI were "reference_b = <marker>.", "reference_a reference_b" and
+# {"system":"reference_b"}. Each case also proves its recorded answer is the one
+# the verdict was given: $1 matches the ordinary reply, $2 the structured system.
+expect_qwen_delivered() {
+  local ordinary="$1" structured="$2"
+  shift 2
+  : >"$tmp/reports.jsonl" || fail "cannot reset $tmp/reports.jsonl; check disk space and permissions"
+  OH_LONG_REPORTS="$tmp/reports.jsonl" qwen_long "$tmp/qwen-delivered.log" "$@" || {
+    show "$tmp/qwen-delivered.log"
+    fail "Qwen rejected a delivered system prompt because of how it answered ($*); its verdict must come from the recorded request"
+  }
+  grep -q 'PASS: qwen receipt in \[ordinary batch structured\]' "$tmp/qwen-delivered.log" || {
+    show "$tmp/qwen-delivered.log"
+    fail "Qwen delivered case ($*) did not verify all three journeys"
+  }
+  jq -se --arg ordinary "$ordinary" --arg structured "$structured" '
+    length == 3 and
+    (.[0].results[0].text | rtrimstr("\n") | test($ordinary)) and
+    (.[2].results[0].structured.system | test($structured))
+  ' "$tmp/reports.jsonl" >/dev/null || {
+    show "$tmp/reports.jsonl"
+    fail "Qwen delivered case ($*) was not given the answer it names (ordinary /$ordinary/, structured system /$structured/); inspect the mock fixture variables"
+  }
+}
+marker_re='ONEHARNESS-LIVE-[0-9]+'
+expect_qwen_delivered "^$marker_re SYSTEM$marker_re\$" "^reference_b = SYSTEM${marker_re}[.]\$" 'MOCK_LONG_STRUCTURED_SYSTEM=reference_b = {}.'
+expect_qwen_delivered "^$marker_re SYSTEM$marker_re\$" '^reference_b$' 'MOCK_LONG_STRUCTURED_SYSTEM=reference_b'
+expect_qwen_delivered "^reference_b = SYSTEM${marker_re}[.]\$" "^SYSTEM$marker_re\$" 'MOCK_LONG_TEXT=reference_b = {}.'
+expect_qwen_delivered '^reference_a reference_b$' "^SYSTEM$marker_re\$" 'MOCK_LONG_TEXT=reference_a reference_b'
+# A system prompt missing from the recorded request fails whatever the reply
+# says: restating the marker or omitting it, in ordinary and in structured.
+expect_qwen_failure() {
+  local journey="$1" problem="$2"
+  shift 2
+  if qwen_long "$tmp/qwen-undelivered.log" "$@"; then
+    show "$tmp/qwen-undelivered.log"
+    fail "Qwen accepted an undelivered system prompt ($*); restore the recorded-request receipt check"
+  fi
+  if ! grep -q "qwen/$journey: prompt/system receipt or off-argv delivery failed" "$tmp/qwen-undelivered.log" ||
+    ! grep -q "$problem" "$tmp/qwen-undelivered.log"; then
+    show "$tmp/qwen-undelivered.log"
+    fail "Qwen undelivered case ($*) failed outside qwen/$journey or for another reason than: $problem"
+  fi
+}
+expect_qwen_failure ordinary 'system marker missing from every recorded model request' MOCK_LONG_LOG_OMIT_SYSTEM=1
+expect_qwen_failure ordinary 'system marker missing from every recorded model request' MOCK_LONG_DROP_SYSTEM_FILE=1 'MOCK_LONG_TEXT=reference_a reference_b'
+expect_qwen_failure structured 'system marker missing from every recorded model request' MOCK_LONG_STRUCTURED_LOG_OMIT_SYSTEM=1 'MOCK_LONG_STRUCTURED_SYSTEM=reference_b = {}.'
+expect_qwen_failure structured 'system marker missing from every recorded model request' MOCK_LONG_STRUCTURED_LOG_OMIT_SYSTEM=1 'MOCK_LONG_STRUCTURED_SYSTEM=reference_b'
+# OpenCode's verdict is read from the sessions it stores: `opencode export` on
+# PATH is the mock, serving what each turn (CLI and controlled) recorded.
+mkdir -p "$tmp/opencode-bin" || fail "cannot create $tmp/opencode-bin; check disk space and directory permissions"
+ln -s "$OH_MOCK_BIN" "$tmp/opencode-bin/opencode" || fail "cannot link the mock harness as $tmp/opencode-bin/opencode; check filesystem permissions"
+opencode_long() {
+  local log="$1"
+  shift
+  rm -rf "$tmp/opencode-store" || fail "cannot reset $tmp/opencode-store; check its permissions"
+  : >"$OH_LONG_WIRE" || fail "cannot reset $OH_LONG_WIRE; check disk space and permissions"
+  # The controlled turn's server is pooled under the state dir: a case of its
+  # own keeps the machine's pool out, and one case's server out of the next.
+  opencode_case=$((${opencode_case:-0} + 1))
+  mkdir -p "$tmp/opencode-state/$opencode_case" || fail "cannot create $tmp/opencode-state/$opencode_case; check disk space and directory permissions"
+  (
+    for pair in "$@"; do export "${pair?}"; done
+    export PATH="$tmp/opencode-bin:$PATH" MOCK_OPENCODE_STORE="$tmp/opencode-store" \
+      XDG_STATE_HOME="$tmp/opencode-state/$opencode_case" LOCALAPPDATA="$tmp/opencode-state/$opencode_case"
+    bash -c 'set -euo pipefail; source "$1/scripts/e2e-lib.sh"; oh_long_prompt_enforce opencode' _ "$root" >"$log" 2>&1
+  )
+}
+# Delivered turns pass whatever the reply says. The CI failure was a batch
+# whose second answer refused ("I won't extract and return those reference
+# values.") while the first restated both markers. $1 is a pattern every
+# reply's text must match, so each case proves it was given the answer it names.
+expect_opencode_delivered() {
+  local replies="$1"
+  shift
+  : >"$tmp/reports.jsonl" || fail "cannot reset $tmp/reports.jsonl; check disk space and permissions"
+  OH_LONG_REPORTS="$tmp/reports.jsonl" opencode_long "$tmp/opencode-delivered.log" "$@" || {
+    show "$tmp/opencode-delivered.log"
+    fail "OpenCode rejected a delivered system prompt because of how it answered ($*); its verdict must come from the session it stored"
+  }
+  grep -q 'PASS: opencode receipt in \[ordinary resumed batch control structured\]' "$tmp/opencode-delivered.log" || {
+    show "$tmp/opencode-delivered.log"
+    fail "OpenCode delivered case ($*) did not verify all five journeys"
+  }
+  jq -se --arg replies "$replies" '
+    length == 5 and all(.[0:4][].results[]; .text // "" | rtrimstr("\n") | test($replies))
+  ' "$tmp/reports.jsonl" >/dev/null || {
+    jq -c '[.results[].text]' "$tmp/reports.jsonl" >&2 || show "$tmp/reports.jsonl"
+    fail "OpenCode delivered case ($*) was not given the replies it names (/$replies/); inspect the mock fixture variables"
+  }
+  grep -q 'session.next.text.ended' "$OH_LONG_WIRE" 2>/dev/null || grep -q 'POST /api/session/ses_mock/prompt' "$OH_LONG_WIRE" || {
+    show "$OH_LONG_WIRE"
+    fail "OpenCode delivered case ($*) never submitted its controlled turn to the HTTP server"
+  }
+}
+expect_opencode_delivered "^$marker_re SYSTEM$marker_re\$|^SECOND$marker_re SYSTEM$marker_re\$"
+expect_opencode_delivered '^ ?$' MOCK_LONG_OMIT_SYSTEM=1 MOCK_LONG_OMIT_USER=1
+expect_opencode_delivered "^I won't extract and return those reference values[.]\$" "MOCK_LONG_TEXT=I won't extract and return those reference values."
+expect_opencode_delivered "^($marker_re|SECOND$marker_re) (SYSTEM$marker_re)?\$" MOCK_LONG_BATCH_OMIT_SYSTEM=1
+# A system prompt missing from the stored session fails whatever the reply
+# says, in each journey that stores its own turn.
+expect_opencode_failure() {
+  local journey="$1"
+  shift
+  if opencode_long "$tmp/opencode-undelivered.log" "$@"; then
+    show "$tmp/opencode-undelivered.log"
+    fail "OpenCode accepted an undelivered system prompt ($*); restore the stored-session receipt check"
+  fi
+  if ! grep -q "opencode/$journey: prompt/system receipt or off-argv delivery failed" "$tmp/opencode-undelivered.log" ||
+    ! grep -q 'system marker missing from every recorded model request' "$tmp/opencode-undelivered.log"; then
+    show "$tmp/opencode-undelivered.log"
+    fail "OpenCode undelivered case ($*) failed outside opencode/$journey or for another reason than a stored session without the system marker"
+  fi
+}
+expect_opencode_failure ordinary MOCK_LONG_LOG_OMIT_SYSTEM=1
+expect_opencode_failure ordinary MOCK_LONG_DROP_SYSTEM_FILE=1 'MOCK_LONG_TEXT=reference_a reference_b'
+expect_opencode_failure batch MOCK_LONG_BATCH_LOG_OMIT_SYSTEM=1
+expect_opencode_failure control MOCK_LONG_CONTROL_LOG_OMIT_SYSTEM=1
+expect_opencode_failure structured MOCK_LONG_STRUCTURED_LOG_OMIT_SYSTEM=1
+# A turn whose stored session cannot be read fails closed with the reason on
+# stderr, and gives its scratch space back: no record is never a delivery.
+#   $1 the verdict's reason; $2 a diagnostic it must also carry ("" for none)
+expect_opencode_unread() {
+  local reason="$1" detail="$2" left
+  shift 2
+  { rm -rf "$tmp/opencode-tmp" && mkdir "$tmp/opencode-tmp"; } || fail "cannot reset $tmp/opencode-tmp; check its permissions"
+  if opencode_long "$tmp/opencode-unread.log" "TMPDIR=$tmp/opencode-tmp" "$@"; then
+    show "$tmp/opencode-unread.log"
+    fail "OpenCode accepted a turn whose stored session it could not read ($*); its receipt must fail closed"
+  fi
+  if ! grep -q 'opencode/ordinary: ' "$tmp/opencode-unread.log" || ! grep -qF -- "$reason" "$tmp/opencode-unread.log" ||
+    ! grep -qF -- "$detail" "$tmp/opencode-unread.log"; then
+    show "$tmp/opencode-unread.log"
+    fail "OpenCode unread-session case ($*) failed without its reason ($reason; $detail) on opencode/ordinary"
+  fi
+  left="$(ls -A "$tmp/opencode-tmp")" || fail "cannot list $tmp/opencode-tmp; check its permissions"
+  if [ -n "$left" ]; then
+    ls -AR "$tmp/opencode-tmp" >&2 || true
+    fail "OpenCode unread-session case ($*) left its scratch space behind; drop the sandbox before aborting"
+  fi
+}
+export_failed='cannot export the sessions this turn stored'
+expect_opencode_unread 'no model request recorded for this turn' '' MOCK_OPENCODE_SESSION_ID=
+expect_opencode_unread 'no model request recorded for this turn' '' 'MOCK_OPENCODE_SESSION_ID=../ses_x; rm'
+expect_opencode_unread "$export_failed" 'Error: mock export refused ses_' MOCK_OPENCODE_EXPORT=fail
+expect_opencode_unread "$export_failed" 'parse error: ' MOCK_OPENCODE_EXPORT=malformed
+expect_opencode_unread "$export_failed" 'Session not found: ses_elsewhere' MOCK_OPENCODE_SESSION_ID=ses_elsewhere
 if MOCK_LONG_REPEAT_BATCH_USER=1 bash -c 'set -euo pipefail; source "$1/scripts/e2e-lib.sh"; oh_long_prompt_enforce goose' _ "$root" >"$tmp/goose-repeat.log" 2>&1; then
   fail 'second-marker relaxation escaped the Qwen batch case'
 fi

@@ -36,9 +36,22 @@ Output: one line per probe
 
     harness | mechanism | probe | requested | decision | ran | fs-changed | verdict
 
-`verdict` is `ran` / `refused` for what the harness did, `NOT-REFUSED` when a
-refusal probe changed something, and `inconclusive` when the call never
-reached the harness's decision or failed for some other reason.
+`requested` is `requested(verbatim)` when the call the harness recorded
+carries the intended command unaltered, `requested(ALTERED)` when a model
+rewrote it (that probe's verdict is then `inconclusive(call altered)`), and
+`NOT-requested` when no call reached the harness. `decision` is the harness's
+own answer to the call: `allowed`, `denied` (its permission layer refused,
+with its message), `sandboxed` (Codex ran it inside the read-only sandbox,
+which refused the write, with the OS error), or `error`. `verdict` is `ran` /
+`refused` / `refused(sandbox)` for what the harness did, `allowed` for a
+permitted read-only tool call, `NOT-REFUSED` when a refusal probe changed a
+file the probe controls, and `inconclusive` when the call never reached the
+harness's decision or failed for some other reason. Lines starting `#` name
+each mechanism's exact flags/configuration.
+
+`--model real` needs each harness's own stored credentials (Claude Code
+~/.claude, Codex ~/.codex/auth.json, OpenCode ~/.local/share/opencode/auth.json)
+and skips, with a `#` line, a harness that has none.
 """
 
 from __future__ import annotations
@@ -878,6 +891,30 @@ def parse_opencode(lines: list[dict], sub: bool, env: dict[str, str]) -> Observe
     return Observed(True, "none", desc)
 
 
+def requested_input(harness: str, events: list[dict], env: dict[str, str], sub: bool) -> str:
+    """The input of the principal call exactly as the harness recorded it."""
+    if harness == "claude-code":
+        uses = [(b, ev.get("parent_tool_use_id")) for ev in events if ev.get("type") == "assistant"
+                for b in (ev.get("message") or {}).get("content") or []
+                if isinstance(b, dict) and b.get("type") == "tool_use"]
+        pick = [b for b, parent in uses if (parent is not None) == sub] or [b for b, _ in uses]
+        return json.dumps(pick[0].get("input")) if pick else ""
+    if harness == "codex":
+        items = [r.get("payload") or {} for r in codex_rollout(events, env) if r.get("type") == "response_item"]
+        calls = [i for i in items if i.get("type") in ("function_call", "custom_tool_call", "local_shell_call")]
+        return str(calls[0].get("arguments") or calls[0].get("input") or "") if calls else ""
+    tools = [ev.get("part") or {} for ev in events if ev.get("type") == "tool_use"]
+    return json.dumps((tools[0].get("state") or {}).get("input")) if tools else ""
+
+
+def verbatim(call: Call, recorded: str) -> bool:
+    """Whether the recorded input carries the intended command (or path/prompt) unaltered."""
+    want = {"shell": call.cmd, "task": (_sub_call(call.prompt).cmd if _sub_call(call.prompt) else call.prompt)}.get(
+        call.kind, call.path)
+    forms = {want, json.dumps(want)[1:-1], json.dumps(json.dumps(want)[1:-1])[1:-1]}
+    return any(f and f in recorded for f in forms)
+
+
 def subagent_obs(log: list[dict]) -> str:
     subs = [x for x in log if x["role"] == "subagent"]
     if not subs:
@@ -902,6 +939,8 @@ class Result:
     verdict: str
     seconds: float
     model: str
+    requested_input: str = ""
+    verbatim: bool = False
 
 
 def run_probe(harness: str, mech: str, probe: Probe, e: Env, d: Path, argv_fn, env_fn, state: ServerState,
@@ -941,6 +980,8 @@ def run_probe(harness: str, mech: str, probe: Probe, e: Env, d: Path, argv_fn, e
         obs.message += " | " + subagent_obs(state.log)
     if not obs.requested and stderr == "TIMEOUT":
         obs.message = "turn timed out; " + obs.message
+    rec_in = requested_input(harness, events, env, probe.sub and harness == "claude-code")
+    exact = verbatim(calls[0], rec_in) if obs.requested else False
     srec, sjunk = new_records(e.standin_log, s_before)
     orec, ojunk = new_records(e.other_log, o_before)
     snap_after = snapshot([wt, e.root / "outside"])
@@ -954,8 +995,10 @@ def run_probe(harness: str, mech: str, probe: Probe, e: Env, d: Path, argv_fn, e
         changed.append("channel log written by something other than the executable")
     ran = bool(srec)
     verdict = classify(probe, obs, srec, orec, changed)
+    if obs.requested and not exact and verdict != "NOT-REFUSED":
+        verdict = "inconclusive(call altered)"
     return Result(harness, mech, probe.id, probe.expect, obs.requested, obs.decision, _short(obs.message, 400),
-                  ran, srec, orec, changed, verdict, round(secs, 1), model)
+                  ran, srec, orec, changed, verdict, round(secs, 1), model, rec_in, exact)
 
 
 def classify(probe: Probe, obs: Observed, srec: list, orec: list, changed: list[str]) -> str:
@@ -1142,7 +1185,7 @@ DRIVERS = {"claude-code": drive_claude, "codex": drive_codex, "opencode": drive_
 
 
 def line(r: Result) -> str:
-    req = "requested" if r.requested else "NOT-requested"
+    req = ("requested" + ("(verbatim)" if r.verbatim else "(ALTERED)")) if r.requested else "NOT-requested"
     dec = r.decision if r.decision in ("allowed", "none") else f"{r.decision}: {_short(r.message, 150)}"
     if r.decision == "allowed":
         dec = f"allowed: {_short(r.message, 110)}"

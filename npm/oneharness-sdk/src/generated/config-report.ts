@@ -325,7 +325,8 @@ export interface SyncPolicyReport {
   allowed_tools: Field2;
   denied_tools: Field2;
   /**
-   * Per-harness sync policy (`[sync.harness.<id>]`), with provenance.
+   * Per-harness sync policy (`[sync.harness.<id>]`), with provenance,
+   * keyed by the registry's id.
    */
   harness: {
     [k: string]: SyncHarnessPolicyReport;

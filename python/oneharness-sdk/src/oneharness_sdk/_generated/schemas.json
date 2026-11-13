@@ -816,7 +816,7 @@
             "additionalProperties": {
               "$ref": "#/$defs/SyncHarnessPolicyReport"
             },
-            "description": "Per-harness sync policy (`[sync.harness.<id>]`), with provenance.",
+            "description": "Per-harness sync policy (`[sync.harness.<id>]`), with provenance,\nkeyed by the registry's id.",
             "type": "object"
           },
           "hooks": {

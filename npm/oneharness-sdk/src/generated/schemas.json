@@ -18346,7 +18346,7 @@
             "$ref": "#/$defs/Field2"
           },
           "harness": {
-            "description": "Per-harness sync policy (`[sync.harness.<id>]`), with provenance.",
+            "description": "Per-harness sync policy (`[sync.harness.<id>]`), with provenance,\nkeyed by the registry's id.",
             "type": "object",
             "additionalProperties": {
               "$ref": "#/$defs/SyncHarnessPolicyReport"

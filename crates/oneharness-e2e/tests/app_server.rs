@@ -5820,6 +5820,32 @@ impl ControlSuite {
         ControlSuite { pool }
     }
 
+    /// The suite's environment for running `oneharness` behind a wrapper
+    /// that runs `prelude` before exec'ing the real binary. The binary and
+    /// the wrapper's own scratch path (`OH_STAGED_SEEN`) arrive in the
+    /// wrapper's environment, so no path is ever spelled as shell source.
+    fn staged(&self, prelude: &str) -> Vec<(&'static str, String)> {
+        let wrapper = self.pool.path("bin/oneharness-staged");
+        std::fs::write(
+            &wrapper,
+            format!("#!/usr/bin/env bash\n{prelude}\nexec \"$OH_STAGED_REAL_BIN\" \"$@\"\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            &wrapper,
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        vec![
+            ("ONEHARNESS_BIN", wrapper.display().to_string()),
+            ("OH_STAGED_REAL_BIN", oneharness_bin().display().to_string()),
+            (
+                "OH_STAGED_SEEN",
+                self.pool.path("seen").display().to_string(),
+            ),
+        ]
+    }
+
     fn run(&self, envs: &[(&str, &str)]) -> Output {
         let pool = &self.pool;
         let path = format!(
@@ -5964,7 +5990,7 @@ fn the_control_suite_s_pooled_phases_pass_and_fail_for_the_right_reason() {
     }
 }
 
-// llmlint: ignore-block[e2e_not_mocked] The control suite's pooled-env phase runs for real — scripts/e2e-control.sh, the built oneharness behind a wrapper that only starts dispatch B late (or once dispatch A has ended) or occupies dispatch A's arrival path before exec'ing it, and oneharness-core's pool; only codex is the repository's subprocess double, as in every ControlSuite journey, because the gate cannot run real Codex. The same phase against real Codex is scripts/e2e-control.sh's live run.
+// llmlint: ignore-block[e2e_not_mocked] The control suite's pooled-env phase runs for real — scripts/e2e-control.sh, the built oneharness behind a wrapper that only starts dispatch B late (or once dispatch A has ended) or occupies the arrivals' directory before exec'ing it, and oneharness-core's pool; only codex is the repository's subprocess double, as in every ControlSuite journey, because the gate cannot run real Codex. The same phase against real Codex is scripts/e2e-control.sh's live run.
 /// The suite's pooled-env dispatches share one server however late the
 /// second of them starts — here only once the first's command is already
 /// running, and then later than the old fixed eight-second rendezvous allowed,
@@ -5991,7 +6017,7 @@ fn the_control_suite_s_pooled_env_shares_one_server_when_one_dispatch_starts_lat
             // up, as a starved scheduler can. The verdict is the same pass.
             "pool-suite-late",
             None,
-            r#"case " $* " in *" --session pooled-env-a "*) "$OH_STAGED_REAL_BIN" "$@" >"$OH_STAGED_SEEN.a-report"; s=$?; cat "$OH_STAGED_SEEN.a-report"; : >"$OH_STAGED_SEEN.a-done"; exit "$s" ;; *" --session pooled-env-b "*) for ((i = 1; i < $#; i++)); do [ "${!i}" = --session-dir ] && { j=$((i + 1)); here="$(dirname "${!j}")/env-a.here"; }; done; gone() { [ -e "$OH_STAGED_SEEN.a-done" ] && pid="$(jq -r '.control.app_server.pid // empty' "$OH_STAGED_SEEN.a-report")" && ! { [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; }; }; n=0; until [ -e "$here" ] || gone; do [ "$n" -lt 1200 ] || { echo "dispatch A neither arrived nor ended with its server reclaimed" >&2; exit 1; }; sleep 0.1; n=$((n + 1)); done; sleep 12 ;; esac"#,
+            r#"case " $* " in *" --session pooled-env-a "*) "$OH_STAGED_REAL_BIN" "$@" >"$OH_STAGED_SEEN.a-report"; s=$?; cat "$OH_STAGED_SEEN.a-report"; : >"$OH_STAGED_SEEN.a-done"; exit "$s" ;; *" --session pooled-env-b "*) for ((i = 1; i < $#; i++)); do [ "${!i}" = --session-dir ] && { j=$((i + 1)); meet="$(dirname "${!j}")/meet"; }; done; gone() { [ -e "$OH_STAGED_SEEN.a-done" ] && pid="$(jq -r '.control.app_server.pid // empty' "$OH_STAGED_SEEN.a-report")" && ! { [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; }; }; n=0; until [ -n "$(ls -A "$meet")" ] || gone; do [ "$n" -lt 1200 ] || { echo "dispatch A neither arrived nor ended with its server reclaimed" >&2; exit 1; }; sleep 0.1; n=$((n + 1)); done; sleep 12 ;; esac"#,
             None,
             "ok: each pooled dispatch saw only its own variable, both on server",
         ),
@@ -6017,9 +6043,10 @@ fn the_control_suite_s_pooled_env_shares_one_server_when_one_dispatch_starts_lat
         (
             "pool-suite-unwritable",
             None,
-            // A directory where dispatch A's arrival file goes, beside its
-            // session store, which no `: >` can create.
-            r#"case " $* " in *" --session pooled-env-a "*) set -- "$@"; for ((i = 1; i < $#; i++)); do [ "${!i}" = --session-dir ] && { j=$((i + 1)); mkdir -p "$(dirname "${!j}")/env-a.here"; }; done ;; esac"#,
+            // A file where the arrivals' directory goes, beside the session
+            // store, so no arrival can be created in it; B starts only once A
+            // has put it there, so neither can have arrived before.
+            r#"case " $* " in *" --session pooled-env-a "*) for ((i = 1; i < $#; i++)); do [ "${!i}" = --session-dir ] && { j=$((i + 1)); meet="$(dirname "${!j}")/meet"; rmdir "$meet" && : >"$meet" && : >"$OH_STAGED_SEEN.a-broke" || exit 1; }; done ;; *" --session pooled-env-b "*) n=0; until [ -e "$OH_STAGED_SEEN.a-broke" ]; do [ "$n" -lt 1200 ] || { echo "dispatch A never replaced the arrivals' directory" >&2; exit 1; }; sleep 0.1; n=$((n + 1)); done ;; esac"#,
             None,
             "FAIL: pooled-env: dispatch A's command did not see its own OH_POOLED_PROBE (output: rendezvous=unwritable: cannot create",
         ),
@@ -6055,24 +6082,7 @@ fn the_control_suite_s_pooled_env_shares_one_server_when_one_dispatch_starts_lat
         let seen = suite.pool.path("seen");
         let scratch = tmp.map(|tag| ScratchDir::under(Path::new("/tmp"), tag).unwrap());
         let tmpdir = scratch.as_ref().map(|dir| dir.display().to_string());
-        let wrapper = suite.pool.path("bin/oneharness-staged");
-        // The real binary arrives in the wrapper's environment, so no path is
-        // ever spelled as shell source.
-        std::fs::write(
-            &wrapper,
-            format!("#!/usr/bin/env bash\n{prelude}\nexec \"$OH_STAGED_REAL_BIN\" \"$@\"\n"),
-        )
-        .unwrap();
-        std::fs::set_permissions(
-            &wrapper,
-            std::os::unix::fs::PermissionsExt::from_mode(0o755),
-        )
-        .unwrap();
-        let mut envs = vec![
-            ("ONEHARNESS_BIN", wrapper.display().to_string()),
-            ("OH_STAGED_REAL_BIN", oneharness_bin().display().to_string()),
-            ("OH_STAGED_SEEN", seen.display().to_string()),
-        ];
+        let mut envs = suite.staged(prelude);
         if let Some(dir) = &tmpdir {
             envs.push(("TMPDIR", dir.clone()));
         }
@@ -6098,6 +6108,51 @@ fn the_control_suite_s_pooled_env_shares_one_server_when_one_dispatch_starts_lat
                 "{tag}: no session store under {dir}: {args}"
             );
         }
+    }
+}
+// llmlint: ignore-end[e2e_not_mocked]
+
+// llmlint: ignore-block[e2e_not_mocked] The control suite's pooled-env phase runs for real — scripts/e2e-control.sh, the built oneharness behind a wrapper that only keeps a copy of each dispatch's report, and oneharness-core's pool; only codex is the repository's subprocess double, whose `leak-env` fault is the one way to make a server run one dispatch's command in the other's environment on demand. The same phase against real Codex is scripts/e2e-control.sh's live run.
+/// A server that runs one dispatch's command in the other's environment fails
+/// the suite as that leak, and the two commands still met: the rendezvous is
+/// the same for both commands, so one running the other's — as the mock's
+/// does, its command text being the environment's — counts as an arrival
+/// rather than waiting out the hang guard for one that never comes. With the
+/// guard at its 120 s default that wait outlasted the test runner's own
+/// timeout on CI. Which dispatch leaks into which is the order the server
+/// opened their threads in, so either is the leak.
+#[test]
+fn the_control_suite_s_pooled_env_meets_when_a_leak_runs_one_dispatch_s_command_as_the_other_s() {
+    let suite = ControlSuite::new("pool-suite-leak-meet");
+    let mut envs = suite.staged(
+        r#"for s in a b; do case " $* " in *" --session pooled-env-$s "*) "$OH_STAGED_REAL_BIN" "$@" | tee "$OH_STAGED_SEEN.$s-report"; exit "${PIPESTATUS[0]}" ;; esac; done"#,
+    );
+    envs.push(("CODEX_MOCK_FAULT", "leak-env".to_string()));
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let out = suite.run(&envs);
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "the suite passed: {said}");
+    assert!(
+        said.contains("FAIL: pooled-env: dispatch A's command saw dispatch B's OH_POOLED_PROBE")
+            || said.contains(
+                "FAIL: pooled-env: dispatch B's command saw dispatch A's OH_POOLED_PROBE"
+            ),
+        "{said}"
+    );
+    for dispatch in ["a", "b"] {
+        let copy = suite.pool.path(&format!("seen.{dispatch}-report"));
+        let report = std::fs::read_to_string(&copy)
+            .unwrap_or_else(|err| panic!("no copy of {dispatch}'s report ({err}): {said}"));
+        let report: Value = serde_json::from_str(&report).unwrap();
+        let output = command_output(&report);
+        assert!(
+            output.contains("probe="),
+            "{dispatch}'s command never probed: {output}"
+        );
+        assert!(
+            !output.contains("rendezvous=missed"),
+            "{dispatch}'s command waited out the hang guard: {output}"
+        );
     }
 }
 // llmlint: ignore-end[e2e_not_mocked]

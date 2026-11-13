@@ -168,32 +168,35 @@ oh_pooled_env() {
   # other's before it probes: their order comes from those two events, so a
   # slow host only makes the phase slower. guard_s ends a wait for a dispatch
   # that never starts; that miss says so and fails the phase.
-  # The two paths are written into each command, not passed in its
+  # The rendezvous is the same text in both commands — an arrival is a fresh
+  # file in one shared directory, the meeting two of them — so a command run
+  # as the other dispatch's (a server leaking A's environment into B's
+  # command, where the mock's command is that environment's) still arrives,
+  # and fails as the leak, not after the guard.
+  # The directory is written into each command, not passed in its
   # environment: the environment is what this phase checks, and one dispatch
   # seeing the other's must fail as that, not as a missed rendezvous.
   # An arrival it cannot write ends the command before its probe, saying so,
   # which the own-variable checks below then name with that output.
-  # Each path is written as a single-quoted shell literal (any ' in it as
-  # '\''), so whatever TMPDIR holds is a path and never shell syntax.
+  # The path is written as a single-quoted shell literal (any ' in it as
+  # '\''), so whatever TMPDIR holds is a path and never shell syntax; its
+  # glob always matches the command's own arrival, so no shell's no-match
+  # rule applies.
   literal() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
-  # $1 this dispatch's arrival, $2 the other's
-  meet() {
-    local here there
-    here="$(literal "$1")"
-    there="$(literal "$2")"
-    # shellcheck disable=SC2016 # $n is the dispatch's own shell's counter
-    printf 'true >%s || { echo rendezvous=unwritable: cannot create %s; exit 1; }; n=0; until [ -e %s ]; do if [ "$n" -ge %d ]; then echo rendezvous=missed; break; fi; sleep 0.1; n=$((n + 1)); done; ' \
-      "$here" "$here" "$there" "$((guard_s * 10))"
-  }
+  local meet_dir="$POOLED_DIR/meet" meet
+  mkdir -p "$meet_dir" ||
+    fail "pooled-env: cannot create the rendezvous directory $meet_dir; check that $POOLED_DIR is writable"
+  meet="$(literal "$meet_dir")"
+  # shellcheck disable=SC2016 # $n and $# are the dispatch's own shell's
+  meet="$(printf 'mktemp %s/here.XXXXXX >/dev/null || { echo rendezvous=unwritable: cannot create an arrival in %s; exit 1; }; n=0; until set -- %s/*; [ "$#" -ge 2 ]; do if [ "$n" -ge %d ]; then echo rendezvous=missed; break; fi; sleep 0.1; n=$((n + 1)); done; ' \
+    "$meet" "$meet" "$meet" "$((guard_s * 10))")"
   report_a="$POOLED_DIR/env-a.json"
   report_b="$POOLED_DIR/env-b.json"
   mkdir -p "$POOLED_DIR/wa" "$POOLED_DIR/wb" ||
     fail "pooled-env: cannot create the dispatches' working directories under $POOLED_DIR; check that it is writable"
-  OH_POOLED_PROBE="$value_a" _oh_pooled_start pooled-env-a "$report_a" "$POOLED_DIR/wa" \
-    "$(meet "$POOLED_DIR/env-a.here" "$POOLED_DIR/env-b.here")$probe"
+  OH_POOLED_PROBE="$value_a" _oh_pooled_start pooled-env-a "$report_a" "$POOLED_DIR/wa" "$meet$probe"
   a=$POOLED_PID
-  OH_POOLED_PROBE="$value_b" _oh_pooled_start pooled-env-b "$report_b" "$POOLED_DIR/wb" \
-    "$(meet "$POOLED_DIR/env-b.here" "$POOLED_DIR/env-a.here")$probe"
+  OH_POOLED_PROBE="$value_b" _oh_pooled_start pooled-env-b "$report_b" "$POOLED_DIR/wb" "$meet$probe"
   b=$POOLED_PID
   wait "$a" || fail "pooled-env: dispatch A failed: $(cat "$report_a.err")"
   wait "$b" || fail "pooled-env: dispatch B failed: $(cat "$report_b.err")"
@@ -206,8 +209,8 @@ oh_pooled_env() {
   case "$out_b" in *"probe=$digest_a"*) fail "pooled-env: dispatch B's command saw dispatch A's OH_POOLED_PROBE" ;; esac
   case "$out_a" in *"probe=$digest_a"*) ;; *) fail "pooled-env: dispatch A's command did not see its own OH_POOLED_PROBE (output: ${out_a:-none})" ;; esac
   case "$out_b" in *"probe=$digest_b"*) ;; *) fail "pooled-env: dispatch B's command did not see its own OH_POOLED_PROBE (output: ${out_b:-none})" ;; esac
-  # After the environment checks: one dispatch running in the other's
-  # environment can miss the rendezvous too, and must fail as the leak.
+  # After the environment checks, which name a dispatch whose command could
+  # not arrive or ran in the other's environment, before this one.
   case "$out_a$out_b" in *rendezvous=missed*) fail "pooled-env: one dispatch's command waited ${guard_s} s for the other's to start and it never did, so the two never ran at once (see $report_a.err and $report_b.err)" ;; esac
   pid_a="$(jq -r '.control.app_server.pid // empty' "$report_a")" ||
     fail "pooled-env: cannot read the server pid from dispatch A's report $report_a"

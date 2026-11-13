@@ -824,7 +824,6 @@ class CodexSuite(BudgetCase):
         self.assertNotEqual(run.returncode, 0, run.stderr)
         self.assertIn("» controlled turn:", run.stderr)
         self.assertNotIn("codex rendezvous:", run.stderr)
-        # The watch's scratch directory went with it.
         self.assertEqual(list((tmp / "live-tmp").glob("oh-codex-rendezvous.*")), [])
 
     @unittest.skipUnless(

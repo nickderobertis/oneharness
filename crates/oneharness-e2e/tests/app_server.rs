@@ -2549,6 +2549,64 @@ fn an_early_exit_quotes_only_the_stderr_it_can_read() {
 }
 // llmlint: ignore-end[e2e_not_mocked]
 
+// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run --control` through the real pool; only codex is the repository's subprocess double, because real Codex cannot be made to read as stopped while it stays uncollectable on demand. That ordering is how macOS reports every exiting server, and it is where this dispatch once reported its own server's early exit as one "another process started" (CI run 43423255385).
+/// A server this dispatch started that reads as stopped before it can be
+/// collected — as macOS shows every exiting process, and as Linux shows one
+/// whose first thread has ended while another runs on — is still reported with
+/// the status it ended with, once it is collectable within the grace.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_early_exit_still_being_collected_is_reported_with_its_status() {
+    let pool = Pool::new("pool-ee-collect");
+    let (_, report) = pool.run(pool.command(
+        "collecting",
+        &[],
+        &[
+            ("CODEX_MOCK_FAULT", "exit-first-thread"),
+            ("CODEX_MOCK_HOLD_MS", "300"),
+        ],
+    ));
+    let ran = result(&report);
+    assert_eq!(ran["status"], "spawn-error", "{ran}");
+    let error = ran["error"].as_str().unwrap_or_default();
+    assert!(
+        error.contains(
+            "it ended with exit status: 11, its stderr ending: Error: mock codex: its first thread is gone"
+        ),
+        "{error}"
+    );
+}
+
+/// A server this dispatch started that reads as stopped but is still not
+/// collectable once the grace runs out is reported without a status, rather
+/// than holding the dispatch until it ends: the run returns while every server
+/// it launched is still held.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_early_exit_never_collected_reports_no_status_rather_than_waiting() {
+    let pool = Pool::new("pool-ee-held");
+    let release = pool.path("release");
+    let child = pool.spawn(pool.command(
+        "held",
+        &[],
+        &[
+            ("CODEX_MOCK_FAULT", "exit-first-thread"),
+            ("CODEX_MOCK_HOLD_UNTIL", release.to_str().unwrap()),
+        ],
+    ));
+    let (_, report) = Pool::finish_within(child, Duration::from_secs(60));
+    std::fs::write(&release, "").unwrap();
+    let ran = result(&report);
+    assert_eq!(ran["status"], "spawn-error", "{ran}");
+    let error = ran["error"].as_str().unwrap_or_default();
+    assert!(error.contains("its exit status is unknown here"), "{error}");
+    assert!(
+        error.ends_with("its stderr ending: Error: mock codex: its first thread is gone"),
+        "{error}"
+    );
+}
+// llmlint: ignore-end[e2e_not_mocked]
+
 // llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run --control` through the real pool; only codex is the repository's subprocess double, because real Codex cannot be made to exit before listening with a known status and stderr on demand. Real Codex's own early-exit reason reached this report on macOS CI (run 38942062567).
 /// A shared server that exits before it listens fails the dispatch with the
 /// server's own account of why — its exit status and the end of its stderr —

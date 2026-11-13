@@ -3449,6 +3449,10 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 ///                         written only whitespace; `exit-non-utf8` exits 9
 ///                         having written more than 2 KiB that is not UTF-8,
 ///                         whose last 2 KiB start inside a character;
+///                         `exit-first-thread` (Linux) ends its first thread
+///                         before binding, reading as stopped while a second
+///                         thread holds the process uncollectable, then exits
+///                         11 (`CODEX_MOCK_HOLD_MS`, `CODEX_MOCK_HOLD_UNTIL`);
 ///                         `stall-upgrade`
 ///                         reads a connection's upgrade request and never
 ///                         answers it; `inheritable-connections` hands every
@@ -3459,6 +3463,10 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 ///                         set close-on-exec atomically.
 ///   CODEX_MOCK_EXIT_FIRST  a path: the first launch creates it and exits before
 ///                         listening.
+///   CODEX_MOCK_HOLD_MS     under `exit-first-thread`, how long the second
+///                         thread holds the process before it exits.
+///   CODEX_MOCK_HOLD_UNTIL  under `exit-first-thread`, a path: the second
+///                         thread holds the process until it exists.
 ///   CODEX_MOCK_LOADED_PAGE  answer `thread/loaded/list` in pages of this many.
 ///   CODEX_MOCK_OPEN_DELAYS_MS  comma-separated: the n-th `thread/start` is
 ///                         answered after the n-th delay.
@@ -3595,6 +3603,41 @@ mod listen_server {
             .map_or(0, |kb| kb * 1024)
     }
 
+    /// CODEX_MOCK_FAULT=exit-first-thread: say why on stderr and end the
+    /// first thread before binding, while a second thread keeps the process
+    /// until `CODEX_MOCK_HOLD_MS` passes or the `CODEX_MOCK_HOLD_UNTIL` path
+    /// exists (two minutes at most), then exits 11.
+    ///
+    /// Linux shows a process whose first thread has ended as a zombie, but no
+    /// wait collects it while another thread runs — the order macOS shows
+    /// every exiting process in, a server read as stopped before its parent
+    /// can collect it, held here for as long as the journey says.
+    #[cfg(target_os = "linux")]
+    fn exit_first_thread() -> ! {
+        let hold_ms = std::env::var("CODEX_MOCK_HOLD_MS")
+            .ok()
+            .map(|n| whole::<u64>("CODEX_MOCK_HOLD_MS", &n));
+        let until = std::env::var_os("CODEX_MOCK_HOLD_UNTIL").map(PathBuf::from);
+        eprintln!("Error: mock codex: its first thread is gone");
+        std::thread::spawn(move || {
+            let started = std::time::Instant::now();
+            let limit = std::time::Duration::from_millis(hold_ms.unwrap_or(120_000));
+            while started.elapsed() < limit && !until.as_ref().is_some_and(|path| path.exists()) {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            std::process::exit(11);
+        });
+        // SAFETY: `SYS_exit` ends only the calling thread, which owns nothing
+        // the thread spawned above reads.
+        unsafe { libc::syscall(libc::SYS_exit, 0) };
+        unreachable!("SYS_exit returned");
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn exit_first_thread() -> ! {
+        super::refuse("CODEX_MOCK_FAULT=exit-first-thread needs Linux's thread-group exit")
+    }
+
     pub fn run(argv: &[String]) -> ! {
         if std::env::var_os("CODEX_MOCK_SHIM").is_some()
             && std::env::var_os("ONEHARNESS_MOCK_SHIM_CHILD").is_none()
@@ -3649,6 +3692,11 @@ mod listen_server {
             said.extend(b"Error: mock codex: bad byte \xff here\n");
             let _ = std::io::stderr().write_all(&said);
             std::process::exit(9);
+        }
+        // CODEX_MOCK_FAULT=exit-first-thread: exit before binding the way a
+        // server reads as stopped before it can be collected.
+        if std::env::var("CODEX_MOCK_FAULT").as_deref() == Ok("exit-first-thread") {
+            exit_first_thread();
         }
         // CODEX_MOCK_FAULT=never-listen: stay alive, marked, and never bind.
         if std::env::var("CODEX_MOCK_FAULT").as_deref() == Ok("never-listen") {

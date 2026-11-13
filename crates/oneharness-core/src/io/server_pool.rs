@@ -1208,12 +1208,10 @@ fn remember_exit(pid: u32, status: std::process::ExitStatus) {
 fn exit_status(pid: Pid, grace: Duration) -> Option<std::process::ExitStatus> {
     reap_finished();
     let until = Instant::now() + grace;
-    // llmlint: ignore-block[changed_behavior_has_e2e] No journey can place the macOS exit ordering this waits out, and on Linux no journey enters the wait; the early-exit journeys in `app_server.rs` read their status through it, and its unit tests force both endings with a real child.
     while is_spawned(pid.get()) && Instant::now() < until {
         std::thread::sleep(IDENTIFY_POLL);
         reap_finished();
     }
-    // llmlint: ignore-end[changed_behavior_has_e2e]
     let statuses = exited().lock().ok()?;
     statuses
         .iter()

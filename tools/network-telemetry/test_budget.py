@@ -835,6 +835,10 @@ class CodexSuite(BudgetCase):
                 "echo 'jq: error: simulated' >&2; exit 2",
                 "FAIL: codex rendezvous: cannot read the rendezvous evidence",
             ),
+            "malformed": (
+                'printf \'{"listen": "x"}\\n\' >"$1"',
+                'not a rendezvous record: {"listen":"x"}',
+            ),
             # As when a server started before the suite served its turn.
             "empty": (
                 ': >"$1"',
@@ -867,6 +871,26 @@ class CodexSuite(BudgetCase):
         self.assertRegex(
             run.stderr,
             r"FAIL: codex rendezvous: /tmp/codex-daemon-\d+ is mode 755, not the 0700 Codex demands",
+        )
+
+    @unittest.skipUnless(
+        sys.platform.startswith("linux") and os.geteuid() != 0,
+        "the suite's controlled turn runs hermetically on the Linux leg alone, and root"
+        " removes a read-only directory's contents",
+    )
+    def test_a_rendezvous_scratch_directory_it_cannot_remove_is_named(self) -> None:
+        tmp = scratch(self)
+        # A read-only directory left in the scratch directory as the step reads
+        # its evidence, so removing it at the suite's end fails.
+        held = '"$(dirname "$1")/held"'
+        run = self.run_with_evidence_read(tmp, f"mkdir {held} && : >{held}/f && chmod 555 {held}")
+        for left in (tmp / "live-tmp").glob("oh-codex-rendezvous.*/held"):
+            left.chmod(0o755)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertRegex(
+            run.stderr,
+            r"could not remove the scratch directory \S+/oh-codex-rendezvous\.\w+ \(rm's error above\)"
+            " — delete it by hand",
         )
 
     @unittest.skipUnless(

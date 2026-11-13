@@ -16,8 +16,21 @@ import subprocess
 import time
 import unittest
 from pathlib import Path
+from typing import TypedDict, cast
 
 from support import BASH, HERE, SCRIPTS, WINDOWS, scratch
+
+
+class Evidence(TypedDict):
+    """One line of the wrapper's evidence, as it writes it."""
+
+    listen: str
+    euid: str
+    linked: bool
+    target: str
+    bound: str
+    mode: str
+
 
 WRAPPER = SCRIPTS / "e2e-codex-rendezvous.sh"
 FAKE = HERE / "codex_double.sh"
@@ -112,8 +125,8 @@ class Wrapper(unittest.TestCase):
             time.sleep(0.05)
         return False
 
-    def records(self) -> list[dict[str, object]]:
-        return [json.loads(line) for line in self.evidence.read_text().splitlines()]
+    def records(self) -> list[Evidence]:
+        return [cast(Evidence, json.loads(line)) for line in self.evidence.read_text().splitlines()]
 
     def failing(self, tool: str) -> str:
         """A PATH whose `tool` fails, saying so."""

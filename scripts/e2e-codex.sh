@@ -42,11 +42,13 @@ oh_codex_rendezvous_setup() {
     fail "codex rendezvous: could not create a scratch directory — check that the host temp dir is writable"
   _oh_codex_rendezvous_dir="$dir"
   trap _oh_codex_rendezvous_cleanup EXIT
-  # llmlint: ignore[changed_behavior_has_e2e] mktemp has just made this directory, private to this user, so writing the evidence file and the wrapper in it fails only on a full or read-only filesystem, which no unprivileged journey can stage between those lines; the directory's own failure is test_the_rendezvous_setup_names_a_temp_dir_it_cannot_use's.
-  : >"$dir/rendezvous.jsonl" || fail "codex rendezvous: cannot create $dir/rendezvous.jsonl; check that the host temp dir is writable"
-  { printf '#!/usr/bin/env bash\nexec bash %q --real %q --evidence %q -- "$@"\n' \
-    "$OH_REPO_ROOT/scripts/e2e-codex-rendezvous.sh" "$real" "$dir/rendezvous.jsonl" >"$dir/codex" &&
-    chmod +x "$dir/codex"; } || fail "codex rendezvous: cannot write the wrapper $dir/codex; check that the host temp dir is writable"
+  # llmlint: ignore-block[changed_behavior_has_e2e] mktemp has just made this directory, private to this user, so writing the evidence file and the wrapper in it fails only on a full or read-only filesystem, which no unprivileged journey can stage between these lines; the directory's own failure is test_the_rendezvous_setup_names_a_temp_dir_it_cannot_use's.
+  {
+    : >"$dir/rendezvous.jsonl" &&
+      printf '#!/usr/bin/env bash\nexec bash %q --real %q --evidence %q -- "$@"\n' \
+        "$OH_REPO_ROOT/scripts/e2e-codex-rendezvous.sh" "$real" "$dir/rendezvous.jsonl" >"$dir/codex" &&
+      chmod +x "$dir/codex"
+  } || fail "codex rendezvous: cannot write the evidence file or the wrapper in $dir; check that the host temp dir is writable"
   PATH="$dir:$PATH"
   export PATH
 }
@@ -57,7 +59,12 @@ oh_codex_rendezvous_check() {
   # `the_live_rendezvous_check_expects_the_rendezvous_the_launch_prepares`.
   local rendezvous_prefix=codex-daemon- rendezvous_mode=700
   tmp="$(cd /tmp && pwd -P)" || fail "codex rendezvous: cannot resolve /tmp; check that it exists"
-  rows="$(jq -r '[.listen, .euid, .linked, .target, .bound, .mode] | @tsv' "$evidence")" ||
+  # Each line as the wrapper writes it, or jq's error naming the one that is not.
+  rows="$(jq -r 'if (.listen | type) == "string" and (.euid | type) == "string" and (.euid | test("^[0-9]+$"))
+      and (.linked | type) == "boolean" and (.target | type) == "string" and (.bound | type) == "string"
+      and (.mode | type) == "string"
+    then [.listen, .euid, .linked, .target, .bound, .mode] | @tsv
+    else error("not a rendezvous record: \(tojson)") end' "$evidence")" ||
     fail "codex rendezvous: cannot read the rendezvous evidence $evidence (jq's error above); each line is one scripts/e2e-codex-rendezvous.sh wrote, so a damaged one is that wrapper's to fix"
   [ -n "$rows" ] ||
     fail "codex rendezvous: no shared codex server started through scripts/e2e-codex-rendezvous.sh during the controlled turn, so nothing could be checked; a server started before this suite may have served it, so let it linger out (60 s) and rerun"

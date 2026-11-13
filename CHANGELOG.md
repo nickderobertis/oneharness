@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.28.4](https://github.com/nickderobertis/oneharness/compare/v0.28.3...v0.28.4) - 2026-11-12
+
+### Fixed
+
+- *(e2e)* prove multi-line --system round-trips without depending on the model's echo ([#1581](https://github.com/nickderobertis/oneharness/pull/1581))
+
 ## [0.28.3](https://github.com/nickderobertis/oneharness/compare/v0.28.2...v0.28.3) - 2026-11-12
 
 ### Fixed

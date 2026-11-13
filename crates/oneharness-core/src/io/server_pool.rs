@@ -835,7 +835,7 @@ fn open_server_log(entry: &Path) -> io::Result<fs::File> {
 /// running.
 #[must_use]
 pub fn early_exit(entry: &Path, record: &ServerRecord) -> String {
-    let status = exit_status(record.pid).map_or_else(
+    let status = exit_status(record.pid, IDENTIFY_GRACE).map_or_else(
         // llmlint: ignore[changed_behavior_has_e2e] An unknown status needs a server another dispatch started to die after that dispatch connected and before this one's first dial, a window no journey can place a death inside; the silent and long-stderr halves beside it are proven by `a_server_that_exits_before_listening_fails_the_dispatch_with_its_own_reason`.
         || "its exit status is unknown here, since another process started it".to_string(),
         |status| format!("it ended with {status}"),
@@ -1201,16 +1201,19 @@ fn remember_exit(pid: u32, status: std::process::ExitStatus) {
 /// Asked once its caller has seen the server stop running, which on macOS is
 /// as soon as it starts to exit — `proc_pidinfo` stops answering for it then,
 /// before a wait can collect it. So a server of ours not yet reapable is given
-/// up to [`IDENTIFY_GRACE`] to settle, as [`identify_spawned`] gives one at
-/// launch; without that, an early exit this process itself spawned was
-/// reported as one "another process started".
-fn exit_status(pid: Pid) -> Option<std::process::ExitStatus> {
+/// up to `grace` to settle, as [`identify_spawned`] gives one at launch;
+/// without that, an early exit this process itself spawned was reported as one
+/// "another process started". One still not collected when `grace` runs out
+/// answers `None`, its status unknown, rather than holding up the report.
+fn exit_status(pid: Pid, grace: Duration) -> Option<std::process::ExitStatus> {
     reap_finished();
-    let until = Instant::now() + IDENTIFY_GRACE;
+    let until = Instant::now() + grace;
+    // llmlint: ignore-block[changed_behavior_has_e2e] A server of ours that reads as stopped before a wait can collect it is a macOS kernel ordering — `proc_pidinfo` stops answering for a process once it begins to exit, before `waitpid` sees it — that no journey can place, and on Linux a server read as stopped is already reapable, so no journey there ever enters this wait. Both early-exit journeys in `crates/oneharness-e2e/tests/app_server.rs` read their dispatch's exit status through this function on every platform, and the unit tests `a_spawned_server_not_yet_reapable_still_reports_its_exit_status` and `a_spawned_server_still_running_past_the_grace_reports_no_exit_status` force both orderings — collected within `grace`, and `grace` exhausted — through it with a real child process.
     while is_spawned(pid.get()) && Instant::now() < until {
         std::thread::sleep(IDENTIFY_POLL);
         reap_finished();
     }
+    // llmlint: ignore-end[changed_behavior_has_e2e]
     let statuses = exited().lock().ok()?;
     statuses
         .iter()
@@ -1383,13 +1386,20 @@ mod tests {
         let pid = |offset: usize| Pid::new(base + offset as u32).unwrap();
         remember_exit(pid(0).get(), status(9));
         remember_exit(pid(0).get(), status(1));
-        assert_eq!(exit_status(pid(0)).and_then(|s| s.code()), Some(1));
+        assert_eq!(
+            exit_status(pid(0), Duration::ZERO).and_then(|s| s.code()),
+            Some(1)
+        );
         for offset in 1..=EXITED_KEPT {
             remember_exit(pid(offset).get(), status(2));
         }
-        assert_eq!(exit_status(pid(0)), None, "the oldest status was kept");
         assert_eq!(
-            exit_status(pid(EXITED_KEPT)).and_then(|s| s.code()),
+            exit_status(pid(0), Duration::ZERO),
+            None,
+            "the oldest status was kept"
+        );
+        assert_eq!(
+            exit_status(pid(EXITED_KEPT), Duration::ZERO).and_then(|s| s.code()),
             Some(2)
         );
     }
@@ -1451,7 +1461,10 @@ mod tests {
             linger_ms: None,
         };
         assert!(!record.is_running(), "{record:?}");
-        assert_eq!(exit_status(pid).and_then(|status| status.code()), Some(5));
+        assert_eq!(
+            exit_status(pid, IDENTIFY_GRACE).and_then(|status| status.code()),
+            Some(5)
+        );
 
         let running = std::process::Command::new("sleep")
             .arg("30")
@@ -1483,7 +1496,10 @@ mod tests {
         let pid = Pid::new(child.id()).unwrap();
         let identity = identify_spawned(child, pid, |_| None, Duration::from_secs(10)).unwrap();
         assert_eq!(identity.0, EXITED_UNIDENTIFIED);
-        assert_eq!(exit_status(pid).and_then(|status| status.code()), Some(6));
+        assert_eq!(
+            exit_status(pid, IDENTIFY_GRACE).and_then(|status| status.code()),
+            Some(6)
+        );
     }
 
     /// A server of ours its caller already reads as stopped — as macOS reports
@@ -1500,7 +1516,35 @@ mod tests {
             .unwrap();
         let pid = Pid::new(child.id()).unwrap();
         remember_spawned(child);
-        assert_eq!(exit_status(pid).and_then(|status| status.code()), Some(7));
+        assert_eq!(
+            exit_status(pid, IDENTIFY_GRACE).and_then(|status| status.code()),
+            Some(7)
+        );
+        assert!(!is_spawned(pid.get()), "the server was not reaped");
+    }
+
+    /// A server of ours still running when its `grace` runs out — one its
+    /// caller misread as stopped — reports no exit status, rather than holding
+    /// up the report until it ends, and stays ours to reap later.
+    #[cfg(unix)]
+    #[test]
+    fn a_spawned_server_still_running_past_the_grace_reports_no_exit_status() {
+        let child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let pid = Pid::new(child.id()).unwrap();
+        remember_spawned(child);
+        let asked = Instant::now();
+        assert_eq!(exit_status(pid, Duration::from_millis(50)), None);
+        assert!(
+            asked.elapsed() < Duration::from_secs(10),
+            "the wait outlasted its grace: {:?}",
+            asked.elapsed()
+        );
+        assert!(is_spawned(pid.get()), "a running server was let go");
+        kill(pid);
+        reap_spawned(pid.get());
         assert!(!is_spawned(pid.get()), "the server was not reaped");
     }
 

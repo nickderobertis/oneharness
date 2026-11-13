@@ -236,7 +236,7 @@ fn refuse_removing_run_level_rules(
     project_dir: &Path,
     spec: &HarnessSpec,
     selected_id: &str,
-    exact: bool,
+    mode: SyncMode,
 ) -> Result<(), OneharnessError> {
     let run_level = cfg.allowed_tools_for(selected_id);
     let Some(sync_spec) = &spec.sync else {
@@ -259,7 +259,7 @@ fn refuse_removing_run_level_rules(
                     .then(|| (statement, rule.clone(), target.clone()))
             });
         }
-    } else if exact && sync_spec.allow_path.is_some() {
+    } else if mode == SyncMode::Exact && sync_spec.allow_path.is_some() {
         let target = json_target(project_dir, sync_spec);
         let existing =
             read_optional(&target)?.and_then(|text| serde_json::from_str::<Value>(&text).ok());
@@ -582,7 +582,7 @@ pub fn sync_with(request: &SyncRequest, mode: SyncMode) -> Result<SyncReport, On
     if !request.global {
         for (index, spec) in specs.iter().enumerate() {
             let selected_id = selected_ids.get(index).map_or(spec.id, String::as_str);
-            refuse_removing_run_level_rules(request, cfg, &project_dir, spec, selected_id, exact)?;
+            refuse_removing_run_level_rules(request, cfg, &project_dir, spec, selected_id, mode)?;
         }
     }
 
@@ -898,9 +898,10 @@ mod tests {
     }
 
     /// The prose that restates this module's contract — the README's matrix
-    /// row, translation table, `--exact` and live-proof sections, the engine's AGENTS.md,
-    /// and the parity note — is held to the code here, so a rename or a
-    /// changed translation cannot leave the documents describing the old one.
+    /// row, `[sync]` table, translation table, `--exact` and live-proof
+    /// sections, the engine's AGENTS.md, and the parity note — is held to the
+    /// code here, so a rename or a changed translation cannot leave the
+    /// documents describing the old one.
     #[test]
     fn the_documents_restating_the_sync_contract_match_the_code() {
         use crate::domain::sync::RuleList;
@@ -909,6 +910,56 @@ mod tests {
         let parity = include_str!("../../../../docs/sdk-parity.md");
         let e2e = include_str!("../../../../scripts/e2e-lib.sh");
         let lane = include_str!("../../../../scripts/e2e-codex.sh");
+
+        // The README's `[sync]` table names exactly what each table takes:
+        // every listed field parses there, a field it does not list is refused,
+        // and a sync-only field outside `[sync]` is refused.
+        let row = |table: &str| {
+            readme
+                .lines()
+                .find(|line| line.starts_with(&format!("| `{table}` |")))
+                .unwrap_or_else(|| panic!("README.md has the `{table}` row"))
+        };
+        let top = row("[sync]");
+        for field in ["`allowed_tools`", "`denied_tools`", "`[[sync.hooks]]`"] {
+            assert!(top.contains(field), "{top}: {field}");
+        }
+        let harness_row = row("[sync.harness.<id>]");
+        for field in ["`allowed_tools`", "`denied_tools`", "`hooks`", "`settings`"] {
+            assert!(harness_row.contains(field), "{harness_row}: {field}");
+        }
+        assert!(row("[sync.harness.<id>.variant.<name>]").contains("the same four"));
+        let four = "allowed_tools = []\ndenied_tools = []\nhooks = {}\nsettings = {}\n";
+        for text in [
+            "[sync]\nallowed_tools = []\ndenied_tools = []\n[[sync.hooks]]\ncommand = \"g\"\n"
+                .to_string(),
+            format!("[sync.harness.claude-code]\n{four}"),
+            format!("[sync.harness.claude-code.variant.work]\n{four}"),
+        ] {
+            crate::domain::config::parse(&text).unwrap_or_else(|e| panic!("{text}: {e}"));
+        }
+        for text in [
+            "[sync]\nsettings = {}",
+            "[sync]\nmodel = \"m\"",
+            "denied_tools = []",
+        ] {
+            assert!(crate::domain::config::parse(text).is_err(), "{text}");
+        }
+        // The engine's note names the symbols that implement it.
+        let _ = (
+            crate::domain::config::FileConfig::allowed_tools_for,
+            crate::domain::config::parse,
+            refuse_removing_run_level_rules,
+            crate::domain::config::SyncConfig::default,
+        );
+        for symbol in [
+            "`domain::config::SyncConfig`",
+            "`FileConfig::allowed_tools_for`",
+            "`domain::config::parse`",
+            "`io::sync::refuse_removing_run_level_rules`",
+        ] {
+            assert!(agents.contains(symbol), "AGENTS.md: {symbol}");
+        }
 
         // The matrix row names the registry's Codex target.
         let codex = harness::by_id("codex").unwrap().sync.as_ref().unwrap();

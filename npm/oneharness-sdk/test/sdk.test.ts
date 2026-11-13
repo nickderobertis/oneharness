@@ -1840,7 +1840,6 @@ describe("OneHarness", () => {
 		expect(report.harnesses.value).toEqual(["codex"]);
 		expect(report.harnesses.source).toContain("oneharness.toml");
 		expect(report.mode.value).toBe("bypass");
-		// Sync policy is reported in its own `sync` object, in the file's shape.
 		const denied = report.sync.harness["claude-code"]?.denied_tools;
 		expect(denied?.value).toEqual(["Bash(rm:*)"]);
 		expect(denied?.source).toContain("oneharness.toml");

@@ -14947,6 +14947,130 @@ fn a_config_without_sync_policy_runs_and_syncs_as_before_under_every_mode() {
 }
 
 #[test]
+fn a_variant_declared_only_under_sync_is_one_identity_on_every_verb() {
+    // `[sync.harness.<id>.variant.<name>]` declares the variant as fully as
+    // `[harness.<id>.variant.<name>]` does: every verb selects it, it carries
+    // the base harness's run settings, and an undeclared name is still the
+    // usage error it always was.
+    let fx = ConfigFixture::new(
+        "sync-only-variant",
+        "[harness.claude-code]\nargs = [\"--verbose\"]\n\
+         [sync.harness.claude-code.variant.work]\ndenied_tools = [\"Bash(rm:*)\"]\n",
+        "",
+    );
+    let project = std::path::Path::new(&fx.cwd()).join("oneharness.toml");
+    let cwd = fx.cwd();
+    let config_arg = project.display().to_string();
+    let bin = bin_override("claude-code");
+
+    let config = run_with_config(&["config", "--cwd", &cwd], &[], &fx.user_config());
+    assert!(config.status.success(), "{config:?}");
+    let report = json_stdout(&config);
+    let work = &report["sync"]["harness"]["claude-code"]["variant"]["work"];
+    assert_eq!(
+        work["denied_tools"]["value"],
+        serde_json::json!(["Bash(rm:*)"])
+    );
+    assert_eq!(
+        work["denied_tools"]["source"],
+        project.display().to_string().as_str()
+    );
+    assert_eq!(work["allowed_tools"]["value"], Value::Null);
+    assert_eq!(
+        report["harness"]["claude-code"]["variant"],
+        serde_json::json!({}),
+        "no run-level variant table was written"
+    );
+
+    let detect = run_with_config(
+        &[
+            "detect",
+            "--harness",
+            "claude-code:work",
+            "--bin",
+            &bin,
+            "--config",
+            &config_arg,
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(detect.status.success(), "{detect:?}");
+    assert_eq!(
+        json_stdout(&detect)["detected"][0]["id"],
+        "claude-code:work"
+    );
+
+    let argv_file = fx.dir.join("work.argv");
+    let base_argv_file = fx.dir.join("base.argv");
+    for (id, file) in [
+        ("claude-code:work", &argv_file),
+        ("claude-code", &base_argv_file),
+    ] {
+        let output = run_with_config(
+            &[
+                "run",
+                "--harness",
+                id,
+                "--prompt",
+                "hi",
+                "--bin",
+                &bin,
+                "--cwd",
+                &cwd,
+            ],
+            &[("MOCK_ARGV_FILE", &file.display().to_string())],
+            &fx.user_config(),
+        );
+        assert!(output.status.success(), "{id}: {output:?}");
+        let result = &json_stdout(&output)["results"][0];
+        assert_eq!(result["harness_id"], id, "{result}");
+    }
+    let argv = std::fs::read_to_string(&argv_file).unwrap();
+    assert!(argv.lines().any(|arg| arg == "--verbose"), "{argv}");
+    assert_eq!(argv, std::fs::read_to_string(&base_argv_file).unwrap());
+
+    let usage = run_with_config(
+        &[
+            "usage",
+            "--harness",
+            "claude-code:work",
+            "--bin",
+            "claude-code=/nonexistent/claude",
+            "--cwd",
+            &cwd,
+            "--timeout",
+            "5",
+        ],
+        &[(
+            "CLAUDE_CONFIG_DIR",
+            &fx.dir.join("claude-home").display().to_string(),
+        )],
+        &fx.user_config(),
+    );
+    assert!(usage.status.success(), "{usage:?}");
+    let identity = &json_stdout(&usage)["identities"][0];
+    assert_eq!(identity["harness"], "claude-code", "{identity}");
+    assert_eq!(identity["variant"], "work", "{identity}");
+
+    for verb in [
+        &["detect", "--harness", "claude-code:nope"][..],
+        &["run", "--harness", "claude-code:nope", "--prompt", "hi"],
+        &["usage", "--harness", "claude-code:nope"],
+        &["sync", "--harness", "claude-code:nope"],
+    ] {
+        let mut args = verb.to_vec();
+        args.extend(["--config", config_arg.as_str()]);
+        let output = run_with_config(&args, &[], &fx.user_config());
+        assert_eq!(output.status.code(), Some(2), "{verb:?}: {output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("claude-code:nope"),
+            "{verb:?}: {output:?}"
+        );
+    }
+}
+
+#[test]
 fn prompt_file_reads_the_prompt_from_a_file() {
     // `--prompt-file PATH` is the file-backed alternative to `--prompt`; the file
     // contents become the prompt verbatim and reach the harness argv.

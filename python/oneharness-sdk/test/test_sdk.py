@@ -829,7 +829,6 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(report["harnesses"]["value"], ["codex"])
         self.assertIn("oneharness.toml", report["harnesses"]["source"])
         self.assertEqual(report["mode"]["value"], "bypass")
-        # Sync policy is reported in its own `sync` object, in the file's shape.
         denied = report["sync"]["harness"]["claude-code"]["denied_tools"]
         self.assertEqual(denied["value"], ["Bash(rm:*)"])
         self.assertIn("oneharness.toml", denied["source"])

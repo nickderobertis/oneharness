@@ -98,7 +98,7 @@ pub enum OneharnessError {
     UnknownHarness { id: String, valid: String },
 
     #[error(
-        "unknown harness variant `{id}`; declare it under `[harness.{base}.variant.{variant}]`"
+        "unknown harness variant `{id}`; declare it under `[harness.{base}.variant.{variant}]` (or `[sync.harness.{base}.variant.{variant}]` for its sync policy)"
     )]
     UnknownHarnessVariant {
         // llmlint: ignore[invalid_states_unrepresentable] Error payloads preserve the exact untrusted selector text that failed validation; a validated selector cannot represent malformed input.

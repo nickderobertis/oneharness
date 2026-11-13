@@ -489,6 +489,7 @@ pub struct SyncConfig {
     /// Per-harness sync policy (`[sync.harness.<id>]`), keyed by canonical
     /// harness id.
     #[serde(default)]
+    // llmlint: ignore[invalid_states_unrepresentable] This is the deny-unknown-fields TOML boundary DTO, keyed exactly like the established `[harness.<id>]` map beside it: `validate` refuses an unknown id (naming `[sync.harness]`) before any FileConfig is exposed, and a registry-typed key could not carry the unknown spelling that refusal has to quote.
     pub harness: BTreeMap<String, SyncHarnessConfig>,
 }
 
@@ -1761,8 +1762,9 @@ pub struct SyncPolicyReport {
     pub allowed_tools: Field<Vec<String>>,
     pub denied_tools: Field<Vec<String>>,
     pub hooks: Field<Vec<HookEntry>>,
-    /// Per-harness sync policy (`[sync.harness.<id>]`), with provenance.
-    pub harness: BTreeMap<String, SyncHarnessPolicyReport>,
+    /// Per-harness sync policy (`[sync.harness.<id>]`), with provenance,
+    /// keyed by the registry's id.
+    pub harness: BTreeMap<&'static str, SyncHarnessPolicyReport>,
 }
 
 /// One harness's `[sync.harness.<id>]` policy, with provenance.
@@ -1775,7 +1777,7 @@ pub struct SyncHarnessPolicyReport {
     pub hooks: Field<toml::Value>,
     #[schemars(with = "serde_json::Map<String, serde_json::Value>")]
     pub settings: Field<toml::Value>,
-    pub variant: BTreeMap<String, SyncVariantPolicyReport>,
+    pub variant: BTreeMap<VariantName, SyncVariantPolicyReport>,
 }
 
 /// One variant's `[sync.harness.<id>.variant.<name>]` policy, with provenance.
@@ -1808,7 +1810,7 @@ fn explain_sync(layers: &[(String, FileConfig)]) -> SyncPolicyReport {
         for name in names {
             let of = |c: &FileConfig| c.sync.harness.get(id)?.variant.get(name.as_str()).cloned();
             variant.insert(
-                name.to_string(),
+                name.clone(),
                 SyncVariantPolicyReport {
                     allowed_tools: pick(layers, |c| of(c).and_then(|v| v.allowed_tools)),
                     denied_tools: pick(layers, |c| of(c).and_then(|v| v.denied_tools)),
@@ -1817,8 +1819,9 @@ fn explain_sync(layers: &[(String, FileConfig)]) -> SyncPolicyReport {
                 },
             );
         }
+        let id_key = harness::by_id(id).expect("ids validated at parse").id;
         harness.insert(
-            id.clone(),
+            id_key,
             SyncHarnessPolicyReport {
                 allowed_tools: pick(layers, |c| section(c).and_then(|h| h.allowed_tools)),
                 denied_tools: pick(layers, |c| section(c).and_then(|h| h.denied_tools)),

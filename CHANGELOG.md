@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.28.5](https://github.com/nickderobertis/oneharness/compare/v0.28.4...v0.28.5) - 2026-11-13
+
+### Fixed
+
+- keep pooled Codex dispatches' session ids so the control suite's reuse journey passes reliably ([#1571](https://github.com/nickderobertis/oneharness/pull/1571))
+
 ## [0.28.4](https://github.com/nickderobertis/oneharness/compare/v0.28.3...v0.28.4) - 2026-11-12
 
 ### Fixed

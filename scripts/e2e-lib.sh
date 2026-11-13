@@ -2372,7 +2372,8 @@ _oh_codex_trust_config() {
       spellings+=("$native")
     fi
   done
-  printf '%s\n' "${spellings[@]}" | sort -u | jq -R -r '"[projects.\(tojson)]\ntrust_level = \"trusted\"\n"'
+  printf '%s\n' "${spellings[@]}" | sort -u | jq -R -r '"[projects.\(tojson)]\ntrust_level = \"trusted\"\n"' ||
+    fail "codex: could not render the trust config for $proj (the error above); check that \`jq --version\` runs"
 }
 
 _oh_codex_direct() {
@@ -2501,7 +2502,8 @@ oh_codex_rules_enforce() {
   proj="$scratch/project"
   mkdir -p "$home" "$proj"
   cp "$auth" "$home/auth.json"
-  _oh_codex_trust_config "$proj" >"$home/config.toml"
+  _oh_codex_trust_config "$proj" >"$home/config.toml" ||
+    fail "codex: cannot write the scratch codex home's $home/config.toml; check that the host temp dir is writable"
   dir="rules-deny-${RANDOM}${RANDOM}"
   file="$(oh_enforce_file rules-allow)"
   del="$(_oh_codex_render_forced_delete "$file")"

@@ -35,17 +35,20 @@ record() {
   printf 'exe %s\n' "$0"
   printf 'cwd %s\n' "$PWD"
   printf 'arg %s\n' "$@"
-  env -0 | LC_ALL=C sort -z | tr '\0' '\n' | sed 's/^/env /'
+  env -0 | LC_ALL=C sort -z | tr '\0' '\n' | sed 's/^/env /' || refuse "cannot record its environment (the error above)"
   for file in "${CODEX_HOME:-$HOME/.codex}/config.toml" .codex/rules/oneharness.rules .codex/hooks.json; do
     printf 'file %s\n' "$file"
-    if [ -f "$file" ]; then sed 's/^/  /' "$file"; else echo "  (absent)"; fi
+    if [ -f "$file" ]; then
+      sed 's/^/  /' "$file" || refuse "cannot read $file, which the launch under test left in its scratch directory"
+    else
+      echo "  (absent)"
+    fi
   done
   echo '---'
 }
 case "${FAKE:?FAKE must say how this double behaves}" in
   args) exit 0 ;;
   record)
-    # Called outside any list, so errexit holds inside it.
     : >>"${FAKE_RECORD:?FAKE=record needs FAKE_RECORD}" || refuse "cannot append to FAKE_RECORD=$FAKE_RECORD"
     record "$@" >>"$FAKE_RECORD"
     exit 0

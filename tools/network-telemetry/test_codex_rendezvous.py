@@ -126,6 +126,8 @@ class Wrapper(unittest.TestCase):
         return False
 
     def records(self) -> list[Evidence]:
+        # Unchecked here: the shape is what the tests assert, the first of
+        # them every field of the one record it expects.
         return [cast(Evidence, json.loads(line)) for line in self.evidence.read_text().splitlines()]
 
     def failing(self, tool: str) -> str:

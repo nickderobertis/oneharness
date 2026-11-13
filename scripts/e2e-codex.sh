@@ -60,7 +60,6 @@ oh_codex_rendezvous_check() {
   # `the_live_rendezvous_check_expects_the_rendezvous_the_launch_prepares`.
   local rendezvous_prefix=codex-daemon- rendezvous_mode=700
   tmp="$(cd /tmp && pwd -P)" || fail "codex rendezvous: cannot resolve /tmp; check that it exists"
-  # Each line as the wrapper writes it, or jq's error naming the one that is not.
   rows="$(jq -r 'if (.listen | type) == "string" and (.euid | type) == "string" and (.euid | test("^[0-9]+$"))
       and (.linked | type) == "boolean" and (.target | type) == "string" and (.bound | type) == "string"
       and (.mode | type) == "string"

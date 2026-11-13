@@ -22,7 +22,7 @@ cd "$root" || {
 }
 
 check="$root/scripts/check-pipe-readers.sh"
-tmp="$(mktemp -d)" || {
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/check-pipe-readers-test.XXXXXX")" || {
   echo "check-pipe-readers-test: could not create a scratch directory under ${TMPDIR:-/tmp}; check that it is writable and has room, then re-run" >&2
   exit 2
 }

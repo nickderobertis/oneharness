@@ -72,6 +72,13 @@ oh_codex_rendezvous_check() {
     [ "$linked" = true ] ||
       fail "codex rendezvous: the shared server bound $target itself rather than linking that --listen path into its rendezvous directory, so where Codex binds cannot be checked; list $(dirname "$listen") to see how Codex now binds a long path"
     want="$tmp/$rendezvous_prefix$euid"
+    # The launch's own override of the directory it prepares, which a hermetic
+    # journey sets (with the mock's CODEX_MOCK_DAEMON_DIR) rather than touch
+    # the host's, shared by every Codex on it.
+    if [ -n "${ONEHARNESS_INTERNAL_CODEX_DAEMON_DIR:-}" ]; then
+      want="$(cd "$ONEHARNESS_INTERNAL_CODEX_DAEMON_DIR" && pwd -P)" ||
+        fail "codex rendezvous: ONEHARNESS_INTERNAL_CODEX_DAEMON_DIR=$ONEHARNESS_INTERNAL_CODEX_DAEMON_DIR is not a directory (cd's error above); unset it, or create it at mode 0700"
+    fi
     [ "$bound" = "$want" ] ||
       fail "codex rendezvous: the shared server runs as euid $euid and bound its socket under $bound, not $want; Codex has moved its rendezvous, so update codex_daemon_dir in crates/oneharness-core/src/domain/app_server.rs, the one source the launch and the mock both read, to it"
     [ "$mode" = "$rendezvous_mode" ] ||

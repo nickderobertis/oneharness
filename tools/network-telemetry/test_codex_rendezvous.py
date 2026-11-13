@@ -197,24 +197,32 @@ class Wrapper(unittest.TestCase):
         self.assertTrue(self.child_gone())
         self.assertFalse(private.is_symlink())
 
-    def test_the_recorded_mode_is_the_socket_directorys_permission_bits(self) -> None:
-        # The special bits fold into their execute bit, or vanish without one.
+    def test_the_recorded_mode_is_the_socket_directorys_mode_as_stat_prints_it(self) -> None:
+        # Setuid, setgid and sticky lead as a fourth digit, whether `ls` shows
+        # them over an execute bit (4700's s, 2750's s, 1777's t) or without
+        # one (2700's S, 1700's T), so none reads as plain 700.
         cases = {
             0o700: "700",
             0o755: "755",
             0o750: "750",
-            0o2750: "750",
-            0o2740: "740",
-            0o1777: "777",
+            0o1700: "1700",
+            0o2700: "2700",
+            0o4700: "4700",
+            0o6700: "6700",
+            0o2740: "2740",
+            0o2750: "2750",
+            0o1777: "1777",
         }
         for bits, recorded in cases.items():
             with self.subTest(mode=oct(bits)):
                 self.prepare()
                 self.socket_dir.mkdir()
                 self.socket_dir.chmod(bits)
+                self.assertEqual(self.socket_dir.stat().st_mode & 0o7777, bits)
                 process = self.serve("link")
                 (record,) = self.records()
                 self.assertEqual(record["mode"], recorded)
+                self.assertEqual(record["mode"], f"{bits:o}", "not as `stat -c %a` prints it")
                 self.assertEqual(self.stop(process)[0], 0)
 
     def test_a_listen_name_that_starts_with_a_dot_gets_a_distinct_private_twin(self) -> None:

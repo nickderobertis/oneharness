@@ -874,6 +874,38 @@ class CodexSuite(BudgetCase):
         )
 
     @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "the suite's controlled turn runs hermetically on the Linux leg alone",
+    )
+    def test_the_rendezvous_step_fails_a_socket_directory_with_a_special_bit_set(self) -> None:
+        # A real socket directory of the test's own (the launch's and the
+        # mock's overrides, never the host's): 0700 passes, and setuid,
+        # setgid or sticky on top fails the step's verdict, as Codex demands
+        # exactly 0700 — the mock, checking only the low bits, binds them all.
+        for bits in (0o700, 0o1700, 0o2700, 0o4700):
+            with self.subTest(mode=oct(bits)):
+                tmp = scratch(self)
+                daemon = tmp / "daemon"
+                daemon.mkdir()
+                daemon.chmod(bits)
+                self.assertEqual(daemon.stat().st_mode & 0o7777, bits)
+                run = self.run_codex(
+                    tmp,
+                    ONEHARNESS_INTERNAL_CODEX_DAEMON_DIR=str(daemon),
+                    CODEX_MOCK_DAEMON_DIR=str(daemon),
+                )
+                if bits == 0o700:
+                    self.assertEqual(run.returncode, 0, run.stderr)
+                    self.assertIn("» usage:", run.stderr)
+                else:
+                    self.assertNotEqual(run.returncode, 0, run.stderr)
+                    self.assertIn(
+                        f"FAIL: codex rendezvous: {daemon.resolve()} is mode {bits:o},"
+                        " not the 0700 Codex demands of it",
+                        run.stderr,
+                    )
+
+    @unittest.skipUnless(
         sys.platform.startswith("linux") and os.geteuid() != 0,
         "the suite's controlled turn runs hermetically on the Linux leg alone, and root"
         " removes a read-only directory's contents",

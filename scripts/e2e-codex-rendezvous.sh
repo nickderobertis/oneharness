@@ -89,7 +89,7 @@ until [ -e "$private" ] || [ -L "$private" ]; do
 done
 
 euid="$(id -u)" || die "cannot read the euid this server runs as (id's error above); check that \`id -u\` runs in the recorder's namespace (scripts/network-recorder-preflight.sh)"
-linked=false target="$private" bound="" mode="" perms="" cell=0 digit=0
+linked=false target="$private" bound="" mode="" perms="" cell=0 digit=0 special=0
 if [ -L "$private" ]; then
   linked=true
   target="$(readlink "$private")" ||
@@ -98,15 +98,24 @@ if [ -L "$private" ]; then
   bound="$(cd "$dir" && cd "$(dirname "$target")" && pwd -P)" ||
     die "cannot enter $(dirname "$target"), the directory Codex bound its socket in (cd's error above); check its owner and mode with \`ls -ld $(dirname "$target")\`"
   # The octal mode from `ls -ld`'s permission string, which GNU and BSD print
-  # alike, where stat's flags differ.
+  # alike, where stat's flags differ, spelled as GNU `stat -c %a` spells it:
+  # setuid, setgid and sticky (s/S, s/S, t/T in the execute cells) lead as a
+  # fourth digit when any is set, so 1700, 2700 or 4700 is never read as 700.
   perms="$(ls -ld "$bound")" || die "cannot read the mode of $bound (ls's error above); check its owner with \`ls -ld $bound\`"
+  special=0
   for cell in 1 4 7; do
     digit=0
     [ "${perms:cell:1}" != r ] || digit=$((digit + 4))
     [ "${perms:cell+1:1}" != w ] || digit=$((digit + 2))
     case "${perms:cell+2:1}" in x | s | t) digit=$((digit + 1)) ;; esac
+    case "$cell:${perms:cell+2:1}" in
+      1:[sS]) special=$((special + 4)) ;;
+      4:[sS]) special=$((special + 2)) ;;
+      7:[tT]) special=$((special + 1)) ;;
+    esac
     mode="$mode$digit"
   done
+  [ "$special" -eq 0 ] || mode="$special$mode"
 fi
 line="$(jq -nc --arg listen "$path" --arg euid "$euid" --argjson linked "$linked" --arg target "$target" \
   --arg bound "$bound" --arg mode "$mode" \

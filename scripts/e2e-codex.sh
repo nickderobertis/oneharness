@@ -42,6 +42,7 @@ oh_codex_rendezvous_setup() {
     fail "codex rendezvous: could not create a scratch directory — check that the host temp dir is writable"
   _oh_codex_rendezvous_dir="$dir"
   trap _oh_codex_rendezvous_cleanup EXIT
+  # llmlint: ignore[changed_behavior_has_e2e] mktemp has just made this directory, private to this user, so writing the evidence file and the wrapper in it fails only on a full or read-only filesystem, which no unprivileged journey can stage between those lines; the directory's own failure is test_the_rendezvous_setup_names_a_temp_dir_it_cannot_use's.
   : >"$dir/rendezvous.jsonl" || fail "codex rendezvous: cannot create $dir/rendezvous.jsonl; check that the host temp dir is writable"
   { printf '#!/usr/bin/env bash\nexec bash %q --real %q --evidence %q -- "$@"\n' \
     "$OH_REPO_ROOT/scripts/e2e-codex-rendezvous.sh" "$real" "$dir/rendezvous.jsonl" >"$dir/codex" &&

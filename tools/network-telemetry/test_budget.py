@@ -761,52 +761,57 @@ class CodexSuite(BudgetCase):
         self.assertLess(len(str(listen)), 100, listen)
         return state
 
-    @unittest.skipUnless(
-        sys.platform.startswith("linux"),
-        "the suite's controlled turn runs hermetically on the Linux leg alone",
-    )
-    def test_the_rendezvous_verdict_stands_when_judged_after_its_server_exited(self) -> None:
-        # A `jq` that holds the step's read of the rendezvous evidence until no
-        # pool record is left, the zero-linger server having exited, and notes
-        # that it waited: the verdict is then the evidence's alone, a pass on a
-        # clean rendezvous and the drift on a moved one.
-        cases = {
-            "clean": lambda tmp: {},
-            "drift": lambda tmp: {"CODEX_MOCK_DAEMON_DIR": str(tmp / "elsewhere")},
-        }
+    def run_with_evidence_read(
+        self, tmp: Path, before: str, **extra: str
+    ) -> subprocess.CompletedProcess[str]:
+        """The suite, its step's `jq` read of the rendezvous evidence first
+        running the bash `before` (the evidence file is `$1`)."""
         real = shutil.which("jq")
         self.assertIsNotNone(
             real, "no jq on PATH; install it (the codex suite reads every record with it)"
         )
         need_builds(self)
+        hooked = tmp / "hooked-jq"
+        hooked.mkdir()
+        (hooked / "jq").write_text(
+            "#!/usr/bin/env bash\n"
+            'for arg in "$@"; do case "$arg" in */rendezvous.jsonl)\n'
+            f'  set -- "$arg" "$@"; {before}\n'
+            "  shift; break ;;\n"
+            "esac; done\n"
+            f'exec {shlex.quote(str(real))} "$@"\n'
+        )
+        (hooked / "jq").chmod(0o755)
+        env = suite_env(tmp, "codex", OH_E2E_PHASE_LIMIT="3", **extra)
+        first, rest = env["PATH"].split(os.pathsep, 1)
+        env["PATH"] = os.pathsep.join((first, str(hooked), rest))
+        return run_suite("codex", env)
+
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "the suite's controlled turn runs hermetically on the Linux leg alone",
+    )
+    def test_the_rendezvous_verdict_stands_when_judged_after_its_server_exited(self) -> None:
+        # The step's read of the evidence is held until no pool record is left,
+        # the zero-linger server having exited, and notes that it waited: the
+        # verdict is then the evidence's alone, a pass on a clean rendezvous and
+        # the drift on a moved one.
+        cases = {
+            "clean": lambda tmp: {},
+            "drift": lambda tmp: {"CODEX_MOCK_DAEMON_DIR": str(tmp / "elsewhere")},
+        }
         for case, extra in cases.items():
             with self.subTest(rendezvous=case):
                 tmp = scratch(self)
-                held = tmp / "slow-jq"
-                held.mkdir()
                 waited = tmp / "waited"
-                (held / "jq").write_text(
-                    "#!/usr/bin/env bash\n"
-                    'case " $* " in *"/rendezvous.jsonl "*)\n'
-                    "  for _ in $(seq 300); do\n"
-                    '    compgen -G "$XDG_STATE_HOME/oneharness/servers/*/server.json" >/dev/null ||\n'
-                    f"      {{ echo gone >{shlex.quote(str(waited))}; break; }}\n"
-                    "    sleep 0.1\n"
-                    "  done ;;\n"
-                    "esac\n"
-                    f'exec {shlex.quote(str(real))} "$@"\n'
-                )
-                (held / "jq").chmod(0o755)
-                env = suite_env(
+                run = self.run_with_evidence_read(
                     tmp,
-                    "codex",
-                    OH_E2E_PHASE_LIMIT="3",
+                    "for _ in $(seq 300); do"
+                    ' compgen -G "$XDG_STATE_HOME/oneharness/servers/*/server.json" >/dev/null ||'
+                    f" {{ echo gone >{shlex.quote(str(waited))}; break; }}; sleep 0.1; done",
                     ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS="0",
                     **extra(tmp),
                 )
-                first, rest = env["PATH"].split(os.pathsep, 1)
-                env["PATH"] = os.pathsep.join((first, str(held), rest))
-                run = run_suite("codex", env)
                 if case == "clean":
                     self.assertEqual(run.returncode, 0, run.stderr)
                     self.assertIn("» usage:", run.stderr)
@@ -817,6 +822,43 @@ class CodexSuite(BudgetCase):
                         run.stderr,
                     )
                 self.assertEqual(waited.read_text(), "gone\n", run.stderr)
+
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "the suite's controlled turn runs hermetically on the Linux leg alone",
+    )
+    def test_the_rendezvous_step_names_evidence_it_cannot_read_or_that_holds_nothing(
+        self,
+    ) -> None:
+        cases = {
+            "unreadable": (
+                "echo 'jq: error: simulated' >&2; exit 2",
+                "FAIL: codex rendezvous: cannot read the rendezvous evidence",
+            ),
+            # As when a server started before the suite served its turn.
+            "empty": (
+                ': >"$1"',
+                "FAIL: codex rendezvous: no shared codex server started through"
+                " scripts/e2e-codex-rendezvous.sh during the controlled turn",
+            ),
+        }
+        for case, (before, said) in cases.items():
+            with self.subTest(evidence=case):
+                run = self.run_with_evidence_read(scratch(self), before)
+                self.assertNotEqual(run.returncode, 0, run.stderr)
+                self.assertIn(said, run.stderr)
+
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "the suite's controlled turn runs hermetically on the Linux leg alone",
+    )
+    def test_the_rendezvous_setup_names_a_temp_dir_it_cannot_use(self) -> None:
+        tmp = scratch(self)
+        missing = tmp / "no-such-tmp"
+        run = self.run_codex(tmp, TMPDIR=str(missing))
+        self.assertNotEqual(run.returncode, 0, run.stderr)
+        self.assertIn("FAIL: codex rendezvous: could not create a scratch directory", run.stderr)
+        self.assertNotIn("» controlled turn:", run.stderr)
 
     @unittest.skipUnless(
         sys.platform.startswith("linux"),

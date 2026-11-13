@@ -489,13 +489,11 @@ class Transparent(unittest.TestCase):
         self.prepare()
         bare, bare_resolved = self.launches(wrap=False)
         wrapped, wrapped_resolved = self.launches(wrap=True)
-        # The wrapper did front the second set; the first went straight in.
         self.assertIn(f"codex resolves to {self.bin}/codex", bare_resolved)
         self.assertRegex(wrapped_resolved, r"codex resolves to .*/oh-codex-rendezvous\.[^/]+/codex")
         # Every launch, the version probe included, recorded the same
         # executable, argv, cwd, environment and files.
         self.assertEqual(wrapped, bare)
-        # And what it recorded is what each journey depends on.
         direct, *rest = bare.split("---\n")
         self.assertIn(f"cwd {self.proj}\n", direct)
         self.assertIn(

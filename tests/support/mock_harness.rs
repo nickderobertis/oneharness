@@ -10,7 +10,7 @@
 //!   MOCK_STDOUT     bytes written to stdout (default: a JSON `result` doc)
 //!   MOCK_STDERR     bytes written to stderr
 //!   MOCK_EXIT       process exit code (default: 0)
-//!   MOCK_EXIT_<n>   with MOCK_ATTEMPT_FILE, process exit code for attempt n
+//!   `MOCK_EXIT_<n>` with MOCK_ATTEMPT_FILE, process exit code for attempt n
 //!   MOCK_EXIT_MARK  once the answer is written, hold the exit — the work an
 //!                   exit does (under coverage, writing the profile) — until a
 //!                   TERM arrives, then write `exited` to this path and exit,
@@ -42,7 +42,7 @@
 //!   MOCK_REPLY_AFTER_LINES  if set to N, read N newline-terminated request
 //!                   lines from stdin, then answer with MOCK_STDOUT and exit.
 //!                   With MOCK_ATTEMPT_FILE, the invocation is counted and
-//!                   MOCK_STDOUT_<n> is preferred for attempt n exactly as on
+//!                   `MOCK_STDOUT_<n>` is preferred for attempt n exactly as on
 //!                   the default path — so a `usage` probe that asks again can
 //!                   be answered differently the second time.
 //!   MOCK_REQUEST_FILE  with MOCK_REPLY_AFTER_LINES, the requests read from stdin
@@ -87,7 +87,7 @@
 //!                   what content.
 //!   MOCK_ATTEMPT_FILE  if set, a counter file: each invocation reads the prior
 //!                   count, increments it, writes it back, and (when
-//!                   MOCK_STDOUT_<n> is set for that 1-based attempt) emits that
+//!                   `MOCK_STDOUT_<n>` is set for that 1-based attempt) emits that
 //!                   instead of MOCK_STDOUT — used to script the structured-output
 //!                   retry loop, where attempt 1 is invalid and a later one valid.
 //!   MOCK_STREAM_DELAY_MS  if set, emit MOCK_STDOUT one line at a time, flushing

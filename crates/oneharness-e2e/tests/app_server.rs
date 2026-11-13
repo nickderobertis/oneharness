@@ -759,12 +759,32 @@ fn a_successor_server_is_never_dialled_through_its_stopped_predecessor_s_socket(
     );
 }
 
-/// Run two dispatches one after the other — the second while the first's
-/// server is still lingering — and answer the servers each ran on.
-fn servers_of(pool: &Pool, first: Command, second: Command) -> (u32, u32) {
-    let (out_a, report_a) = pool.run(first);
-    succeeded(&out_a, &report_a);
+/// Run two dispatches — the second while the first is held live, so the
+/// first's server is certainly up whenever the second starts — and answer the
+/// servers each ran on. Sharing (or not) is then the pool key's verdict alone:
+/// running the second after the first had ended left it to arrive inside the
+/// linger, and a runner slow to start it saw a fresh server for one key.
+fn servers_of(pool: &Pool, mut first: Command, second: Command) -> (u32, u32) {
+    static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let release = pool.path(&format!("servers-of-release-{call}"));
+    first
+        .env_remove("MOCK_CODEX_COMPLETE_TURN")
+        .env("MOCK_CODEX_HOLD_UNTIL", &release);
+    let held = pool.spawn(first);
+    wait_for(
+        "the first dispatch's turn to be live",
+        Duration::from_secs(30),
+        || {
+            pool.server_pids()
+                .into_iter()
+                .any(|pid| pool.live_turns(pid) == 1)
+        },
+    );
     let (out_b, report_b) = pool.run(second);
+    std::fs::write(&release, "").unwrap();
+    let (out_a, report_a) = Pool::finish(held);
+    succeeded(&out_a, &report_a);
     succeeded(&out_b, &report_b);
     (reported_server(&report_a), reported_server(&report_b))
 }

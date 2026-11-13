@@ -2392,7 +2392,10 @@ oh_codex_rules_match() {
   dir="rules-deny-${RANDOM}${RANDOM}"
   cfg="$scratch/oneharness.toml"
   printf '[sync.harness.codex]\nallowed_tools = ["Bash(rm -f %s:*)", "Bash(Remove-Item -Force %s:*)"]\ndenied_tools = ["Bash(mkdir %s:*)"]\n' \
-    "$file" "$file" "$dir" >"$cfg"
+    "$file" "$file" "$dir" >"$cfg" || {
+    rm -rf "$scratch"
+    fail "codex: could not write the sync config $cfg; check that the host temp dir is writable"
+  }
   if ! out="$(ONEHARNESS_NO_CONFIG='' "$bin" sync --harness codex --cwd "$(oh_native_path "$scratch")" \
     --config "$(oh_native_path "$cfg")" --compact 2>&1)"; then
     printf '%s\n' "$out" >&2
@@ -2519,7 +2522,10 @@ oh_codex_rules_enforce() {
   cfg="$scratch/oneharness.toml"
   # Each rule names only the scratch path its half needs.
   printf '[sync.harness.codex]\nallowed_tools = ["Bash(%s:*)"]\ndenied_tools = ["Bash(mkdir %s:*)"]\n' \
-    "$del" "$dir" >"$cfg"
+    "$del" "$dir" >"$cfg" || {
+    rm -rf "$scratch"
+    fail "codex: could not write the sync config $cfg; check that the host temp dir is writable"
+  }
   if ! out="$(ONEHARNESS_NO_CONFIG='' "$bin" sync --harness codex --cwd "$proj" \
     --config "$cfg" --compact 2>&1)"; then
     printf '%s\n' "$out" >&2
@@ -3416,7 +3422,7 @@ oh_hook_enforce() {
   denyfile="$sandbox/$marker.txt"
   allowfile="$sandbox/ohgate-allowed-${RANDOM}${RANDOM}.txt"
 
-  cat >"$sandbox/oneharness.toml" <<TOML
+  cat >"$sandbox/oneharness.toml" <<TOML || fail "$id: could not write the gate config into $sandbox; check that the host temp dir is writable"
 [[sync.hooks]]
 command = "$bin gate $id --deny-if-contains $marker"
 harnesses = ["$id"]

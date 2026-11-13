@@ -102,7 +102,7 @@ oh_opencode_session_id_forwarded() {
     sb="$(mktemp -d)"
     sb="$(oh_native_path "$sb")"
     git init -q "$sb" 2>/dev/null || true
-    cat >"$sb/oneharness.toml" <<TOML
+    cat >"$sb/oneharness.toml" <<TOML || fail "opencode: could not write the gate config into $sb; check that the host temp dir is writable"
 [[sync.hooks]]
 command = "$bin gate opencode --deny-if-contains $needle"
 harnesses = ["opencode"]

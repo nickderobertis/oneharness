@@ -14781,6 +14781,109 @@ fn the_sync_guard_keeps_an_old_top_level_allowlist_from_erasing_what_it_synced()
 }
 
 #[test]
+fn the_sync_guard_reads_the_resolved_run_level_rules_and_lets_a_kept_rule_stay() {
+    let fx = ConfigFixture::new("sync-guard-scoped", "", "");
+    seed_a_project_synced_by_the_previous_release(&fx.dir);
+    // A per-harness rule in a parent, a per-variant one in the file extending
+    // it: each refusal names the file its rule resolves from.
+    let parent = fx.dir.join("parent.toml");
+    std::fs::write(
+        &parent,
+        "[harness.codex]\nallowed_tools = [\"Bash(git log:*)\"]\n",
+    )
+    .unwrap();
+    let config = fx.dir.join("child.toml");
+    std::fs::write(
+        &config,
+        "extends = \"parent.toml\"\n[harness.claude-code.variant.work]\nallowed_tools = [\"Read\"]\n",
+    )
+    .unwrap();
+    let rules = fx
+        .dir
+        .join(".codex/rules/oneharness.rules")
+        .display()
+        .to_string();
+    let claude = fx.dir.join(".claude/settings.json").display().to_string();
+    let argv_file = fx.dir.join("spawned.argv");
+    let before = tree_bytes(&fx.dir);
+    for (verb, entry, file, rule, source) in [
+        (
+            &["sync", "--harness", "codex"][..],
+            "prefix_rule(pattern=[\"git\", \"log\"], decision=\"allow\")",
+            &rules,
+            "Bash(git log:*)",
+            &parent,
+        ),
+        (
+            &["sync", "--harness", "claude-code:work", "--exact"],
+            "Read",
+            &claude,
+            "Read",
+            &config,
+        ),
+    ] {
+        let output = drive_policy_verb(&fx, &config, verb, &argv_file);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{verb:?}: {stderr}");
+        assert!(
+            stderr.contains(&format!("would remove `{entry}` from `{file}`")),
+            "{verb:?}: {stderr}"
+        );
+        assert!(
+            stderr.contains(&format!(
+                "`{rule}`, which `{}` now sets as the run-level `allowed_tools`",
+                source.display()
+            )),
+            "{verb:?}: {stderr}"
+        );
+        assert_eq!(tree_bytes(&fx.dir), before, "{verb:?} wrote something");
+    }
+    // The base harness resolves no run-level rule of its own, so an exact
+    // check of it is the ordinary pending verdict, not a refusal.
+    let base = drive_policy_verb(
+        &fx,
+        &config,
+        &["sync", "--harness", "claude-code", "--check", "--exact"],
+        &argv_file,
+    );
+    assert_eq!(base.status.code(), Some(1), "{base:?}");
+    assert_eq!(tree_bytes(&fx.dir), before);
+
+    // A run-level rule the `[sync]` policy also lists stays in what sync
+    // writes, so nothing is removed and nothing is refused: the guard is about
+    // what a sync would erase, never about the run-level list being set.
+    let kept = fx.dir.join("kept.toml");
+    std::fs::write(
+        &kept,
+        "allowed_tools = [\"Bash(git log:*)\", \"Read\"]\n\
+         [sync]\nallowed_tools = [\"Bash(git log:*)\", \"Read\"]\n",
+    )
+    .unwrap();
+    for verb in [
+        &["sync", "--harness", "claude-code,codex"][..],
+        &["sync", "--harness", "claude-code,codex", "--exact"],
+        &[
+            "sync",
+            "--harness",
+            "claude-code,codex",
+            "--check",
+            "--exact",
+        ],
+    ] {
+        let output = drive_policy_verb(&fx, &kept, verb, &argv_file);
+        assert!(output.status.success(), "{verb:?}: {output:?}");
+        let after = tree_bytes(&fx.dir);
+        for seeded in [".claude/settings.json", ".codex/rules/oneharness.rules"] {
+            assert_eq!(
+                after.get(seeded),
+                before.get(seeded),
+                "{verb:?} changed {seeded}"
+            );
+        }
+    }
+}
+
+#[test]
 fn a_sync_policy_in_an_extends_parent_merges_under_the_child() {
     let fx = ConfigFixture::new("sync-extends", "", "");
     std::fs::write(

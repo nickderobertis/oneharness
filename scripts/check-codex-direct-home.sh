@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # llmlint: ignore-file[e2e_not_mocked] The subprocess double observes the environment at the native CLI boundary; the live Codex suite proves the same launch against real Codex on Windows.
-# The direct execpolicy control must resolve its isolated home on every OS.
+# The direct execpolicy control must resolve its isolated home, and trust its
+# scratch project under the key Codex looks it up by, on every OS.
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || {
   echo "check-codex-direct-home: could not resolve the repository; run this script inside a readable checkout" >&2
@@ -12,7 +13,7 @@ source "$root/scripts/e2e-lib.sh" || {
 }
 fail() {
   echo "check-codex-direct-home: $1" >&2
-  echo "  inspect _oh_codex_direct in scripts/e2e-lib.sh; rerun with bash -x scripts/check-codex-direct-home.sh" >&2
+  echo "  inspect _oh_codex_direct and _oh_codex_trust_config in scripts/e2e-lib.sh; rerun with bash -x scripts/check-codex-direct-home.sh" >&2
   exit 1
 }
 scratch="$(mktemp -d)" || fail "could not create scratch space; check the host temp directory"
@@ -64,3 +65,21 @@ CYGPATH
 if (_oh_codex_direct "$scratch/project" "$POSIX_CODEX_HOME" 'echo marker') >"$scratch/empty.log" 2>&1; then
   fail 'direct Codex launch must fail when conversion returns an empty path'
 fi
+# Codex keys a Windows project by its backslashed long path, folding case but
+# not separators, so the trust config must name that spelling beside the
+# forward-slash one the rest of the suite passes.
+cat >"$scratch/bin/cygpath" <<'CYGPATH' || fail "could not write the converter fixture; check $scratch permissions"
+#!/usr/bin/env bash
+set -euo pipefail
+case "$1" in
+  -ml | -m) printf 'C:/Users/runneradmin/project\n' ;;
+  -wl) printf 'C:\\Users\\runneradmin\\project\n' ;;
+  *) echo "unexpected cygpath $*" >&2; exit 2 ;;
+esac
+CYGPATH
+trust="$(_oh_codex_trust_config "$scratch/project")" || fail "the trust config could not be written: $trust"
+for key in "$scratch/project" 'C:/Users/runneradmin/project' 'C:\\Users\\runneradmin\\project'; do
+  [ "$(printf '%s\n' "$trust" | grep -cxF "[projects.\"$key\"]")" -eq 1 ] ||
+    fail "the trust config must name one [projects.\"$key\"] table, else Codex finds the project untrusted there:
+$trust"
+done

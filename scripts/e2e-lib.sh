@@ -2353,6 +2353,23 @@ oh_enforce_file() { printf '%s-%s%s.txt' "$1" "${RANDOM}" "${RANDOM}"; }
 # live-codex pass, which the network budgets (live/AGENTS.md) count.
 _OH_CODEX_DEFAULTS=(-c features.plugins=false -c features.apps=false -c analytics.enabled=false)
 _OH_CODEX_OUT=""
+# The config.toml that trusts project $1 under every spelling Codex may look
+# it up by, each named once: as given, physical (macOS's /private/var), and on
+# Windows the backslashed long path Codex canonicalizes its cwd to. Codex folds
+# case there but not separators, so the forward-slash `cygpath -m` spelling
+# alone matches nothing; codex 0.168 hid that by trusting a writable-sandbox
+# `exec`'s cwd itself, which 0.169.0 (openai/codex#60041) no longer does.
+_oh_codex_trust_config() {
+  local proj="$1" real
+  real="$(cd "$proj" && pwd -P)" || fail "codex: cannot resolve the scratch project $proj (cd's error above)"
+  {
+    printf '%s\n' "$proj" "$real" "$(oh_native_path "$proj")" "$(oh_native_path "$real")"
+    if command -v cygpath >/dev/null 2>&1; then
+      printf '%s\n' "$(cygpath -wl "$proj")" "$(cygpath -wl "$real")"
+    fi
+  } | sort -u | jq -R -r 'select(. != "") | "[projects.\(tojson)]\ntrust_level = \"trusted\"\n"'
+}
+
 _oh_codex_direct() {
   local proj="$1" home="$2" prompt="$3" native_home
   shift 3
@@ -2467,7 +2484,7 @@ _oh_codex_render_forced_delete() {
 # trusts only the scratch project — the user's own ~/.codex is never written.
 oh_codex_rules_enforce() {
   _oh_phase
-  local bin auth scratch home proj cfg real out rules dir file del
+  local bin auth scratch home proj cfg out rules dir file del
   bin="$(oh_bin)"
   [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
   command -v codex >/dev/null 2>&1 || skip "codex is not installed; nothing to verify"
@@ -2479,12 +2496,7 @@ oh_codex_rules_enforce() {
   proj="$scratch/project"
   mkdir -p "$home" "$proj"
   cp "$auth" "$home/auth.json"
-  real="$(cd "$proj" && pwd -P)"
-  # Trust every spelling Codex may resolve the project to (macOS's
-  # /private/var, Windows's native path), each named once.
-  printf '%s\n' "$proj" "$real" "$(oh_native_path "$proj")" "$(oh_native_path "$real")" |
-    sort -u |
-    jq -R -r '"[projects.\(tojson)]\ntrust_level = \"trusted\"\n"' >"$home/config.toml"
+  _oh_codex_trust_config "$proj" >"$home/config.toml"
   dir="rules-deny-${RANDOM}${RANDOM}"
   file="$(oh_enforce_file rules-allow)"
   del="$(_oh_codex_render_forced_delete "$file")"

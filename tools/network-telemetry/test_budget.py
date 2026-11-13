@@ -16,6 +16,7 @@ import json
 import math
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -741,11 +742,8 @@ class CodexSuite(BudgetCase):
         tmp = scratch(self)
         # A zero linger: the pool stops the controlled turn's server the moment
         # its lease ends, before `oneharness run` returns, so it is gone by the
-        # time the post-turn step runs. Its thread opens 1.5 s late, so the
-        # turn lasts longer than the rendezvous reading takes.
-        run = self.run_codex(
-            tmp, ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS="0", CODEX_MOCK_OPEN_DELAYS_MS="1500"
-        )
+        # time the post-turn step runs.
+        run = self.run_codex(tmp, ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS="0")
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertIn("» usage:", run.stderr)
 
@@ -763,38 +761,58 @@ class CodexSuite(BudgetCase):
         sys.platform.startswith("linux"),
         "the suite's controlled turn runs hermetically on the Linux leg alone",
     )
-    def test_the_rendezvous_reading_holds_a_server_whose_turn_ends_under_it(self) -> None:
-        tmp = scratch(self)
-        # A `jq` that reads a pool record 3 s late: the reading starts with
-        # that read, under the entry's lock, early in the turn (whose thread
-        # opens 1.5 s late), so the turn ends meanwhile, and with a zero linger
-        # its lease's end would stop the server under the reading if the lock
-        # did not hold that stop back.
-        slow = tmp / "slow-jq"
-        slow.mkdir()
+    def test_the_rendezvous_verdict_stands_when_judged_after_its_server_exited(self) -> None:
+        # A `jq` that holds the step's read of the rendezvous evidence until no
+        # pool record is left, the zero-linger server having exited, and notes
+        # that it waited: the verdict is then the evidence's alone, a pass on a
+        # clean rendezvous and the drift on a moved one.
+        cases = {
+            "clean": lambda tmp: {},
+            "drift": lambda tmp: {"CODEX_MOCK_DAEMON_DIR": str(tmp / "elsewhere")},
+        }
         real = shutil.which("jq")
-        # The suite needs jq itself, so a host without it fails here, named.
         self.assertIsNotNone(
             real, "no jq on PATH; install it (the codex suite reads every record with it)"
         )
-        (slow / "jq").write_text(
-            '#!/usr/bin/env bash\ncase " $* " in *"/server.json "*) sleep 3 ;; esac\n'
-            f'exec "{real}" "$@"\n'
-        )
-        (slow / "jq").chmod(0o755)
-        env = suite_env(
-            tmp,
-            "codex",
-            OH_E2E_PHASE_LIMIT="3",
-            ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS="0",
-            CODEX_MOCK_OPEN_DELAYS_MS="1500",
-        )
-        first, rest = env["PATH"].split(os.pathsep, 1)
-        env["PATH"] = os.pathsep.join((first, str(slow), rest))
         need_builds(self)
-        run = run_suite("codex", env)
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertIn("» usage:", run.stderr)
+        for case, extra in cases.items():
+            with self.subTest(rendezvous=case):
+                tmp = scratch(self)
+                held = tmp / "slow-jq"
+                held.mkdir()
+                waited = tmp / "waited"
+                (held / "jq").write_text(
+                    "#!/usr/bin/env bash\n"
+                    'case " $* " in *"/rendezvous.jsonl "*)\n'
+                    "  for _ in $(seq 300); do\n"
+                    '    compgen -G "$XDG_STATE_HOME/oneharness/servers/*/server.json" >/dev/null ||\n'
+                    f"      {{ echo gone >{shlex.quote(str(waited))}; break; }}\n"
+                    "    sleep 0.1\n"
+                    "  done ;;\n"
+                    "esac\n"
+                    f'exec "{real}" "$@"\n'
+                )
+                (held / "jq").chmod(0o755)
+                env = suite_env(
+                    tmp,
+                    "codex",
+                    OH_E2E_PHASE_LIMIT="3",
+                    ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS="0",
+                    **extra(tmp),
+                )
+                first, rest = env["PATH"].split(os.pathsep, 1)
+                env["PATH"] = os.pathsep.join((first, str(held), rest))
+                run = run_suite("codex", env)
+                if case == "clean":
+                    self.assertEqual(run.returncode, 0, run.stderr)
+                    self.assertIn("» usage:", run.stderr)
+                else:
+                    self.assertNotEqual(run.returncode, 0, run.stderr)
+                    self.assertIn(
+                        f"and bound its socket under {(tmp / 'elsewhere').resolve()}, not /tmp/codex-daemon-",
+                        run.stderr,
+                    )
+                self.assertEqual(waited.read_text(), "gone\n", run.stderr)
 
     @unittest.skipUnless(
         sys.platform.startswith("linux"),
@@ -807,42 +825,23 @@ class CodexSuite(BudgetCase):
         self.assertNotEqual(run.returncode, 0, run.stderr)
         self.assertIn("PASS: codex live e2e\n» controlled turn:", run.stderr)
         self.assertIn(
-            f"FAIL: codex rendezvous: no pooled codex server under {state}/oneharness/servers"
-            " was running with its --listen path linked to a socket while the controlled turn ran",
+            f"FAIL: codex rendezvous: the shared server bound {state}/oneharness/servers/",
             run.stderr,
         )
+        self.assertIn("itself rather than linking that --listen path", run.stderr)
 
     @unittest.skipUnless(
         sys.platform.startswith("linux"),
         "the suite's controlled turn runs hermetically on the Linux leg alone",
     )
-    def test_a_suite_that_dies_in_its_controlled_turn_takes_the_rendezvous_watch_with_it(
-        self,
-    ) -> None:
-        # The server refuses the turn's thread, which ends the suite, with the
-        # watch still waiting (no link to read), or done before the refusal
-        # (the thread opens 1.5 s late): passed, or failed on a drift.
-        cases = {
-            "waiting": lambda tmp: {"XDG_STATE_HOME": str(self.short_state())},
-            "passed": lambda tmp: {"CODEX_MOCK_OPEN_DELAYS_MS": "1500"},
-            "failed": lambda tmp: {
-                "CODEX_MOCK_OPEN_DELAYS_MS": "1500",
-                "CODEX_MOCK_DAEMON_DIR": str(tmp / "elsewhere"),
-            },
-        }
-        for case, extra in cases.items():
-            with self.subTest(watch=case):
-                tmp = scratch(self)
-                run = self.run_codex(tmp, CODEX_MOCK_FAULT="refuse-thread-start", **extra(tmp))
-                self.assertNotEqual(run.returncode, 0, run.stderr)
-                self.assertIn("» controlled turn:", run.stderr)
-                said = re.findall(r"^FAIL: codex rendezvous: .*", run.stderr, re.MULTILINE)
-                if case == "failed":
-                    self.assertEqual(len(said), 1, run.stderr)
-                    self.assertIn("Codex has moved its rendezvous", said[0])
-                else:
-                    self.assertEqual(said, [], run.stderr)
-                self.assertEqual(list((tmp / "live-tmp").glob("oh-codex-rendezvous.*")), [])
+    def test_a_suite_that_dies_in_its_controlled_turn_leaves_no_rendezvous_scratch(self) -> None:
+        tmp = scratch(self)
+        # The server refuses the turn's thread, which ends the suite.
+        run = self.run_codex(tmp, CODEX_MOCK_FAULT="refuse-thread-start")
+        self.assertNotEqual(run.returncode, 0, run.stderr)
+        self.assertIn("» controlled turn:", run.stderr)
+        self.assertNotIn("codex rendezvous:", run.stderr)
+        self.assertEqual(list((tmp / "live-tmp").glob("oh-codex-rendezvous.*")), [])
 
     @unittest.skipUnless(
         sys.platform.startswith("linux"),

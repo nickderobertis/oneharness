@@ -3368,12 +3368,12 @@ _oh_control_mode_enforce_once() {
 
 # --- hook enforcement --------------------------------------------------------
 
-# Live proof that a synced `[[hooks]]` gate is HONORED by the real harness — the
+# Live proof that a synced `[[sync.hooks]]` gate is HONORED by the real harness — the
 # hook counterpart to `oh_sync_enforce`, and the only check that the installed
 # hook file is in a shape the real CLI loads and fires (the hermetic suite can
 # only prove the file was written correctly).
 #
-# It syncs a `[[hooks]]` entry whose command is `oneharness gate <id>` into the
+# It syncs a `[[sync.hooks]]` entry whose command is `oneharness gate <id>` into the
 # harness's OWN config, then drives the harness (via `oneharness run`, under
 # bypass so the hook is the sole decider) through two commands:
 #   * deny  — a `touch` whose path carries a unique marker. The gate matches the

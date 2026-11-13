@@ -12507,7 +12507,7 @@ fn sync_with_nothing_configured_skips_everything() {
 
 #[test]
 fn sync_installs_normalized_hooks_across_harness_shapes() {
-    // One `[[hooks]]` entry fans across harnesses with structurally different
+    // One `[[sync.hooks]]` entry fans across harnesses with structurally different
     // hook formats: a shared-file merge (claude-code), a dedicated file
     // (codex), and a JS plugin shim (opencode). `{harness}` is substituted.
     let project =
@@ -12982,7 +12982,7 @@ fn sync_writes_codex_rules_and_reports_each_untranslatable_rule() {
     }
 
     // Nothing else lands under .codex/: the rules file, and the hooks file the
-    // `[[hooks]]` binding has always written, exactly as it writes it.
+    // `[[sync.hooks]]` binding has always written, exactly as it writes it.
     let mut under_codex: Vec<String> = walk(&fx.dir.join(".codex"));
     under_codex.sort();
     assert_eq!(under_codex, ["hooks.json", "rules/oneharness.rules"]);
@@ -14173,7 +14173,7 @@ fn mock_startup_faults_are_loud_usage_errors() {
     );
 }
 
-/// `sync --global` installs `[[hooks]]` at each harness's user-global location
+/// `sync --global` installs `[[sync.hooks]]` at each harness's user-global location
 /// (resolved from the injected HOME / XDG_CONFIG_HOME), not the project.
 #[test]
 fn sync_global_installs_hooks_at_user_locations() {

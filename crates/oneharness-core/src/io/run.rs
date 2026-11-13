@@ -2198,7 +2198,7 @@ fn setup_mock(
                 reason: match spec.id {
                     "qwen" => {
                         "its hooks fire only at user scope headlessly (project hooks sit behind \
-                         folder trust) — sync a [[hooks]] mock with --global into a redirected \
+                         folder trust) — sync a [[sync.hooks]] mock with --global into a redirected \
                          HOME instead (see the README)"
                     }
                     _ => {

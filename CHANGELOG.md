@@ -6,6 +6,33 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+<!-- llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] A changelog entry records what this release changed, as of this release; it is the migration note a consumer reads when upgrading, not a live copy of the config contract to keep in step. That contract's source is `domain::config` (`FileConfig`, `SyncConfig`, `parse`'s refusal) and `io::sync`'s guard, pinned by the `crates/oneharness-e2e/tests/cli.rs` `[sync]` journeys and the README's *Syncing harness configs* section. -->
+
+### Changed
+
+- **Breaking:** every sync-policy field now lives in its own `[sync]` section:
+  `[sync]` holds `allowed_tools`, `denied_tools` and `[[sync.hooks]]`;
+  `[sync.harness.<id>]` and `[sync.harness.<id>.variant.<name>]` hold
+  `allowed_tools`, `denied_tools`, `hooks` and `settings`. `oneharness sync`
+  reads its policy from `[sync]` alone and writes byte-for-byte what the old
+  spelling wrote. `denied_tools`, `hooks` / `[[hooks]]` and `settings` anywhere
+  outside `[sync]` are now a usage error (exit 2) on every command, naming the
+  file, each field and its `[sync]` spelling.
+- **Breaking:** a top-level, per-harness or per-variant `allowed_tools` changed
+  meaning. It used to be synced into each harness's config file; it is now the
+  run-level allowlist, which `sync` never writes. In this release `run` refuses
+  a config that sets one, naming the rule, until a later release applies it per
+  run. **Migration:** move it to `[sync] allowed_tools` (or
+  `[sync.harness.<id>] allowed_tools`) to keep it synced. Until you do, `sync`
+  refuses, writing nothing, rather than remove from a harness's allow list or
+  Codex rules file a rule an earlier release synced from it.
+- **Breaking:** the `config` report (schema `0.14`) carries the sync policy in a
+  `sync` object mirroring the file, and drops the top-level `denied_tools` /
+  `hooks` and each harness's and variant's `denied_tools` / `hooks` /
+  `settings`; its `allowed_tools` is the run-level allowlist.
+
+<!-- llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate] -->
+
 ## [0.28.6](https://github.com/nickderobertis/oneharness/compare/v0.28.5...v0.28.6) - 2026-11-13
 
 ### Added

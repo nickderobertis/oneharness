@@ -375,7 +375,7 @@ export interface Field11 {
   [k: string]: unknown;
 }
 /**
- * One `[[hooks]]` entry: a pre-tool gate installed into each targeted harness.
+ * One `[[sync.hooks]]` entry: a pre-tool gate installed into each targeted harness.
  * The `command` may contain `{harness}`, replaced with the harness id when the
  * hook is built (so one entry can route `mygate hook {harness}` to every CLI).
  */

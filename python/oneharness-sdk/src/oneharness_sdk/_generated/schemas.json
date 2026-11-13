@@ -651,7 +651,7 @@
       },
       "HookEntry": {
         "additionalProperties": false,
-        "description": "One `[[hooks]]` entry: a pre-tool gate installed into each targeted harness.\nThe `command` may contain `{harness}`, replaced with the harness id when the\nhook is built (so one entry can route `mygate hook {harness}` to every CLI).",
+        "description": "One `[[sync.hooks]]` entry: a pre-tool gate installed into each targeted harness.\nThe `command` may contain `{harness}`, replaced with the harness id when the\nhook is built (so one entry can route `mygate hook {harness}` to every CLI).",
         "properties": {
           "command": {
             "description": "The command the harness runs before a tool call. `{harness}` is\nsubstituted with the harness id. Required and non-empty.",
@@ -17904,7 +17904,7 @@
         ]
       },
       "HookFileResult": {
-        "description": "One installed `[[hooks]]` file.",
+        "description": "One installed `[[sync.hooks]]` file.",
         "properties": {
           "file": {
             "type": "string"
@@ -17979,7 +17979,7 @@
             "type": "string"
           },
           "hooks": {
-            "description": "Normalized `[[hooks]]` files installed into this harness (a Goose hook\nwrites two). Empty when no `[[hooks]]` entry targets it.",
+            "description": "Normalized `[[sync.hooks]]` files installed into this harness (a Goose hook\nwrites two). Empty when no `[[sync.hooks]]` entry targets it.",
             "items": {
               "$ref": "#/$defs/HookFileResult"
             },
@@ -17996,7 +17996,7 @@
             "$ref": "#/$defs/SyncStatus"
           },
           "unmapped": {
-            "description": "Top-level settings that have no mapping for this harness (e.g. a\ntop-level `allowed_tools` while the harness has no allow-list concept)\n\u2014 visible here and warned on stderr, never silently dropped.",
+            "description": "Top-level settings that have no mapping for this harness (e.g. a\n`[sync] allowed_tools` while the harness has no allow-list concept)\n\u2014 visible here and warned on stderr, never silently dropped.",
             "items": {
               "type": "string"
             },

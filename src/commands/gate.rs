@@ -1,6 +1,6 @@
 //! `oneharness gate <id>` — the runtime pre-tool gate for a harness.
 //!
-//! An installed `[[hooks]]` hook (see `oneharness sync`) invokes this: the
+//! An installed `[[sync.hooks]]` hook (see `oneharness sync`) invokes this: the
 //! harness pipes its pre-tool event JSON to stdin, and this reads it, decides
 //! whether to block, and — only on a block — writes that harness's native deny
 //! verdict to stdout. A non-block writes nothing (the universal fall-through),

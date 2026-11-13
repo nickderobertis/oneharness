@@ -434,11 +434,11 @@ pub struct SyncResult {
     // would fail to import it. `SyncStatus`'s own definition carries the
     // description, including what `skipped` means here.
     pub status: SyncStatus,
-    /// Normalized `[[hooks]]` files installed into this harness (a Goose hook
-    /// writes two). Empty when no `[[hooks]]` entry targets it.
+    /// Normalized `[[sync.hooks]]` files installed into this harness (a Goose hook
+    /// writes two). Empty when no `[[sync.hooks]]` entry targets it.
     pub hooks: Vec<HookFileResult>,
     /// Top-level settings that have no mapping for this harness (e.g. a
-    /// top-level `allowed_tools` while the harness has no allow-list concept)
+    /// `[sync] allowed_tools` while the harness has no allow-list concept)
     /// — visible here and warned on stderr, never silently dropped.
     pub unmapped: Vec<&'static str>,
     /// Individual configured rules this harness cannot express (a Codex
@@ -475,7 +475,7 @@ impl SyncResult {
     }
 }
 
-/// One installed `[[hooks]]` file.
+/// One installed `[[sync.hooks]]` file.
 #[derive(Debug, Clone, schemars::JsonSchema, serde::Serialize)]
 pub struct HookFileResult {
     pub file: String,
@@ -665,7 +665,7 @@ pub fn sync_with(request: &SyncRequest, mode: SyncMode) -> Result<SyncReport, On
             None => (None, SyncStatus::Skipped, Vec::new(), Vec::new()),
         };
 
-        // Normalized `[[hooks]]` install into this harness's native shape,
+        // Normalized `[[sync.hooks]]` install into this harness's native shape,
         // independent of the permission/settings fragment above.
         let mut hooks = Vec::new();
         for hook in cfg.sync.hook_specs_for(spec.id) {

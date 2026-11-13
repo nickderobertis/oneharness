@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::domain::gate::DenyShape;
+use crate::domain::harness::HarnessSpec;
 
 /// How a harness expresses "allow this call, but with these rewritten
 /// arguments" from a pre-tool hook. Every variant is live-verified (the
@@ -103,7 +104,8 @@ pub fn hook_command(exe: &str, id: &str, rules: Option<&str>, spy: Option<&str>)
 
 /// The argv that trusts the project a [`MockDelivery::ProjectHooks`] install
 /// wrote into, for this invocation only, where the harness loads no project
-/// hooks without it; empty for every other harness. `project_keys` are the
+/// hooks without it; empty for every other harness. `spec` is the registry
+/// entry the install was for, and `project_keys` are the
 /// spellings of the working directory the harness may look its trust up under
 /// (as given, and canonical), each named once.
 ///
@@ -115,8 +117,8 @@ pub fn hook_command(exe: &str, id: &str, rules: Option<&str>, spy: Option<&str>)
 /// and merges with the trust already saved there. (The dotted
 /// `projects."<dir>".trust_level` spelling cannot carry a path with a `.` in
 /// it: Codex splits the key on every dot and ignores the setting.)
-pub fn project_trust_args(id: &str, project_keys: &[String]) -> Vec<String> {
-    if id != "codex" || project_keys.is_empty() {
+pub fn project_trust_args(spec: &HarnessSpec, project_keys: &[String]) -> Vec<String> {
+    if spec.id != "codex" || project_keys.is_empty() {
         return Vec::new();
     }
     let entries: Vec<String> = project_keys
@@ -922,7 +924,8 @@ mod tests {
             "/tmp/tmp.Ab1/project".to_string(),
             r"C:\Users\runneradmin\AppData\Local\Temp\tmp.X".to_string(),
         ];
-        let args = project_trust_args("codex", &keys);
+        let codex = crate::domain::harness::by_id("codex").expect("codex is registered");
+        let args = project_trust_args(codex, &keys);
         assert_eq!(args.len(), 2);
         assert_eq!(args[0], "-c");
         let value = args[1]
@@ -945,18 +948,13 @@ mod tests {
     #[test]
     fn project_trust_args_are_codex_only() {
         let keys = vec!["/work".to_string()];
-        for id in [
-            "claude-code",
-            "opencode",
-            "goose",
-            "crush",
-            "cursor",
-            "qwen",
-            "copilot",
-        ] {
-            assert!(project_trust_args(id, &keys).is_empty(), "{id}");
+        for spec in crate::domain::harness::all() {
+            if spec.id != "codex" {
+                assert!(project_trust_args(spec, &keys).is_empty(), "{}", spec.id);
+            }
         }
-        assert!(project_trust_args("codex", &[]).is_empty());
+        let codex = crate::domain::harness::by_id("codex").expect("codex is registered");
+        assert!(project_trust_args(codex, &[]).is_empty());
     }
 
     #[test]

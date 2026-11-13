@@ -13708,7 +13708,7 @@ fn run_mock_rules_codex_trusts_its_cwd_for_the_run() {
             "--mock-rules",
             rules.to_str().unwrap(),
             "--bin",
-            &bin_override("codex"),
+            &bin_override("codex"), // llmlint: ignore[e2e_not_mocked] The layer under test is the argv oneharness hands codex; the gate cannot spend a model call, so the repo's --bin double records it, while scripts/e2e-codex.sh's `oh_mock_enforce codex` proves real Codex 0.169 loads the hook under this trust.
             "--compact",
         ],
         &[("MOCK_ARGV_FILE", argv_file.to_str().unwrap())],

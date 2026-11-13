@@ -2303,7 +2303,7 @@ fn setup_mock(
                 hooks_io::install(Scope::Project(project_dir), spec, &hook, false)?;
                 let mut argv: Vec<String> = extra_args.iter().map(|a| a.to_string()).collect();
                 argv.extend(mock::project_trust_args(
-                    spec.id,
+                    spec,
                     &project_trust_keys(project_dir),
                 ));
                 if !argv.is_empty() {

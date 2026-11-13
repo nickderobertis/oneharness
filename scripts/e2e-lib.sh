@@ -2360,14 +2360,19 @@ _OH_CODEX_OUT=""
 # alone matches nothing; codex 0.168 hid that by trusting a writable-sandbox
 # `exec`'s cwd itself, which 0.169.0 (openai/codex#60041) no longer does.
 _oh_codex_trust_config() {
-  local proj="$1" real
+  local proj="$1" real path native spellings=()
   real="$(cd "$proj" && pwd -P)" || fail "codex: cannot resolve the scratch project $proj (cd's error above)"
-  {
-    printf '%s\n' "$proj" "$real" "$(oh_native_path "$proj")" "$(oh_native_path "$real")"
+  for path in "$proj" "$real"; do
+    native="$(oh_native_path "$path")" && [ -n "$native" ] ||
+      fail "codex: could not convert $path to a native path to trust; check cygpath on this host"
+    spellings+=("$path" "$native")
     if command -v cygpath >/dev/null 2>&1; then
-      printf '%s\n' "$(cygpath -wl "$proj")" "$(cygpath -wl "$real")"
+      native="$(cygpath -wl "$path")" && [ -n "$native" ] ||
+        fail "codex: cygpath -wl could not convert $path to the backslashed path Windows codex trusts a project by; check cygpath on this host"
+      spellings+=("$native")
     fi
-  } | sort -u | jq -R -r 'select(. != "") | "[projects.\(tojson)]\ntrust_level = \"trusted\"\n"'
+  done
+  printf '%s\n' "${spellings[@]}" | sort -u | jq -R -r '"[projects.\(tojson)]\ntrust_level = \"trusted\"\n"'
 }
 
 _oh_codex_direct() {

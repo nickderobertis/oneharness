@@ -45,7 +45,9 @@ record() {
 case "${FAKE:?FAKE must say how this double behaves}" in
   args) exit 0 ;;
   record)
-    record "$@" >>"${FAKE_RECORD:?FAKE=record needs FAKE_RECORD}" || refuse "cannot append to FAKE_RECORD=$FAKE_RECORD"
+    # Called outside any list, so errexit holds inside it.
+    : >>"${FAKE_RECORD:?FAKE=record needs FAKE_RECORD}" || refuse "cannot append to FAKE_RECORD=$FAKE_RECORD"
+    record "$@" >>"$FAKE_RECORD"
     exit 0
     ;;
   exit:*) exit "${FAKE#exit:}" ;;

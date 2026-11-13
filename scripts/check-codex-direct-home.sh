@@ -83,3 +83,20 @@ for key in "$scratch/project" 'C:/Users/runneradmin/project' 'C:\\Users\\runnera
     fail "the trust config must name one [projects.\"$key\"] table, else Codex finds the project untrusted there:
 $trust"
 done
+# A Windows spelling cygpath cannot give, failing or empty, stops the journey
+# naming it rather than leaving a config that trusts the project nowhere.
+for body in 'exit 1' 'exit 0'; do
+  cat >"$scratch/bin/cygpath" <<CYGPATH || fail "could not write the converter fixture; check $scratch permissions"
+#!/usr/bin/env bash
+set -euo pipefail
+case "\$1" in
+  -wl) $body ;;
+  *) printf 'C:/Users/runneradmin/project\n' ;;
+esac
+CYGPATH
+  if (_oh_codex_trust_config "$scratch/project") >"$scratch/trust.log" 2>&1; then
+    fail "the trust config must fail when cygpath -wl does '$body'"
+  fi
+  grep -qF 'cygpath -wl could not convert' "$scratch/trust.log" ||
+    fail "the trust config's failure must name the cygpath -wl conversion: $(cat "$scratch/trust.log")"
+done

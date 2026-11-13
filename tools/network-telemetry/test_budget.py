@@ -815,16 +815,30 @@ class CodexSuite(BudgetCase):
     def test_a_suite_that_dies_in_its_controlled_turn_takes_the_rendezvous_watch_with_it(
         self,
     ) -> None:
-        tmp = scratch(self)
-        # No link to read, so the watch is still waiting when the turn, whose
-        # thread the server refuses, ends the suite.
-        run = self.run_codex(
-            tmp, XDG_STATE_HOME=str(self.short_state()), CODEX_MOCK_FAULT="refuse-thread-start"
-        )
-        self.assertNotEqual(run.returncode, 0, run.stderr)
-        self.assertIn("» controlled turn:", run.stderr)
-        self.assertNotIn("codex rendezvous:", run.stderr)
-        self.assertEqual(list((tmp / "live-tmp").glob("oh-codex-rendezvous.*")), [])
+        # The server refuses the turn's thread, which ends the suite, with the
+        # watch still waiting (no link to read), or done before the refusal
+        # (the thread opens 1.5 s late): passed, or failed on a drift.
+        cases = {
+            "waiting": lambda tmp: {"XDG_STATE_HOME": str(self.short_state())},
+            "passed": lambda tmp: {"CODEX_MOCK_OPEN_DELAYS_MS": "1500"},
+            "failed": lambda tmp: {
+                "CODEX_MOCK_OPEN_DELAYS_MS": "1500",
+                "CODEX_MOCK_DAEMON_DIR": str(tmp / "elsewhere"),
+            },
+        }
+        for case, extra in cases.items():
+            with self.subTest(watch=case):
+                tmp = scratch(self)
+                run = self.run_codex(tmp, CODEX_MOCK_FAULT="refuse-thread-start", **extra(tmp))
+                self.assertNotEqual(run.returncode, 0, run.stderr)
+                self.assertIn("» controlled turn:", run.stderr)
+                said = re.findall(r"^FAIL: codex rendezvous: .*", run.stderr, re.MULTILINE)
+                if case == "failed":
+                    self.assertEqual(len(said), 1, run.stderr)
+                    self.assertIn("Codex has moved its rendezvous", said[0])
+                else:
+                    self.assertEqual(said, [], run.stderr)
+                self.assertEqual(list((tmp / "live-tmp").glob("oh-codex-rendezvous.*")), [])
 
     @unittest.skipUnless(
         sys.platform.startswith("linux"),

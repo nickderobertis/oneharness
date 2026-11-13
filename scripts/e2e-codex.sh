@@ -118,7 +118,7 @@ _oh_alive() {
 # Watch the pool through the controlled turn until one running, bound server
 # has been checked. Once $1 exists the turn is over: one last look, and a fail
 # when nothing was there to check. A suite that died ($2, its pid, gone) ends
-# the watch and removes $1's directory, which nobody else will now.
+# the watch: it holds the suite's output open, which its parent waits on.
 oh_codex_rendezvous_check() {
   local over="$1" main="$2" state="${XDG_STATE_HOME:-$HOME/.local/state}" tmp entry ended checked=0
   tmp="$(cd /tmp && pwd -P)" || fail "codex rendezvous: cannot resolve /tmp; check that it exists"
@@ -135,26 +135,35 @@ oh_codex_rendezvous_check() {
     [ "$checked" -eq 0 ] || return 0
     [ "$ended" -eq 0 ] ||
       fail "codex rendezvous: no pooled codex server under $state/oneharness/servers was running with its --listen path linked to a socket while the controlled turn ran, so nothing could be checked; if the turn passed, list the entry's sock/ directory to see how Codex now binds that path"
-    if ! _oh_alive "$main"; then
-      rm -rf "$(dirname "$over")" ||
-        fail "codex rendezvous: could not remove the scratch directory $(dirname "$over") (rm's error above); delete it by hand"
-      return 0
-    fi
+    _oh_alive "$main" || return 0
     sleep 0.05
   done
 }
 
+_oh_codex_rendezvous_scratch=""
+_oh_codex_rendezvous_cleanup() {
+  [ -z "$_oh_codex_rendezvous_scratch" ] || rm -rf "$_oh_codex_rendezvous_scratch" ||
+    note "  could not remove the scratch directory $_oh_codex_rendezvous_scratch (rm's error above) — delete it by hand"
+}
+
+# The scratch directory goes however the suite ends: a failed turn exits it
+# from inside oh_controlled_turn, and the watch, in a subshell, cannot know
+# whether the suite will still need it.
 oh_codex_controlled_turn() {
   local flags witness status=0
   need perl
   flags="$(mktemp -d "${TMPDIR:-/tmp}/oh-codex-rendezvous.XXXXXX")" || fail "codex rendezvous: could not create a scratch directory — check that the host temp dir is writable"
+  _oh_codex_rendezvous_scratch="$flags"
+  trap _oh_codex_rendezvous_cleanup EXIT
   oh_codex_rendezvous_check "$flags/turn-over" "$$" &
   witness=$!
   oh_controlled_turn codex
   : >"$flags/turn-over" ||
     fail "codex rendezvous: cannot mark the controlled turn over in $flags (the error above); check that the host temp dir is writable"
   wait "$witness" || status=$?
-  rm -rf "$flags" || note "  could not remove the scratch directory $flags — delete it by hand"
+  trap - EXIT
+  _oh_codex_rendezvous_cleanup
+  _oh_codex_rendezvous_scratch=""
   [ "$status" -eq 0 ] || exit "$status"
 }
 

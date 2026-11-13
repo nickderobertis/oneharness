@@ -6269,6 +6269,74 @@ mod tests {
         ));
     }
 
+    /// Codex 0.169.0 loads no project `.codex/` layer of an untrusted cwd under
+    /// `exec`, so the hooks.json `--mock-rules` installs would sit unread: the
+    /// wiring trusts the project directory for the run alone — one
+    /// inline-table override naming each spelling Codex may look it up by,
+    /// after the hook-engine opt-in — while the hooks file lands in that
+    /// directory and comes out again. A dotted directory name stays whole.
+    #[test]
+    fn mock_wiring_trusts_codexs_project_directory_for_the_run() {
+        let dir = crate::io::scratch::ScratchDir::new("mock-trust.dotted").unwrap();
+        let rules = dir.join("rules.json");
+        std::fs::write(
+            &rules,
+            r#"{"rules":[{"match":{"event_contains":"MARK"},"action":{"deny":{"message":"m"}}}]}"#,
+        )
+        .unwrap();
+        let args = RunRequest {
+            mock_rules: Some(rules),
+            ..run_args()
+        };
+        let codex = harness::by_id("codex").unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let overrides = BinOverrides::parse(&[format!("codex={}", exe.display())]).unwrap();
+        let wiring = setup_mock(&args, &[codex], dir.path(), &overrides)
+            .unwrap()
+            .expect("--mock-rules wires the mock");
+        assert!(
+            dir.join(".codex/hooks.json").is_file(),
+            "the hook is installed"
+        );
+
+        let argv = wiring.extra_args_for("codex");
+        let at = argv
+            .iter()
+            .position(|a| a.starts_with("projects="))
+            .unwrap_or_else(|| panic!("no per-run project trust override in {argv:?}"));
+        assert_eq!(
+            argv[..at - 1],
+            [
+                "-c",
+                "features.hooks=true",
+                "--dangerously-bypass-hook-trust"
+            ],
+            "the trust follows the hook-engine opt-in: {argv:?}"
+        );
+        assert_eq!(argv[at - 1], "-c");
+        let value = argv[at].strip_prefix("projects=").unwrap();
+        let parsed: toml::Table = toml::from_str(&format!("projects = {value}")).unwrap();
+        let projects = parsed["projects"].as_table().unwrap();
+        let canonical = std::fs::canonicalize(dir.path())
+            .unwrap()
+            .display()
+            .to_string();
+        let canonical = canonical.strip_prefix(r"\\?\").unwrap_or(&canonical);
+        for key in [dir.path().display().to_string(), canonical.to_string()] {
+            assert_eq!(
+                projects.get(&key).and_then(|p| p["trust_level"].as_str()),
+                Some("trusted"),
+                "{key} must be trusted: {value}"
+            );
+        }
+
+        wiring.finish();
+        assert!(
+            !dir.join(".codex").exists(),
+            "the created .codex is removed"
+        );
+    }
+
     fn run_args() -> RunRequest {
         // A minimal request with only the mode-relevant fields set; the rest keep
         // their defaults — exactly what the CLI's own conversion produces for

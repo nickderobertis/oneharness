@@ -1567,7 +1567,6 @@ mod tests {
         assert!(!is_spawned(pid.get()), "the server was not reaped");
     }
 
-    /// The exit code of a server [`exit_status`] found ended, if it did.
     fn ended_code(exit: ServerExit) -> Option<i32> {
         match exit {
             ServerExit::Ended(status) => status.code(),

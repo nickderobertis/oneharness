@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.2](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.31.1...oneharness-core-v0.31.2) - 2026-11-13
+
+### Fixed
+
+- *(core)* never drop an interrupt's redirection when the turn ends during the write ([#1567](https://github.com/nickderobertis/oneharness/pull/1567))
+
 ## [0.31.1](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.31.0...oneharness-core-v0.31.1) - 2026-11-11
 
 ### Fixed

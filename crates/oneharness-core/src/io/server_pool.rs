@@ -830,17 +830,28 @@ fn open_server_log(entry: &Path) -> io::Result<fs::File> {
 }
 
 /// Why the server `record` names, in the pool entry `entry`, stopped before it
-/// served: its exit status when this process started and reaped it, and the
-/// tail of what it wrote to stderr. Read once the server is known not to be
-/// running.
+/// served: how it ended — its exit status when this process started and
+/// collected it — and the tail of what it wrote to stderr. Read once the
+/// server is known not to be running.
+///
+/// The stderr is read before the status is collected: a server of ours may
+/// still be exiting, and its last words are already in its log, while its
+/// status may take up to [`IDENTIFY_GRACE`] longer to arrive.
 #[must_use]
 pub fn early_exit(entry: &Path, record: &ServerRecord) -> String {
-    let status = exit_status(record.pid, IDENTIFY_GRACE).map_or_else(
+    let tail = stderr_tail(&entry.join(SERVER_LOG));
+    let status = match exit_status(record.pid, IDENTIFY_GRACE) {
+        ServerExit::Ended(status) => format!("it ended with {status}"),
+        ServerExit::StillExiting => format!(
+            "its exit status is unknown here: this process started it, and it had not finished exiting {}s after it stopped running",
+            IDENTIFY_GRACE.as_secs()
+        ),
         // llmlint: ignore[changed_behavior_has_e2e] An unknown status needs a server another dispatch started to die after that dispatch connected and before this one's first dial, a window no journey can place a death inside; the silent and long-stderr halves beside it are proven by `a_server_that_exits_before_listening_fails_the_dispatch_with_its_own_reason`.
-        || "its exit status is unknown here, since another process started it".to_string(),
-        |status| format!("it ended with {status}"),
-    );
-    match stderr_tail(&entry.join(SERVER_LOG)) {
+        ServerExit::NotOurs => {
+            "its exit status is unknown here, since another process started it".to_string()
+        }
+    };
+    match tail {
         Some(tail) => format!("{status}, its stderr ending: {tail}"),
         None => format!("{status}, and wrote nothing to stderr"),
     }
@@ -1196,28 +1207,46 @@ fn remember_exit(pid: u32, status: std::process::ExitStatus) {
     }
 }
 
-/// How the server `pid` ended, when this process started it.
+/// How a stopped server ended, as far as this process can tell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServerExit {
+    /// This process started it and collected this status.
+    Ended(std::process::ExitStatus),
+    /// This process started it, but it could not be collected within the
+    /// grace it was given.
+    StillExiting,
+    /// This process did not start it, or no longer remembers its status.
+    NotOurs,
+}
+
+/// How the server `pid` ended.
 ///
 /// Asked once its caller has seen the server stop running, which on macOS is
 /// as soon as it starts to exit — `proc_pidinfo` stops answering for it then,
 /// before a wait can collect it. So a server of ours not yet reapable is given
 /// up to `grace` to settle, as [`identify_spawned`] gives one at launch;
 /// without that, an early exit this process itself spawned was reported as one
-/// "another process started". One still not collected when `grace` runs out
-/// answers `None`, its status unknown, rather than holding up the report.
-fn exit_status(pid: Pid, grace: Duration) -> Option<std::process::ExitStatus> {
+/// "another process started". One still not collected when `grace` runs out is
+/// [`ServerExit::StillExiting`], rather than holding up the report.
+fn exit_status(pid: Pid, grace: Duration) -> ServerExit {
     reap_finished();
     let until = Instant::now() + grace;
     while is_spawned(pid.get()) && Instant::now() < until {
         std::thread::sleep(IDENTIFY_POLL);
         reap_finished();
     }
-    let statuses = exited().lock().ok()?;
-    statuses
-        .iter()
-        .rev()
-        .find(|(known, _)| *known == pid.get())
-        .map(|(_, status)| *status)
+    let known = exited().lock().ok().and_then(|statuses| {
+        statuses
+            .iter()
+            .rev()
+            .find(|(known, _)| *known == pid.get())
+            .map(|(_, status)| *status)
+    });
+    match known {
+        Some(status) => ServerExit::Ended(status),
+        None if is_spawned(pid.get()) => ServerExit::StillExiting,
+        None => ServerExit::NotOurs,
+    }
 }
 
 fn remember_spawned(child: std::process::Child) {
@@ -1384,20 +1413,17 @@ mod tests {
         let pid = |offset: usize| Pid::new(base + offset as u32).unwrap();
         remember_exit(pid(0).get(), status(9));
         remember_exit(pid(0).get(), status(1));
-        assert_eq!(
-            exit_status(pid(0), Duration::ZERO).and_then(|s| s.code()),
-            Some(1)
-        );
+        assert_eq!(ended_code(exit_status(pid(0), Duration::ZERO)), Some(1));
         for offset in 1..=EXITED_KEPT {
             remember_exit(pid(offset).get(), status(2));
         }
         assert_eq!(
             exit_status(pid(0), Duration::ZERO),
-            None,
+            ServerExit::NotOurs,
             "the oldest status was kept"
         );
         assert_eq!(
-            exit_status(pid(EXITED_KEPT), Duration::ZERO).and_then(|s| s.code()),
+            ended_code(exit_status(pid(EXITED_KEPT), Duration::ZERO)),
             Some(2)
         );
     }
@@ -1459,10 +1485,7 @@ mod tests {
             linger_ms: None,
         };
         assert!(!record.is_running(), "{record:?}");
-        assert_eq!(
-            exit_status(pid, IDENTIFY_GRACE).and_then(|status| status.code()),
-            Some(5)
-        );
+        assert_eq!(ended_code(exit_status(pid, IDENTIFY_GRACE)), Some(5));
 
         let running = std::process::Command::new("sleep")
             .arg("30")
@@ -1494,10 +1517,7 @@ mod tests {
         let pid = Pid::new(child.id()).unwrap();
         let identity = identify_spawned(child, pid, |_| None, Duration::from_secs(10)).unwrap();
         assert_eq!(identity.0, EXITED_UNIDENTIFIED);
-        assert_eq!(
-            exit_status(pid, IDENTIFY_GRACE).and_then(|status| status.code()),
-            Some(6)
-        );
+        assert_eq!(ended_code(exit_status(pid, IDENTIFY_GRACE)), Some(6));
     }
 
     /// A server of ours its caller already reads as stopped — as macOS reports
@@ -1514,19 +1534,17 @@ mod tests {
             .unwrap();
         let pid = Pid::new(child.id()).unwrap();
         remember_spawned(child);
-        assert_eq!(
-            exit_status(pid, IDENTIFY_GRACE).and_then(|status| status.code()),
-            Some(7)
-        );
+        assert_eq!(ended_code(exit_status(pid, IDENTIFY_GRACE)), Some(7));
         assert!(!is_spawned(pid.get()), "the server was not reaped");
     }
 
     /// A server of ours still running when its `grace` runs out — one its
-    /// caller misread as stopped — reports no exit status, rather than holding
-    /// up the report until it ends, and stays ours to reap later.
+    /// caller misread as stopped — reads as still exiting, not as another
+    /// process's, rather than holding up the report until it ends, and stays
+    /// ours to reap later.
     #[cfg(unix)]
     #[test]
-    fn a_spawned_server_still_running_past_the_grace_reports_no_exit_status() {
+    fn a_spawned_server_still_running_past_the_grace_reads_as_still_exiting() {
         let child = std::process::Command::new("sleep")
             .arg("30")
             .spawn()
@@ -1534,7 +1552,10 @@ mod tests {
         let pid = Pid::new(child.id()).unwrap();
         remember_spawned(child);
         let asked = Instant::now();
-        assert_eq!(exit_status(pid, Duration::from_millis(50)), None);
+        assert_eq!(
+            exit_status(pid, Duration::from_millis(50)),
+            ServerExit::StillExiting
+        );
         assert!(
             asked.elapsed() < Duration::from_secs(10),
             "the wait outlasted its grace: {:?}",
@@ -1544,6 +1565,14 @@ mod tests {
         kill(pid);
         reap_spawned(pid.get());
         assert!(!is_spawned(pid.get()), "the server was not reaped");
+    }
+
+    /// The exit code of a server [`exit_status`] found ended, if it did.
+    fn ended_code(exit: ServerExit) -> Option<i32> {
+        match exit {
+            ServerExit::Ended(status) => status.code(),
+            ServerExit::StillExiting | ServerExit::NotOurs => None,
+        }
     }
 
     /// Unix-gated with the lifecycle tests that use it: every acquire/sweep test

@@ -75,11 +75,20 @@ fail() {
 
 check_common() {
   # $1 = workflow file
-  local f="$1"
+  local f="$1" on_block status=0
   # The `on:` trigger block ends at `permissions:`; no `push` may appear in it.
-  if awk '/^on:/{a=1} /^permissions:/{a=0} a' "$f" | grep -qE '^\s*push:'; then
-    fail "$f still triggers on push (must be pull_request + workflow_dispatch only)"
+  # Read first, so a workflow awk cannot read fails as that, never as no push.
+  if ! on_block="$(awk '/^on:/{a=1} /^permissions:/{a=0} a' "$f")"; then
+    fail "cannot read $f's on: block; restore the file (git checkout -- $f) and re-run"
+    return
   fi
+  # grep's 1 is no push; above that is a scan that never finished.
+  grep -E '^\s*push:' <<<"$on_block" >/dev/null || status=$?
+  case "$status" in
+    0) fail "$f still triggers on push (must be pull_request + workflow_dispatch only)" ;;
+    1) ;;
+    *) fail "grep could not scan $f's on: block for push (exit $status); fix the pattern in check_common and re-run" ;;
+  esac
   grep -qE '^\s*workflow_dispatch:' "$f" || fail "$f missing workflow_dispatch trigger"
   grep -qE '^\s+os:$' "$f" || fail "$f missing the workflow_dispatch 'os' input"
 }
@@ -114,9 +123,9 @@ check_matrix() {
     fail "$f has no fromJSON matrix expression"
     return
   }
-  printf '%s' "$line" | grep -qF "|| '$prd') }}" ||
+  grep -qF "|| '$prd') }}" <<<"$line" ||
     fail "$f PR-default matrix is not $prd"
-  printf '%s' "$line" | grep -qF "'all' && '$all'" ||
+  grep -qF "'all' && '$all'" <<<"$line" ||
     fail "$f dispatch 'all' matrix is not $all"
 }
 
@@ -210,7 +219,7 @@ check_control() {
   fi
   # shellcheck disable=SC2016  # a GitHub expression to match, not a shell one
   line="$(grep -F 'os: ${{ fromJSON(' "$f" || true)"
-  printf '%s' "$line" | grep -qF "|| '$LINUX'" ||
+  grep -qF "|| '$LINUX'" <<<"$line" ||
     fail "$f automatic runs must use Linux; Mac turn-control proof is consolidated in ci.yml"
   grep -q 'run: just live-control' .github/workflows/ci.yml ||
     fail "ci.yml must retain the consolidated Mac turn-control proof"
@@ -239,13 +248,13 @@ check_control() {
     detail=""
     for v in $accepted; do
       case "$v" in *_E2E_AUTH) continue ;; esac
-      if printf '%s\n' "$preflight" | grep -qx "$v"; then
-        if printf '%s\n' "$live" | grep -qx "$v"; then
+      if grep -qx "$v" <<<"$preflight"; then
+        if grep -qx "$v" <<<"$live"; then
           satisfied=1
           break
         fi
         detail="$detail; $v is checked up front but never reaches the live step"
-      elif printf '%s\n' "$live" | grep -qx "$v"; then
+      elif grep -qx "$v" <<<"$live"; then
         detail="$detail; $v reaches the live step but is not checked up front"
       fi
     done

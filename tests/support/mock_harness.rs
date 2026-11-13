@@ -3397,6 +3397,12 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 ///                         which a `-c` launch argument overrides.
 ///   CODEX_MOCK_SERVER_BYTES  allocate and touch this many bytes for the
 ///                         server's life, its own resident footprint.
+///   CODEX_MOCK_STARTUP_UNTIL  the server's initialization — committing that
+///                         footprint, on a loaded host — lasts until this path
+///                         exists.
+///   CODEX_MOCK_LISTEN_BEFORE_READY  bind before initializing, as this double
+///                         once did: a connection made meanwhile waits on its
+///                         WebSocket upgrade until initialization ends.
 ///   CODEX_MOCK_THREAD_BYTES  allocate and touch this many bytes per loaded
 ///                         thread, freed when it unloads.
 ///   CODEX_MOCK_FAULT      `leak-env` runs every command under the first opened
@@ -3650,7 +3656,15 @@ mod listen_server {
                 std::thread::sleep(std::time::Duration::from_secs(1));
             }
         }
-        let listener = bind(&path);
+        // The server initializes before it listens, so a connection it
+        // accepts is one it can serve at once. Listening first left every
+        // client that connected during startup waiting on its WebSocket
+        // upgrade, past the handshake's deadline whenever startup was slow;
+        // CODEX_MOCK_LISTEN_BEFORE_READY keeps that ordering, to stage it.
+        let early = std::env::var_os("CODEX_MOCK_LISTEN_BEFORE_READY")
+            .is_some()
+            .then(|| bind(&path));
+        //
         // CODEX_MOCK_SERVER_BYTES: a resident footprint of the server's own,
         // touched and held for its life, as a real server has one.
         let _footprint: Vec<u8> = vec![
@@ -3658,6 +3672,18 @@ mod listen_server {
             std::env::var("CODEX_MOCK_SERVER_BYTES")
                 .map_or(0, |n| whole("CODEX_MOCK_SERVER_BYTES", &n))
         ];
+        // CODEX_MOCK_STARTUP_UNTIL: initialization — committing that footprint,
+        // on a loaded host — lasts until this path exists, so a journey ends it
+        // on something it has observed rather than after a guessed time.
+        if let Some(gate) = std::env::var_os("CODEX_MOCK_STARTUP_UNTIL") {
+            let gate = std::path::PathBuf::from(gate);
+            while !gate.exists() {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+        let listener = early.unwrap_or_else(|| bind(&path));
+        // Started once listening: a launch refused here — its socket already
+        // in use — must leave no helper behind.
         if std::env::var_os("CODEX_MOCK_HELPER").is_some() {
             if let Ok(exe) = std::env::current_exe() {
                 let helper = std::process::Command::new(exe)

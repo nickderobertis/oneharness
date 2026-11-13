@@ -853,7 +853,7 @@ pub fn early_exit(entry: &Path, record: &ServerRecord) -> String {
             IDENTIFY_GRACE.as_secs()
         ),
         // llmlint: ignore[changed_behavior_has_e2e] An unknown status needs a server another dispatch started to die after that dispatch connected and before this one's first dial, a window no journey can place a death inside; the silent and long-stderr halves beside it are proven by `a_server_that_exits_before_listening_fails_the_dispatch_with_its_own_reason`.
-        ServerExit::NotOurs => {
+        ServerExit::Unrecorded => {
             "its exit status is unknown here, since another process started it".to_string()
         }
     };
@@ -1221,8 +1221,9 @@ enum ServerExit {
     /// This process started it, but it could not be collected within the
     /// grace it was given.
     StillExiting,
-    /// This process did not start it, or no longer remembers its status.
-    NotOurs,
+    /// No status is recorded for it: this process did not start it, or has
+    /// since dropped its status to keep newer ones.
+    Unrecorded,
 }
 
 /// How the server `pid` ended.
@@ -1258,7 +1259,7 @@ fn exit_status(pid: Pid, grace: Duration) -> ServerExit {
     match known {
         Some(status) => ServerExit::Ended(status),
         None if is_spawned(pid.get()) => ServerExit::StillExiting,
-        None => ServerExit::NotOurs,
+        None => ServerExit::Unrecorded,
     }
 }
 
@@ -1432,7 +1433,7 @@ mod tests {
         }
         assert_eq!(
             exit_status(pid(0), Duration::ZERO),
-            ServerExit::NotOurs,
+            ServerExit::Unrecorded,
             "the oldest status was kept"
         );
         assert_eq!(
@@ -1583,7 +1584,7 @@ mod tests {
     fn ended_code(exit: ServerExit) -> Option<i32> {
         match exit {
             ServerExit::Ended(status) => status.code(),
-            ServerExit::StillExiting | ServerExit::NotOurs => None,
+            ServerExit::StillExiting | ServerExit::Unrecorded => None,
         }
     }
 

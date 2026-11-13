@@ -75,6 +75,16 @@ run_case() {
 build_fixture
 run_case "an undrifted tree" 0 "all e2e workflows match the matrix contract"
 
+# A push trigger in the workflow's on: block: every merge would spend the
+# suite's paid calls again.
+build_fixture
+sed -i.bak 's#^on:$#on:\
+  push:\
+    branches: [main]#' "$tmp/repo/$workflow"
+grep -q '^  push:$' "$tmp/repo/$workflow" ||
+  fail "fixture setup: the push-trigger case did not add a push trigger to $workflow"
+run_case "a push trigger" 1 "$workflow still triggers on push"
+
 # A control source that moved: the filter still names the old path, so a change
 # to the feature would no longer trigger the suite.
 build_fixture

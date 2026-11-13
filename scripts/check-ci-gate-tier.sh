@@ -172,12 +172,16 @@ grep -qF '"Full sweep (just check all)"' scripts/ci-verdict.sh ||
 prefix_of() { sed -n 's/^readonly RELEASE_BRANCH_PREFIX="\(.*\)"$/\1/p' "$1"; }
 tier_prefix="$(prefix_of scripts/ci-gate-tier.sh)"
 verdict_prefix="$(prefix_of scripts/ci-verdict.sh)"
-plz_prefix="$(sed -n 's/.*startswith("\([^"]*\)").*/\1/p' .github/workflows/release-plz.yml | sed -n 1p)"
+plz=".github/workflows/release-plz.yml"
+# Read on its own so a missing workflow says so, never as an empty prefix.
+plz_text="$(cat -- "$plz")" ||
+  fail "cannot read $plz; restore it (git checkout -- $plz) so its release pull request's branch prefix can be compared"
+plz_prefix="$(sed -n 's/.*startswith("\([^"]*\)").*/\1/p' <<<"$plz_text" | sed -n 1p)"
 [ -n "$tier_prefix" ] || fail "scripts/ci-gate-tier.sh declares no 'readonly RELEASE_BRANCH_PREFIX=\"...\"'"
 [ "$verdict_prefix" = "$tier_prefix" ] ||
   fail "scripts/ci-verdict.sh recognizes release pull requests by '$verdict_prefix' but scripts/ci-gate-tier.sh sweeps '$tier_prefix'; the release would read a run that never swept, or none"
 [ "$plz_prefix" = "$tier_prefix" ] ||
-  fail ".github/workflows/release-plz.yml finds its release pull request by '$plz_prefix' but scripts/ci-gate-tier.sh sweeps '$tier_prefix'"
+  fail "$plz finds its release pull request by '$plz_prefix' but scripts/ci-gate-tier.sh sweeps '$tier_prefix'"
 
 omission="$(sed -n 's/^readonly MACOS_OMISSION_STEP="\([^"]*\)"$/\1/p' scripts/ci-verdict.sh)"
 [ -n "$omission" ] || fail "scripts/ci-verdict.sh declares no 'readonly MACOS_OMISSION_STEP=\"...\"'; restore it with the name of ci.yml's authorized Mac omission step"

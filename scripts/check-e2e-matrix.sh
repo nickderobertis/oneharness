@@ -75,11 +75,20 @@ fail() {
 
 check_common() {
   # $1 = workflow file
-  local f="$1"
+  local f="$1" on_block status=0
   # The `on:` trigger block ends at `permissions:`; no `push` may appear in it.
-  if awk '/^on:/{a=1} /^permissions:/{a=0} a' "$f" | grep -E '^\s*push:' >/dev/null; then
-    fail "$f still triggers on push (must be pull_request + workflow_dispatch only)"
+  # Read first, so a workflow awk cannot read fails as that, never as no push.
+  if ! on_block="$(awk '/^on:/{a=1} /^permissions:/{a=0} a' "$f")"; then
+    fail "cannot read $f's on: block; restore the file (git checkout -- $f) and re-run"
+    return
   fi
+  # grep's 1 is no push; above that is a scan that never finished.
+  grep -E '^\s*push:' <<<"$on_block" >/dev/null || status=$?
+  case "$status" in
+    0) fail "$f still triggers on push (must be pull_request + workflow_dispatch only)" ;;
+    1) ;;
+    *) fail "grep could not scan $f's on: block for push (exit $status); fix the pattern in check_common and re-run" ;;
+  esac
   grep -qE '^\s*workflow_dispatch:' "$f" || fail "$f missing workflow_dispatch trigger"
   grep -qE '^\s+os:$' "$f" || fail "$f missing the workflow_dispatch 'os' input"
 }

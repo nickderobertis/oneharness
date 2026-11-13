@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 #
-# Behavioral test of the MSRV half of the workflow drift gate.
+# Behavioral test of the MSRV half of the workflow drift gate, and of how it
+# reads the files its forbidden-pattern checks scan.
 #
 # Both manifests inherit `rust-version` from `[workspace.package]`, so the gate
 # must resolve each manifest's own `[package]` table rather than search the
-# file. Each case drives the gate over a staged checkout; the green baseline
-# keeps a refusal from passing for an unrelated reason.
+# file. An input it cannot read must end it naming that file, never pass as a
+# clean absence of what it forbids. Each case drives the gate over a staged
+# checkout; the green baseline keeps a refusal from passing for an unrelated
+# reason.
 #
 set -euo pipefail
 
@@ -161,5 +164,33 @@ if run_gate "$root"; then
 fi
 grep -Fq "crates/oneharness-core/Cargo.toml declares no rust-version" "$work/out" ||
   fail_showing "a manifest declaring no rust-version must be named as such"
+
+# A forbidden-pattern input the gate cannot read ends it with exit 2 naming
+# that file — not a pass, and not a refusal for whatever else it then misses.
+for input in .github/workflows/release.yml scripts/verify-published.sh; do
+  root="$(stage "unreadable-$(basename "$input")")"
+  rm "$root/$input"
+  status=0
+  run_gate "$root" || status=$?
+  [ "$status" -eq 2 ] ||
+    fail_showing "a missing $input must end the gate with exit 2, not $status"
+  grep -Fxq "workflow drift: cannot read $input; restore it (git checkout -- $input) and re-run scripts/check-workflows.sh" "$work/out" ||
+    fail_showing "a missing $input must be named as unreadable"
+done
+
+# A registry probe the release only mentions in a comment is exempt; the same
+# line as a step is refused.
+root="$(stage commented-probe)"
+printf '      # npm view "oneharness-cli@1.2.3" version replaced by verify-published.sh\n' >>"$root/.github/workflows/release.yml"
+if ! run_gate "$root"; then
+  fail_showing "a registry probe named only in a release.yml comment must pass"
+fi
+root="$(stage running-probe)"
+printf '      - run: npm view "oneharness-cli@1.2.3" version\n' >>"$root/.github/workflows/release.yml"
+if run_gate "$root"; then
+  fail_showing "a release.yml step running a registry metadata probe must be refused"
+fi
+grep -Fq "release.yml must not wait on a registry's metadata API" "$work/out" ||
+  fail_showing "a registry metadata probe must be named as such"
 
 echo "check-workflows-test: ok"

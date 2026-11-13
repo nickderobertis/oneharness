@@ -16,6 +16,35 @@ require_line() {
   grep -Fq -- "$line" "$file" || fail "$file must $description"
 }
 
+# The text of $1. One it cannot read ends the check with exit 2, naming it, so
+# a missing input is never read as a clean absence of what it is checked for.
+# Callers assign it with `|| exit 2`, since this runs in their substitution.
+read_input() {
+  cat -- "$1" || {
+    printf 'workflow drift: cannot read %s; restore it (git checkout -- %s) and re-run scripts/check-workflows.sh\n' "$1" "$1" >&2
+    exit 2
+  }
+}
+
+# Whether ERE $1 matches a line of the text $2 (fed as a here-string, so no
+# writer can be cut short). grep's 1 is no match; above that the scan never
+# finished, which ends the check rather than passing as no match.
+matches() {
+  local status=0
+  grep -E -e "$1" <<<"$2" >/dev/null || status=$?
+  [ "$status" -le 1 ] || {
+    printf 'workflow drift: grep could not scan for %s (exit %s); fix that pattern in scripts/check-workflows.sh and re-run\n' "$1" "$status" >&2
+    exit 2
+  }
+  return "$status"
+}
+
+# Read before any check of it, so a missing release workflow ends the gate here
+# naming it rather than in whichever check first reaches for it. Its CRLF (a
+# Windows checkout) is dropped so the anchored patterns below match there too.
+release_yml="$(read_input .github/workflows/release.yml)" || exit 2
+release_yml="${release_yml//$'\r'/}"
+
 # The `rust-version` a manifest's `[package]` table states, read from that table
 # alone. Prints `literal <value>` where one is stated, `inherit` where the
 # manifest takes the workspace's with `rust-version.workspace = true`, and
@@ -90,7 +119,8 @@ if ! [[ "$toolchain" =~ ^[0-9]+\.[0-9]+\.0$ ]]; then
   fail "rust-toolchain.toml must contain one stable x.y.0 channel"
 else
   msrv="${toolchain%.0}"
-  workspace_msrv="$(sed -n '/^\[workspace\.package\]$/,/^\[/ s/^rust-version = "\([^"]*\)"$/\1/p' Cargo.toml | sed -n 1p)"
+  cargo_toml="$(read_input Cargo.toml)" || exit 2
+  workspace_msrv="$(sed -n '/^\[workspace\.package\]$/,/^\[/ s/^rust-version = "\([^"]*\)"$/\1/p' <<<"$cargo_toml" | sed -n 1p)"
   for manifest in Cargo.toml crates/oneharness-core/Cargo.toml; do
     stated="$(package_rust_version "$manifest")"
     case "$stated" in
@@ -186,7 +216,7 @@ require_guarded .github/workflows/release.yml 'run: just check all' \
 # `just check` contains both SDK gates, so the fallback above has already run
 # them on this commit. A release job running either again is the same commit
 # swept twice, and neither belongs here any more.
-if tr -d '\r' <.github/workflows/release.yml | grep -E '^[[:space:]]*run: just (sdk-check|python-sdk-check)$' >/dev/null; then
+if matches '^[[:space:]]*run: just (sdk-check|python-sdk-check)$' "$release_yml"; then
   fail "release.yml must not run an SDK gate; 'just check' in the gate job contains both, so running one here sweeps the same commit twice"
 fi
 # The gate builds the gitignored SDK dist on its way past; skipping the gate must
@@ -201,7 +231,8 @@ require_line .github/workflows/release.yml 'run: just sdk-build' \
 # The target list is verify-published.sh's own, read out of the allowlist it
 # validates against rather than restated here — a target added there and not
 # called from the workflow is exactly the drift this catches.
-verify_targets="$(sed -n 's/^  \([a-z| -]*\)) ;;$/\1/p' scripts/verify-published.sh | sed -n 1p | tr -d ' ' | tr '|' ' ')"
+verify_published="$(read_input scripts/verify-published.sh)" || exit 2
+verify_targets="$(sed -n 's/^  \([a-z| -]*\)) ;;$/\1/p' <<<"$verify_published" | sed -n 1p | tr -d ' ' | tr '|' ' ')"
 if [ -z "$verify_targets" ]; then
   fail "scripts/verify-published.sh must keep its accepted targets in one 'case' allowlist ending in ') ;;', which is what names the workflow calls this gate requires"
 fi
@@ -212,7 +243,13 @@ for verify_target in $verify_targets; do
 done
 # Comment lines are exempt: the rule is about what the release RUNS, and the
 # job comments have to be able to say what they replaced.
-if grep -vE '^[[:space:]]*#' .github/workflows/release.yml | grep -E 'pypi\.org/pypi/|npm view' >/dev/null; then
+# The workflow's lines that are not comments, by bash itself, so no exit
+# status of a filter stands between the read and the match.
+release_runs=""
+while IFS= read -r release_line; do
+  [[ "$release_line" =~ ^[[:space:]]*# ]] || release_runs+="$release_line"$'\n'
+done <<<"$release_yml"
+if matches 'pypi\.org/pypi/|npm view' "$release_runs"; then
   fail "release.yml must not wait on a registry's metadata API; retry the consumer's own install through scripts/verify-published.sh instead"
 fi
 require_line .github/workflows/release.yml 'needs: [publish-pypi, build-python-sdk]' "publish the Python SDK only after its exact CLI dependency"

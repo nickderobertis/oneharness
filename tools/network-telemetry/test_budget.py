@@ -746,6 +746,10 @@ class CodexSuite(BudgetCase):
         run = self.run_codex(tmp, ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS="0")
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertIn("» usage:", run.stderr)
+        # Each server's stop reached its wrapper, which went with Codex and
+        # took the private path it had Codex bind.
+        sockets = list((tmp / "state" / "oneharness" / "servers").glob("*/sock/*"))
+        self.assertEqual([p for p in sockets if p.name.startswith(".")], [], sockets)
 
     def short_state(self) -> Path:
         """A state directory short enough that the pool's --listen path fits
@@ -790,7 +794,7 @@ class CodexSuite(BudgetCase):
                     "    sleep 0.1\n"
                     "  done ;;\n"
                     "esac\n"
-                    f'exec "{real}" "$@"\n'
+                    f'exec {shlex.quote(str(real))} "$@"\n'
                 )
                 (held / "jq").chmod(0o755)
                 env = suite_env(

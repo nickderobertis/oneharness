@@ -57,7 +57,7 @@ oh_codex_rendezvous_check() {
   local rendezvous_prefix=codex-daemon- rendezvous_mode=700
   tmp="$(cd /tmp && pwd -P)" || fail "codex rendezvous: cannot resolve /tmp; check that it exists"
   rows="$(jq -r '[.listen, .euid, .linked, .target, .bound, .mode] | @tsv' "$evidence")" ||
-    fail "codex rendezvous: cannot read the rendezvous evidence $evidence (jq's error above)"
+    fail "codex rendezvous: cannot read the rendezvous evidence $evidence (jq's error above); each line is one scripts/e2e-codex-rendezvous.sh wrote, so a damaged one is that wrapper's to fix"
   [ -n "$rows" ] ||
     fail "codex rendezvous: no shared codex server started through scripts/e2e-codex-rendezvous.sh during the controlled turn, so nothing could be checked; a server started before this suite may have served it, so let it linger out (60 s) and rerun"
   while IFS=$'\t' read -r listen euid linked target bound mode; do

@@ -13,6 +13,10 @@
 # Only then is PATH linked to the same socket. The pool's dispatch dials PATH,
 # so no turn can start, and no lease end and let the pool stop the server,
 # before the evidence is written.
+#
+# Exit status: Codex's own, except 125, which is this wrapper failing (its
+# usage, or recording or publishing the evidence), said on stderr — for a
+# shared server, the pool entry's server.log.
 set -euo pipefail
 
 child=""
@@ -58,6 +62,10 @@ esac
 path="${args[$at]#unix://}"
 dir="$(dirname "$path")"
 base="$(basename "$path")"
+# Only an absolute path in an existing directory is the pool's; anything else
+# is Codex's to refuse, so it gets the launch as given.
+case "$path" in /*[!/]) ;; *) exec "$real" "$@" ;; esac
+[ -d "$dir" ] && [ ! -d "$path" ] || exec "$real" "$@"
 private="$dir/.${base#?}"
 [ "$private" != "$path" ] || private="$dir/,${base#?}"
 rm -f "$private" || die "cannot clear the stale private path $private (rm's error above); check the permissions of $dir"
@@ -80,26 +88,30 @@ until [ -e "$private" ] || [ -L "$private" ]; do
   sleep 0.02
 done
 
-euid="$(id -u)" || die "cannot read the euid this server runs as (id's error above)"
-linked=false target="$private" bound="" mode=""
+euid="$(id -u)" || die "cannot read the euid this server runs as (id's error above); check that \`id -u\` runs in the recorder's namespace (scripts/network-recorder-preflight.sh)"
+linked=false target="$private" bound="" mode="" perms="" cell=0 digit=0
 if [ -L "$private" ]; then
   linked=true
-  target="$(readlink "$private")" || die "cannot read the link Codex left at $private (readlink's error above)"
-  case "$target" in /*) ;; *) target="$dir/$target" ;; esac
-  bound="$(cd "$(dirname "$target")" && pwd -P)" ||
+  target="$(readlink "$private")" ||
+    die "cannot read the link Codex left at $private (readlink's error above); check its permissions with \`ls -la $dir\`"
+  # A relative target is relative to the link's directory, PATH's too.
+  bound="$(cd "$dir" && cd "$(dirname "$target")" && pwd -P)" ||
     die "cannot enter $(dirname "$target"), the directory Codex bound its socket in (cd's error above); check its owner and mode with \`ls -ld $(dirname "$target")\`"
-  # Probe the stat dialect rather than the OS: GNU's (Linux, Git Bash) takes
-  # -c, BSD's (macOS) takes -f.
-  if stat -c %a / >/dev/null 2>&1; then
-    mode="$(stat -c %a "$bound")"
-  else
-    mode="$(stat -f %Lp "$bound")"
-  fi || die "cannot read the mode of $bound (stat's error above); run \`ls -ld $bound\` to see it"
+  # The octal mode from `ls -ld`'s permission string, which GNU and BSD print
+  # alike, where stat's flags differ.
+  perms="$(ls -ld "$bound")" || die "cannot read the mode of $bound (ls's error above); check its owner with \`ls -ld $bound\`"
+  for cell in 1 4 7; do
+    digit=0
+    [ "${perms:cell:1}" != r ] || digit=$((digit + 4))
+    [ "${perms:cell+1:1}" != w ] || digit=$((digit + 2))
+    case "${perms:cell+2:1}" in x | s | t) digit=$((digit + 1)) ;; esac
+    mode="$mode$digit"
+  done
 fi
 line="$(jq -nc --arg listen "$path" --arg euid "$euid" --argjson linked "$linked" --arg target "$target" \
   --arg bound "$bound" --arg mode "$mode" \
   '{listen: $listen, euid: $euid, linked: $linked, target: $target, bound: $bound, mode: $mode}')" ||
-  die "cannot encode the rendezvous evidence (jq's error above)"
+  die "cannot encode the rendezvous evidence (jq's error above); check that \`jq --version\` runs"
 printf '%s\n' "$line" >>"$evidence" || die "cannot append the rendezvous evidence to $evidence; check that its directory is writable"
 
 { ln -s "$target" "$path.$$.partial" && mv -f "$path.$$.partial" "$path"; } ||

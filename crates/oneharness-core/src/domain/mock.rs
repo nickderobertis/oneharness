@@ -101,6 +101,39 @@ pub fn hook_command(exe: &str, id: &str, rules: Option<&str>, spy: Option<&str>)
     command
 }
 
+/// The argv that trusts the project a [`MockDelivery::ProjectHooks`] install
+/// wrote into, for this invocation only, where the harness loads no project
+/// hooks without it; empty for every other harness. `project_keys` are the
+/// spellings of the working directory the harness may look its trust up under
+/// (as given, and canonical), each named once.
+///
+/// Codex 0.169.0 (openai/codex#60041) stopped trusting the cwd of a
+/// writable-sandbox `codex exec` implicitly, so every project `.codex/` layer
+/// — the mock's `hooks.json` with it — stays disabled until the project is
+/// trusted. Codex's `--trust` would persist the grant into the user's
+/// config.toml; an inline-table `-c projects={…}` grants it for the run alone
+/// and merges with the trust already saved there. (The dotted
+/// `projects."<dir>".trust_level` spelling cannot carry a path with a `.` in
+/// it: Codex splits the key on every dot and ignores the setting.)
+pub fn project_trust_args(id: &str, project_keys: &[String]) -> Vec<String> {
+    if id != "codex" || project_keys.is_empty() {
+        return Vec::new();
+    }
+    let entries: Vec<String> = project_keys
+        .iter()
+        .map(|key| {
+            format!(
+                "{}={{trust_level=\"trusted\"}}",
+                toml::Value::from(key.as_str())
+            )
+        })
+        .collect();
+    vec![
+        "-c".to_string(),
+        format!("projects={{{}}}", entries.join(",")),
+    ]
+}
+
 /// The settings JSON a [`MockDelivery::SettingsFlag`] harness receives: a
 /// PreToolUse hook (no matcher — every tool) invoking `command`. Exactly the
 /// shape the explore-hooks probe verified Claude Code loads from a per-run
@@ -878,6 +911,52 @@ mod tests {
             hook_command("oh", "claude-code", Some("r.json"), None),
             "oh mock claude-code --rules r.json"
         );
+    }
+
+    /// Codex's trust override is one inline table naming every spelling, each
+    /// a TOML basic string — a Windows path's backslashes escaped, a dotted
+    /// directory kept whole — that parses back to exactly those keys.
+    #[test]
+    fn project_trust_args_grant_codex_each_spelling_for_the_run() {
+        let keys = vec![
+            "/tmp/tmp.Ab1/project".to_string(),
+            r"C:\Users\runneradmin\AppData\Local\Temp\tmp.X".to_string(),
+        ];
+        let args = project_trust_args("codex", &keys);
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[0], "-c");
+        let value = args[1]
+            .strip_prefix("projects=")
+            .expect("a projects override");
+        let parsed: toml::Table = toml::from_str(&format!("projects = {value}")).expect("TOML");
+        let projects = parsed["projects"].as_table().expect("an inline table");
+        assert_eq!(projects.len(), keys.len());
+        for key in &keys {
+            assert_eq!(
+                projects[key.as_str()]["trust_level"].as_str(),
+                Some("trusted"),
+                "{key}"
+            );
+        }
+    }
+
+    /// Only Codex gates its project hooks on trust; no other harness's argv
+    /// grows, and Codex's does not without a directory to trust.
+    #[test]
+    fn project_trust_args_are_codex_only() {
+        let keys = vec!["/work".to_string()];
+        for id in [
+            "claude-code",
+            "opencode",
+            "goose",
+            "crush",
+            "cursor",
+            "qwen",
+            "copilot",
+        ] {
+            assert!(project_trust_args(id, &keys).is_empty(), "{id}");
+        }
+        assert!(project_trust_args("codex", &[]).is_empty());
     }
 
     #[test]

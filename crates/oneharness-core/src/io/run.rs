@@ -2301,15 +2301,43 @@ fn setup_mock(
                 let paths: Vec<std::path::PathBuf> = planned.into_iter().map(|w| w.path).collect();
                 wiring.snapshot.extend(HookSnapshot::capture(&paths));
                 hooks_io::install(Scope::Project(project_dir), spec, &hook, false)?;
-                if !extra_args.is_empty() {
-                    wiring
-                        .extra_args
-                        .insert(spec.id, extra_args.iter().map(|a| a.to_string()).collect());
+                let mut argv: Vec<String> = extra_args.iter().map(|a| a.to_string()).collect();
+                argv.extend(mock::project_trust_args(
+                    spec.id,
+                    &project_trust_keys(project_dir),
+                ));
+                if !argv.is_empty() {
+                    wiring.extra_args.insert(spec.id, argv);
                 }
             }
         }
     }
     Ok(Some(wiring))
+}
+
+/// The spellings a harness may look the trust of `dir` up under: the absolute
+/// path as given, and its canonical form (symlinks resolved; on Windows the
+/// long name with backslashes, the `\\?\` verbatim prefix dropped as Codex's
+/// `dunce::canonicalize` drops it), each once.
+fn project_trust_keys(dir: &std::path::Path) -> Vec<String> {
+    let mut keys = Vec::new();
+    let mut push = |key: String| {
+        if !key.is_empty() && !keys.contains(&key) {
+            keys.push(key);
+        }
+    };
+    if let Ok(absolute) = std::path::absolute(dir) {
+        push(absolute.display().to_string());
+    }
+    if let Ok(canonical) = std::fs::canonicalize(dir) {
+        let text = canonical.display().to_string();
+        let stripped = match text.strip_prefix(r"\\?\") {
+            Some(rest) if rest.as_bytes().get(1) == Some(&b':') => rest.to_string(),
+            _ => text,
+        };
+        push(stripped);
+    }
+    keys
 }
 
 /// Assemble the top-level [`RunReport`] from the finished results and the shared

@@ -13682,6 +13682,63 @@ fn run_mock_rules_codex_appends_opt_in_flags_and_removes_created_files() {
     assert!(!dir.join(".codex").exists(), "created dir must be pruned");
 }
 
+/// Codex 0.169.0 loads no project `.codex/` layer of an untrusted cwd under
+/// `exec`, so the mock's hooks.json would sit unread: the run trusts the
+/// working directory for that invocation alone, as one inline-table override
+/// naming its canonical spelling — and writes no trust anywhere.
+#[test]
+fn run_mock_rules_codex_trusts_its_cwd_for_the_run() {
+    let dir = ScratchDir::new("mockcodex.trust").unwrap();
+    let rules = dir.join("rules.json");
+    std::fs::write(
+        &rules,
+        r#"{"rules":[{"match":{"event_contains":"MARK"},"action":{"deny":{"message":"m"}}}]}"#,
+    )
+    .unwrap();
+    let argv_file = dir.join("argv.txt");
+    let out = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "hi",
+            "--cwd",
+            dir.to_str().unwrap(),
+            "--mock-rules",
+            rules.to_str().unwrap(),
+            "--bin",
+            &bin_override("codex"),
+            "--compact",
+        ],
+        &[("MOCK_ARGV_FILE", argv_file.to_str().unwrap())],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let argv: Vec<String> = std::fs::read_to_string(&argv_file)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    let at = argv
+        .iter()
+        .position(|a| a.starts_with("projects="))
+        .unwrap_or_else(|| panic!("no per-run project trust override in {argv:?}"));
+    assert_eq!(argv[at - 1], "-c", "{argv:?}");
+    let canonical = std::fs::canonicalize(&*dir).unwrap().display().to_string();
+    let canonical = canonical.strip_prefix(r"\\?\").unwrap_or(&canonical);
+    let quoted = serde_json::to_string(canonical).unwrap();
+    assert!(
+        argv[at].contains(&format!("{quoted}={{trust_level=\"trusted\"}}")),
+        "the override must trust {quoted}: {}",
+        argv[at]
+    );
+    assert!(!dir.join(".codex").exists(), "created dir must be pruned");
+}
+
 /// Claude Code delivery: zero workspace mutation — the hook rides a per-run
 /// `--settings <tempfile>` argument (contents proven mid-run by catting the
 /// file the argv names), and the temp file is deleted afterwards.

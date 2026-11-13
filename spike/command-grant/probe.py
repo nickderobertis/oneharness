@@ -34,12 +34,18 @@ OpenCode `run --format json`).
 
 Output: one line per probe
 
-    harness | mechanism | probe | requested | decision | ran | fs-changed | verdict
+    harness | mechanism | probe | requested | decision | ran | fs | verdict
 
 `requested` is `requested(verbatim)` when the call the harness recorded
 carries the intended command unaltered, `requested(ALTERED)` when a model
 rewrote it (that probe's verdict is then `inconclusive(call altered)`), and
-`NOT-requested` when no call reached the harness. `decision` is the harness's
+`NOT-requested` when no call reached the harness. `fs` covers every file the
+probe controls, the granted executable's own log included: `fs-unchanged` when
+none changed; `fs-changed:expected(...)` when the only change is the granted
+executable appending its record to channel/records.jsonl; and
+`fs-changed:unexpected(...)` naming every other change (worktree files, the
+ungranted executable's log, a channel line not written by the executable),
+followed by `+expected(...)` when the granted log also changed. `decision` is the harness's
 own answer to the call: `allowed`, `denied` (its permission layer refused,
 with its message), `sandboxed` (Codex ran it inside the read-only sandbox,
 which refused the write, with the OS error), or `error`. `verdict` is `ran` /
@@ -1200,8 +1206,15 @@ def line(r: Result) -> str:
     if r.decision == "allowed":
         dec = f"allowed: {_short(r.message, 110)}"
     ran = "ran" if r.ran else ("other-exe-ran" if r.other_records else "not-run")
-    chg = "fs-changed:" + ",".join(r.changed) if [c for c in r.changed if "granted stand-in" not in c] \
-        else "fs-unchanged"
+    granted = [c for c in r.changed if "granted stand-in" in c]
+    others = [c for c in r.changed if "granted stand-in" not in c]
+    expected = "expected(channel/records.jsonl: granted executable's record)"
+    if others:
+        chg = "fs-changed:unexpected(" + ",".join(others) + ")" + ("+" + expected if granted else "")
+    elif granted:
+        chg = "fs-changed:" + expected
+    else:
+        chg = "fs-unchanged"
     return " | ".join(f.replace("|", "¦") for f in [r.harness, r.mechanism, r.probe, req, dec, ran, chg, r.verdict])
 
 
@@ -1209,12 +1222,14 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--harness", default="claude-code,codex,opencode")
     ap.add_argument("--model", choices=("scripted", "real"), default="scripted")
-    ap.add_argument("--scratch", help="where probe worktrees go (default: a new temp dir)")
+    ap.add_argument("--scratch", help="where probe worktrees go (default: a new unique directory under "
+                    "$ONEPIPELINE_NODE_SCRATCH_DIR, or under the system temp dir when that is unset)")
     ap.add_argument("--json", help="write every result as JSON here")
     ap.add_argument("--only", help="comma-separated probe ids")
     ap.add_argument("--mechanism", help="comma-separated mechanism ids")
     args = ap.parse_args()
-    root = Path(args.scratch or tempfile.mkdtemp(prefix="spike-command-grant-")).resolve()
+    node_scratch = os.environ.get("ONEPIPELINE_NODE_SCRATCH_DIR") or None
+    root = Path(args.scratch or tempfile.mkdtemp(prefix="spike-command-grant-", dir=node_scratch)).resolve()
     root.mkdir(parents=True, exist_ok=True)
     only = set(args.only.split(",")) if args.only else None
     mechs = set(args.mechanism.split(",")) if args.mechanism else None

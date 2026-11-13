@@ -852,6 +852,27 @@ class CodexSuite(BudgetCase):
         sys.platform.startswith("linux"),
         "the suite's controlled turn runs hermetically on the Linux leg alone",
     )
+    def test_the_rendezvous_step_fails_evidence_of_a_loosened_socket_directory(self) -> None:
+        # Codex refuses any directory but 0700 today (the mock does too), so a
+        # server that recorded 0755 is one whose Codex accepted it: the
+        # evidence it would have written stands in for that Codex.
+        real = shutil.which("jq")
+        self.assertIsNotNone(real, "no jq on PATH; install it")
+        loosen = (
+            f'{shlex.quote(str(real))} -c \'.mode = "755"\' "$1" >"$1.loose"'
+            ' && mv -f "$1.loose" "$1"'
+        )
+        run = self.run_with_evidence_read(scratch(self), loosen)
+        self.assertNotEqual(run.returncode, 0, run.stderr)
+        self.assertRegex(
+            run.stderr,
+            r"FAIL: codex rendezvous: /tmp/codex-daemon-\d+ is mode 755, not the 0700 Codex demands",
+        )
+
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "the suite's controlled turn runs hermetically on the Linux leg alone",
+    )
     def test_the_rendezvous_setup_names_a_temp_dir_it_cannot_use(self) -> None:
         tmp = scratch(self)
         missing = tmp / "no-such-tmp"

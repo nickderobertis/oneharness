@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import signal
 import subprocess
 import time
@@ -181,6 +182,26 @@ class Wrapper(unittest.TestCase):
         self.assertTrue(self.child_gone())
         self.assertFalse(private.is_symlink())
 
+    def test_the_recorded_mode_is_the_socket_directorys_permission_bits(self) -> None:
+        # The special bits fold into their execute bit, or vanish without one.
+        cases = {
+            0o700: "700",
+            0o755: "755",
+            0o750: "750",
+            0o2750: "750",
+            0o2740: "740",
+            0o1777: "777",
+        }
+        for bits, recorded in cases.items():
+            with self.subTest(mode=oct(bits)):
+                self.prepare()
+                self.socket_dir.mkdir()
+                self.socket_dir.chmod(bits)
+                process = self.serve("link")
+                (record,) = self.records()
+                self.assertEqual(record["mode"], recorded)
+                self.assertEqual(self.stop(process)[0], 0)
+
     def test_a_listen_name_that_starts_with_a_dot_gets_a_distinct_private_twin(self) -> None:
         self.prepare()
         self.listen = self.sock / ".hidden.sock"
@@ -268,7 +289,8 @@ class Wrapper(unittest.TestCase):
             ["bash", "-c", "command -v jq"], capture_output=True, text=True, check=True
         ).stdout.strip()
         (bin_dir / "jq").write_text(
-            f"#!/usr/bin/env bash\nchmod 555 '{self.sock}'\nexec '{real}' \"$@\"\n"
+            f"#!/usr/bin/env bash\nchmod 555 {shlex.quote(str(self.sock))}\n"
+            f'exec {shlex.quote(real)} "$@"\n'
         )
         (bin_dir / "jq").chmod(0o755)
         self.addCleanup(self.sock.chmod, 0o755)

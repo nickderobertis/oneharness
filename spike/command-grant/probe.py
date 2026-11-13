@@ -830,10 +830,12 @@ def parse_codex(events: list[dict], sub: bool, env: dict[str, str]) -> Observed:
     if o is None:
         return Observed(True, "none", f"{c.get('name')}: no output in the rollout")
     out = o.get("output")
+    if isinstance(out, list):  # code mode (`exec`, real models): a list of input_text parts
+        out = "\n".join(str(x.get("text", "")) if isinstance(x, dict) else str(x) for x in out)
     out = out if isinstance(out, str) else json.dumps(out)
     desc = f"{c.get('name')}: {out}"
-    m = re.search(r"Process exited with code (\d+)", out)
-    code = int(m.group(1)) if m else None
+    m = re.search(r'Process exited with code (\d+)|"exit_code":\s*(-?\d+)', out)
+    code = int(m.group(1) or m.group(2)) if m else None
     if re.search(r"rejected|declined|not allowed|approval|unsupported call|forbidden|blocked", out, re.I) \
             and code in (None,) or re.search(r"rejected by|execution was rejected|exec command rejected", out, re.I):
         return Observed(True, "denied", desc)
@@ -1022,7 +1024,7 @@ def drive_claude(e: Env, model: str, port: int, sel: Callable[[Probe, Mechanism]
 
             def argv(prompt: str, extra: list[str], flags=flags) -> list[str]:
                 return ["claude", "-p", prompt, *flags, "--output-format", "stream-json", "--verbose",
-                        "--max-turns", "4"] + ([] if model == "real" else ["--setting-sources", ""])
+                        "--max-turns", "4", "--setting-sources", ""]  # no user/project settings, rules or hooks
 
             def env_fn() -> dict[str, str]:
                 env = base_env(e)
@@ -1101,7 +1103,11 @@ def drive_opencode(e: Env, model: str, port: int, sel, out, state: ServerState) 
                                               "models": {"m": {"name": "m", "tool_call": True}}}},
                     "model": "scripted/m", "small_model": "scripted/m"})
     else:
+        # This host stores no OpenCode credentials; a real run needs them at this path.
         src = Path.home() / ".local" / "share" / "opencode" / "auth.json"
+        if not src.exists():
+            out(f"# opencode: real-model probes not run: no credentials at {src}")
+            return []
         dst = oc / "data" / "opencode" / "auth.json"
         if not dst.exists():
             dst.symlink_to(src)

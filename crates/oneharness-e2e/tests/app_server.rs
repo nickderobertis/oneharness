@@ -5990,23 +5990,22 @@ fn the_control_suite_s_pooled_phases_pass_and_fail_for_the_right_reason() {
     }
 }
 
-// llmlint: ignore-block[e2e_not_mocked] The control suite's pooled-env phase runs for real — scripts/e2e-control.sh, the built oneharness behind a wrapper that only starts dispatch B late (or once dispatch A has ended) or occupies the arrivals' directory before exec'ing it, and oneharness-core's pool; only codex is the repository's subprocess double, as in every ControlSuite journey, because the gate cannot run real Codex. The same phase against real Codex is scripts/e2e-control.sh's live run.
+// llmlint: ignore-block[e2e_not_mocked] The control suite's pooled-env phase runs for real — scripts/e2e-control.sh, the built oneharness behind a wrapper that only starts dispatch B late, ends it before it runs, or occupies the arrivals' directory before exec'ing it, and oneharness-core's pool; only codex is the repository's subprocess double, as in every ControlSuite journey, because the gate cannot run real Codex. The same phase against real Codex is scripts/e2e-control.sh's live run.
 /// The suite's pooled-env dispatches share one server however late the
 /// second of them starts — here only once the first's command is already
 /// running, and then later than the old fixed eight-second rendezvous allowed,
 /// as a loaded host starts one: each dispatch's command waits for the other's
 /// arrival itself, so both hold their leases at once, and the first's server
-/// cannot be reclaimed before the late one leases it. A second that starts
-/// only after the first has finished fails the phase saying the two never ran
-/// at once, rather than on whichever server it happened to find; a dispatch
-/// that cannot mark its arrival stops before its probe, and the phase names
-/// that.
+/// cannot be reclaimed before the late one leases it. A second dispatch that
+/// ends without its command ever arriving releases the first's command, which
+/// waits on that end, not a clock, and the phase fails naming the dispatch
+/// that ended; a dispatch that cannot mark its arrival stops before its
+/// probe, and the phase names that.
 #[test]
 fn the_control_suite_s_pooled_env_shares_one_server_when_one_dispatch_starts_late() {
     // Each case: the suite's temp directory (the host's, unless a scratch one
     // under /tmp is tagged — short, as the suite's sockets need), what the
-    // wrapper does before exec'ing the real binary, the suite's rendezvous
-    // hang guard (its 120 s default unless set), and the line the suite's
+    // wrapper does before exec'ing the real binary, and the line the suite's
     // stderr must hold (a pass when it is the `ok:` one).
     let cases = [
         (
@@ -6018,18 +6017,18 @@ fn the_control_suite_s_pooled_env_shares_one_server_when_one_dispatch_starts_lat
             "pool-suite-late",
             None,
             r#"case " $* " in *" --session pooled-env-a "*) "$OH_STAGED_REAL_BIN" "$@" >"$OH_STAGED_SEEN.a-report"; s=$?; cat "$OH_STAGED_SEEN.a-report"; : >"$OH_STAGED_SEEN.a-done"; exit "$s" ;; *" --session pooled-env-b "*) for ((i = 1; i < $#; i++)); do [ "${!i}" = --session-dir ] && { j=$((i + 1)); meet="$(dirname "${!j}")/meet"; }; done; gone() { [ -e "$OH_STAGED_SEEN.a-done" ] && pid="$(jq -r '.control.app_server.pid // empty' "$OH_STAGED_SEEN.a-report")" && ! { [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; }; }; n=0; until [ -n "$(ls -A "$meet")" ] || gone; do [ "$n" -lt 1200 ] || { echo "dispatch A neither arrived nor ended with its server reclaimed" >&2; exit 1; }; sleep 0.1; n=$((n + 1)); done; sleep 12 ;; esac"#,
-            None,
             "ok: each pooled dispatch saw only its own variable, both on server",
         ),
         (
-            // B starts only once A's whole dispatch has ended, so A's command
-            // can only have ended on its hang guard, unmet: by construction,
-            // not by timing, so a guard of 2 s keeps the case short.
-            "pool-suite-later",
+            // B ends, failing, once A's command has arrived and before B's
+            // own could: A's command is waiting for an arrival that will
+            // never come. It ends on B's end, so A's dispatch succeeds and
+            // the phase names B's failure; were A's wait ended by nothing but
+            // a clock, A would sit out its dispatch's own timeout instead.
+            "pool-suite-gone",
             None,
-            r#"case " $* " in *" --session pooled-env-a "*) "$OH_STAGED_REAL_BIN" "$@"; s=$?; : >"$OH_STAGED_SEEN.a-done"; exit "$s" ;; *" --session pooled-env-b "*) n=0; until [ -e "$OH_STAGED_SEEN.a-done" ]; do [ "$n" -lt 1200 ] || { echo "dispatch A never ended" >&2; exit 1; }; sleep 0.1; n=$((n + 1)); done ;; esac"#,
-            Some("2"),
-            "FAIL: pooled-env: one dispatch's command waited 2 s for the other's to start and it never did, so the two never ran at once",
+            r#"case " $* " in *" --session pooled-env-b "*) for ((i = 1; i < $#; i++)); do [ "${!i}" = --session-dir ] && { j=$((i + 1)); meet="$(dirname "${!j}")/meet"; }; done; n=0; until [ -n "$(ls -A "$meet")" ]; do [ "$n" -lt 1200 ] || { echo "dispatch A never arrived" >&2; exit 1; }; sleep 0.1; n=$((n + 1)); done; echo "staged: dispatch B ends before its command arrives" >&2; exit 3 ;; esac"#,
+            "FAIL: pooled-env: dispatch B failed: staged: dispatch B ends before its command arrives",
         ),
         (
             // Arrival paths holding an apostrophe and a `$`: each is written
@@ -6037,7 +6036,6 @@ fn the_control_suite_s_pooled_env_shares_one_server_when_one_dispatch_starts_lat
             "pool-suite-quoted",
             Some("q'$x"),
             r#"printf '%s\n' "$@" >>"$OH_STAGED_SEEN""#,
-            None,
             "ok: each pooled dispatch saw only its own variable, both on server",
         ),
         (
@@ -6047,37 +6045,10 @@ fn the_control_suite_s_pooled_env_shares_one_server_when_one_dispatch_starts_lat
             // store, so no arrival can be created in it; B starts only once A
             // has put it there, so neither can have arrived before.
             r#"case " $* " in *" --session pooled-env-a "*) for ((i = 1; i < $#; i++)); do [ "${!i}" = --session-dir ] && { j=$((i + 1)); meet="$(dirname "${!j}")/meet"; rmdir "$meet" && : >"$meet" && : >"$OH_STAGED_SEEN.a-broke" || exit 1; }; done ;; *" --session pooled-env-b "*) n=0; until [ -e "$OH_STAGED_SEEN.a-broke" ]; do [ "$n" -lt 1200 ] || { echo "dispatch A never replaced the arrivals' directory" >&2; exit 1; }; sleep 0.1; n=$((n + 1)); done ;; esac"#,
-            None,
             "FAIL: pooled-env: dispatch A's command did not see its own OH_POOLED_PROBE (output: rendezvous=unwritable: cannot create",
         ),
-        (
-            // A guard that is not whole seconds is refused before either
-            // dispatch starts, never read as some other bound.
-            "pool-suite-bad-guard",
-            None,
-            "",
-            Some("2s"),
-            "FAIL: pooled-env: OH_POOLED_MEET_GUARD_S must be whole seconds from 1 to 86400, got '2s'",
-        ),
-        (
-            // Whole seconds past a day, here 2^64 that would wrap the
-            // command's tick count to zero, are refused the same way rather
-            // than ending the rendezvous at once.
-            "pool-suite-huge-guard",
-            None,
-            "",
-            Some("18446744073709551616"),
-            "FAIL: pooled-env: OH_POOLED_MEET_GUARD_S must be whole seconds from 1 to 86400, got '18446744073709551616'",
-        ),
-        (
-            "pool-suite-over-day-guard",
-            None,
-            "",
-            Some("86401"),
-            "FAIL: pooled-env: OH_POOLED_MEET_GUARD_S must be whole seconds from 1 to 86400, got '86401'",
-        ),
     ];
-    for (tag, tmp, prelude, guard, expected) in cases {
+    for (tag, tmp, prelude, expected) in cases {
         let suite = ControlSuite::new(tag);
         let seen = suite.pool.path("seen");
         let scratch = tmp.map(|tag| ScratchDir::under(Path::new("/tmp"), tag).unwrap());
@@ -6085,9 +6056,6 @@ fn the_control_suite_s_pooled_env_shares_one_server_when_one_dispatch_starts_lat
         let mut envs = suite.staged(prelude);
         if let Some(dir) = &tmpdir {
             envs.push(("TMPDIR", dir.clone()));
-        }
-        if let Some(guard) = guard {
-            envs.push(("OH_POOLED_MEET_GUARD_S", guard.to_string()));
         }
         let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
         let out = suite.run(&envs);
@@ -6117,9 +6085,9 @@ fn the_control_suite_s_pooled_env_shares_one_server_when_one_dispatch_starts_lat
 /// the suite as that leak, and the two commands still met: the rendezvous is
 /// the same for both commands, so one running the other's — as the mock's
 /// does, its command text being the environment's — counts as an arrival
-/// rather than waiting out the hang guard for one that never comes. With the
-/// guard at its 120 s default that wait outlasted the test runner's own
-/// timeout on CI. Which dispatch leaks into which is the order the server
+/// rather than waiting for one that never comes. When it waited on a 120 s
+/// hang guard instead, that wait outlasted the test runner's own timeout on
+/// CI. Which dispatch leaks into which is the order the server
 /// opened their threads in, so either is the leak.
 #[test]
 fn the_control_suite_s_pooled_env_meets_when_a_leak_runs_one_dispatch_s_command_as_the_other_s() {
@@ -6151,9 +6119,58 @@ fn the_control_suite_s_pooled_env_meets_when_a_leak_runs_one_dispatch_s_command_
         );
         assert!(
             !output.contains("rendezvous=missed"),
-            "{dispatch}'s command waited out the hang guard: {output}"
+            "{dispatch}'s command never met the other's: {output}"
         );
     }
+}
+// llmlint: ignore-end[e2e_not_mocked]
+
+// llmlint: ignore-block[e2e_not_mocked] The control suite's pooled-env phase runs for real — scripts/e2e-control.sh, the built oneharness behind a wrapper that only holds dispatch B back, and keeps a copy of A's report, before exec'ing it, and oneharness-core's pool; only codex is the repository's subprocess double, as in every ControlSuite journey, because the gate cannot run real Codex. The same phase against real Codex is scripts/e2e-control.sh's live run.
+/// A dispatch held back past the point the suite's former rendezvous guard
+/// gave up still meets the other: nothing timed ends a command's wait, so
+/// however long a host takes to start B, A's command waits for it and the
+/// verdict is the same pass, both on one server, each seeing only its own
+/// variable.
+///
+/// `OH_POOLED_MEET_GUARD_S=1` is that former guard at its least. The suite no
+/// longer reads it; it is set so this hold — B released only once A's command
+/// has arrived and then 3 s more, or as soon as A's dispatch has ended —
+/// passed that guard against the script that read it, where A's command gave
+/// up after 1 s, its dispatch ended, and B ran alone. That B was released
+/// with A still running is asserted, so the hold provably outlasted the guard
+/// condition rather than racing it; the pass does not depend on the hold's
+/// length.
+#[test]
+fn the_control_suite_s_pooled_env_meets_a_dispatch_held_past_its_former_guard() {
+    let suite = ControlSuite::new("pool-suite-held");
+    let mut envs = suite.staged(
+        r#"case " $* " in *" --session pooled-env-a "*) "$OH_STAGED_REAL_BIN" "$@" | tee "$OH_STAGED_SEEN.a-report"; s="${PIPESTATUS[0]}"; : >"$OH_STAGED_SEEN.a-done"; exit "$s" ;; *" --session pooled-env-b "*) for ((i = 1; i < $#; i++)); do [ "${!i}" = --session-dir ] && { j=$((i + 1)); meet="$(dirname "${!j}")/meet"; }; done; n=0; until [ -n "$(ls -A "$meet")" ] || [ -e "$OH_STAGED_SEEN.a-done" ]; do [ "$n" -lt 1200 ] || { echo "dispatch A neither arrived nor ended" >&2; exit 1; }; sleep 0.1; n=$((n + 1)); done; n=0; until [ -e "$OH_STAGED_SEEN.a-done" ] || [ "$n" -ge 30 ]; do sleep 0.1; n=$((n + 1)); done; [ -e "$OH_STAGED_SEEN.a-done" ] || : >"$OH_STAGED_SEEN.b-held" ;; esac"#,
+    );
+    envs.push(("OH_POOLED_MEET_GUARD_S", "1".to_string()));
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let out = suite.run(&envs);
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        suite.pool.path("seen.b-held").exists(),
+        "A's dispatch ended before held B was released: {said}"
+    );
+    assert!(out.status.success(), "{said}");
+    assert!(
+        said.contains("ok: each pooled dispatch saw only its own variable, both on server"),
+        "{said}"
+    );
+    let report = std::fs::read_to_string(suite.pool.path("seen.a-report"))
+        .unwrap_or_else(|err| panic!("no copy of A's report ({err}): {said}"));
+    let report: Value = serde_json::from_str(&report).unwrap();
+    let output = command_output(&report);
+    assert!(
+        output.contains("probe="),
+        "A's command never probed: {output}"
+    );
+    assert!(
+        !output.contains("rendezvous=missed"),
+        "A's command stopped waiting for held B: {output}"
+    );
 }
 // llmlint: ignore-end[e2e_not_mocked]
 

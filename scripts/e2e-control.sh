@@ -113,8 +113,6 @@ have_env() {
 #                 DEAD_LEASE_STOP_DEADLINE (5 s);
 #   pooled-reuse  (Linux) the sustained-reuse workload, then onebudgetspec's
 #                 check over live/control/budgets.yaml.
-# OH_POOLED_MEET_GUARD_S (default 120, at most 86400) bounds pooled-env's wait for a dispatch
-# that never starts; it is a hang guard, never what orders the two.
 # OH_CONTROL_ONLY=pooled runs these alone (the gate's journeys drive them with
 # the mock harness standing for codex).
 
@@ -122,35 +120,37 @@ have_env() {
 # Its session store is "$POOLED_DIR/s", one letter so the control socket's path
 # stays under macOS's 104-byte sun_path limit beneath its long temp dir.
 #   $1 session, $2 its report file, $3 its working directory, $4 the command
-#   the prompt asks it to run (also exported as OH_POOLED_COMMAND)
+#   the prompt asks it to run (also exported as OH_POOLED_COMMAND), and
+#   optionally $5, a file created once the dispatch has ended, however it
+#   ended; POOLED_PID is then the subshell that creates it, not oneharness.
 _oh_pooled_start() {
-  local session="$1" report="$2" cwd="$3" command="$4"
+  local session="$1" report="$2" cwd="$3" command="$4" ended="${5:-}"
   if ! { : >"$report" && : >"$report.err"; }; then
     fail "$session: cannot create its report files $report and $report.err; check that $POOLED_DIR is writable"
   fi
-  OH_POOLED_COMMAND="$command" ONEHARNESS_NO_CONFIG=1 "$BIN" run --harness codex --control \
-    --session "$session" --session-dir "$POOLED_DIR/s" --cwd "$cwd" --mode bypass \
-    --timeout "${OH_TIMEOUT:-180}" --compact \
-    --prompt "Run this shell command exactly once, as written, then reply with the single word done: $command" \
-    >"$report" 2>"$report.err" &
+  local -a argv=(run --harness codex --control
+    --session "$session" --session-dir "$POOLED_DIR/s" --cwd "$cwd" --mode bypass
+    --timeout "${OH_TIMEOUT:-180}" --compact
+    --prompt "Run this shell command exactly once, as written, then reply with the single word done: $command")
+  if [ -z "$ended" ]; then
+    OH_POOLED_COMMAND="$command" ONEHARNESS_NO_CONFIG=1 "$BIN" "${argv[@]}" >"$report" 2>"$report.err" &
+  else
+    {
+      local s=0
+      OH_POOLED_COMMAND="$command" ONEHARNESS_NO_CONFIG=1 "$BIN" "${argv[@]}" >"$report" 2>"$report.err" || s=$?
+      if ! : >"$ended"; then
+        echo "$session: ended, but cannot create $ended to say so; check that $POOLED_DIR is writable" >>"$report.err"
+        s=1
+      fi
+      exit "$s"
+    } &
+  fi
   POOLED_PID=$!
 }
 
 oh_pooled_env() {
   _oh_phase pooled-env
   local a b report_a report_b value_a value_b digest_a digest_b out_a out_b pid_a pid_b home
-  # A hang guard, not a window: the rendezvous ends on the other's arrival,
-  # however long scheduling takes to bring it, and only a dispatch that never
-  # starts meets this bound. Whole seconds from 1 to a day: the length test
-  # comes first, so no value too long for shell arithmetic is ever compared,
-  # and the bound keeps guard_s * 10 (the command's tick count) from wrapping.
-  local guard_s="${OH_POOLED_MEET_GUARD_S:-120}"
-  case "$guard_s" in
-    '' | *[!0-9]* | 0*) fail "pooled-env: OH_POOLED_MEET_GUARD_S must be whole seconds from 1 to 86400, got '$guard_s'" ;;
-  esac
-  if [ "${#guard_s}" -gt 5 ] || [ "$guard_s" -gt 86400 ]; then
-    fail "pooled-env: OH_POOLED_MEET_GUARD_S must be whole seconds from 1 to 86400, got '$guard_s'"
-  fi
   value_a="pooled-a-${RANDOM}${RANDOM}${RANDOM}"
   value_b="pooled-b-${RANDOM}${RANDOM}${RANDOM}"
   digest() { printf %s "$1" | cksum | cut -d' ' -f1; }
@@ -166,13 +166,17 @@ oh_pooled_env() {
   # first's server already released, reclaimed after its linger, and run on a
   # server of its own. So each command marks its arrival and waits for the
   # other's before it probes: their order comes from those two events, so a
-  # slow host only makes the phase slower. guard_s ends a wait for a dispatch
-  # that never starts; that miss says so and fails the phase.
+  # slow host only makes the phase slower. Nothing timed ends the wait: it
+  # ends on the other's arrival, or once the other's dispatch has ended (each
+  # dispatch's end creates one file, "ended") without its command arriving —
+  # it failed to start, its turn failed, or it never ran the command. The
+  # command then says rendezvous=missed and probes; the other's own failure
+  # (its wait, or its own-variable check below) is what fails the phase.
   # The rendezvous is the same text in both commands — an arrival is a fresh
   # file in one shared directory, the meeting two of them — so a command run
   # as the other dispatch's (a server leaking A's environment into B's
   # command, where the mock's command is that environment's) still arrives,
-  # and fails as the leak, not after the guard.
+  # and fails as the leak, not on the other's end.
   # The directory is written into each command, not passed in its
   # environment: the environment is what this phase checks, and one dispatch
   # seeing the other's must fail as that, not as a missed rendezvous.
@@ -181,22 +185,25 @@ oh_pooled_env() {
   # The path is written as a single-quoted shell literal (any ' in it as
   # '\''), so whatever TMPDIR holds is a path and never shell syntax; its
   # glob always matches the command's own arrival, so no shell's no-match
-  # rule applies.
+  # rule applies; the end is one fixed name, tested with -e, never a glob.
   literal() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
-  local meet_dir="$POOLED_DIR/meet" meet
+  local meet_dir="$POOLED_DIR/meet" ended="$POOLED_DIR/ended" meet end
   mkdir -p "$meet_dir" ||
     fail "pooled-env: cannot create the rendezvous directory $meet_dir; check that $POOLED_DIR is writable"
+  rm -f "$ended" ||
+    fail "pooled-env: cannot clear the dispatches' end marker $ended; check that $POOLED_DIR is writable"
   meet="$(literal "$meet_dir")"
-  # shellcheck disable=SC2016 # $n and $# are the dispatch's own shell's
-  meet="$(printf 'mktemp %s/here.XXXXXX >/dev/null || { echo rendezvous=unwritable: cannot create an arrival in %s; exit 1; }; n=0; until set -- %s/*; [ "$#" -ge 2 ]; do if [ "$n" -ge %d ]; then echo rendezvous=missed; break; fi; sleep 0.1; n=$((n + 1)); done; ' \
-    "$meet" "$meet" "$meet" "$((guard_s * 10))")"
+  end="$(literal "$ended")"
+  # shellcheck disable=SC2016 # $# is the dispatch's own shell's
+  meet="$(printf 'mktemp %s/here.XXXXXX >/dev/null || { echo rendezvous=unwritable: cannot create an arrival in %s; exit 1; }; until set -- %s/*; [ "$#" -ge 2 ]; do if [ -e %s ]; then echo rendezvous=missed; break; fi; sleep 0.1; done; ' \
+    "$meet" "$meet" "$meet" "$end")"
   report_a="$POOLED_DIR/env-a.json"
   report_b="$POOLED_DIR/env-b.json"
   mkdir -p "$POOLED_DIR/wa" "$POOLED_DIR/wb" ||
     fail "pooled-env: cannot create the dispatches' working directories under $POOLED_DIR; check that it is writable"
-  OH_POOLED_PROBE="$value_a" _oh_pooled_start pooled-env-a "$report_a" "$POOLED_DIR/wa" "$meet$probe"
+  OH_POOLED_PROBE="$value_a" _oh_pooled_start pooled-env-a "$report_a" "$POOLED_DIR/wa" "$meet$probe" "$ended"
   a=$POOLED_PID
-  OH_POOLED_PROBE="$value_b" _oh_pooled_start pooled-env-b "$report_b" "$POOLED_DIR/wb" "$meet$probe"
+  OH_POOLED_PROBE="$value_b" _oh_pooled_start pooled-env-b "$report_b" "$POOLED_DIR/wb" "$meet$probe" "$ended"
   b=$POOLED_PID
   wait "$a" || fail "pooled-env: dispatch A failed: $(cat "$report_a.err")"
   wait "$b" || fail "pooled-env: dispatch B failed: $(cat "$report_b.err")"
@@ -209,9 +216,6 @@ oh_pooled_env() {
   case "$out_b" in *"probe=$digest_a"*) fail "pooled-env: dispatch B's command saw dispatch A's OH_POOLED_PROBE" ;; esac
   case "$out_a" in *"probe=$digest_a"*) ;; *) fail "pooled-env: dispatch A's command did not see its own OH_POOLED_PROBE (output: ${out_a:-none})" ;; esac
   case "$out_b" in *"probe=$digest_b"*) ;; *) fail "pooled-env: dispatch B's command did not see its own OH_POOLED_PROBE (output: ${out_b:-none})" ;; esac
-  # After the environment checks, which name a dispatch whose command could
-  # not arrive or ran in the other's environment, before this one.
-  case "$out_a$out_b" in *rendezvous=missed*) fail "pooled-env: one dispatch's command waited ${guard_s} s for the other's to start and it never did, so the two never ran at once (see $report_a.err and $report_b.err)" ;; esac
   pid_a="$(jq -r '.control.app_server.pid // empty' "$report_a")" ||
     fail "pooled-env: cannot read the server pid from dispatch A's report $report_a"
   pid_b="$(jq -r '.control.app_server.pid // empty' "$report_b")" ||

@@ -3452,7 +3452,7 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 ///                         `exit-first-thread` (Linux) ends its first thread
 ///                         before binding, reading as stopped while a second
 ///                         thread holds the process uncollectable, then exits
-///                         11 (`CODEX_MOCK_HOLD_MS`, `CODEX_MOCK_HOLD_UNTIL`);
+///                         11 (`CODEX_MOCK_HOLD_UNTIL_READ`, `CODEX_MOCK_HOLD_UNTIL`);
 ///                         `stall-upgrade`
 ///                         reads a connection's upgrade request and never
 ///                         answers it; `inheritable-connections` hands every
@@ -3463,8 +3463,9 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 ///                         set close-on-exec atomically.
 ///   CODEX_MOCK_EXIT_FIRST  a path: the first launch creates it and exits before
 ///                         listening.
-///   CODEX_MOCK_HOLD_MS     under `exit-first-thread`, how long the second
-///                         thread holds the process before it exits.
+///   CODEX_MOCK_HOLD_UNTIL_READ  under `exit-first-thread`, set: the second
+///                         thread holds the process until its stderr log is
+///                         read.
 ///   CODEX_MOCK_HOLD_UNTIL  under `exit-first-thread`, a path: the second
 ///                         thread holds the process until it exists.
 ///   CODEX_MOCK_LOADED_PAGE  answer `thread/loaded/list` in pages of this many.
@@ -3605,25 +3606,33 @@ mod listen_server {
 
     /// CODEX_MOCK_FAULT=exit-first-thread: say why on stderr and end the
     /// first thread before binding, while a second thread keeps the process
-    /// until `CODEX_MOCK_HOLD_MS` passes or the `CODEX_MOCK_HOLD_UNTIL` path
-    /// exists (two minutes at most), then exits 11.
+    /// until its release, then exits 11. It is released once someone has read
+    /// its stderr log (`CODEX_MOCK_HOLD_UNTIL_READ`) or the
+    /// `CODEX_MOCK_HOLD_UNTIL` path exists, and after two minutes regardless.
     ///
     /// Linux shows a process whose first thread has ended as a zombie, but no
     /// wait collects it while another thread runs — the order macOS shows
     /// every exiting process in, a server read as stopped before its parent
-    /// can collect it, held here for as long as the journey says.
+    /// can collect it, held here until the journey's release. The log read is
+    /// watched for before the first thread ends, so no read can slip past it.
     #[cfg(target_os = "linux")]
     fn exit_first_thread() -> ! {
-        let hold_ms = std::env::var("CODEX_MOCK_HOLD_MS")
-            .ok()
-            .map(|n| whole::<u64>("CODEX_MOCK_HOLD_MS", &n));
+        let watch = std::env::var_os("CODEX_MOCK_HOLD_UNTIL_READ").map(|_| watch_log_read());
         let until = std::env::var_os("CODEX_MOCK_HOLD_UNTIL").map(PathBuf::from);
         eprintln!("Error: mock codex: its first thread is gone");
         std::thread::spawn(move || {
             let started = std::time::Instant::now();
-            let limit = std::time::Duration::from_millis(hold_ms.unwrap_or(120_000));
-            while started.elapsed() < limit && !until.as_ref().is_some_and(|path| path.exists()) {
-                std::thread::sleep(std::time::Duration::from_millis(10));
+            let limit = std::time::Duration::from_secs(120);
+            while started.elapsed() < limit {
+                if until.as_ref().is_some_and(|path| path.exists()) {
+                    break;
+                }
+                if watch.is_some_and(|fd| log_was_read(fd, 10)) {
+                    break;
+                }
+                if watch.is_none() {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
             }
             std::process::exit(11);
         });
@@ -3631,6 +3640,41 @@ mod listen_server {
         // the thread spawned above reads.
         unsafe { libc::syscall(libc::SYS_exit, 0) };
         unreachable!("SYS_exit returned");
+    }
+
+    /// An inotify descriptor told of every read-only open of this process's
+    /// stderr — the server log a dispatch reads an early exit from — closing.
+    #[cfg(target_os = "linux")]
+    fn watch_log_read() -> libc::c_int {
+        use std::os::unix::ffi::OsStrExt;
+        let log = std::fs::read_link("/proc/self/fd/2")
+            .unwrap_or_else(|err| super::refuse(&format!("cannot find the stderr log: {err}")));
+        let log = std::ffi::CString::new(log.as_os_str().as_bytes())
+            .unwrap_or_else(|_| super::refuse("the stderr log path holds a NUL"));
+        // SAFETY: plain syscalls on a descriptor this function owns and a
+        // NUL-terminated path that outlives the call.
+        let fd = unsafe { libc::inotify_init1(libc::IN_CLOEXEC) };
+        if fd < 0
+            || unsafe { libc::inotify_add_watch(fd, log.as_ptr(), libc::IN_CLOSE_NOWRITE) } < 0
+        {
+            super::refuse(&format!(
+                "cannot watch the stderr log: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        fd
+    }
+
+    /// Whether `fd` (from [`watch_log_read`]) reports a read within `ms`.
+    #[cfg(target_os = "linux")]
+    fn log_was_read(fd: libc::c_int, ms: libc::c_int) -> bool {
+        let mut ready = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one live `pollfd` for a descriptor this process owns.
+        unsafe { libc::poll(&raw mut ready, 1, ms) > 0 }
     }
 
     #[cfg(not(target_os = "linux"))]

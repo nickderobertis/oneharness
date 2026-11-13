@@ -2554,6 +2554,11 @@ fn an_early_exit_quotes_only_the_stderr_it_can_read() {
 /// collected — as macOS shows every exiting process, and as Linux shows one
 /// whose first thread has ended while another runs on — is still reported with
 /// the status it ended with, once it is collectable within the grace.
+///
+/// The ordering is forced, not timed: the server cannot be collected until the
+/// dispatch has seen it stopped and begun its early-exit report by reading the
+/// server's log, so a report that asks for the status without waiting for it
+/// always finds none.
 #[cfg(target_os = "linux")]
 #[test]
 fn an_early_exit_still_being_collected_is_reported_with_its_status() {
@@ -2563,7 +2568,7 @@ fn an_early_exit_still_being_collected_is_reported_with_its_status() {
         &[],
         &[
             ("CODEX_MOCK_FAULT", "exit-first-thread"),
-            ("CODEX_MOCK_HOLD_MS", "300"),
+            ("CODEX_MOCK_HOLD_UNTIL_READ", "1"),
         ],
     ));
     let ran = result(&report);
@@ -2578,9 +2583,9 @@ fn an_early_exit_still_being_collected_is_reported_with_its_status() {
 }
 
 /// A server this dispatch started that reads as stopped but is still not
-/// collectable once the grace runs out is reported without a status, rather
-/// than holding the dispatch until it ends: the run returns while every server
-/// it launched is still held.
+/// collectable once the grace runs out is reported as its own server still
+/// exiting, without a status, rather than holding the dispatch until it ends:
+/// the run returns while every server it launched is still held.
 #[cfg(target_os = "linux")]
 #[test]
 fn an_early_exit_never_collected_reports_no_status_rather_than_waiting() {
@@ -2599,11 +2604,13 @@ fn an_early_exit_never_collected_reports_no_status_rather_than_waiting() {
     let ran = result(&report);
     assert_eq!(ran["status"], "spawn-error", "{ran}");
     let error = ran["error"].as_str().unwrap_or_default();
-    assert!(error.contains("its exit status is unknown here"), "{error}");
     assert!(
-        error.ends_with("its stderr ending: Error: mock codex: its first thread is gone"),
+        error.ends_with(
+            "its exit status is unknown here: this process started it, and it had not finished exiting 2s after it stopped running, its stderr ending: Error: mock codex: its first thread is gone"
+        ),
         "{error}"
     );
+    assert!(!error.contains("another process started it"), "{error}");
 }
 // llmlint: ignore-end[e2e_not_mocked]
 

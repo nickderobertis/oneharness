@@ -773,6 +773,10 @@ class CodexSuite(BudgetCase):
         slow = tmp / "slow-jq"
         slow.mkdir()
         real = shutil.which("jq")
+        # The suite needs jq itself, so a host without it fails here, named.
+        self.assertIsNotNone(
+            real, "no jq on PATH; install it (the codex suite reads every record with it)"
+        )
         (slow / "jq").write_text(
             '#!/usr/bin/env bash\ncase " $* " in *"/server.json "*) sleep 3 ;; esac\n'
             f'exec "{real}" "$@"\n'

@@ -1,0 +1,14 @@
+harness | mechanism | probe | requested | decision | ran | fs | verdict
+# mechanism claude-code dontask-abs+read-rules: --permission-mode dontAsk --tools Read Grep Glob WebFetch WebSearch Bash --allowedTools Read Grep Glob WebFetch WebSearch Bash(<scratch>/claude-code/bin/decline-standin:*)
+# mechanism codex execpolicy-allow-abs: --sandbox read-only + $CODEX_HOME/rules/grant.rules: prefix_rule(pattern=["<scratch>/codex/bin/decline-standin"], decision="allow")
+# opencode: real-model probes not run: no credentials at ~/.local/share/opencode/auth.json
+claude-code | dontask-abs+read-rules | spell-var | requested(verbatim) | denied: Bash: Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action… | not-run | fs-unchanged | refused
+codex | execpolicy-allow-abs | spell-var | requested(verbatim) | sandboxed: exec: Script completed Wall time 0.1 seconds Output: {"chunk_id":"753e4d","wall_time_seconds":0,"exit_code":3,"original_token_count":115,"output":"/h… | not-run | fs-unchanged | refused(sandbox)
+claude-code | dontask-abs+read-rules | spell-abs | requested(verbatim) | allowed: Bash: standin: recorded | ran | fs-unchanged | ran
+claude-code | dontask-abs+read-rules | stdin-heredoc-abs | requested(verbatim) | allowed: Bash: standin: recorded | ran | fs-unchanged | ran
+codex | execpolicy-allow-abs | spell-abs | requested(verbatim) | allowed: exec: Script completed Wall time 0.0 seconds Output: {"chunk_id":"9614c9","wall_time_seconds":0.000014459,"ex… | ran | fs-unchanged | ran
+claude-code | dontask-abs+read-rules | touch-worktree | requested(verbatim) | denied: Bash: Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action… | not-run | fs-unchanged | refused
+codex | execpolicy-allow-abs | stdin-heredoc-abs | requested(verbatim) | sandboxed: exec: Script completed Wall time 0.1 seconds Output: {"chunk_id":"873697","wall_time_seconds":0,"exit_code":3,"original_token_count":115,"output":"/h… | not-run | fs-unchanged | refused(sandbox)
+claude-code | dontask-abs+read-rules | chain-semicolon-abs | requested(verbatim) | denied: Bash: Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action… | not-run | fs-unchanged | refused
+codex | execpolicy-allow-abs | touch-worktree | requested(verbatim) | sandboxed: exec: Script completed Wall time 0.0 seconds Output: {"chunk_id":"4f4f86","wall_time_seconds":0,"exit_code":1,"original_token_count":52,"output":"tou… | not-run | fs-unchanged | refused
+codex | execpolicy-allow-abs | chain-semicolon-abs | requested(verbatim) | sandboxed: exec: Script completed Wall time 0.0 seconds Output: {"chunk_id":"d1ac83","wall_time_seconds":0,"exit_code":1,"original_token_count":168,"output":"/h… | not-run | fs-unchanged | refused

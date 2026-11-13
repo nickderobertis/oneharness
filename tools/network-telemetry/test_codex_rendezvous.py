@@ -291,7 +291,19 @@ class Wrapper(unittest.TestCase):
                 self.assertTrue(self.child_gone(), "the wrapper left codex serving")
                 self.assertFalse(self.listen.is_symlink(), "it published without evidence")
 
-    @unittest.skipIf(os.geteuid() == 0, "root enters a directory of any mode")
+    def test_a_failed_publication_rename_stops_codex_after_creating_the_link(self) -> None:
+        self.prepare()
+        run = self.run_wrapper("link", *self.shared(), path=self.failing("mv"))
+        self.assertEqual(run.returncode, 125, run.stderr)
+        self.assertIn(f"cannot link {self.listen} to the socket at", run.stderr)
+        self.assertIn("mv: refused", run.stderr)
+        self.assertEqual(len(self.records()), 1)
+        self.assertEqual(len(list(self.sock.glob("*.partial"))), 1)
+        self.assertTrue(next(self.sock.glob("*.partial")).is_symlink())
+        self.assertFalse(self.listen.is_symlink())
+        self.assertTrue(self.child_gone())
+
+    @unittest.skipIf(not WINDOWS and os.geteuid() == 0, "root enters a directory of any mode")
     def test_a_socket_directory_it_cannot_enter_exits_125_and_stops_codex(self) -> None:
         self.prepare()
         self.socket_dir.mkdir(mode=0o000)
@@ -301,7 +313,7 @@ class Wrapper(unittest.TestCase):
         self.assertIn(f"cannot enter {self.socket_dir}", run.stderr)
         self.assertTrue(self.child_gone())
 
-    @unittest.skipIf(os.geteuid() == 0, "root writes a directory of any mode")
+    @unittest.skipIf(not WINDOWS and os.geteuid() == 0, "root writes a directory of any mode")
     def test_a_listen_path_it_cannot_publish_exits_125_and_stops_codex(self) -> None:
         self.prepare()
         # A `jq` that makes the --listen directory read-only as the evidence
@@ -325,7 +337,7 @@ class Wrapper(unittest.TestCase):
         self.assertTrue(self.child_gone())
         self.assertEqual(len(self.records()), 1)
 
-    @unittest.skipIf(os.geteuid() == 0, "root writes a directory of any mode")
+    @unittest.skipIf(not WINDOWS and os.geteuid() == 0, "root writes a directory of any mode")
     def test_a_private_path_it_cannot_remove_is_named_and_codexs_status_kept(self) -> None:
         self.prepare()
         self.addCleanup(self.sock.chmod, 0o755)

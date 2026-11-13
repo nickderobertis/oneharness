@@ -827,6 +827,24 @@ class CodexSuite(BudgetCase):
         sys.platform.startswith("linux"),
         "the suite's controlled turn runs hermetically on the Linux leg alone",
     )
+    def test_the_rendezvous_step_names_an_override_removed_before_its_read(self) -> None:
+        tmp = scratch(self)
+        gone = tmp / "gone"
+        # Remove the override after the controlled turn, so launch validation
+        # accepts it and the check itself diagnoses its disappearance.
+        run = self.run_with_evidence_read(
+            tmp,
+            f"rm -rf {shlex.quote(str(gone))}",
+            ONEHARNESS_INTERNAL_CODEX_DAEMON_DIR=str(gone),
+            CODEX_MOCK_DAEMON_DIR=str(gone),
+        )
+        self.assertNotEqual(run.returncode, 0, run.stderr)
+        self.assertIn(f"ONEHARNESS_INTERNAL_CODEX_DAEMON_DIR={gone} is not a directory", run.stderr)
+
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "the suite's controlled turn runs hermetically on the Linux leg alone",
+    )
     def test_the_rendezvous_step_names_evidence_it_cannot_read_or_that_holds_nothing(
         self,
     ) -> None:

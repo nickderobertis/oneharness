@@ -169,7 +169,8 @@ grep -Fq "crates/oneharness-core/Cargo.toml declares no rust-version" "$work/out
 # that file — not a pass, and not a refusal for whatever else it then misses.
 for input in .github/workflows/release.yml scripts/verify-published.sh; do
   root="$(stage "unreadable-$(basename "$input")")"
-  rm "$root/$input"
+  rm "$root/$input" ||
+    fail_showing "fixture setup: could not remove the staged $input under $root; check that the temp dir is writable"
   status=0
   run_gate "$root" || status=$?
   [ "$status" -eq 2 ] ||
@@ -181,12 +182,14 @@ done
 # A registry probe the release only mentions in a comment is exempt; the same
 # line as a step is refused.
 root="$(stage commented-probe)"
-printf '      # npm view "oneharness-cli@1.2.3" version replaced by verify-published.sh\n' >>"$root/.github/workflows/release.yml"
+printf '      # npm view "oneharness-cli@1.2.3" version replaced by verify-published.sh\n' >>"$root/.github/workflows/release.yml" ||
+  fail_showing "fixture setup: could not append to the staged release.yml under $root; check that the temp dir is writable"
 if ! run_gate "$root"; then
   fail_showing "a registry probe named only in a release.yml comment must pass"
 fi
 root="$(stage running-probe)"
-printf '      - run: npm view "oneharness-cli@1.2.3" version\n' >>"$root/.github/workflows/release.yml"
+printf '      - run: npm view "oneharness-cli@1.2.3" version\n' >>"$root/.github/workflows/release.yml" ||
+  fail_showing "fixture setup: could not append to the staged release.yml under $root; check that the temp dir is writable"
 if run_gate "$root"; then
   fail_showing "a release.yml step running a registry metadata probe must be refused"
 fi

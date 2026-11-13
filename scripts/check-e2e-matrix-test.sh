@@ -80,7 +80,8 @@ run_case "an undrifted tree" 0 "all e2e workflows match the matrix contract"
 build_fixture
 sed -i.bak 's#^on:$#on:\
   push:\
-    branches: [main]#' "$tmp/repo/$workflow"
+    branches: [main]#' "$tmp/repo/$workflow" ||
+  fail "fixture setup: could not rewrite $tmp/repo/$workflow to add a push trigger; check that the temp dir is writable"
 grep -q '^  push:$' "$tmp/repo/$workflow" ||
   fail "fixture setup: the push-trigger case did not add a push trigger to $workflow"
 run_case "a push trigger" 1 "$workflow still triggers on push"

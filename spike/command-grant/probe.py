@@ -590,7 +590,7 @@ def build_probes() -> list[Probe]:
 
 
 REAL_SUBSET = ("spell-var", "spell-abs", "stdin-heredoc-abs", "chain-semicolon-abs", "touch-worktree")
-PROJECT_SUBSET = ("spell-abs", "touch-worktree", "chain-semicolon-abs", "redirect-out-abs")
+SUBSET = ("spell-abs", "touch-worktree", "chain-semicolon-abs", "redirect-out-abs")
 BASELINE_SUBSET = ("spell-var", "spell-abs", "stdin-heredoc-abs", "posture-read-outside", "posture-webfetch")
 
 
@@ -672,13 +672,16 @@ def codex_mechanisms(e: Env) -> list[tuple[Mechanism, list[str], str | None]]:
         (Mechanism("add-dir-channel",
                    f"--sandbox read-only --add-dir {e.root}/channel (no rules)", "all"),
          base + ["--add-dir", str(e.root / "channel")], None),
+        (Mechanism("sandbox-permissions-config",
+                   "--sandbox read-only -c 'sandbox_permissions=[\"disk-full-read-access\"]' (no rules)", "subset"),
+         base + ["-c", 'sandbox_permissions=["disk-full-read-access"]'], None),
         (Mechanism("execpolicy-allow-abs-project-trusted",
                    "--sandbox read-only + <worktree>/.codex/rules/grant.rules (the abs prefix_rule) + "
-                   "-c projects.\"<worktree>\".trust_level=\"trusted\"", "project"),
+                   "-c projects.\"<worktree>\".trust_level=\"trusted\"", "subset"),
          base, codex_rules(e, (str(e.standin),))),
         (Mechanism("execpolicy-allow-abs-project-untrusted",
                    "--sandbox read-only + <worktree>/.codex/rules/grant.rules (the abs prefix_rule), "
-                   "project not trusted", "project"),
+                   "project not trusted", "subset"),
          base, codex_rules(e, (str(e.standin),))),
     ]
 
@@ -1084,6 +1087,13 @@ def drive_claude(e: Env, model: str, port: int, sel: Callable[[Probe, Mechanism]
 
 
 def drive_codex(e: Env, model: str, port: int, sel, out, state: ServerState) -> list[Result]:
+    # Whether this Codex still knows the `sandbox_permissions` config key at all.
+    chk = subprocess.run(["codex", "exec", "--strict-config", "--sandbox", "read-only", "--skip-git-repo-check",
+                          "-c", 'sandbox_permissions=["disk-full-read-access"]', "hi"],
+                         capture_output=True, text=True, env={**base_env(e), "CODEX_HOME": str(e.root)},
+                         stdin=subprocess.DEVNULL, timeout=60)
+    out("# codex --strict-config -c sandbox_permissions=[...]: exit "
+        f"{chk.returncode}: {_short(chk.stderr or chk.stdout, 200)}")
     res = []
     for mech, flags, rules in codex_mechanisms(e):
         if any(sel(p, mech) for p in build_probes() if "codex" in p.harnesses):
@@ -1216,8 +1226,8 @@ def main() -> int:
             return False
         if args.model == "real":
             return m.probes == "all" and p.id in REAL_SUBSET and m.id in REAL_MECHS
-        if m.probes == "project":
-            return p.id in PROJECT_SUBSET
+        if m.probes == "subset":
+            return p.id in SUBSET
         return m.probes == "all" or p.id in BASELINE_SUBSET
 
     print(f"# scratch: {root}  model: {args.model}", file=sys.stderr)

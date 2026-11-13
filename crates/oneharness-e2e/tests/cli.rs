@@ -14279,6 +14279,673 @@ fn config_command_attributes_settings_tables() {
         .ends_with("oneharness.toml"));
 }
 
+/// Every file under `dir` with its bytes, keyed by its `/`-separated relative
+/// path: what "byte-identical" compares, so a refusal that wrote, created or
+/// removed anything at all fails the comparison.
+fn tree_bytes(dir: &std::path::Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    if !dir.exists() {
+        return std::collections::BTreeMap::new();
+    }
+    walk(dir)
+        .into_iter()
+        .map(|rel| {
+            let bytes = std::fs::read(dir.join(&rel)).unwrap();
+            (rel, bytes)
+        })
+        .collect()
+}
+
+/// One command of the six every sync-policy refusal stops, driven over the
+/// fixture's explicit `--config` with a private HOME/XDG so `--global` has a
+/// user-global tree of its own to (not) write. `run` drives the mock harness
+/// with `MOCK_ARGV_FILE`, so a spawn leaves a file behind.
+fn drive_policy_verb(
+    fx: &ConfigFixture,
+    config: &std::path::Path,
+    verb: &[&str],
+    argv_file: &std::path::Path,
+) -> Output {
+    let cwd = fx.cwd();
+    let config = config.display().to_string();
+    let mut args: Vec<&str> = verb.to_vec();
+    if verb[0] == "run" {
+        args.extend(["--prompt", "hi"]);
+    }
+    let bin = bin_override("claude-code");
+    if verb[0] == "run" {
+        args.extend(["--bin", bin.as_str()]);
+    }
+    args.extend([
+        "--cwd",
+        cwd.as_str(),
+        "--config",
+        config.as_str(),
+        "--compact",
+    ]);
+    let home = fx.dir.join("home");
+    let home = home.display().to_string();
+    let xdg = fx.dir.join("home/xdg");
+    let xdg = xdg.display().to_string();
+    let argv = argv_file.display().to_string();
+    run_with_config(
+        &args,
+        &[
+            ("HOME", home.as_str()),
+            ("USERPROFILE", home.as_str()),
+            ("XDG_CONFIG_HOME", xdg.as_str()),
+            ("MOCK_ARGV_FILE", argv.as_str()),
+        ],
+        &fx.user_config(),
+    )
+}
+
+/// The commands a sync-policy refusal must stop: `run`, `sync` in all four of
+/// its modes, and `config`.
+const POLICY_VERBS: [&[&str]; 6] = [
+    &["run", "--harness", "claude-code"],
+    &["sync", "--harness", "claude-code"],
+    &["sync", "--harness", "claude-code", "--check"],
+    &["sync", "--harness", "claude-code", "--exact"],
+    &["sync", "--harness", "claude-code", "--global"],
+    &["config"],
+];
+
+#[test]
+fn a_sync_policy_field_outside_sync_stops_every_command_before_anything_is_written() {
+    // Each field at each of its places outside `[sync]`, then the same field in
+    // a parent reached through `extends`, whose file the refusal must name.
+    let cases: &[(&str, &str, &str)] = &[
+        (
+            "denied_tools = [\"Bash(rm:*)\"]\n",
+            "`denied_tools` at the top level",
+            "`[sync] denied_tools`",
+        ),
+        (
+            "[[hooks]]\ncommand = \"oneharness gate {harness}\"\n",
+            "`hooks` at the top level",
+            "`[[sync.hooks]]`",
+        ),
+        (
+            "[settings]\nmodel = \"x\"\n",
+            "`settings` at the top level",
+            "`[sync.harness.<id>.settings]`",
+        ),
+        (
+            "[harness.claude-code]\ndenied_tools = [\"Bash(rm:*)\"]\n",
+            "`denied_tools` in `[harness.claude-code]`",
+            "`[sync.harness.claude-code] denied_tools`",
+        ),
+        (
+            "[harness.claude-code.hooks]\nPreToolUse = []\n",
+            "`hooks` in `[harness.claude-code]`",
+            "`[sync.harness.claude-code.hooks]`",
+        ),
+        (
+            "[harness.claude-code.settings]\nmodel = \"x\"\n",
+            "`settings` in `[harness.claude-code]`",
+            "`[sync.harness.claude-code.settings]`",
+        ),
+        (
+            "[harness.claude-code.variant.work]\ndenied_tools = [\"Bash(rm:*)\"]\n",
+            "`denied_tools` in `[harness.claude-code.variant.work]`",
+            "`[sync.harness.claude-code.variant.work] denied_tools`",
+        ),
+        (
+            "[harness.claude-code.variant.work.hooks]\nPreToolUse = []\n",
+            "`hooks` in `[harness.claude-code.variant.work]`",
+            "`[sync.harness.claude-code.variant.work.hooks]`",
+        ),
+        (
+            "[harness.claude-code.variant.work.settings]\nmodel = \"x\"\n",
+            "`settings` in `[harness.claude-code.variant.work]`",
+            "`[sync.harness.claude-code.variant.work.settings]`",
+        ),
+    ];
+    for (index, (toml, field, spelling)) in cases.iter().enumerate() {
+        for through_extends in [false, true] {
+            let fx = ConfigFixture::new(&format!("misplaced-{index}-{through_extends}"), "", "");
+            // A project already synced once: a refusal must leave it as it was.
+            std::fs::create_dir_all(fx.dir.join(".claude")).unwrap();
+            std::fs::write(
+                fx.dir.join(".claude/settings.json"),
+                "{\n  \"permissions\": {\n    \"allow\": [\n      \"Read\"\n    ]\n  }\n}\n",
+            )
+            .unwrap();
+            let config = fx.dir.join("policy.toml");
+            let named = if through_extends {
+                let parent = fx.dir.join("parent.toml");
+                std::fs::write(&parent, toml).unwrap();
+                std::fs::write(&config, "extends = \"parent.toml\"\nmodel = \"m\"\n").unwrap();
+                parent
+            } else {
+                std::fs::write(&config, toml).unwrap();
+                config.clone()
+            };
+            let argv_file = fx.dir.join("spawned.argv");
+            let before = tree_bytes(&fx.dir);
+            for verb in POLICY_VERBS {
+                let output = drive_policy_verb(&fx, &config, verb, &argv_file);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let what = format!("{verb:?} over {toml:?} (extends: {through_extends})");
+                assert_eq!(output.status.code(), Some(2), "{what}: {stderr}");
+                assert!(
+                    stderr.contains(&format!("`{}`", named.display())),
+                    "{what} must name the file: {stderr}"
+                );
+                assert!(
+                    stderr.contains(&format!("{field} belongs in {spelling}")),
+                    "{what} must name the field and its [sync] spelling: {stderr}"
+                );
+                assert!(output.stdout.is_empty(), "{what}: no report on a refusal");
+                assert!(!argv_file.exists(), "{what} spawned a harness");
+                assert_eq!(tree_bytes(&fx.dir), before, "{what} wrote something");
+            }
+        }
+    }
+}
+
+#[test]
+fn every_misplaced_sync_policy_field_is_named_at_once() {
+    let fx = ConfigFixture::new(
+        "misplaced-all",
+        "allowed_tools = [\"Read\"]\ndenied_tools = [\"Bash(rm:*)\"]\n\
+         [[hooks]]\ncommand = \"g\"\n\
+         [harness.opencode.settings.permission]\nedit = \"deny\"\n",
+        "",
+    );
+    let output = run_with_config(&["config", "--cwd", &fx.cwd()], &[], &fx.user_config());
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for named in [
+        "`denied_tools` at the top level belongs in `[sync] denied_tools`",
+        "`hooks` at the top level belongs in `[[sync.hooks]]`",
+        "`settings` in `[harness.opencode]` belongs in `[sync.harness.opencode.settings]`",
+        // The run-level `allowed_tools` beside them is not refused here, but
+        // its changed meaning is said in the same breath.
+        "`allowed_tools` outside `[sync]` is now the run-level allowlist, which `sync` never writes: move it to `[sync] allowed_tools` to keep syncing it",
+    ] {
+        assert!(stderr.contains(named), "{named}\n{stderr}");
+    }
+}
+
+#[test]
+fn no_key_selects_another_config_shape() {
+    // A version or format marker beside today's top-level policy is an unknown
+    // field like any other: it is never read as a request for the old meaning.
+    for (index, key) in [
+        "config_version = 1",
+        "version = 1",
+        "format = \"v1\"",
+        "schema_version = \"0.13\"",
+    ]
+    .iter()
+    .enumerate()
+    {
+        for policy in [
+            "denied_tools = [\"Bash(rm:*)\"]",
+            "allowed_tools = [\"Read\"]",
+        ] {
+            let fx = ConfigFixture::new(&format!("version-key-{index}"), "", "");
+            let config = fx.dir.join("policy.toml");
+            std::fs::write(&config, format!("{key}\n{policy}\n")).unwrap();
+            let argv_file = fx.dir.join("spawned.argv");
+            let before = tree_bytes(&fx.dir);
+            let name = key.split(' ').next().unwrap();
+            for verb in [POLICY_VERBS[0], POLICY_VERBS[1], POLICY_VERBS[5]] {
+                let output = drive_policy_verb(&fx, &config, verb, &argv_file);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                assert_eq!(output.status.code(), Some(2), "{verb:?} {key}: {stderr}");
+                assert!(
+                    stderr.contains(&format!("unknown field `{name}`")),
+                    "{verb:?} {key}: {stderr}"
+                );
+                assert!(
+                    !stderr.contains("`[sync]` section"),
+                    "{verb:?} {key}: {stderr}"
+                );
+                assert!(!argv_file.exists(), "{verb:?} {key} spawned a harness");
+                assert_eq!(
+                    tree_bytes(&fx.dir),
+                    before,
+                    "{verb:?} {key} wrote something"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_run_level_allowed_tools_is_reported_never_synced_and_refused_by_run() {
+    // Top level (through `extends`), per harness and per variant: `config`
+    // reports each where `allowed_tools` has always been reported, with its
+    // file; `sync` writes nothing for any of them; `run` refuses each, naming
+    // the rules and the file, before spawning.
+    let fx = ConfigFixture::new("run-level-allowlist", "", "");
+    let parent = fx.dir.join("parent.toml");
+    std::fs::write(&parent, "allowed_tools = [\"Bash(git log:*)\"]\n").unwrap();
+    let config = fx.dir.join("child.toml");
+    std::fs::write(
+        &config,
+        "extends = \"parent.toml\"\n\
+         [harness.codex]\nallowed_tools = [\"Bash(cargo test:*)\"]\n\
+         [harness.claude-code.variant.work]\nallowed_tools = [\"Read\", \"Edit\"]\n",
+    )
+    .unwrap();
+    let parent_name = parent.display().to_string();
+    let child_name = config.display().to_string();
+
+    let report = drive_policy_verb(&fx, &config, &["config"], &fx.dir.join("unused"));
+    assert!(report.status.success(), "{report:?}");
+    let report = json_stdout(&report);
+    assert_eq!(
+        report["allowed_tools"]["value"],
+        serde_json::json!(["Bash(git log:*)"])
+    );
+    assert_eq!(report["allowed_tools"]["source"], parent_name.as_str());
+    let codex = &report["harness"]["codex"]["allowed_tools"];
+    assert_eq!(codex["value"], serde_json::json!(["Bash(cargo test:*)"]));
+    assert_eq!(codex["source"], child_name.as_str());
+    let work = &report["harness"]["claude-code"]["variant"]["work"]["allowed_tools"];
+    assert_eq!(work["value"], serde_json::json!(["Read", "Edit"]));
+    assert_eq!(work["source"], child_name.as_str());
+    assert_eq!(report["sync"]["allowed_tools"]["value"], Value::Null);
+    assert_eq!(report["sync"]["harness"], serde_json::json!({}));
+
+    let argv_file = fx.dir.join("spawned.argv");
+    let before = tree_bytes(&fx.dir);
+    for mode in [&[][..], &["--exact"], &["--check"]] {
+        let mut verb = vec!["sync", "--harness", "claude-code,codex,claude-code:work"];
+        verb.extend_from_slice(mode);
+        let output = drive_policy_verb(&fx, &config, &verb, &argv_file);
+        assert!(output.status.success(), "{verb:?}: {output:?}");
+        for result in json_stdout(&output)["results"].as_array().unwrap() {
+            assert_eq!(result["status"], "skipped", "{verb:?}: {result}");
+            assert_eq!(result["file"], Value::Null, "{verb:?}: {result}");
+        }
+        assert_eq!(
+            tree_bytes(&fx.dir),
+            before,
+            "{verb:?} wrote a run-level rule"
+        );
+    }
+
+    for (id, rules, source) in [
+        ("claude-code", "`Bash(git log:*)`", &parent_name),
+        ("codex", "`Bash(cargo test:*)`", &child_name),
+        ("claude-code:work", "`Read`, `Edit`", &child_name),
+    ] {
+        let output = drive_policy_verb(&fx, &config, &["run", "--harness", id], &argv_file);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{id}: {stderr}");
+        assert!(
+            stderr.contains(&format!(
+                "`allowed_tools` in `{source}` sets a run-level allowlist for harness `{id}` ({rules})"
+            )),
+            "{id}: {stderr}"
+        );
+        assert!(
+            stderr.contains("this release does not apply a run-level allowlist to a run"),
+            "{id}: {stderr}"
+        );
+        assert!(
+            stderr.contains("move it to `[sync] allowed_tools`"),
+            "{id}: {stderr}"
+        );
+        assert!(!argv_file.exists(), "{id}: a harness was spawned");
+        assert!(output.stdout.is_empty(), "{id}: no report on a refusal");
+    }
+    assert_eq!(tree_bytes(&fx.dir), before);
+}
+
+/// What the previous release's `oneharness sync` wrote from a top-level
+/// `allowed_tools = ["Bash(git log:*)", "Read"]`: Claude Code's allow list and
+/// Codex's rules file, byte for byte as the existing sync journeys pin them.
+fn seed_a_project_synced_by_the_previous_release(dir: &std::path::Path) {
+    std::fs::create_dir_all(dir.join(".claude")).unwrap();
+    std::fs::write(
+        dir.join(".claude/settings.json"),
+        "{\n  \"permissions\": {\n    \"allow\": [\n      \"Bash(git log:*)\",\n      \"Read\"\n    ]\n  }\n}\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.join(".codex/rules")).unwrap();
+    std::fs::write(
+        dir.join(".codex/rules/oneharness.rules"),
+        concat!(
+            "# Generated by `oneharness sync` from the unified `allowed_tools` / `denied_tools`.\n",
+            "# Do not edit: every sync that changes it rewrites this file whole.\n",
+            "\n",
+            "# allowed_tools: Bash(git log:*)\n",
+            "prefix_rule(pattern=[\"git\", \"log\"], decision=\"allow\")\n",
+        ),
+    )
+    .unwrap();
+}
+
+#[test]
+fn the_sync_guard_keeps_an_old_top_level_allowlist_from_erasing_what_it_synced() {
+    let old = "allowed_tools = [\"Bash(git log:*)\", \"Read\"]\n";
+    let fx = ConfigFixture::new("sync-guard", "", "");
+    seed_a_project_synced_by_the_previous_release(&fx.dir);
+    let config = fx.dir.join("policy.toml");
+    std::fs::write(&config, old).unwrap();
+    let config_name = config.display().to_string();
+    let claude = fx.dir.join(".claude/settings.json").display().to_string();
+    let rules = fx
+        .dir
+        .join(".codex/rules/oneharness.rules")
+        .display()
+        .to_string();
+    let argv_file = fx.dir.join("spawned.argv");
+    let before = tree_bytes(&fx.dir);
+
+    // Every project mode would erase a rule it once synced: the Codex rules
+    // file is rewritten whole by a plain sync, and `--exact` empties the
+    // Claude allow list. Each refuses, naming the file and the move.
+    for (verb, file, entry, rule) in [
+        (
+            &["sync", "--harness", "claude-code,codex"][..],
+            &rules,
+            "prefix_rule(pattern=[\"git\", \"log\"], decision=\"allow\")",
+            "Bash(git log:*)",
+        ),
+        (
+            &["sync", "--harness", "claude-code,codex", "--exact"],
+            &claude,
+            "Bash(git log:*)",
+            "Bash(git log:*)",
+        ),
+        (
+            &[
+                "sync",
+                "--harness",
+                "claude-code,codex",
+                "--check",
+                "--exact",
+            ],
+            &claude,
+            "Bash(git log:*)",
+            "Bash(git log:*)",
+        ),
+        (
+            &["sync", "--harness", "codex", "--exact"],
+            &rules,
+            "prefix_rule(pattern=[\"git\", \"log\"], decision=\"allow\")",
+            "Bash(git log:*)",
+        ),
+        // With no selection every harness is synced: Claude's add-only merge
+        // removes nothing, and the rewritten Codex rules file is what refuses.
+        (
+            &["sync"],
+            &rules,
+            "prefix_rule(pattern=[\"git\", \"log\"], decision=\"allow\")",
+            "Bash(git log:*)",
+        ),
+    ] {
+        let output = drive_policy_verb(&fx, &config, verb, &argv_file);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{verb:?}: {stderr}");
+        assert!(
+            stderr.contains(&format!("would remove `{entry}` from `{file}`")),
+            "{verb:?}: {stderr}"
+        );
+        assert!(
+            stderr.contains(&format!(
+                "`{rule}`, which `{config_name}` now sets as the run-level `allowed_tools`"
+            )),
+            "{verb:?}: {stderr}"
+        );
+        assert!(
+            stderr.contains("Move it to `[sync] allowed_tools`"),
+            "{verb:?}: {stderr}"
+        );
+        assert!(stderr.contains("Nothing was written"), "{verb:?}: {stderr}");
+        assert_eq!(tree_bytes(&fx.dir), before, "{verb:?} wrote something");
+    }
+
+    // `--global` writes no permission file, so it has nothing to erase: it
+    // exits as it does for a config with no permission rules, and neither the
+    // project nor any user-global file changes.
+    let global = drive_policy_verb(&fx, &config, &["sync", "--global"], &argv_file);
+    assert!(global.status.success(), "{global:?}");
+    let reference = ConfigFixture::new("sync-guard-global-reference", "", "");
+    let reference_config = reference.dir.join("policy.toml");
+    std::fs::write(&reference_config, "model = \"m\"\n").unwrap();
+    let expected = drive_policy_verb(
+        &reference,
+        &reference_config,
+        &["sync", "--global"],
+        &argv_file,
+    );
+    assert!(expected.status.success(), "{expected:?}");
+    let without_files = |output: &Output| {
+        let mut value = json_stdout(output);
+        value["config_files"] = Value::Null;
+        value
+    };
+    assert_eq!(without_files(&global), without_files(&expected));
+    assert_eq!(tree_bytes(&fx.dir), before, "--global wrote something");
+    assert!(
+        !fx.dir.join("home").exists(),
+        "--global wrote a user-global file"
+    );
+
+    // The same list moved into `[sync]` syncs cleanly, and leaves both files
+    // as the previous release wrote them (a plain sync over every harness also
+    // creates the other harnesses' files, as it always has).
+    std::fs::write(&config, format!("[sync]\n{old}")).unwrap();
+    for verb in [&["sync"][..], &["sync", "--exact"]] {
+        let output = drive_policy_verb(&fx, &config, verb, &argv_file);
+        assert!(output.status.success(), "{verb:?}: {output:?}");
+        let after = tree_bytes(&fx.dir);
+        for seeded in [".claude/settings.json", ".codex/rules/oneharness.rules"] {
+            assert_eq!(
+                after.get(seeded),
+                before.get(seeded),
+                "{verb:?} changed {seeded}"
+            );
+        }
+    }
+
+    // A run-level list over a project holding none of its rules has nothing
+    // to erase, and syncs without refusal — even where the rules file holds
+    // other rules a rewrite drops.
+    let fresh = ConfigFixture::new("sync-guard-fresh", "", "");
+    let fresh_config = fresh.dir.join("policy.toml");
+    std::fs::write(&fresh_config, old).unwrap();
+    std::fs::create_dir_all(fresh.dir.join(".codex/rules")).unwrap();
+    std::fs::write(
+        fresh.dir.join(".codex/rules/oneharness.rules"),
+        "prefix_rule(pattern=[\"ls\"], decision=\"allow\")\n",
+    )
+    .unwrap();
+    for verb in [
+        &["sync"][..],
+        &["sync", "--exact"],
+        &["sync", "--check", "--exact"],
+    ] {
+        let output = drive_policy_verb(&fresh, &fresh_config, verb, &argv_file);
+        assert!(
+            output.status.success()
+                || (verb.contains(&"--check") && output.status.code() == Some(1)),
+            "{verb:?}: {output:?}"
+        );
+        assert!(
+            !String::from_utf8_lossy(&output.stderr).contains("run-level"),
+            "{verb:?}: {output:?}"
+        );
+    }
+    assert!(
+        !fresh.dir.join(".claude").exists(),
+        "a run-level rule was synced"
+    );
+}
+
+#[test]
+fn a_sync_policy_in_an_extends_parent_merges_under_the_child() {
+    let fx = ConfigFixture::new("sync-extends", "", "");
+    std::fs::write(
+        fx.dir.join("parent.toml"),
+        "[sync]\nallowed_tools = [\"Read\"]\ndenied_tools = [\"Bash(rm:*)\"]\n",
+    )
+    .unwrap();
+    let config = fx.dir.join("child.toml");
+    std::fs::write(
+        &config,
+        "extends = \"parent.toml\"\n[sync.harness.claude-code]\nallowed_tools = [\"Edit\"]\n",
+    )
+    .unwrap();
+    let output = drive_policy_verb(
+        &fx,
+        &config,
+        &["sync", "--harness", "claude-code"],
+        &fx.dir.join("unused"),
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        std::fs::read_to_string(fx.dir.join(".claude/settings.json")).unwrap(),
+        "{\n  \"permissions\": {\n    \"allow\": [\n      \"Edit\"\n    ],\n    \"deny\": [\n      \"Bash(rm:*)\"\n    ]\n  }\n}\n"
+    );
+}
+
+#[test]
+fn a_config_without_sync_policy_runs_and_syncs_as_before_under_every_mode() {
+    // The repository's own `oneharness.toml` sets no sync-policy field and no
+    // `allowed_tools`: it needs no edit, and still loads.
+    let repo_config =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../oneharness.toml");
+    let fx = ConfigFixture::new("no-policy", "", "");
+    let loaded = drive_policy_verb(&fx, &repo_config, &["config"], &fx.dir.join("unused"));
+    assert!(loaded.status.success(), "{loaded:?}");
+
+    // A run-level config: what it spawns is exactly what the same settings
+    // given as flags with no config spawn, argv and environment alike, under
+    // each mode, and nothing is written into the project.
+    let config = fx.dir.join("run.toml");
+    std::fs::write(
+        &config,
+        "model = \"m\"\ntimeout = 60\n[env]\nOH_PROBE = \"1\"\n[harness.claude-code]\nargs = [\"--verbose\"]\n",
+    )
+    .unwrap();
+    for mode in ["read-only", "default", "plan", "auto", "bypass"] {
+        let configured_argv = fx.dir.join(format!("{mode}.config.argv"));
+        let configured_env = fx.dir.join(format!("{mode}.config.env"));
+        let flagged_argv = fx.dir.join(format!("{mode}.flags.argv"));
+        let flagged_env = fx.dir.join(format!("{mode}.flags.env"));
+        let bin = bin_override("claude-code");
+        let cwd = fx.cwd();
+        let config_arg = config.display().to_string();
+        let before = tree_bytes(&fx.dir);
+        let configured = run_with_config(
+            &[
+                "run",
+                "--harness",
+                "claude-code",
+                "--prompt",
+                "hi",
+                "--mode",
+                mode,
+                "--bin",
+                &bin,
+                "--cwd",
+                &cwd,
+                "--config",
+                &config_arg,
+                "--compact",
+            ],
+            &[
+                ("MOCK_ARGV_FILE", &configured_argv.display().to_string()),
+                ("MOCK_ENV_FILE", &configured_env.display().to_string()),
+            ],
+            &fx.user_config(),
+        );
+        assert!(configured.status.success(), "{mode}: {configured:?}");
+        let flagged = run_with_config(
+            &[
+                "run",
+                "--no-config",
+                "--harness",
+                "claude-code",
+                "--prompt",
+                "hi",
+                "--mode",
+                mode,
+                "--model",
+                "m",
+                "--timeout",
+                "60",
+                "--env",
+                "OH_PROBE=1",
+                "--bin",
+                &bin,
+                "--cwd",
+                &cwd,
+                "--compact",
+                "--",
+                "--verbose",
+            ],
+            &[
+                ("MOCK_ARGV_FILE", &flagged_argv.display().to_string()),
+                ("MOCK_ENV_FILE", &flagged_env.display().to_string()),
+            ],
+            &fx.user_config(),
+        );
+        assert!(flagged.status.success(), "{mode}: {flagged:?}");
+        assert_eq!(
+            std::fs::read_to_string(&configured_argv).unwrap(),
+            std::fs::read_to_string(&flagged_argv).unwrap(),
+            "{mode}: argv"
+        );
+        // The mock records its whole environment as one JSON object. The two
+        // invocations differ only in where the mock writes its own records
+        // and the per-process coverage profile, so those are set aside; on a
+        // mismatch only the differing names are printed, never a value.
+        let environment = |path: &std::path::Path| {
+            let value: Value =
+                serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+            let mut vars: std::collections::BTreeMap<String, Value> =
+                value.as_object().unwrap().clone().into_iter().collect();
+            for own in ["MOCK_ARGV_FILE", "MOCK_ENV_FILE", "LLVM_PROFILE_FILE"] {
+                vars.remove(own);
+            }
+            vars
+        };
+        let (configured_vars, flagged_vars) =
+            (environment(&configured_env), environment(&flagged_env));
+        let differing: Vec<&String> = configured_vars
+            .keys()
+            .chain(flagged_vars.keys())
+            .filter(|key| configured_vars.get(*key) != flagged_vars.get(*key))
+            .collect();
+        assert!(
+            differing.is_empty(),
+            "{mode}: environment differs at {differing:?}"
+        );
+        let mut after = tree_bytes(&fx.dir);
+        for path in [
+            &configured_argv,
+            &configured_env,
+            &flagged_argv,
+            &flagged_env,
+        ] {
+            after.remove(&path.file_name().unwrap().to_string_lossy().to_string());
+        }
+        assert_eq!(after, before, "{mode}: the run wrote into the project");
+    }
+
+    // And `sync` over it writes nothing at all, in every mode.
+    let before = tree_bytes(&fx.dir);
+    for verb in [
+        &["sync"][..],
+        &["sync", "--exact"],
+        &["sync", "--check"],
+        &["sync", "--global"],
+    ] {
+        let output = drive_policy_verb(&fx, &config, verb, &fx.dir.join("unused"));
+        assert!(output.status.success(), "{verb:?}: {output:?}");
+        assert_eq!(tree_bytes(&fx.dir), before, "{verb:?}");
+    }
+}
+
 #[test]
 fn prompt_file_reads_the_prompt_from_a_file() {
     // `--prompt-file PATH` is the file-backed alternative to `--prompt`; the file

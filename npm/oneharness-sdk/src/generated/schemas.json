@@ -17628,9 +17628,6 @@
           "type": "string"
         }
       },
-      "denied_tools": {
-        "$ref": "#/$defs/Field2"
-      },
       "env": {
         "description": "Per-key provenance for the top-level `[env]`.",
         "type": "object",
@@ -17666,9 +17663,6 @@
       },
       "history_pointer_file": {
         "$ref": "#/$defs/Field3"
-      },
-      "hooks": {
-        "$ref": "#/$defs/Field11"
       },
       "load_mcp": {
         "$ref": "#/$defs/Field"
@@ -17720,6 +17714,10 @@
         "description": "Whether config asks every `run` to stream (`--stream` / ONEHARNESS_STREAM);\ndefaults to false, the built-in buffered report.",
         "$ref": "#/$defs/Field"
       },
+      "sync": {
+        "description": "The `[sync]` section, mirroring the file's shape, each value with its\nprovenance: what `oneharness sync` writes into each harness's files.",
+        "$ref": "#/$defs/SyncPolicyReport"
+      },
       "system": {
         "$ref": "#/$defs/Field3"
       },
@@ -17760,8 +17758,7 @@
       "history_pointer_file",
       "history_labels",
       "allowed_tools",
-      "denied_tools",
-      "hooks",
+      "sync",
       "env",
       "harness"
     ],
@@ -18122,18 +18119,11 @@
           "bin": {
             "$ref": "#/$defs/Field3"
           },
-          "denied_tools": {
-            "$ref": "#/$defs/Field2"
-          },
           "env": {
             "type": "object",
             "additionalProperties": {
               "$ref": "#/$defs/Field3"
             }
-          },
-          "hooks": {
-            "type": "object",
-            "additionalProperties": true
           },
           "model": {
             "$ref": "#/$defs/Field3"
@@ -18163,10 +18153,6 @@
           "reasoning": {
             "$ref": "#/$defs/Field3"
           },
-          "settings": {
-            "type": "object",
-            "additionalProperties": true
-          },
           "shared_model_catalog": {
             "description": "The resolved `shared_model_catalog` (`true` by default), present only\nfor `codex`.",
             "anyOf": [
@@ -18191,9 +18177,6 @@
           "bin",
           "args",
           "allowed_tools",
-          "denied_tools",
-          "hooks",
-          "settings",
           "env",
           "variant"
         ]
@@ -18319,6 +18302,93 @@
           }
         ]
       },
+      "SyncHarnessPolicyReport": {
+        "description": "One harness's `[sync.harness.<id>]` policy, with provenance.",
+        "type": "object",
+        "properties": {
+          "allowed_tools": {
+            "$ref": "#/$defs/Field2"
+          },
+          "denied_tools": {
+            "$ref": "#/$defs/Field2"
+          },
+          "hooks": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "settings": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "variant": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/$defs/SyncVariantPolicyReport"
+            }
+          }
+        },
+        "required": [
+          "allowed_tools",
+          "denied_tools",
+          "hooks",
+          "settings",
+          "variant"
+        ]
+      },
+      "SyncPolicyReport": {
+        "description": "The `[sync]` section of the `config` report: every sync-policy field, in\nthe file's own shape, with provenance.",
+        "type": "object",
+        "properties": {
+          "allowed_tools": {
+            "$ref": "#/$defs/Field2"
+          },
+          "denied_tools": {
+            "$ref": "#/$defs/Field2"
+          },
+          "harness": {
+            "description": "Per-harness sync policy (`[sync.harness.<id>]`), with provenance.",
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/$defs/SyncHarnessPolicyReport"
+            }
+          },
+          "hooks": {
+            "$ref": "#/$defs/Field11"
+          }
+        },
+        "required": [
+          "allowed_tools",
+          "denied_tools",
+          "hooks",
+          "harness"
+        ]
+      },
+      "SyncVariantPolicyReport": {
+        "description": "One variant's `[sync.harness.<id>.variant.<name>]` policy, with provenance.",
+        "type": "object",
+        "properties": {
+          "allowed_tools": {
+            "$ref": "#/$defs/Field2"
+          },
+          "denied_tools": {
+            "$ref": "#/$defs/Field2"
+          },
+          "hooks": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "settings": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "allowed_tools",
+          "denied_tools",
+          "hooks",
+          "settings"
+        ]
+      },
       "ToolClass": {
         "description": "A harness-agnostic class of built-in tool a turn may load (`tool_set`).",
         "oneOf": [
@@ -18379,9 +18449,6 @@
           "bin": {
             "$ref": "#/$defs/Field3"
           },
-          "denied_tools": {
-            "$ref": "#/$defs/Field2"
-          },
           "env": {
             "type": "object",
             "additionalProperties": {
@@ -18396,10 +18463,6 @@
             "additionalProperties": {
               "$ref": "#/$defs/Field3"
             }
-          },
-          "hooks": {
-            "type": "object",
-            "additionalProperties": true
           },
           "model": {
             "$ref": "#/$defs/Field3"
@@ -18429,10 +18492,6 @@
           "reasoning": {
             "$ref": "#/$defs/Field3"
           },
-          "settings": {
-            "type": "object",
-            "additionalProperties": true
-          },
           "shared_model_catalog": {
             "description": "The `shared_model_catalog` a launch of this variant resolves to: the\nvariant's own, else its harness's, else `true`. Present only for `codex`.",
             "anyOf": [
@@ -18454,9 +18513,6 @@
           "bin",
           "args",
           "allowed_tools",
-          "denied_tools",
-          "hooks",
-          "settings",
           "env_file",
           "env_from",
           "unset_env",

@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.13",
+  "schema_version": "0.14",
   "config_files": [
     "<dir>/base.toml",
     "<dir>/single.toml",
@@ -112,13 +112,20 @@
     "value": null,
     "source": null
   },
-  "denied_tools": {
-    "value": null,
-    "source": null
-  },
-  "hooks": {
-    "value": null,
-    "source": null
+  "sync": {
+    "allowed_tools": {
+      "value": null,
+      "source": null
+    },
+    "denied_tools": {
+      "value": null,
+      "source": null
+    },
+    "hooks": {
+      "value": null,
+      "source": null
+    },
+    "harness": {}
   },
   "env": {
     "OWN": {
@@ -149,18 +156,6 @@
         "source": null
       },
       "allowed_tools": {
-        "value": null,
-        "source": null
-      },
-      "denied_tools": {
-        "value": null,
-        "source": null
-      },
-      "hooks": {
-        "value": null,
-        "source": null
-      },
-      "settings": {
         "value": null,
         "source": null
       },
@@ -212,18 +207,6 @@
         "value": null,
         "source": null
       },
-      "denied_tools": {
-        "value": null,
-        "source": null
-      },
-      "hooks": {
-        "value": null,
-        "source": null
-      },
-      "settings": {
-        "value": null,
-        "source": null
-      },
       "env": {},
       "variant": {
         "lean": {
@@ -268,18 +251,6 @@
             "source": "default"
           },
           "allowed_tools": {
-            "value": null,
-            "source": null
-          },
-          "denied_tools": {
-            "value": null,
-            "source": null
-          },
-          "hooks": {
-            "value": null,
-            "source": null
-          },
-          "settings": {
             "value": null,
             "source": null
           },

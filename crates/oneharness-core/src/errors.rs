@@ -145,6 +145,42 @@ pub enum OneharnessError {
         second: String,
     },
 
+    #[error(
+        "`allowed_tools` in `{source_file}` sets a run-level allowlist for harness `{harness}` \
+         ({rules}), and this release does not apply a run-level allowlist to a run. Outside \
+         `[sync]`, `allowed_tools` no longer syncs either: move it to `[sync] allowed_tools` \
+         (or `[sync.harness.{harness}] allowed_tools`) to keep syncing it into the harness's \
+         project config, or remove it. Nothing was spawned"
+    )]
+    RunLevelAllowlistNotApplied {
+        // llmlint: ignore[invalid_states_unrepresentable] Selection has validated this id before the check; the diagnostic keeps the selector exactly as the caller spelled it.
+        harness: String,
+        /// The configured rules, each quoted, as one printable list.
+        rules: String,
+        /// The config file the resolved rules come from.
+        source_file: String,
+    },
+
+    #[error(
+        "`oneharness sync` would remove `{entry}` from `{file}` (harness `{harness}`): it is \
+         what an earlier sync wrote for `{rule}`, which `{source_file}` now sets as the \
+         run-level `allowed_tools` — a field `sync` no longer writes. Move it to \
+         `[sync] allowed_tools` (or `[sync.harness.{harness}] allowed_tools`) to keep \
+         syncing it, or remove `{entry}` from `{file}` by hand. Nothing was written"
+    )]
+    SyncWouldRemoveRunLevelRule {
+        // llmlint: ignore[invalid_states_unrepresentable] Selection has validated this id before the guard runs; the diagnostic keeps the selector exactly as the caller spelled it.
+        harness: String,
+        /// The harness file the entry would leave.
+        file: String,
+        /// The entry exactly as the harness file holds it.
+        entry: String,
+        /// The run-level rule it is the translation of.
+        rule: String,
+        /// The config file the run-level rule comes from.
+        source_file: String,
+    },
+
     #[error("--mock-harness `{id}` must name a selected harness")]
     MockHarnessNotSelected { id: String },
 

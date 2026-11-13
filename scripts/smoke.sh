@@ -322,7 +322,7 @@ assert_contains "$out" 'oneharness.toml' "config source attribution is broken"
 
 # 3d. `sync` — materialize a permission rule into a harness's own config file
 #     (the file-based delivery for allow/deny/hooks), and prove idempotency.
-printf 'allowed_tools = ["Bash(echo *)"]\n' >>"$cfg_dir/oneharness.toml"
+printf '[sync]\nallowed_tools = ["Bash(echo *)"]\n' >>"$cfg_dir/oneharness.toml"
 LAST_CMD="ONEHARNESS_CONFIG=$cfg_dir/user.toml $oh sync --harness claude-code --cwd $cfg_dir --compact"
 out="$(oh_hermetic ONEHARNESS_CONFIG="$cfg_dir/user.toml" \
   "$oh" sync --harness claude-code --cwd "$cfg_dir" --compact)" ||

@@ -81,7 +81,7 @@ oh_batch_fork_enforce claude-code
 # deny rule (and headless default-deny) keeps the other from running.
 ok="$(oh_enforce_file ok)"
 blocked="$(oh_enforce_file blocked)"
-policy="[harness.claude-code]
+policy="[sync.harness.claude-code]
 allowed_tools = [\"Bash(touch $ok)\"]
 denied_tools = [\"Bash(touch $blocked)\"]"
 oh_sync_enforce claude-code "$policy" "$ok" present allow

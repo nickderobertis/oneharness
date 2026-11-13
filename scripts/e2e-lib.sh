@@ -2391,7 +2391,7 @@ oh_codex_rules_match() {
   file="rules-allow-${RANDOM}${RANDOM}.txt"
   dir="rules-deny-${RANDOM}${RANDOM}"
   cfg="$scratch/oneharness.toml"
-  printf '[harness.codex]\nallowed_tools = ["Bash(rm -f %s:*)", "Bash(Remove-Item -Force %s:*)"]\ndenied_tools = ["Bash(mkdir %s:*)"]\n' \
+  printf '[sync.harness.codex]\nallowed_tools = ["Bash(rm -f %s:*)", "Bash(Remove-Item -Force %s:*)"]\ndenied_tools = ["Bash(mkdir %s:*)"]\n' \
     "$file" "$file" "$dir" >"$cfg"
   if ! out="$(ONEHARNESS_NO_CONFIG='' "$bin" sync --harness codex --cwd "$(oh_native_path "$scratch")" \
     --config "$(oh_native_path "$cfg")" --compact 2>&1)"; then
@@ -2518,7 +2518,7 @@ oh_codex_rules_enforce() {
 
   cfg="$scratch/oneharness.toml"
   # Each rule names only the scratch path its half needs.
-  printf '[harness.codex]\nallowed_tools = ["Bash(%s:*)"]\ndenied_tools = ["Bash(mkdir %s:*)"]\n' \
+  printf '[sync.harness.codex]\nallowed_tools = ["Bash(%s:*)"]\ndenied_tools = ["Bash(mkdir %s:*)"]\n' \
     "$del" "$dir" >"$cfg"
   if ! out="$(ONEHARNESS_NO_CONFIG='' "$bin" sync --harness codex --cwd "$proj" \
     --config "$cfg" --compact 2>&1)"; then
@@ -3417,7 +3417,7 @@ oh_hook_enforce() {
   allowfile="$sandbox/ohgate-allowed-${RANDOM}${RANDOM}.txt"
 
   cat >"$sandbox/oneharness.toml" <<TOML
-[[hooks]]
+[[sync.hooks]]
 command = "$bin gate $id --deny-if-contains $marker"
 harnesses = ["$id"]
 plugin_name = "ohgate"

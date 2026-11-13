@@ -688,7 +688,7 @@ pub fn run_supervised(
     };
     for id in include.iter().chain(exclude.iter()) {
         if let Some((base, variant)) = id.split_once(':') {
-            if cfg.variant_for(id).is_none() {
+            if !cfg.declares_variant(id) {
                 return Err(OneharnessError::UnknownHarnessVariant {
                     id: id.clone(),
                     base: base.to_string(),
@@ -708,6 +708,7 @@ pub fn run_supervised(
             .cloned()
             .collect()
     };
+    refuse_run_level_allowlist(args, cfg, &selected_ids, &project_start)?;
     // `--run-mode` (CLI beats config; an unset mode is `RunMode::default()` —
     // the one source, which `config::explain` reports from too — on every
     // surface: a library caller, the CLI and the SDKs; `parallel` is the
@@ -5625,6 +5626,39 @@ pub(crate) fn parse_env(values: &[String]) -> Result<Vec<(String, String)>, Oneh
                 .ok_or_else(|| OneharnessError::BadEnv(v.clone()))
         })
         .collect()
+}
+
+/// Refuse a run whose resolved config holds a run-level `allowed_tools` rule
+/// for any selected harness, before anything is spawned. Outside `[sync]`,
+/// `allowed_tools` is the run-level allowlist, which this release does not
+/// apply: running anyway would silently ignore a permission the config asks
+/// for, so the run stops and names it.
+fn refuse_run_level_allowlist(
+    args: &RunRequest,
+    cfg: &crate::domain::config::FileConfig,
+    selected_ids: &[String],
+    project_start: &std::path::Path,
+) -> Result<(), OneharnessError> {
+    let Some((id, rules)) = selected_ids.iter().find_map(|id| {
+        let rules = cfg.allowed_tools_for(id);
+        (!rules.is_empty()).then_some((id, rules))
+    }) else {
+        return Ok(());
+    };
+    // Only on refusal: read the layers again to name the file the rules are in.
+    let layers = config_io::load_layers(&args.config, args.no_config, project_start)?;
+    let source_file = crate::domain::config::allowed_tools_source(&layers, id)
+        .unwrap_or("the loaded config")
+        .to_string();
+    Err(OneharnessError::RunLevelAllowlistNotApplied {
+        harness: id.clone(),
+        rules: rules
+            .iter()
+            .map(|rule| format!("`{rule}`"))
+            .collect::<Vec<_>>()
+            .join(", "),
+        source_file,
+    })
 }
 
 #[cfg(test)]

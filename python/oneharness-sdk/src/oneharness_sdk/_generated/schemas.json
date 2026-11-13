@@ -586,17 +586,10 @@
           "bin": {
             "$ref": "#/$defs/Field3"
           },
-          "denied_tools": {
-            "$ref": "#/$defs/Field2"
-          },
           "env": {
             "additionalProperties": {
               "$ref": "#/$defs/Field3"
             },
-            "type": "object"
-          },
-          "hooks": {
-            "additionalProperties": true,
             "type": "object"
           },
           "model": {
@@ -627,10 +620,6 @@
           "reasoning": {
             "$ref": "#/$defs/Field3"
           },
-          "settings": {
-            "additionalProperties": true,
-            "type": "object"
-          },
           "shared_model_catalog": {
             "anyOf": [
               {
@@ -655,9 +644,6 @@
           "bin",
           "args",
           "allowed_tools",
-          "denied_tools",
-          "hooks",
-          "settings",
           "env",
           "variant"
         ],
@@ -784,6 +770,93 @@
           }
         ]
       },
+      "SyncHarnessPolicyReport": {
+        "description": "One harness's `[sync.harness.<id>]` policy, with provenance.",
+        "properties": {
+          "allowed_tools": {
+            "$ref": "#/$defs/Field2"
+          },
+          "denied_tools": {
+            "$ref": "#/$defs/Field2"
+          },
+          "hooks": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "settings": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "variant": {
+            "additionalProperties": {
+              "$ref": "#/$defs/SyncVariantPolicyReport"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "allowed_tools",
+          "denied_tools",
+          "hooks",
+          "settings",
+          "variant"
+        ],
+        "type": "object"
+      },
+      "SyncPolicyReport": {
+        "description": "The `[sync]` section of the `config` report: every sync-policy field, in\nthe file's own shape, with provenance.",
+        "properties": {
+          "allowed_tools": {
+            "$ref": "#/$defs/Field2"
+          },
+          "denied_tools": {
+            "$ref": "#/$defs/Field2"
+          },
+          "harness": {
+            "additionalProperties": {
+              "$ref": "#/$defs/SyncHarnessPolicyReport"
+            },
+            "description": "Per-harness sync policy (`[sync.harness.<id>]`), with provenance.",
+            "type": "object"
+          },
+          "hooks": {
+            "$ref": "#/$defs/Field11"
+          }
+        },
+        "required": [
+          "allowed_tools",
+          "denied_tools",
+          "hooks",
+          "harness"
+        ],
+        "type": "object"
+      },
+      "SyncVariantPolicyReport": {
+        "description": "One variant's `[sync.harness.<id>.variant.<name>]` policy, with provenance.",
+        "properties": {
+          "allowed_tools": {
+            "$ref": "#/$defs/Field2"
+          },
+          "denied_tools": {
+            "$ref": "#/$defs/Field2"
+          },
+          "hooks": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "settings": {
+            "additionalProperties": true,
+            "type": "object"
+          }
+        },
+        "required": [
+          "allowed_tools",
+          "denied_tools",
+          "hooks",
+          "settings"
+        ],
+        "type": "object"
+      },
       "ToolClass": {
         "description": "A harness-agnostic class of built-in tool a turn may load (`tool_set`).",
         "oneOf": [
@@ -843,9 +916,6 @@
           "bin": {
             "$ref": "#/$defs/Field3"
           },
-          "denied_tools": {
-            "$ref": "#/$defs/Field2"
-          },
           "env": {
             "additionalProperties": {
               "$ref": "#/$defs/Field3"
@@ -859,10 +929,6 @@
             "additionalProperties": {
               "$ref": "#/$defs/Field3"
             },
-            "type": "object"
-          },
-          "hooks": {
-            "additionalProperties": true,
             "type": "object"
           },
           "model": {
@@ -893,10 +959,6 @@
           "reasoning": {
             "$ref": "#/$defs/Field3"
           },
-          "settings": {
-            "additionalProperties": true,
-            "type": "object"
-          },
           "shared_model_catalog": {
             "anyOf": [
               {
@@ -918,9 +980,6 @@
           "bin",
           "args",
           "allowed_tools",
-          "denied_tools",
-          "hooks",
-          "settings",
           "env_file",
           "env_from",
           "unset_env",
@@ -950,9 +1009,6 @@
           "type": "string"
         },
         "type": "array"
-      },
-      "denied_tools": {
-        "$ref": "#/$defs/Field2"
       },
       "env": {
         "additionalProperties": {
@@ -989,9 +1045,6 @@
       },
       "history_pointer_file": {
         "$ref": "#/$defs/Field3"
-      },
-      "hooks": {
-        "$ref": "#/$defs/Field11"
       },
       "load_mcp": {
         "$ref": "#/$defs/Field"
@@ -1043,6 +1096,10 @@
         "$ref": "#/$defs/Field",
         "description": "Whether config asks every `run` to stream (`--stream` / ONEHARNESS_STREAM);\ndefaults to false, the built-in buffered report."
       },
+      "sync": {
+        "$ref": "#/$defs/SyncPolicyReport",
+        "description": "The `[sync]` section, mirroring the file's shape, each value with its\nprovenance: what `oneharness sync` writes into each harness's files."
+      },
       "system": {
         "$ref": "#/$defs/Field3"
       },
@@ -1083,8 +1140,7 @@
       "history_pointer_file",
       "history_labels",
       "allowed_tools",
-      "denied_tools",
-      "hooks",
+      "sync",
       "env",
       "harness"
     ],

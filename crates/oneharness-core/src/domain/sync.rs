@@ -92,7 +92,7 @@ pub struct SyncPlan {
     /// nothing is configured for it (the harness is then reported `skipped`).
     pub fragment: Option<Value>,
     /// Top-level settings that exist but have no mapping for this harness
-    /// (e.g. a top-level `allowed_tools` while the harness has no allow-list
+    /// (e.g. a `[sync] allowed_tools` while the harness has no allow-list
     /// concept). Surfaced in the report and on stderr so a rule that did not
     /// land is always visible — never silently dropped. Per-harness fields
     /// can't end up here; those are rejected at config parse time.
@@ -101,7 +101,7 @@ pub struct SyncPlan {
 
 /// Build the sync plan for one harness. Pure.
 ///
-/// The fragment starts from the harness's raw `[harness.<id>.settings]` table
+/// The fragment starts from the harness's raw `[sync.harness.<id>.settings]` table
 /// (converted to JSON), then the unified rule lists and hooks are inserted at
 /// the registry's key paths — an explicit `allowed_tools`/`denied_tools`/
 /// `hooks` wins over the same key in the raw table.
@@ -127,10 +127,10 @@ pub fn plan_for(cfg: &FileConfig, spec: &HarnessSpec, id: &str) -> Result<SyncPl
         // No config surface at all: anything aimed at this harness from the
         // top level is unmapped (per-harness fields were parse-rejected).
         let mut unmapped = Vec::new();
-        if !cfg.allowed_tools_for(id).is_empty() {
+        if !cfg.sync.allowed_tools_for(id).is_empty() {
             unmapped.push("allowed_tools");
         }
-        if !cfg.denied_tools_for(id).is_empty() {
+        if !cfg.sync.denied_tools_for(id).is_empty() {
             unmapped.push("denied_tools");
         }
         return Ok(SyncPlan {
@@ -139,7 +139,7 @@ pub fn plan_for(cfg: &FileConfig, spec: &HarnessSpec, id: &str) -> Result<SyncPl
         });
     };
 
-    let mut root = match cfg.settings_for(id) {
+    let mut root = match cfg.sync.settings_for(id) {
         Some(table) => {
             let value = serde_json::to_value(table)
                 .map_err(|e| format!("settings table is not representable as JSON: {e}"))?;
@@ -153,8 +153,16 @@ pub fn plan_for(cfg: &FileConfig, spec: &HarnessSpec, id: &str) -> Result<SyncPl
     let mut unmapped = Vec::new();
 
     let rules = [
-        ("allowed_tools", cfg.allowed_tools_for(id), sync.allow_path),
-        ("denied_tools", cfg.denied_tools_for(id), sync.deny_path),
+        (
+            "allowed_tools",
+            cfg.sync.allowed_tools_for(id),
+            sync.allow_path,
+        ),
+        (
+            "denied_tools",
+            cfg.sync.denied_tools_for(id),
+            sync.deny_path,
+        ),
     ];
     for (name, values, path) in rules {
         if values.is_empty() {
@@ -184,7 +192,7 @@ pub fn plan_for(cfg: &FileConfig, spec: &HarnessSpec, id: &str) -> Result<SyncPl
         }
     }
 
-    if let Some(hooks) = cfg.hooks_for(id) {
+    if let Some(hooks) = cfg.sync.hooks_for(id) {
         // Parse-time validation guarantees hooks only appear where a path
         // exists, so this expect cannot fire on user input.
         let path = sync.hooks_path.expect("hooks validated against hooks_path");
@@ -516,8 +524,8 @@ pub fn rules_plan_for(cfg: &FileConfig, spec: &HarnessSpec, id: &str) -> Option<
     let mut unmapped = Vec::new();
     let mut configured = false;
     let lists = [
-        (RuleList::AllowedTools, cfg.allowed_tools_for(id)),
-        (RuleList::DeniedTools, cfg.denied_tools_for(id)),
+        (RuleList::AllowedTools, cfg.sync.allowed_tools_for(id)),
+        (RuleList::DeniedTools, cfg.sync.denied_tools_for(id)),
     ];
     for (list, rules) in lists {
         let decision = list.exec_policy_decision();
@@ -538,6 +546,16 @@ pub fn rules_plan_for(cfg: &FileConfig, spec: &HarnessSpec, id: &str) -> Option<
         configured,
         unmapped,
     })
+}
+
+/// The `prefix_rule(...)` statement a rule of `list` renders to in a Codex
+/// rules file — exactly the line [`rules_plan_for`] writes for it — or `None`
+/// when Codex cannot express the rule.
+#[must_use]
+pub fn exec_policy_statement(list: RuleList, rule: &str) -> Option<String> {
+    exec_policy_pattern(rule)
+        .ok()
+        .map(|tokens| prefix_rule(&tokens, list.exec_policy_decision()))
 }
 
 /// One `prefix_rule(...)` statement. A token never holds a control character
@@ -647,9 +665,9 @@ mod tests {
     fn rules_and_hooks_land_at_the_registry_paths() {
         let p = plan_for(
             concat!(
-                "allowed_tools = [\"Bash(git log:*)\"]\n",
+                "[sync]\nallowed_tools = [\"Bash(git log:*)\"]\n",
                 "denied_tools = [\"Bash(rm:*)\"]\n",
-                "[harness.claude-code.hooks]\n",
+                "[sync.harness.claude-code.hooks]\n",
                 "PreToolUse = []\n",
             ),
             "claude-code",
@@ -669,7 +687,7 @@ mod tests {
 
     #[test]
     fn crush_deny_maps_to_disabled_tools() {
-        let p = plan_for("denied_tools = [\"bash\"]", "crush");
+        let p = plan_for("[sync]\ndenied_tools = [\"bash\"]", "crush");
         assert_eq!(
             p.fragment.unwrap(),
             json!({ "options": { "disabled_tools": ["bash"] } })
@@ -680,9 +698,9 @@ mod tests {
     fn settings_table_passes_through_and_explicit_rules_win() {
         let p = plan_for(
             concat!(
-                "[harness.opencode.settings.permission]\n",
+                "[sync.harness.opencode.settings.permission]\n",
                 "edit = \"deny\"\n",
-                "[harness.opencode.settings.permission.bash]\n",
+                "[sync.harness.opencode.settings.permission.bash]\n",
                 "\"git *\" = \"allow\"\n",
             ),
             "opencode",
@@ -695,9 +713,9 @@ mod tests {
         // An explicit rule list overwrites the same key from the raw table.
         let p = plan_for(
             concat!(
-                "[harness.claude-code]\n",
+                "[sync.harness.claude-code]\n",
                 "allowed_tools = [\"Read\"]\n",
-                "[harness.claude-code.settings.permissions]\n",
+                "[sync.harness.claude-code.settings.permissions]\n",
                 "allow = [\"stale\"]\n",
                 "defaultMode = \"acceptEdits\"\n",
             ),
@@ -713,7 +731,7 @@ mod tests {
     fn top_level_rules_without_a_mapping_are_reported_unmapped() {
         // opencode has a config file but no list-shaped permission concept;
         // goose has no config surface at all. Both must say so, loudly.
-        let text = "allowed_tools = [\"x\"]\ndenied_tools = [\"y\"]";
+        let text = "[sync]\nallowed_tools = [\"x\"]\ndenied_tools = [\"y\"]";
         let p = plan_for(text, "opencode");
         assert!(p.fragment.is_none());
         assert_eq!(p.unmapped, ["allowed_tools", "denied_tools"]);
@@ -751,7 +769,7 @@ mod tests {
 
     #[test]
     fn codex_lists_are_planned_as_a_rules_file_never_a_json_fragment() {
-        let text = "allowed_tools = [\"Bash(git status:*)\"]";
+        let text = "[sync]\nallowed_tools = [\"Bash(git status:*)\"]";
         let p = plan_for(text, "codex");
         assert!(p.fragment.is_none());
         assert!(p.unmapped.is_empty());
@@ -777,7 +795,7 @@ mod tests {
     #[test]
     fn prefix_rules_translate_to_one_prefix_rule_each_in_source_order() {
         let p = rules(concat!(
-            "allowed_tools = [\"Bash(git status:*)\", \"Bash(cargo test *)\"]\n",
+            "[sync]\nallowed_tools = [\"Bash(git status:*)\", \"Bash(cargo test *)\"]\n",
             "denied_tools = [\"Bash(rm -rf:*)\"]\n",
         ));
         assert!(p.configured);
@@ -800,8 +818,8 @@ mod tests {
     #[test]
     fn a_per_harness_list_replaces_the_top_level_one_for_codex() {
         let p = rules(concat!(
-            "allowed_tools = [\"Bash(ls:*)\"]\n",
-            "[harness.codex]\n",
+            "[sync]\nallowed_tools = [\"Bash(ls:*)\"]\n",
+            "[sync.harness.codex]\n",
             "allowed_tools = [\"Bash(just check:*)\"]\n",
         ));
         assert!(p.text.contains("[\"just\", \"check\"]"), "{}", p.text);
@@ -854,7 +872,7 @@ mod tests {
     #[test]
     fn unmapped_rules_are_left_out_of_the_file_and_reported_in_order() {
         let p = rules(concat!(
-            "allowed_tools = [\"Bash(git -C * log*)\", \"Bash(git log:*)\", \"Read\"]\n",
+            "[sync]\nallowed_tools = [\"Bash(git -C * log*)\", \"Bash(git log:*)\", \"Read\"]\n",
             "denied_tools = [\"Bash(git status*)\"]\n",
         ));
         assert_eq!(
@@ -884,7 +902,7 @@ mod tests {
         assert!(!p.configured);
         assert_eq!(p.text, RULES_FILE_HEADER);
         // Every rule unmapped is still configured: the file is written, empty.
-        let p = rules("allowed_tools = [\"Read\"]");
+        let p = rules("[sync]\nallowed_tools = [\"Read\"]");
         assert!(p.configured);
         assert_eq!(p.text, RULES_FILE_HEADER);
     }
@@ -1010,7 +1028,7 @@ mod tests {
         // (observed live: "permissions.deny Required"), so a partial write
         // must be seeded into a schema-valid shape.
         let p = plan_for(
-            "[harness.cursor]\nallowed_tools = [\"Shell(touch)\"]",
+            "[sync.harness.cursor]\nallowed_tools = [\"Shell(touch)\"]",
             "cursor",
         );
         assert_eq!(
@@ -1019,7 +1037,7 @@ mod tests {
         );
         // And the seed never invents a permissions block out of nothing.
         let p = plan_for(
-            "[harness.cursor.settings]\neditor = { vimMode = true }",
+            "[sync.harness.cursor.settings]\neditor = { vimMode = true }",
             "cursor",
         );
         assert_eq!(

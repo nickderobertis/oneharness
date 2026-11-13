@@ -44,7 +44,7 @@ oh_long_prompt_enforce qwen
 # request as a cue to go and run the project's tests (no package.json on
 # macOS, no run_tests.sh on Ubuntu) and never echoed the marker.
 sandbox="$(mktemp -d)"
-printf '[harness.qwen]\nallowed_tools = ["run_shell_command(ls)"]\ndenied_tools = ["run_shell_command(rm)"]\n' \
+printf '[sync.harness.qwen]\nallowed_tools = ["run_shell_command(ls)"]\ndenied_tools = ["run_shell_command(rm)"]\n' \
   >"$sandbox/oneharness.toml" || fail "qwen: could not write the sync config into $sandbox; check that the host temp dir is writable"
 rc=0
 (oh_echo_without_context qwen --sync "$sandbox/oneharness.toml") || rc=$?

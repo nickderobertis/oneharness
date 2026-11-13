@@ -21,6 +21,9 @@ import type {
   Field9,
   HarnessReport,
   HookEntry,
+  SyncHarnessPolicyReport,
+  SyncPolicyReport,
+  SyncVariantPolicyReport,
   VariantReport,
 } from "./config-report.js";
 import type {
@@ -217,7 +220,6 @@ export const ConfigReportSchema: z.ZodType<ConfigReport> = z.looseObject({
   auto_compact_tokens: z.lazy(() => Field5Schema).refine((value) => value !== undefined, { message: "Required" }),
   bypass: z.lazy(() => FieldSchema).refine((value) => value !== undefined, { message: "Required" }),
   config_files: z.array(z.string()).refine((value) => value !== undefined, { message: "Required" }),
-  denied_tools: z.lazy(() => Field2Schema).refine((value) => value !== undefined, { message: "Required" }),
   env: z
     .record(
       z.string(),
@@ -241,7 +243,6 @@ export const ConfigReportSchema: z.ZodType<ConfigReport> = z.looseObject({
     )
     .refine((value) => value !== undefined, { message: "Required" }),
   history_pointer_file: z.lazy(() => Field3Schema).refine((value) => value !== undefined, { message: "Required" }),
-  hooks: z.lazy(() => Field11Schema).refine((value) => value !== undefined, { message: "Required" }),
   load_mcp: z.lazy(() => FieldSchema).refine((value) => value !== undefined, { message: "Required" }),
   load_skills: z.lazy(() => FieldSchema).refine((value) => value !== undefined, { message: "Required" }),
   max_parallel: z.lazy(() => Field9Schema).refine((value) => value !== undefined, { message: "Required" }),
@@ -259,6 +260,7 @@ export const ConfigReportSchema: z.ZodType<ConfigReport> = z.looseObject({
     .lazy(() => Field8Schema)
     .refine((value) => value !== undefined, { message: "Required" }),
   stream: z.lazy(() => FieldSchema).refine((value) => value !== undefined, { message: "Required" }),
+  sync: z.lazy(() => SyncPolicyReportSchema).refine((value) => value !== undefined, { message: "Required" }),
   system: z.lazy(() => Field3Schema).refine((value) => value !== undefined, { message: "Required" }),
   timeout: z.lazy(() => Field5Schema).refine((value) => value !== undefined, { message: "Required" }),
   tool_set: z.lazy(() => Field6Schema).refine((value) => value !== undefined, { message: "Required" }),
@@ -554,19 +556,16 @@ export const HarnessReportSchema: z.ZodType<HarnessReport> = z.looseObject({
   apps: z.union([z.lazy(() => FieldSchema), z.null()]).optional(),
   args: z.lazy(() => Field2Schema).refine((value) => value !== undefined, { message: "Required" }),
   bin: z.lazy(() => Field3Schema).refine((value) => value !== undefined, { message: "Required" }),
-  denied_tools: z.lazy(() => Field2Schema).refine((value) => value !== undefined, { message: "Required" }),
   env: z
     .record(
       z.string(),
       z.lazy(() => Field3Schema),
     )
     .refine((value) => value !== undefined, { message: "Required" }),
-  hooks: z.looseObject({}).refine((value) => value !== undefined, { message: "Required" }),
   model: z.lazy(() => Field3Schema).refine((value) => value !== undefined, { message: "Required" }),
   model_catalog_refresh_seconds: z.union([z.lazy(() => Field5Schema), z.null()]).optional(),
   plugins: z.union([z.lazy(() => FieldSchema), z.null()]).optional(),
   reasoning: z.lazy(() => Field3Schema).refine((value) => value !== undefined, { message: "Required" }),
-  settings: z.looseObject({}).refine((value) => value !== undefined, { message: "Required" }),
   shared_model_catalog: z.union([z.lazy(() => FieldSchema), z.null()]).optional(),
   variant: z
     .record(
@@ -3536,6 +3535,19 @@ export const StatusSchema: z.ZodType<Status> = z.union([
   z.literal("planned"),
 ]);
 
+export const SyncHarnessPolicyReportSchema: z.ZodType<SyncHarnessPolicyReport> = z.looseObject({
+  allowed_tools: z.lazy(() => Field2Schema).refine((value) => value !== undefined, { message: "Required" }),
+  denied_tools: z.lazy(() => Field2Schema).refine((value) => value !== undefined, { message: "Required" }),
+  hooks: z.looseObject({}).refine((value) => value !== undefined, { message: "Required" }),
+  settings: z.looseObject({}).refine((value) => value !== undefined, { message: "Required" }),
+  variant: z
+    .record(
+      z.string(),
+      z.lazy(() => SyncVariantPolicyReportSchema),
+    )
+    .refine((value) => value !== undefined, { message: "Required" }),
+});
+
 export const SyncOptionsSchema: z.ZodType<SyncOptions> = z.strictObject({
   check: z.boolean().optional(),
   config: z.array(z.string()).optional(),
@@ -3544,6 +3556,18 @@ export const SyncOptionsSchema: z.ZodType<SyncOptions> = z.strictObject({
   global: z.boolean().optional(),
   harnesses: z.array(z.string()).optional(),
   noConfig: z.boolean().optional(),
+});
+
+export const SyncPolicyReportSchema: z.ZodType<SyncPolicyReport> = z.looseObject({
+  allowed_tools: z.lazy(() => Field2Schema).refine((value) => value !== undefined, { message: "Required" }),
+  denied_tools: z.lazy(() => Field2Schema).refine((value) => value !== undefined, { message: "Required" }),
+  harness: z
+    .record(
+      z.string(),
+      z.lazy(() => SyncHarnessPolicyReportSchema),
+    )
+    .refine((value) => value !== undefined, { message: "Required" }),
+  hooks: z.lazy(() => Field11Schema).refine((value) => value !== undefined, { message: "Required" }),
 });
 
 export const SyncReportSchema: z.ZodType<SyncReport> = z.looseObject({
@@ -3571,6 +3595,13 @@ export const SyncStatusSchema: z.ZodType<SyncStatus> = z.union([
   z.literal("unchanged"),
   z.literal("skipped"),
 ]);
+
+export const SyncVariantPolicyReportSchema: z.ZodType<SyncVariantPolicyReport> = z.looseObject({
+  allowed_tools: z.lazy(() => Field2Schema).refine((value) => value !== undefined, { message: "Required" }),
+  denied_tools: z.lazy(() => Field2Schema).refine((value) => value !== undefined, { message: "Required" }),
+  hooks: z.looseObject({}).refine((value) => value !== undefined, { message: "Required" }),
+  settings: z.looseObject({}).refine((value) => value !== undefined, { message: "Required" }),
+});
 
 export const TimingSourceSchema: z.ZodType<TimingSource> = z.union([
   z.literal("provider_measured"),
@@ -3730,7 +3761,6 @@ export const VariantReportSchema: z.ZodType<VariantReport> = z.looseObject({
   apps: z.union([z.lazy(() => FieldSchema), z.null()]).optional(),
   args: z.lazy(() => Field2Schema).refine((value) => value !== undefined, { message: "Required" }),
   bin: z.lazy(() => Field3Schema).refine((value) => value !== undefined, { message: "Required" }),
-  denied_tools: z.lazy(() => Field2Schema).refine((value) => value !== undefined, { message: "Required" }),
   env: z
     .record(
       z.string(),
@@ -3744,12 +3774,10 @@ export const VariantReportSchema: z.ZodType<VariantReport> = z.looseObject({
       z.lazy(() => Field3Schema),
     )
     .refine((value) => value !== undefined, { message: "Required" }),
-  hooks: z.looseObject({}).refine((value) => value !== undefined, { message: "Required" }),
   model: z.lazy(() => Field3Schema).refine((value) => value !== undefined, { message: "Required" }),
   model_catalog_refresh_seconds: z.union([z.lazy(() => Field5Schema), z.null()]).optional(),
   plugins: z.union([z.lazy(() => FieldSchema), z.null()]).optional(),
   reasoning: z.lazy(() => Field3Schema).refine((value) => value !== undefined, { message: "Required" }),
-  settings: z.looseObject({}).refine((value) => value !== undefined, { message: "Required" }),
   shared_model_catalog: z.union([z.lazy(() => FieldSchema), z.null()]).optional(),
   unset_env: z.lazy(() => Field2Schema).refine((value) => value !== undefined, { message: "Required" }),
 });

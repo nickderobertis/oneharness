@@ -43,9 +43,9 @@ oh_stream_assert cursor
 # base token (Shell(touch)), so allow and deny get their own sandboxes.
 ok="$(oh_enforce_file ok)"
 blocked="$(oh_enforce_file blocked)"
-oh_sync_enforce cursor "[harness.cursor]
+oh_sync_enforce cursor "[sync.harness.cursor]
 allowed_tools = [\"Shell(touch)\"]" "$ok" present allow
-oh_sync_enforce cursor "[harness.cursor]
+oh_sync_enforce cursor "[sync.harness.cursor]
 denied_tools = [\"Shell(touch)\"]" "$blocked" absent deny
 note "PASS: cursor sync enforcement"
 

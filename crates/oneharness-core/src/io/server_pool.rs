@@ -1196,9 +1196,21 @@ fn remember_exit(pid: u32, status: std::process::ExitStatus) {
     }
 }
 
-/// How the server `pid` ended, when this process started it and has reaped it.
+/// How the server `pid` ended, when this process started it.
+///
+/// Asked once its caller has seen the server stop running, which on macOS is
+/// as soon as it starts to exit — `proc_pidinfo` stops answering for it then,
+/// before a wait can collect it. So a server of ours not yet reapable is given
+/// up to [`IDENTIFY_GRACE`] to settle, as [`identify_spawned`] gives one at
+/// launch; without that, an early exit this process itself spawned was
+/// reported as one "another process started".
 fn exit_status(pid: Pid) -> Option<std::process::ExitStatus> {
     reap_finished();
+    let until = Instant::now() + IDENTIFY_GRACE;
+    while is_spawned(pid.get()) && Instant::now() < until {
+        std::thread::sleep(IDENTIFY_POLL);
+        reap_finished();
+    }
     let statuses = exited().lock().ok()?;
     statuses
         .iter()
@@ -1211,6 +1223,13 @@ fn remember_spawned(child: std::process::Child) {
     if let Ok(mut children) = spawned().lock() {
         children.push(child);
     }
+}
+
+/// Whether `pid` is a server this process started and has not yet reaped.
+fn is_spawned(pid: u32) -> bool {
+    spawned()
+        .lock()
+        .is_ok_and(|children| children.iter().any(|child| child.id() == pid))
 }
 
 /// Reap a server this process started, if it is one of ours.
@@ -1465,6 +1484,24 @@ mod tests {
         let identity = identify_spawned(child, pid, |_| None, Duration::from_secs(10)).unwrap();
         assert_eq!(identity.0, EXITED_UNIDENTIFIED);
         assert_eq!(exit_status(pid).and_then(|status| status.code()), Some(6));
+    }
+
+    /// A server of ours its caller already reads as stopped — as macOS reports
+    /// one that has only begun to exit — but that a wait cannot yet collect
+    /// still reports how it ended, rather than as a server another process
+    /// started. The child here is still running when its status is asked for,
+    /// which forces that ordering on any platform.
+    #[cfg(unix)]
+    #[test]
+    fn a_spawned_server_not_yet_reapable_still_reports_its_exit_status() {
+        let child = std::process::Command::new("sh")
+            .args(["-c", "sleep 0.2; exit 7"])
+            .spawn()
+            .unwrap();
+        let pid = Pid::new(child.id()).unwrap();
+        remember_spawned(child);
+        assert_eq!(exit_status(pid).and_then(|status| status.code()), Some(7));
+        assert!(!is_spawned(pid.get()), "the server was not reaped");
     }
 
     /// Unix-gated with the lifecycle tests that use it: every acquire/sweep test

@@ -49,6 +49,7 @@ oh_codex_rendezvous_setup() {
         "$OH_REPO_ROOT/scripts/e2e-codex-rendezvous.sh" "$real" "$dir/rendezvous.jsonl" >"$dir/codex" &&
       chmod +x "$dir/codex"
   } || fail "codex rendezvous: cannot write the evidence file or the wrapper in $dir; check that the host temp dir is writable"
+  # llmlint: ignore-end[changed_behavior_has_e2e]
   PATH="$dir:$PATH"
   export PATH
 }

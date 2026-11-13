@@ -842,7 +842,7 @@ fn open_server_log(entry: &Path) -> io::Result<fs::File> {
 ///
 /// The stderr is read before the status is collected: a server of ours may
 /// still be exiting, and its last words are already in its log, while its
-/// status may take up to [`IDENTIFY_GRACE`] longer to arrive.
+/// status may take up to the two-second launch grace longer to arrive.
 #[must_use]
 pub fn early_exit(entry: &Path, record: &ServerRecord) -> String {
     let tail = stderr_tail(&entry.join(SERVER_LOG));

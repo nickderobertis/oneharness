@@ -1208,7 +1208,7 @@ fn remember_exit(pid: u32, status: std::process::ExitStatus) {
 fn exit_status(pid: Pid, grace: Duration) -> Option<std::process::ExitStatus> {
     reap_finished();
     let until = Instant::now() + grace;
-    // llmlint: ignore-block[changed_behavior_has_e2e] A server of ours that reads as stopped before a wait can collect it is a macOS kernel ordering — `proc_pidinfo` stops answering for a process once it begins to exit, before `waitpid` sees it — that no journey can place, and on Linux a server read as stopped is already reapable, so no journey there ever enters this wait. Both early-exit journeys in `crates/oneharness-e2e/tests/app_server.rs` read their dispatch's exit status through this function on every platform, and the unit tests `a_spawned_server_not_yet_reapable_still_reports_its_exit_status` and `a_spawned_server_still_running_past_the_grace_reports_no_exit_status` force both orderings — collected within `grace`, and `grace` exhausted — through it with a real child process.
+    // llmlint: ignore-block[changed_behavior_has_e2e] No journey can place the macOS exit ordering this waits out, and on Linux no journey enters the wait; the early-exit journeys in `app_server.rs` read their status through it, and its unit tests force both endings with a real child.
     while is_spawned(pid.get()) && Instant::now() < until {
         std::thread::sleep(IDENTIFY_POLL);
         reap_finished();

@@ -2567,6 +2567,37 @@ oh_codex_rules_enforce() {
   rm -rf "$scratch"
 }
 
+_oh_codex_rendezvous_dir=""
+_oh_codex_rendezvous_cleanup() {
+  [ -z "$_oh_codex_rendezvous_dir" ] || rm -rf "$_oh_codex_rendezvous_dir" ||
+    note "  could not remove the scratch directory $_oh_codex_rendezvous_dir (rm's error above) — delete it by hand"
+}
+
+# Put scripts/e2e-codex-rendezvous.sh first on PATH as `codex`, before
+# oh_telemetry_setup resolves the codex its shim runs, so the wrapper runs
+# inside the recorder's namespace, where Codex does. It takes its directory off
+# PATH again before it runs Codex, so every launch sees the PATH it would
+# without it. Its scratch directory goes however the suite ends; the check of
+# what it records is scripts/e2e-codex.sh's oh_codex_rendezvous_check.
+oh_codex_rendezvous_setup() {
+  local real dir
+  real="$(_oh_unshimmed codex)" || return 0 # no codex: the first turn reports it
+  dir="$(mktemp -d "${TMPDIR:-/tmp}/oh-codex-rendezvous.XXXXXX")" ||
+    fail "codex rendezvous: could not create a scratch directory — check that the host temp dir is writable"
+  _oh_codex_rendezvous_dir="$dir"
+  trap _oh_codex_rendezvous_cleanup EXIT
+  # llmlint: ignore-block[changed_behavior_has_e2e] mktemp has just made this directory, private to this user, so writing the evidence file and the wrapper in it fails only on a full or read-only filesystem, which no unprivileged journey can stage between these lines; the directory's own failure is test_the_rendezvous_setup_names_a_temp_dir_it_cannot_use's.
+  {
+    : >"$dir/rendezvous.jsonl" &&
+      printf '#!/usr/bin/env bash\nexec bash %q --real %q --evidence %q --drop-path %q -- "$@"\n' \
+        "$OH_REPO_ROOT/scripts/e2e-codex-rendezvous.sh" "$real" "$dir/rendezvous.jsonl" "$dir" >"$dir/codex" &&
+      chmod +x "$dir/codex"
+  } || fail "codex rendezvous: cannot write the evidence file or the wrapper in $dir; check that the host temp dir is writable"
+  # llmlint: ignore-end[changed_behavior_has_e2e]
+  PATH="$dir:$PATH"
+  export PATH
+}
+
 # --- approval-mode enforcement ----------------------------------------------
 
 # Live proof that a NO-MUTATION mode (`read-only` or `plan`) is HONORED by the

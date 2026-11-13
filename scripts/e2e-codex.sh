@@ -21,39 +21,11 @@ fi
 # directory for the euid it runs as, at the mode Codex accepts.
 #
 # It judges what scripts/e2e-codex-rendezvous.sh, in front of every codex
-# launch, recorded as each server bound — before any dispatch could reach the
-# server, so before the pool could stop it. A reading of the live server after
+# launch (oh_codex_rendezvous_setup in scripts/e2e-lib.sh), recorded as each
+# server bound — before any dispatch could reach the server, so before the
+# pool could stop it. A reading of the live server after
 # its turn raced its linger: one the pool had stopped, or was stopping, left
 # nothing to read.
-_oh_codex_rendezvous_dir=""
-_oh_codex_rendezvous_cleanup() {
-  [ -z "$_oh_codex_rendezvous_dir" ] || rm -rf "$_oh_codex_rendezvous_dir" ||
-    note "  could not remove the scratch directory $_oh_codex_rendezvous_dir (rm's error above) — delete it by hand"
-}
-
-# Put the rendezvous wrapper first on PATH as `codex`, before
-# oh_telemetry_setup resolves the codex its shim runs, so the wrapper runs
-# inside the recorder's namespace, where Codex does. Its scratch directory goes
-# however the suite ends.
-oh_codex_rendezvous_setup() {
-  local real dir
-  real="$(_oh_unshimmed codex)" || return 0 # no codex: the first turn reports it
-  dir="$(mktemp -d "${TMPDIR:-/tmp}/oh-codex-rendezvous.XXXXXX")" ||
-    fail "codex rendezvous: could not create a scratch directory — check that the host temp dir is writable"
-  _oh_codex_rendezvous_dir="$dir"
-  trap _oh_codex_rendezvous_cleanup EXIT
-  # llmlint: ignore-block[changed_behavior_has_e2e] mktemp has just made this directory, private to this user, so writing the evidence file and the wrapper in it fails only on a full or read-only filesystem, which no unprivileged journey can stage between these lines; the directory's own failure is test_the_rendezvous_setup_names_a_temp_dir_it_cannot_use's.
-  {
-    : >"$dir/rendezvous.jsonl" &&
-      printf '#!/usr/bin/env bash\nexec bash %q --real %q --evidence %q -- "$@"\n' \
-        "$OH_REPO_ROOT/scripts/e2e-codex-rendezvous.sh" "$real" "$dir/rendezvous.jsonl" >"$dir/codex" &&
-      chmod +x "$dir/codex"
-  } || fail "codex rendezvous: cannot write the evidence file or the wrapper in $dir; check that the host temp dir is writable"
-  # llmlint: ignore-end[changed_behavior_has_e2e]
-  PATH="$dir:$PATH"
-  export PATH
-}
-
 oh_codex_rendezvous_check() {
   local evidence="$_oh_codex_rendezvous_dir/rendezvous.jsonl" tmp rows listen euid linked target bound want mode
   # The rendezvous as the Rust source states it, held there by core's

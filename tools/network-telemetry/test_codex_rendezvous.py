@@ -18,7 +18,7 @@ import unittest
 from pathlib import Path
 from typing import TypedDict, cast
 
-from support import BASH, HERE, SCRIPTS, WINDOWS, scratch
+from support import BASH, HERE, LIB, ONEHARNESS, SCRIPTS, WINDOWS, need_builds, scratch
 
 
 class Evidence(TypedDict):
@@ -169,6 +169,42 @@ class Wrapper(unittest.TestCase):
                 self.assertEqual(run.returncode, 0, run.stderr)
                 self.assertEqual(self.argv.read_text().splitlines(), list(argv))
                 self.assertEqual(self.evidence.read_text(), "")
+
+    def test_its_own_directory_comes_off_path_and_nothing_else_does(self) -> None:
+        self.prepare()
+        mine = str(self.tmp / "wrapper")
+        record = self.tmp / "record"
+        bash_dir = os.path.dirname(BASH)
+        cases = {
+            "first": (f"{mine}:{bash_dir}", bash_dir),
+            "repeated, beside an empty entry": (f"{bash_dir}::{mine}:/x:{mine}", f"{bash_dir}::/x"),
+            "a longer name it prefixes": (f"{mine}x:{bash_dir}", f"{mine}x:{bash_dir}"),
+        }
+        for case, (given, kept) in cases.items():
+            with self.subTest(case=case):
+                record.write_text("")
+                run = subprocess.run(
+                    [
+                        BASH,
+                        str(WRAPPER),
+                        "--real",
+                        str(FAKE),
+                        "--evidence",
+                        str(self.evidence),
+                        "--drop-path",
+                        mine,
+                        "--",
+                        "exec",
+                        "hi",
+                    ],
+                    env={**self.env("record", given), "FAKE_RECORD": str(record)},
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    check=False,
+                )
+                self.assertEqual(run.returncode, 0, run.stderr)
+                self.assertIn(f"env PATH={kept}\n", record.read_text())
 
     def test_a_shared_server_is_recorded_before_its_listen_path_is_published(self) -> None:
         self.prepare()
@@ -346,6 +382,132 @@ class Wrapper(unittest.TestCase):
         self.assertIn(
             f"could not remove {self.sock}/.{LISTEN_BASE[1:]}; delete it by hand", run.stderr
         )
+
+
+# The two launches the live Codex failures were in, made exactly as the suite
+# makes them: the denied-tools journey's codex started directly in its trusted
+# scratch project with the synced rules file, and the shell-rewrite journey's
+# `oneharness run --mock-rules`, whose codex reads the hooks it installs.
+LAUNCHES = r"""
+source "$LIB"
+[ "$1" = bare ] || oh_codex_rendezvous_setup
+printf 'codex resolves to %s\n' "$(command -v codex)"
+_oh_codex_direct "$PROJ" "$CODEX_HOME_DIR" "mkdir $DENIED" --dangerously-bypass-approvals-and-sandbox
+"$ONEHARNESS_BIN" run --harness codex --mode bypass --cwd "$SANDBOX" --mock-rules "$RULES" \
+  --prompt 'touch OHMOCKORIG1' --compact >/dev/null
+"""
+
+
+@unittest.skipIf(WINDOWS, "e2e-codex.sh fronts codex with the wrapper on the unix legs alone")
+class Transparent(unittest.TestCase):
+    """What a codex launch the wrapper fronts sees, against the same launch
+    without it: one recording double behind both."""
+
+    def prepare(self) -> None:
+        """Both journeys' scratch: the recording double first on PATH as
+        `codex`, the rules journey's trusted project with its synced rules,
+        and the mock journey's sandbox and ruleset."""
+        need_builds(self)
+        self.tmp = scratch(self)
+        self.bin = self.tmp / "bin"
+        self.bin.mkdir()
+        (self.bin / "codex").symlink_to(FAKE)
+        self.record = self.tmp / "record"
+        self.proj = self.tmp / "rules" / "project"
+        self.proj.mkdir(parents=True)
+        self.home = self.tmp / "rules" / "codex-home"
+        self.home.mkdir()
+        self.sandbox = self.tmp / "mock"
+        self.sandbox.mkdir()
+        self.rules = self.tmp / "mock-rules.json"
+        self.rules.write_text(
+            '{"rules":[{"match":{"input":{"command":{"regex":"OHMOCKORIG1"}}},'
+            '"action":{"rewrite":{"input":{"command":"true"}}}}]}'
+        )
+        self.env = {
+            **os.environ,
+            "PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}",
+            "TMPDIR": str(self.tmp),
+            "ONEHARNESS_NO_CONFIG": "1",
+            "ONEHARNESS_BIN": str(ONEHARNESS),
+            "LIB": str(LIB),
+            "PROJ": str(self.proj),
+            "CODEX_HOME_DIR": str(self.home),
+            "DENIED": "rules-deny-1",
+            "SANDBOX": str(self.sandbox),
+            "RULES": str(self.rules),
+            "FAKE": "record",
+            "FAKE_RECORD": str(self.record),
+            "FAKE_ARGV": str(self.tmp / "argv"),
+            "FAKE_PID": str(self.tmp / "pid"),
+        }
+        # The journey's own setup: its trust config, and the rules `sync` writes.
+        trust = self.bash(
+            'source "$LIB"; _oh_codex_trust_config "$PROJ" >"$CODEX_HOME_DIR/config.toml"'
+        )
+        self.assertEqual(trust.returncode, 0, trust.stderr)
+        policy = self.tmp / "oneharness.toml"
+        policy.write_text('[harness.codex]\ndenied_tools = ["Bash(mkdir rules-deny-1:*)"]\n')
+        sync = subprocess.run(
+            [
+                str(ONEHARNESS),
+                "sync",
+                "--harness",
+                "codex",
+                "--cwd",
+                str(self.proj),
+                "--config",
+                str(policy),
+                "--compact",
+            ],
+            env={**self.env, "ONEHARNESS_NO_CONFIG": ""},
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        self.assertEqual(sync.returncode, 0, sync.stderr)
+
+    def bash(self, script: str, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [BASH, "-c", f"set -euo pipefail\n{script}", "launches", *args],
+            env=self.env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+
+    def launches(self, wrap: bool) -> tuple[str, str]:
+        """Each codex launch's record, and where `codex` resolved."""
+        self.record.write_text("")
+        run = self.bash(LAUNCHES, "wrapped" if wrap else "bare")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        return self.record.read_text(), run.stdout
+
+    def test_each_launch_sees_what_it_would_without_the_wrapper(self) -> None:
+        self.prepare()
+        bare, bare_resolved = self.launches(wrap=False)
+        wrapped, wrapped_resolved = self.launches(wrap=True)
+        # The wrapper did front the second set; the first went straight in.
+        self.assertIn(f"codex resolves to {self.bin}/codex", bare_resolved)
+        self.assertRegex(wrapped_resolved, r"codex resolves to .*/oh-codex-rendezvous\.[^/]+/codex")
+        # Every launch, the version probe included, recorded the same
+        # executable, argv, cwd, environment and files.
+        self.assertEqual(wrapped, bare)
+        # And what it recorded is what each journey depends on.
+        direct, *rest = bare.split("---\n")
+        self.assertIn(f"cwd {self.proj}\n", direct)
+        self.assertIn(
+            'prefix_rule(pattern=["mkdir", "rules-deny-1"], decision="forbidden")', direct
+        )
+        self.assertIn(f'[projects."{self.proj}"]', direct)
+        mock = "".join(rest)
+        self.assertIn("arg --dangerously-bypass-hook-trust\n", mock)
+        self.assertIn(
+            f'arg projects={{"{self.sandbox.resolve()}"={{trust_level="trusted"}}}}', mock
+        )
+        self.assertIn("mock codex --rules", mock)
 
 
 if __name__ == "__main__":

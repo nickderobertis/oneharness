@@ -2,10 +2,12 @@
 # The launch wrapper scripts/e2e-codex.sh puts in front of codex, so its drift
 # gate on Codex's socket rendezvous judges evidence that outlives the server.
 #
-#   e2e-codex-rendezvous.sh --real CODEX --evidence FILE -- ARGS...
+#   e2e-codex-rendezvous.sh --real CODEX --evidence FILE [--drop-path DIR] -- ARGS...
 #
-# Every launch but a shared app-server's (`--listen unix://PATH`) is CODEX,
-# exec'd. A shared server is started on a private path in PATH's directory, of
+# DIR, the directory scripts/e2e-codex.sh put this wrapper's `codex` in, is
+# taken off PATH first, so Codex runs on the PATH it would without the
+# wrapper. Every launch but a shared app-server's (`--listen unix://PATH`) is
+# then CODEX, exec'd. A shared server is started on a private path in PATH's directory, of
 # PATH's length, so Codex binds it as it would PATH. Once Codex has, one JSON
 # line goes to FILE: where its link points, the directory that resolves to and
 # its mode, and the euid Codex runs as — this process's, since Codex is its
@@ -26,14 +28,15 @@ die() {
   exit 125
 }
 
-real="" evidence=""
+real="" evidence="" drop=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --real | --evidence)
+    --real | --evidence | --drop-path)
       [ "$#" -ge 2 ] || die "$1 needs a value; scripts/e2e-codex.sh writes this wrapper's codex with --real, --evidence and --"
       case "$1" in
         --real) real="$2" ;;
         --evidence) evidence="$2" ;;
+        --drop-path) drop="$2" ;;
       esac
       shift 2
       ;;
@@ -46,6 +49,15 @@ while [ "$#" -gt 0 ]; do
 done
 [ -n "$real" ] && [ -n "$evidence" ] ||
   die "--real and --evidence are both required; rerun scripts/e2e-codex.sh, which writes them"
+
+# Spliced out of the text, so every other entry, an empty one included, stays.
+if [ -n "$drop" ]; then
+  kept=":${PATH-}:"
+  while [ "${kept#*":$drop:"}" != "$kept" ]; do kept="${kept/":$drop:"/:}"; done
+  kept="${kept#:}"
+  PATH="${kept%:}"
+  export PATH
+fi
 
 args=("$@")
 at=-1

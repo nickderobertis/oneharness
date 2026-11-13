@@ -3,6 +3,10 @@
 # behind scripts/e2e-codex-rendezvous.sh. It writes its argv (one per line) to
 # FAKE_ARGV and its pid to FAKE_PID, then acts as FAKE says:
 #   args               exit 0 having bound nothing
+#   record             append to FAKE_RECORD what this launch would show
+#                      Codex — the executable, argv, cwd, environment and the
+#                      config, trust, rules and hooks files it reads — then
+#                      exit 0
 #   exit:N             exit N before binding
 #   link               link the --listen path to FAKE_SOCKDIR/s, made private
 #   dangling           link it to FAKE_SOCKDIR/s, creating nothing there
@@ -26,8 +30,24 @@ for arg in "$@"; do
   [ "$previous" != --listen ] || listen="${arg#unix://}"
   previous="$arg"
 done
+record() {
+  local file
+  printf 'exe %s\n' "$0"
+  printf 'cwd %s\n' "$PWD"
+  printf 'arg %s\n' "$@"
+  env -0 | LC_ALL=C sort -z | tr '\0' '\n' | sed 's/^/env /'
+  for file in "${CODEX_HOME:-$HOME/.codex}/config.toml" .codex/rules/oneharness.rules .codex/hooks.json; do
+    printf 'file %s\n' "$file"
+    if [ -f "$file" ]; then sed 's/^/  /' "$file"; else echo "  (absent)"; fi
+  done
+  echo '---'
+}
 case "${FAKE:?FAKE must say how this double behaves}" in
   args) exit 0 ;;
+  record)
+    record "$@" >>"${FAKE_RECORD:?FAKE=record needs FAKE_RECORD}" || refuse "cannot append to FAKE_RECORD=$FAKE_RECORD"
+    exit 0
+    ;;
   exit:*) exit "${FAKE#exit:}" ;;
 esac
 dir="$(dirname "$listen")"

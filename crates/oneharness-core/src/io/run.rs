@@ -2329,15 +2329,22 @@ fn project_trust_keys(dir: &std::path::Path) -> Vec<String> {
     if let Ok(absolute) = std::path::absolute(dir) {
         push(absolute.display().to_string());
     }
+    // A directory that cannot be resolved (missing) has no canonical form to
+    // name; its absolute spelling still stands.
     if let Ok(canonical) = std::fs::canonicalize(dir) {
-        let text = canonical.display().to_string();
-        let stripped = match text.strip_prefix(r"\\?\") {
-            Some(rest) if rest.as_bytes().get(1) == Some(&b':') => rest.to_string(),
-            _ => text,
-        };
-        push(stripped);
+        push(without_verbatim_prefix(canonical.display().to_string()));
     }
     keys
+}
+
+/// `text` without the `\\?\` verbatim prefix Windows' canonicalize puts before
+/// a drive path (`\\?\C:\…` → `C:\…`), as `dunce` drops it; every other
+/// spelling — a verbatim UNC path included — unchanged.
+fn without_verbatim_prefix(text: String) -> String {
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => rest.to_string(),
+        _ => text,
+    }
 }
 
 /// Assemble the top-level [`RunReport`] from the finished results and the shared
@@ -6335,6 +6342,29 @@ mod tests {
             !dir.join(".codex").exists(),
             "the created .codex is removed"
         );
+    }
+
+    /// A drive path loses Windows' verbatim prefix, as Codex's canonical
+    /// spelling has none; nothing else is touched.
+    #[test]
+    fn the_verbatim_prefix_comes_off_a_drive_path_only() {
+        let strip = |text: &str| without_verbatim_prefix(text.to_string());
+        assert_eq!(strip(r"\\?\C:\Users\x\tmp.a"), r"C:\Users\x\tmp.a");
+        assert_eq!(strip(r"\\?\UNC\host\share"), r"\\?\UNC\host\share");
+        assert_eq!(strip("/tmp/tmp.a"), "/tmp/tmp.a");
+    }
+
+    /// A directory that does not resolve keeps its absolute spelling alone,
+    /// and a path with no absolute form gives no key at all.
+    #[test]
+    fn project_trust_keys_keep_what_resolves() {
+        let dir = crate::io::scratch::ScratchDir::new("trust-keys").unwrap();
+        let missing = dir.join("gone");
+        assert_eq!(
+            project_trust_keys(&missing),
+            [missing.display().to_string()]
+        );
+        assert!(project_trust_keys(std::path::Path::new("")).is_empty());
     }
 
     fn run_args() -> RunRequest {

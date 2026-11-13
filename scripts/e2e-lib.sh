@@ -2353,14 +2353,14 @@ oh_enforce_file() { printf '%s-%s%s.txt' "$1" "${RANDOM}" "${RANDOM}"; }
 # live-codex pass, which the network budgets (live/AGENTS.md) count.
 _OH_CODEX_DEFAULTS=(-c features.plugins=false -c features.apps=false -c analytics.enabled=false)
 _OH_CODEX_OUT=""
-# The config.toml that trusts project $1 under every spelling Codex may look
-# it up by, each named once: as given, physical (macOS's /private/var), and on
+# Write to $2 the config.toml that trusts project $1 under every spelling
+# Codex may look it up by, each named once: as given, physical (macOS's /private/var), and on
 # Windows the backslashed long path Codex canonicalizes its cwd to. Codex folds
 # case there but not separators, so the forward-slash `cygpath -m` spelling
 # alone matches nothing; codex 0.168 hid that by trusting a writable-sandbox
 # `exec`'s cwd itself, which 0.169.0 (openai/codex#60041) no longer does.
 _oh_codex_trust_config() {
-  local proj="$1" real path native spellings=()
+  local proj="$1" out="$2" real path native spellings=() config
   real="$(cd "$proj" && pwd -P)" || fail "codex: cannot resolve the scratch project $proj (cd's error above); check that the host temp dir is readable, then rerun \`just live-codex\`"
   for path in "$proj" "$real"; do
     native="$(oh_native_path "$path")" && [ -n "$native" ] ||
@@ -2372,8 +2372,10 @@ _oh_codex_trust_config() {
       spellings+=("$native")
     fi
   done
-  printf '%s\n' "${spellings[@]}" | sort -u | jq -R -r '"[projects.\(tojson)]\ntrust_level = \"trusted\"\n"' ||
+  config="$(printf '%s\n' "${spellings[@]}" | sort -u | jq -R -r '"[projects.\(tojson)]\ntrust_level = \"trusted\"\n"')" ||
     fail "codex: could not render the trust config for $proj (the error above); check that \`jq --version\` runs"
+  printf '%s\n' "$config" >"$out" ||
+    fail "codex: cannot write the trust config $out (the error above); check that the host temp dir is writable"
 }
 
 _oh_codex_direct() {
@@ -2502,8 +2504,7 @@ oh_codex_rules_enforce() {
   proj="$scratch/project"
   mkdir -p "$home" "$proj"
   cp "$auth" "$home/auth.json"
-  _oh_codex_trust_config "$proj" >"$home/config.toml" ||
-    fail "codex: cannot write the scratch codex home's $home/config.toml; check that the host temp dir is writable"
+  _oh_codex_trust_config "$proj" "$home/config.toml"
   dir="rules-deny-${RANDOM}${RANDOM}"
   file="$(oh_enforce_file rules-allow)"
   del="$(_oh_codex_render_forced_delete "$file")"

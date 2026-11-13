@@ -443,7 +443,7 @@ class Transparent(unittest.TestCase):
         }
         # The journey's own setup: its trust config, and the rules `sync` writes.
         trust = self.bash(
-            'source "$LIB"; _oh_codex_trust_config "$PROJ" >"$CODEX_HOME_DIR/config.toml"'
+            'source "$LIB"; _oh_codex_trust_config "$PROJ" "$CODEX_HOME_DIR/config.toml"'
         )
         self.assertEqual(trust.returncode, 0, trust.stderr)
         policy = self.tmp / "oneharness.toml"

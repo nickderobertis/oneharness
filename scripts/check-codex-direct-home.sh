@@ -77,7 +77,8 @@ case "$1" in
   *) echo "unexpected cygpath $*" >&2; exit 2 ;;
 esac
 CYGPATH
-trust="$(_oh_codex_trust_config "$scratch/project")" || fail "the trust config could not be written: $trust"
+_oh_codex_trust_config "$scratch/project" "$scratch/config.toml" || fail "the trust config could not be written"
+trust="$(cat "$scratch/config.toml")" || fail "could not read back $scratch/config.toml"
 for key in "$scratch/project" 'C:/Users/runneradmin/project' 'C:\\Users\\runneradmin\\project'; do
   [ "$(printf '%s\n' "$trust" | grep -cxF "[projects.\"$key\"]")" -eq 1 ] ||
     fail "the trust config must name one [projects.\"$key\"] table, else Codex finds the project untrusted there:
@@ -94,9 +95,36 @@ case "\$1" in
   *) printf 'C:/Users/runneradmin/project\n' ;;
 esac
 CYGPATH
-  if (_oh_codex_trust_config "$scratch/project") >"$scratch/trust.log" 2>&1; then
+  if (_oh_codex_trust_config "$scratch/project" "$scratch/config.toml") >"$scratch/trust.log" 2>&1; then
     fail "the trust config must fail when cygpath -wl does '$body'"
   fi
   grep -qF 'cygpath -wl could not convert' "$scratch/trust.log" ||
     fail "the trust config's failure must name the cygpath -wl conversion: $(cat "$scratch/trust.log")"
 done
+# Each other way the trust config can fail stops the journey naming it.
+# Prints why `_oh_codex_trust_config $1 $2` failed, failing if it did not.
+trust_refused() {
+  if (_oh_codex_trust_config "$1" "$2") >"$scratch/trust.log" 2>&1; then
+    fail "the trust config of $1 into $2 must fail"
+  fi
+  cat "$scratch/trust.log"
+}
+expect_refusal() {
+  printf '%s\n' "$1" | grep -qF "$2" || fail "the trust config's failure must say '$2': $1"
+}
+expect_refusal "$(trust_refused "$scratch/no-such-project" "$scratch/config.toml")" "cannot resolve the scratch project $scratch/no-such-project"
+# A path oh_native_path cannot convert, failing or empty.
+for body in 'exit 1' 'exit 0'; do
+  printf '#!/usr/bin/env bash\n%s\n' "$body" >"$scratch/bin/cygpath" || fail "could not write the converter fixture; check $scratch permissions"
+  expect_refusal "$(trust_refused "$scratch/project" "$scratch/config.toml")" "could not convert $scratch/project to a native path to trust"
+done
+rm -f "$scratch/bin/cygpath" || fail "could not remove the converter fixture; check $scratch permissions"
+cat >"$scratch/bin/jq" <<'JQ' || fail "could not write the jq fixture; check $scratch permissions"
+#!/usr/bin/env bash
+echo 'jq: error: simulated' >&2
+exit 2
+JQ
+chmod +x "$scratch/bin/jq" || fail "could not make the jq fixture executable; check $scratch permissions"
+expect_refusal "$(trust_refused "$scratch/project" "$scratch/config.toml")" "could not render the trust config for $scratch/project"
+rm -f "$scratch/bin/jq" || fail "could not remove the jq fixture; check $scratch permissions"
+expect_refusal "$(trust_refused "$scratch/project" "$scratch/no-such-home/config.toml")" "cannot write the trust config $scratch/no-such-home/config.toml"

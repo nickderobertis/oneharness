@@ -17,6 +17,7 @@ import math
 import os
 import re
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 from typing import Callable, NamedTuple, Optional
@@ -728,6 +729,37 @@ class CodexSuite(BudgetCase):
         self.assertIn(
             f"largest: launch {probe['launch_id']} (phase usage-probe, kind app-server",
             selected.stdout,
+        )
+
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "the suite's controlled turn runs hermetically on the Linux leg alone",
+    )
+    def test_the_rendezvous_check_passes_when_its_server_stopped_before_the_step(self) -> None:
+        tmp = scratch(self)
+        # A zero linger: the pool stops the controlled turn's server the moment
+        # its lease ends, before `oneharness run` returns, so it is gone by the
+        # time the post-turn step runs. Its thread opens 1.5 s late, so the
+        # turn lasts longer than the rendezvous reading takes.
+        run = self.run_codex(
+            tmp, ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS="0", CODEX_MOCK_OPEN_DELAYS_MS="1500"
+        )
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("» usage:", run.stderr)
+
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "the suite's controlled turn runs hermetically on the Linux leg alone",
+    )
+    def test_the_rendezvous_check_fails_a_server_bound_outside_codexs_rendezvous(self) -> None:
+        tmp = scratch(self)
+        # The mock binds its socket where Codex would if Codex moved its
+        # rendezvous: the check must name that drift.
+        elsewhere = tmp / "elsewhere"
+        run = self.run_codex(tmp, CODEX_MOCK_DAEMON_DIR=str(elsewhere))
+        self.assertNotEqual(run.returncode, 0, run.stderr)
+        self.assertIn(
+            f"and bound its socket under {elsewhere.resolve()}, not /tmp/codex-daemon-", run.stderr
         )
 
     def test_a_phase_whose_launch_the_shim_could_not_measure_fails_the_check_step(self) -> None:

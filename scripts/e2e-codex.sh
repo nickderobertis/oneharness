@@ -40,57 +40,113 @@ _oh_codex_server_euid() {
 # The drift gate for Codex's socket rendezvous, which the shared-server launch
 # tightens before Codex starts (stated once as `codex_daemon_dir` and
 # `CODEX_DAEMON_DIR_MODE` in crates/oneharness-core/src/domain/app_server.rs):
-# every pooled codex server still lingering after the controlled turn must have
-# left its --listen path linking into exactly that directory for the euid it
-# runs as, at the mode Codex accepts. Read from the server's own process, so it
-# holds under the recorder's namespace as well as outside it.
-oh_codex_rendezvous_check() {
-  local state="${XDG_STATE_HOME:-$HOME/.local/state}" tmp record link fields pid marker euid target bound want mode checked=0
+# a pooled codex server must leave its --listen path linking into exactly that
+# directory for the euid it runs as, at the mode Codex accepts. Read from the
+# server's own process, so it holds under the recorder's namespace as well as
+# outside it.
+#
+# The reading is taken while the controlled turn runs, under the pool entry's
+# lock (`.lock`, the flock every start and stop of its server takes): a server
+# seen running and bound under that lock cannot be stopped until it is
+# released, however short its linger. Read after the turn instead, it raced
+# the linger — a server the pool had already stopped, or was stopping, left
+# nothing to check.
+
+# Check pool entry $1's server against the rendezvous, $2 the canonical /tmp,
+# holding the entry's lock: 0 once checked, 1 when it names no running, bound
+# server (it has stopped, or not bound yet). A drift fails the suite.
+_oh_codex_rendezvous_entry() {
+  local record="$1/server.json" link="$1/sock/app-server.sock" tmp="$2" fields pid marker euid target bound want mode
   # The rendezvous as the Rust source states it, held there by core's
   # `the_live_rendezvous_check_expects_the_rendezvous_the_launch_prepares`.
   local rendezvous_prefix=codex-daemon- rendezvous_mode=700
+  [ -f "$record" ] && [ -L "$link" ] || return 1
+  fields="$(jq -r '"\(.pid // "") \(.marker // "")"' "$record")" ||
+    fail "codex rendezvous: cannot read the pool record $record (jq's error above); a damaged record stops the pool too, so remove that entry's directory and rerun"
+  read -r pid marker <<<"$fields"
+  case "${pid:-}" in '' | 0 | *[!0-9]*)
+    fail "codex rendezvous: the pool record $record names pid '${pid:-}', not a process id; remove that entry's directory and rerun"
+    ;;
+  esac
+  # A killed server can leave its record and link behind; only a running one
+  # says where Codex binds now.
+  ps -p "$pid" >/dev/null 2>&1 || return 1
+  [ -n "$marker" ] ||
+    fail "codex rendezvous: the pool record $record names no server marker, which every shared codex server is launched with; remove that entry's directory and rerun"
+  target="$(readlink "$link")" ||
+    fail "codex rendezvous: cannot read the socket link $link (readlink's error above); check the entry's permissions with \`ls -la $(dirname "$link")\`"
+  euid="$(_oh_codex_server_euid "$marker")" ||
+    fail "codex rendezvous: no running codex process carries the server marker in $record, though the pool, whose lock this check holds, has not stopped it; check \`ps -ef | grep app-server\` and that entry's server.log for a server that died on its own"
+  want="$tmp/$rendezvous_prefix$euid"
+  bound="$(cd "$(dirname "$target")" && pwd -P)" ||
+    fail "codex rendezvous: the socket link $link names $target, whose directory cannot be entered (cd's error above); a server that is still running holds its socket there, so check that directory's owner and mode with \`ls -ld $(dirname "$target")\`"
+  [ "$bound" = "$want" ] ||
+    fail "codex rendezvous: the shared server runs as euid $euid and bound its socket under $bound, not $want; Codex has moved its rendezvous, so update codex_daemon_dir in crates/oneharness-core/src/domain/app_server.rs, the one source the launch and the mock both read, to it"
+  # Probe the stat dialect rather than the OS: GNU's (Linux, Git Bash) takes
+  # -c, BSD's (macOS) takes -f.
+  if stat -c %a / >/dev/null 2>&1; then
+    mode="$(stat -c %a "$bound")"
+  else
+    mode="$(stat -f %Lp "$bound")"
+  fi || fail "codex rendezvous: cannot read the mode of $bound (stat's error above); run \`ls -ld $bound\` to see it"
+  [ "$mode" = "$rendezvous_mode" ] ||
+    fail "codex rendezvous: $bound is mode $mode, not the 0$rendezvous_mode Codex demands of it; read Codex's refusal for what it now requires"
+}
+
+# Run "$@" holding pool entry $1's lock, the advisory flock the pool's
+# EntryLock takes (fs2's lock_exclusive). The lock belongs to fd 9's open file,
+# so it outlives perl, which only takes it, and goes when fd 9 is closed.
+_oh_pool_entry_locked() {
+  local entry="$1" status=0
+  shift
+  exec 9>>"$entry/.lock" || fail "codex rendezvous: cannot open the pool entry's lock $entry/.lock (the error above); check that entry's permissions with \`ls -la $entry\`"
+  perl -MFcntl=:flock -e 'open(my $lock, ">>&=", 9) or die "cannot reopen fd 9: $!\n"; flock($lock, LOCK_EX) or die "cannot lock it: $!\n"' ||
+    fail "codex rendezvous: cannot take the pool entry's lock $entry/.lock (perl's error above)"
+  "$@" || status=$?
+  exec 9>&-
+  return "$status"
+}
+
+# Watch the pool through the controlled turn until one running, bound server
+# has been checked. Once $1 exists the turn is over: one last look, and a fail
+# when nothing was there to check. A suite that died ($2, its pid, gone) ends
+# the watch and removes $1's directory, which nobody else will now.
+oh_codex_rendezvous_check() {
+  local over="$1" main="$2" state="${XDG_STATE_HOME:-$HOME/.local/state}" tmp entry ended checked=0
   tmp="$(cd /tmp && pwd -P)" || fail "codex rendezvous: cannot resolve /tmp; check that it exists"
-  for record in "$state"/oneharness/servers/codex-app-server-*/server.json; do
-    link="$(dirname "$record")/sock/app-server.sock"
-    # A record without a bound link is a server that has stopped since.
-    [ -f "$record" ] && [ -L "$link" ] || continue
-    fields="$(jq -r '"\(.pid // "") \(.marker // "")"' "$record")" ||
-      fail "codex rendezvous: cannot read the pool record $record (jq's error above); a damaged record stops the pool too, so remove that entry's directory and rerun"
-    read -r pid marker <<<"$fields"
-    case "${pid:-}" in '' | 0 | *[!0-9]*)
-      fail "codex rendezvous: the pool record $record names pid '${pid:-}', not a process id; remove that entry's directory and rerun"
-      ;;
-    esac
-    # A killed server can leave its record and link behind; only a running
-    # one says where Codex binds now.
-    ps -p "$pid" >/dev/null 2>&1 || continue
-    [ -n "$marker" ] ||
-      fail "codex rendezvous: the pool record $record names no server marker, which every shared codex server is launched with; remove that entry's directory and rerun"
-    if ! target="$(readlink "$link")"; then
-      # Gone between the test and the read: that server has just stopped.
-      [ -L "$link" ] || continue
-      fail "codex rendezvous: cannot read the socket link $link (readlink's error above); check the entry's permissions with \`ls -la $(dirname "$link")\`"
+  while :; do
+    ended=0
+    [ ! -e "$over" ] || ended=1
+    for entry in "$state"/oneharness/servers/codex-app-server-*; do
+      # Unlocked first, so the watch never queues behind a start for nothing.
+      [ -f "$entry/server.json" ] && [ -L "$entry/sock/app-server.sock" ] || continue
+      if _oh_pool_entry_locked "$entry" _oh_codex_rendezvous_entry "$entry" "$tmp"; then
+        checked=$((checked + 1))
+      fi
+    done
+    [ "$checked" -eq 0 ] || return 0
+    [ "$ended" -eq 0 ] ||
+      fail "codex rendezvous: no pooled codex server under $state/oneharness/servers was running and bound while the controlled turn ran, so nothing could be checked; read its entry's server.log for why the server never bound"
+    if ! kill -0 "$main" 2>/dev/null; then
+      rm -rf "$(dirname "$over")"
+      return 0
     fi
-    euid="$(_oh_codex_server_euid "$marker")" ||
-      fail "codex rendezvous: no running codex process carries the server marker in $record, so the euid its socket directory is named for is unknown; check \`ps -ef | grep app-server\` while a pooled server lingers"
-    want="$tmp/$rendezvous_prefix$euid"
-    bound="$(cd "$(dirname "$target")" && pwd -P)" ||
-      fail "codex rendezvous: the socket link $link names $target, whose directory cannot be entered (cd's error above); a server that is still running holds its socket there, so check that directory's owner and mode with \`ls -ld $(dirname "$target")\`"
-    [ "$bound" = "$want" ] ||
-      fail "codex rendezvous: the shared server runs as euid $euid and bound its socket under $bound, not $want; Codex has moved its rendezvous, so update codex_daemon_dir in crates/oneharness-core/src/domain/app_server.rs, the one source the launch and the mock both read, to it"
-    # Probe the stat dialect rather than the OS: GNU's (Linux, Git Bash) takes
-    # -c, BSD's (macOS) takes -f.
-    if stat -c %a / >/dev/null 2>&1; then
-      mode="$(stat -c %a "$bound")"
-    else
-      mode="$(stat -f %Lp "$bound")"
-    fi || fail "codex rendezvous: cannot read the mode of $bound (stat's error above); run \`ls -ld $bound\` to see it"
-    [ "$mode" = "$rendezvous_mode" ] ||
-      fail "codex rendezvous: $bound is mode $mode, not the 0$rendezvous_mode Codex demands of it; read Codex's refusal for what it now requires"
-    checked=$((checked + 1))
+    sleep 0.05
   done
-  [ "$checked" -gt 0 ] ||
-    fail "codex rendezvous: no pooled codex server under $state/oneharness/servers was still bound after the controlled turn, so nothing could be checked; it lingers 60 s by default, so look for what stopped it early"
+}
+
+# The controlled turn, with the rendezvous witness watching its server.
+oh_codex_controlled_turn() {
+  local flags witness status=0
+  need perl
+  flags="$(mktemp -d)" || fail "codex rendezvous: could not create a scratch directory — check that the host temp dir is writable"
+  oh_codex_rendezvous_check "$flags/turn-over" "$$" &
+  witness=$!
+  oh_controlled_turn codex
+  : >"$flags/turn-over"
+  wait "$witness" || status=$?
+  rm -rf "$flags" || note "  could not remove the scratch directory $flags — delete it by hand"
+  [ "$status" -eq 0 ] || exit "$status"
 }
 
 export OH_MODEL="${CODEX_E2E_MODEL:-}"
@@ -108,8 +164,7 @@ if [ "${OS:-}" = "Windows_NT" ]; then
 else
   # llmlint: ignore[tool_output_is_signal] Every phase in this script announces itself on one line before it runs, and that header is what attributes a later failure (or a hang) to a phase in the CI log.
   note "» controlled turn: a --control turn must round-trip over codex's stdio app-server"
-  oh_controlled_turn codex
-  oh_codex_rendezvous_check
+  oh_codex_controlled_turn
 fi
 
 # Usage enforcement: the app-server answers `account/rateLimits/read`

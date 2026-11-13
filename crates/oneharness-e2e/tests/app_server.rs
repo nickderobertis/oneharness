@@ -6044,6 +6044,7 @@ fn the_control_suite_s_pooled_env_shares_one_server_when_one_dispatch_starts_lat
             // A file where the arrivals' directory goes, beside the session
             // store, so no arrival can be created in it; B starts only once A
             // has put it there, so neither can have arrived before.
+            // llmlint: ignore[tests_mirror_real_usage] The suite offers no interface that makes its arrivals' directory unwritable, and a read-only TMPDIR fails its scratch setup before pooled-env starts, so the journey stages exactly that fault and asserts only the suite's own verdict.
             r#"case " $* " in *" --session pooled-env-a "*) for ((i = 1; i < $#; i++)); do [ "${!i}" = --session-dir ] && { j=$((i + 1)); meet="$(dirname "${!j}")/meet"; rmdir "$meet" && : >"$meet" && : >"$OH_STAGED_SEEN.a-broke" || exit 1; }; done ;; *" --session pooled-env-b "*) n=0; until [ -e "$OH_STAGED_SEEN.a-broke" ]; do [ "$n" -lt 1200 ] || { echo "dispatch A never replaced the arrivals' directory" >&2; exit 1; }; sleep 0.1; n=$((n + 1)); done ;; esac"#,
             "FAIL: pooled-env: dispatch A's command did not see its own OH_POOLED_PROBE (output: rendezvous=unwritable: cannot create",
         ),

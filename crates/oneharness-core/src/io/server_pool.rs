@@ -84,6 +84,12 @@ const EXITED_UNIDENTIFIED: &str = "exited-before-identified";
 const IDENTIFY_GRACE: Duration = Duration::from_secs(2);
 const IDENTIFY_POLL: Duration = Duration::from_millis(5);
 
+/// A test seam: a path [`exit_status`] creates once it is waiting on a server
+/// of ours that reads as stopped but cannot yet be collected. A journey hands
+/// the same path to a stand-in server that stays uncollectable until it
+/// exists, which forces that wait without timing it. Unset, nothing is written.
+const EXIT_WAIT_MARK: &str = "ONEHARNESS_TEST_EXIT_WAIT_MARK";
+
 /// How much of a server's stderr an early-exit diagnosis quotes, from its end.
 const STDERR_TAIL_BYTES: u64 = 2048;
 
@@ -1231,7 +1237,14 @@ enum ServerExit {
 fn exit_status(pid: Pid, grace: Duration) -> ServerExit {
     reap_finished();
     let until = Instant::now() + grace;
+    let mut marked = false;
     while is_spawned(pid.get()) && Instant::now() < until {
+        if !marked {
+            marked = true;
+            if let Some(mark) = std::env::var_os(EXIT_WAIT_MARK).filter(|path| !path.is_empty()) {
+                let _ = fs::write(mark, "");
+            }
+        }
         std::thread::sleep(IDENTIFY_POLL);
         reap_finished();
     }

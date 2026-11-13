@@ -2556,19 +2556,22 @@ fn an_early_exit_quotes_only_the_stderr_it_can_read() {
 /// the status it ended with, once it is collectable within the grace.
 ///
 /// The ordering is forced, not timed: the server cannot be collected until the
-/// dispatch has seen it stopped and begun its early-exit report by reading the
-/// server's log, so a report that asks for the status without waiting for it
-/// always finds none.
+/// dispatch's status collection has found it stopped but uncollectable and is
+/// waiting on it (`ONEHARNESS_TEST_EXIT_WAIT_MARK`), so a report that asks for
+/// the status without waiting for it always finds none.
 #[cfg(target_os = "linux")]
 #[test]
 fn an_early_exit_still_being_collected_is_reported_with_its_status() {
     let pool = Pool::new("pool-ee-collect");
+    let waiting = pool.path("waiting");
+    let waiting = waiting.to_str().unwrap();
     let (_, report) = pool.run(pool.command(
         "collecting",
         &[],
         &[
             ("CODEX_MOCK_FAULT", "exit-first-thread"),
-            ("CODEX_MOCK_HOLD_UNTIL_READ", "1"),
+            ("CODEX_MOCK_RELEASE_ON", waiting),
+            ("ONEHARNESS_TEST_EXIT_WAIT_MARK", waiting),
         ],
     ));
     let ran = result(&report);

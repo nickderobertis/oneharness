@@ -77,6 +77,43 @@ fn trace_redirect_written() {
     }
 }
 
+/// A path. Once set, the run creates it the moment the controlled turn's stdin
+/// is parked and its prompt not yet written, and holds the opening there until
+/// an interrupt's abort is on its way — so a journey can land an interrupt
+/// inside the opening. Compiled only into the `mock-harness` test build, like
+/// the mock harness itself, so a shipped `oneharness` has no such seam.
+#[cfg(feature = "mock-harness")]
+const HOLD_OPENING_ENV: &str = "ONEHARNESS_INTERNAL_HOLD_OPENING";
+
+/// `turn-ended` or `released`. Once set, an interrupt whose abort frames are
+/// written holds there, before it hands its redirection on, until the aborted
+/// turn's end has reached the run (`turn-ended`) or the run has released its
+/// candidate (`released`). `mock-harness` builds only.
+#[cfg(feature = "mock-harness")]
+const HOLD_ABORT_ENV: &str = "ONEHARNESS_INTERNAL_HOLD_ABORT";
+
+/// Any value. Once set, an interrupt that has written its redirection's
+/// replacement prompt holds there, before the delivery is settled, until the
+/// run is closing the turn or has answered for the message itself.
+/// `mock-harness` builds only.
+#[cfg(feature = "mock-harness")]
+const HOLD_REDIRECT_WRITTEN_ENV: &str = "ONEHARNESS_INTERNAL_HOLD_REDIRECT_WRITTEN";
+
+/// Poll `done` until it holds, for one of the seams above. Bounded, so a
+/// journey whose interleaving never comes gets its own failure back rather
+/// than a hung suite.
+#[cfg(feature = "mock-harness")]
+fn hold_until(what: &str, mut done: impl FnMut() -> bool) {
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !done() {
+        if std::time::Instant::now() >= until {
+            eprintln!("oneharness: warning: held for {what}, which never came");
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+
 /// The delivery deadline this process's runs wait out.
 fn redirect_delivery_deadline() -> std::time::Duration {
     let Ok(raw) = std::env::var(REDIRECT_DEADLINE_ENV) else {
@@ -501,6 +538,10 @@ pub struct ControlHandle {
     /// settled — the seam a test holds that gap open at.
     #[cfg(all(test, unix))]
     on_redirect_written: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// Set once the run starts closing the turn, for the
+    /// [`HOLD_REDIRECT_WRITTEN_ENV`] seam to wait on.
+    #[cfg(feature = "mock-harness")]
+    closing: std::sync::atomic::AtomicBool,
 }
 
 /// Where a redirection is between being accepted and becoming the next turn.
@@ -559,6 +600,8 @@ impl ControlHandle {
             app_server: Mutex::new(None),
             #[cfg(all(test, unix))]
             on_redirect_written: Mutex::new(None),
+            #[cfg(feature = "mock-harness")]
+            closing: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -615,6 +658,7 @@ impl ControlHandle {
     /// write fails because the harness has gone. Which of the two threads gets
     /// there first must not change what the supervisor is told.
     pub(crate) fn release(&self) {
+        self.mark_closing();
         let undelivered = matches!(
             self.mechanism().take(),
             Some(Backend::Dialogue(dialogue)) if dialogue.has_pending_redirect()
@@ -963,6 +1007,78 @@ impl ControlHandle {
         }
     }
 
+    /// The [`HOLD_OPENING_ENV`] seam: the turn's stdin is parked and its
+    /// prompt is not written yet. `under_turn_lock` says the caller holds the
+    /// turn's lock, so an interrupt that has begun its abort is waiting on it.
+    ///
+    /// The redirection is read with `try_lock` only: this runs under the
+    /// turn's lock, and blocking on the `redirect` lock there would nest it
+    /// inside `state` — the inverse of the type's order.
+    #[cfg(feature = "mock-harness")]
+    fn hold_opening(&self, under_turn_lock: bool) {
+        let Some(marker) = std::env::var_os(HOLD_OPENING_ENV) else {
+            return;
+        };
+        let _ = std::fs::write(marker, b"");
+        hold_until("an interrupt's abort", || {
+            let Ok(slot) = self.redirect.try_lock() else {
+                return false;
+            };
+            match &*slot {
+                Redirect::Deliverable(_) | Redirect::Answered(_) => true,
+                Redirect::Aborting(_) => under_turn_lock || self.state.try_lock().is_err(),
+                Redirect::None | Redirect::Committed(_) => false,
+            }
+        });
+    }
+
+    #[cfg(not(feature = "mock-harness"))]
+    fn hold_opening(&self, _under_turn_lock: bool) {}
+
+    /// The [`HOLD_ABORT_ENV`] seam: every abort frame is written and the
+    /// redirection not yet handed on. Holds no lock while it waits.
+    #[cfg(feature = "mock-harness")]
+    fn hold_abort_written(&self) {
+        let Ok(until) = std::env::var(HOLD_ABORT_ENV) else {
+            return;
+        };
+        if until == "released" {
+            hold_until("the run's release", || self.mechanism().is_none());
+        } else {
+            hold_until("the aborted turn's end", || {
+                matches!(&*self.redirect(), Redirect::Answered(_)) || self.mechanism().is_none()
+            });
+        }
+    }
+
+    #[cfg(not(feature = "mock-harness"))]
+    fn hold_abort_written(&self) {}
+
+    /// The [`HOLD_REDIRECT_WRITTEN_ENV`] seam: the replacement prompt is
+    /// written and its delivery not yet settled. Under the turn's lock the run
+    /// cannot close the turn past this, so the hold ends once it has started
+    /// to; otherwise it ends once the run has answered for the message.
+    #[cfg(feature = "mock-harness")]
+    fn hold_redirect_written(&self, under_turn_lock: bool) {
+        if std::env::var_os(HOLD_REDIRECT_WRITTEN_ENV).is_none() {
+            return;
+        }
+        hold_until("the run to close the replacement turn", || {
+            self.delivery().is_none()
+                || (under_turn_lock && self.closing.load(std::sync::atomic::Ordering::SeqCst))
+        });
+    }
+
+    #[cfg(not(feature = "mock-harness"))]
+    fn hold_redirect_written(&self, _under_turn_lock: bool) {}
+
+    /// Record that the run is closing the turn, for the seam above.
+    fn mark_closing(&self) {
+        #[cfg(feature = "mock-harness")]
+        self.closing
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
     /// Shorten how long a redirection may wait to be written, so a test can
     /// reach the withdrawal without waiting out the real deadline.
     #[cfg(all(test, unix))]
@@ -1127,6 +1243,7 @@ impl ControlHandle {
                     trace_redirect_written();
                     #[cfg(all(test, unix))]
                     self.redirect_written_hook();
+                    self.hold_redirect_written(true);
                     self.redirect_delivered();
                 }
                 Err(err) => self.redirect_refused(&err.to_string()),
@@ -1188,7 +1305,7 @@ impl ControlHandle {
         prompt: &str,
     ) -> io::Result<()> {
         let frames = self.open_frames(prompt);
-        self.open_turn_with(Box::new(stdin), &frames, || {})
+        self.open_turn_with(Box::new(stdin), &frames, || self.hold_opening(true))
     }
 
     /// [`Self::open_turn`] over any sink. `parked` runs once the turn's lock
@@ -1308,6 +1425,7 @@ impl ControlHandle {
     /// is how a control-enabled child — whose stdin was deliberately held open
     /// — learns it may exit).
     pub fn end_turn(&self) {
+        self.mark_closing();
         *self
             .state
             .lock()
@@ -1541,6 +1659,7 @@ impl ControlHandle {
                 }
             }
         }
+        self.hold_abort_written();
         // Every abort frame is on the child's stdin, so the message may be
         // handed on once the harness says the turn it aborted has ended — or
         // is handed on now, if it already said so while the frames went out.

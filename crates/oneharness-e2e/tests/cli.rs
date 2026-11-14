@@ -33333,6 +33333,23 @@ impl RedirectJourney {
         envs: &[(&str, &str)],
         timeout: &str,
     ) -> Self {
+        Self::spawn(double, tag, envs, timeout, true)
+    }
+
+    /// [`Self::start`], returning once the control socket is up without
+    /// waiting for the turn to be in flight — for a journey that holds the
+    /// turn's opening itself.
+    fn start_opening(double: RedirectDouble, tag: &str, envs: &[(&str, &str)]) -> Self {
+        Self::spawn(double, tag, envs, "60", false)
+    }
+
+    fn spawn(
+        double: RedirectDouble,
+        tag: &str,
+        envs: &[(&str, &str)],
+        timeout: &str,
+        wait_in_flight: bool,
+    ) -> Self {
         let store = control_store_dir(&format!("{tag}-{}", double.harness()));
         let cwd = control_store_dir(&format!("{tag}-{}-cwd", double.harness()));
         let log = store.join("double.log");
@@ -33416,9 +33433,11 @@ impl RedirectJourney {
                 .join(format!("{}.sock", Self::SESSION))
                 .exists()
         });
-        wait_until("the turn to be in flight", || {
-            journey.received().contains(double.in_flight())
-        });
+        if wait_in_flight {
+            wait_until("the turn to be in flight", || {
+                journey.received().contains(double.in_flight())
+            });
+        }
         journey
     }
 
@@ -33680,6 +33699,112 @@ fn a_redirect_whose_run_exits_first_is_refused_and_never_delivered() {
         );
         assert_eq!(carried(&received), 0, "{double:?}:\n{received}");
     }
+}
+
+/// An interrupt that lands while the turn is opening — its stdin parked, so
+/// the run is live to the control socket, but its prompt not yet written — is
+/// written after that prompt, never before it: an abort that is the harness's
+/// first line aims at a turn that does not exist yet. The run holds its
+/// opening at exactly that point (`ONEHARNESS_INTERNAL_HOLD_OPENING`) until
+/// the interrupt's abort is on its way, the interleaving a loaded host
+/// produces by chance.
+#[cfg(unix)]
+#[test]
+fn an_interrupt_landing_while_the_turn_opens_is_written_after_its_prompt() {
+    let double = RedirectDouble::Claude;
+    let held = control_store_dir("opening-held");
+    let marker = held.join("held");
+    let journey = RedirectJourney::start_opening(
+        double,
+        "opening",
+        &[(
+            "ONEHARNESS_INTERNAL_HOLD_OPENING",
+            &marker.display().to_string(),
+        )],
+    );
+    wait_until("the opening to be held", || marker.exists());
+    wait_until("the harness to be listening", || {
+        journey.received().contains("TURN_STARTED")
+    });
+    let answer = journey.redirect_recorded().join().unwrap();
+    let (output, report, received) = journey.finish();
+    assert!(answer.status.success(), "{answer:?}\n{received}");
+    assert_eq!(json_stdout(&answer)["redirected"], true, "{received}");
+    assert!(output.status.success(), "{output:?}");
+    let interrupts = report["control"]["interrupts"].as_array().unwrap();
+    assert_eq!(interrupts[0]["redirected"], true, "{report}");
+    let at = |needle: &str| {
+        received
+            .lines()
+            .position(|line| line.contains(needle))
+            .unwrap_or_else(|| panic!("no `{needle}` in:\n{received}"))
+    };
+    // The prompt opened the turn, the abort ended it, and the message opened
+    // the next one — in that order, each once.
+    assert!(
+        at("keep working on the wrong thing") < at(double.aborted())
+            && at(double.aborted()) < at("TURN_ENDED")
+            && at("TURN_ENDED") < at(RedirectJourney::MESSAGE),
+        "{received}"
+    );
+    assert_eq!(carried(&received), 1, "{received}");
+}
+
+/// A replacement prompt the interrupt itself writes — the aborted turn ended
+/// while its abort was going out — is delivered, however fast the harness runs
+/// that turn to its end and the run closes it. The interrupt is held after
+/// writing the prompt and before recording it
+/// (`ONEHARNESS_INTERNAL_HOLD_REDIRECT_WRITTEN`), until the run is closing the
+/// turn or has answered for the message: a run that could close the harness's
+/// stdin and release its candidate inside that gap refused a message the
+/// harness had received, `not_running`, as never delivered.
+#[cfg(unix)]
+#[test]
+fn a_redirect_the_interrupt_wrote_is_delivered_however_fast_its_turn_closes() {
+    let journey = RedirectJourney::start(
+        RedirectDouble::Claude,
+        "closing",
+        &[
+            ("ONEHARNESS_INTERNAL_HOLD_ABORT", "turn-ended"),
+            ("ONEHARNESS_INTERNAL_HOLD_REDIRECT_WRITTEN", "1"),
+        ],
+    );
+    let answer = journey.redirect().wait_with_output().unwrap();
+    let (output, report, received) = journey.finish();
+    assert!(answer.status.success(), "{answer:?}\n{received}");
+    let frame = json_stdout(&answer);
+    assert_eq!(frame["ok"], true, "{frame}");
+    assert_eq!(frame["redirected"], true, "{frame}");
+    assert!(output.status.success(), "{output:?}");
+    let interrupts = report["control"]["interrupts"].as_array().unwrap();
+    assert_eq!(interrupts.len(), 1, "{report}");
+    assert_eq!(interrupts[0]["outcome"], "served", "{report}");
+    assert_eq!(interrupts[0]["redirected"], true, "{report}");
+    assert_eq!(carried(&received), 1, "{received}");
+    assert!(received.contains("REDIRECT_WRITTEN"), "{received}");
+}
+
+/// An aborted turn that ended while its abort was being written, of a
+/// harness that then exits, is released by the run before the interrupt is
+/// back to write the replacement (`ONEHARNESS_INTERNAL_HOLD_ABORT=released`
+/// holds it there). The turn is what ended first, so the refusal is the
+/// `no_active_turn` the failed write gives when the interrupt wins that race —
+/// never a `not_running` that depends on which thread got there first.
+#[cfg(unix)]
+#[test]
+fn a_redirect_whose_aborted_turn_ended_before_the_run_released_is_refused_no_active_turn() {
+    let journey = RedirectJourney::start(
+        RedirectDouble::Claude,
+        "released",
+        &[
+            ("MOCK_TURN_ONCE", "1"),
+            ("ONEHARNESS_INTERNAL_HOLD_ABORT", "released"),
+        ],
+    );
+    let answer = journey.redirect().wait_with_output().unwrap();
+    let (_, report, received) = journey.finish();
+    assert_undelivered(&answer, &report, "no_active_turn", "released");
+    assert_eq!(carried(&received), 0, "{received}");
 }
 
 /// A redirect whose aborted turn never ends would hold the supervisor

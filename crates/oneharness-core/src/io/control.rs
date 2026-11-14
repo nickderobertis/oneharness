@@ -2579,8 +2579,12 @@ mod tests {
         handle.begin_turn(child.stdin.take().unwrap());
 
         let pending = send_in_background(&path, "do X instead");
-        wait_for("the redirection to be committed", || {
-            handle.has_pending_redirect()
+        // Waited out until the abort is written, not merely committed: a turn
+        // that ends before its abort starts going out ended on its own, and one
+        // that ends while it is being written is answered by the interrupt —
+        // each its own test. This one is the abort that landed first.
+        wait_for("the abort to be written", || {
+            handle.redirect_is_deliverable()
         });
         // The abort is out, the message is the run's — and the supervisor has
         // not been answered, because nothing has written it yet.

@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.28.8](https://github.com/nickderobertis/oneharness/compare/v0.28.7...v0.28.8) - 2026-11-14
+
+### Fixed
+
+- make the controlled Codex echo journey pass reliably ([#1593](https://github.com/nickderobertis/oneharness/pull/1593))
+
 ## [0.28.7](https://github.com/nickderobertis/oneharness/compare/v0.28.6...v0.28.7) - 2026-11-14
 
 ### Fixed

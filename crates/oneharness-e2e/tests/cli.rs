@@ -41752,6 +41752,72 @@ fn with_no_new_key_every_codex_launch_carries_analytics_off_and_the_shared_catal
     assert_eq!(world.fetches(), 1, "{:?}", world.records());
 }
 
+#[cfg(unix)]
+#[test]
+fn a_controlled_run_starts_its_shared_server_under_a_pinned_marker_and_recovers_from_an_invalid_one(
+) {
+    // The marker is read off the pool's record while the server lingers, so
+    // the linger is long and the server is stopped here once it is read.
+    const MARKER_ENV: &str = "ONEHARNESS_INTERNAL_APP_SERVER_MARKER";
+    for (tag, raw, pinned) in [
+        ("pinned", "oh-pinned-marker", true),
+        ("empty", "", false),
+        ("control", "bad\u{1}marker", false),
+    ] {
+        let world = CatalogWorld::new(&format!("server-marker-{tag}"), "", "");
+        let run = world.launch(
+            CodexLaunchPath::Control,
+            "codex",
+            &[],
+            &[(APP_SERVER_LINGER_ENV, "600000"), (MARKER_ENV, raw)],
+        );
+        let warning = format!("oneharness: warning: ignoring {MARKER_ENV}={raw:?}");
+        assert_eq!(
+            run.stderr().contains(&warning),
+            !pinned,
+            "{tag}: {}",
+            run.stderr()
+        );
+        assert_eq!(
+            run.warnings(),
+            usize::from(!pinned),
+            "{tag}: {}",
+            run.stderr()
+        );
+        let servers = world
+            .fx
+            .dir
+            .join("state")
+            .join("oneharness")
+            .join("servers");
+        let records: Vec<PathBuf> = std::fs::read_dir(&servers)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path().join("server.json"))
+            .filter(|record| record.is_file())
+            .collect();
+        assert_eq!(records.len(), 1, "{tag}: {records:?}");
+        let record: Value =
+            serde_json::from_str(&std::fs::read_to_string(&records[0]).unwrap()).unwrap();
+        let marker = record["marker"].as_str().unwrap_or_default().to_string();
+        let pid = record["pid"]
+            .as_i64()
+            .and_then(|pid| libc::pid_t::try_from(pid).ok())
+            .filter(|pid| *pid > 0)
+            .unwrap_or_else(|| panic!("{tag}: no server pid in {record}"));
+        // SAFETY: plain integers; the pid is the server this run started.
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+        }
+        std::fs::remove_file(&records[0]).unwrap();
+        if pinned {
+            assert_eq!(marker, raw, "{record}");
+        } else {
+            assert!(!marker.is_empty() && marker != raw, "{tag}: {record}");
+        }
+    }
+}
+
 #[test]
 fn a_callers_own_analytics_or_catalog_setting_lands_after_oneharness_s() {
     // Codex applies `-c` last-wins, so a caller's own setting of either key —

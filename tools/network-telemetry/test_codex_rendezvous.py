@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -18,7 +19,7 @@ import unittest
 from pathlib import Path
 from typing import TypedDict, cast
 
-from support import BASH, HERE, LIB, ONEHARNESS, SCRIPTS, WINDOWS, need_builds, scratch
+from support import BASH, HERE, LIB, MOCK, ONEHARNESS, SCRIPTS, WINDOWS, need_builds, scratch
 
 
 class Evidence(TypedDict):
@@ -384,10 +385,12 @@ class Wrapper(unittest.TestCase):
         )
 
 
-# The two launches the live Codex failures were in, made exactly as the suite
+# The launches the live Codex failures were in, made exactly as the suite
 # makes them: the denied-tools journey's codex started directly in its trusted
-# scratch project with the synced rules file, and the shell-rewrite journey's
-# `oneharness run --mock-rules`, whose codex reads the hooks it installs.
+# scratch project with the synced rules file, the shell-rewrite journey's
+# `oneharness run --mock-rules`, whose codex reads the hooks it installs, and
+# the controlled turn's shared app-server, which the pool starts and then
+# dials at its --listen path.
 LAUNCHES = r"""
 source "$LIB"
 [ "$1" = bare ] || oh_codex_rendezvous_setup
@@ -395,6 +398,9 @@ printf 'codex resolves to %s\n' "$(command -v codex)"
 _oh_codex_direct "$PROJ" "$CODEX_HOME_DIR" "mkdir $DENIED" --dangerously-bypass-approvals-and-sandbox
 "$ONEHARNESS_BIN" run --harness codex --mode bypass --cwd "$SANDBOX" --mock-rules "$RULES" \
   --prompt 'touch OHMOCKORIG1' --compact >/dev/null
+"$ONEHARNESS_BIN" run --harness codex --mode bypass --control --session "oh-$1" \
+  --session-dir "$SERVE/sessions-$1" --cwd "$SERVE" --prompt "SERVED-$1" --compact
+[ "$1" = bare ] || cat "$_oh_codex_rendezvous_dir/rendezvous.jsonl"
 """
 
 
@@ -411,14 +417,30 @@ class Transparent(unittest.TestCase):
         self.tmp = scratch(self)
         self.bin = self.tmp / "bin"
         self.bin.mkdir()
-        (self.bin / "codex").symlink_to(FAKE)
         self.record = self.tmp / "record"
+        # The pool starts a shared server from a scrubbed environment, so the
+        # double's settings reach it from here; every launch sees them alike.
+        settings = {
+            "FAKE": "serve",
+            "FAKE_RECORD": self.record,
+            "FAKE_ARGV": self.tmp / "argv",
+            "FAKE_PID": self.tmp / "pid",
+            "FAKE_MOCK": MOCK,
+        }
+        (self.bin / "codex").write_text(
+            "#!/usr/bin/env bash\n"
+            + "".join(f"export {k}={shlex.quote(str(v))}\n" for k, v in settings.items())
+            + f'FAKE_EXE="$0" exec bash {shlex.quote(str(FAKE))} "$@"\n'
+        )
+        (self.bin / "codex").chmod(0o755)
         self.proj = self.tmp / "rules" / "project"
         self.proj.mkdir(parents=True)
         self.home = self.tmp / "rules" / "codex-home"
         self.home.mkdir()
         self.sandbox = self.tmp / "mock"
         self.sandbox.mkdir()
+        self.serve_dir = self.tmp / "served"
+        self.serve_dir.mkdir()
         self.rules = self.tmp / "mock-rules.json"
         self.rules.write_text(
             '{"rules":[{"match":{"input":{"command":{"regex":"OHMOCKORIG1"}}},'
@@ -436,10 +458,13 @@ class Transparent(unittest.TestCase):
             "DENIED": "rules-deny-1",
             "SANDBOX": str(self.sandbox),
             "RULES": str(self.rules),
-            "FAKE": "record",
-            "FAKE_RECORD": str(self.record),
-            "FAKE_ARGV": str(self.tmp / "argv"),
-            "FAKE_PID": str(self.tmp / "pid"),
+            "SERVE": str(self.serve_dir),
+            "XDG_STATE_HOME": str(self.tmp / "state"),
+            # Each run's server stops with its turn, so the next run starts
+            # its own rather than reuse it.
+            "ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS": "0",
+            "ONEHARNESS_INTERNAL_CODEX_DAEMON_DIR": str(self.tmp / "daemon"),
+            "CODEX_MOCK_DAEMON_DIR": str(self.tmp / "daemon"),
         }
         # The journey's own setup: its trust config, and the rules `sync` writes.
         trust = self.bash(
@@ -478,22 +503,57 @@ class Transparent(unittest.TestCase):
             check=False,
         )
 
-    def launches(self, wrap: bool) -> tuple[str, str]:
-        """Each codex launch's record, and where `codex` resolved."""
+    def launches(self, wrap: bool) -> tuple[str, list[str]]:
+        """Each codex launch's record, and what the launches printed: where
+        `codex` resolved, the controlled turn's report and, wrapped, the
+        wrapper's evidence."""
         self.record.write_text("")
         run = self.bash(LAUNCHES, "wrapped" if wrap else "bare")
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
-        return self.record.read_text(), run.stdout
+        return self.record.read_text(), run.stdout.splitlines()
+
+    def served(self, record: str, printed: list[str], name: str) -> tuple[str, str]:
+        """The controlled turn's --listen path, from its report, having
+        checked that the turn completed on the server it dialled there; and
+        `record` with that path, the pool entry's name (keyed by the executable the pool
+        resolved, the wrapper's own when it fronts codex) and the dispatch's
+        marker (fresh for every dispatch) written generically."""
+        report = json.loads(printed[1])
+        (result,) = report["results"]
+        self.assertEqual((result["status"], result["text"]), ("ok", f"SERVED-{name}"), result)
+        command = [str(arg) for arg in result["command"]]
+        listen = command[command.index("--listen") + 1].removeprefix("unix://")
+        key = str(report["control"]["app_server"]["pool_key"])
+        self.assertIn(f"/{key}/", listen)
+        generic = re.sub(r"(ONEHARNESS_APP_SERVER_MARKER=).*", r"\1<marker>", record)
+        return listen, generic.replace(listen, "<listen>").replace(key, "<pool-key>")
 
     def test_each_launch_sees_what_it_would_without_the_wrapper(self) -> None:
         self.prepare()
-        bare, bare_resolved = self.launches(wrap=False)
-        wrapped, wrapped_resolved = self.launches(wrap=True)
-        self.assertIn(f"codex resolves to {self.bin}/codex", bare_resolved)
-        self.assertRegex(wrapped_resolved, r"codex resolves to .*/oh-codex-rendezvous\.[^/]+/codex")
-        # Every launch, the version probe included, recorded the same
-        # executable, argv, cwd, environment and files.
-        self.assertEqual(wrapped, bare)
+        bare, bare_printed = self.launches(wrap=False)
+        wrapped, wrapped_printed = self.launches(wrap=True)
+        self.assertEqual(bare_printed[0], f"codex resolves to {self.bin}/codex")
+        self.assertRegex(
+            wrapped_printed[0], r"codex resolves to .*/oh-codex-rendezvous\.[^/]+/codex"
+        )
+        _, bare = self.served(bare, bare_printed, "bare")
+        wrapped_listen, wrapped = self.served(wrapped, wrapped_printed, "wrapped")
+        # The shared server alone is bound at a private path: PATH's length,
+        # in PATH's directory.
+        private = f"{os.path.dirname(wrapped_listen)}/.{LISTEN_BASE[1:]}"
+        self.assertEqual(len(private), len(wrapped_listen))
+        key = wrapped_listen.split("/")[-3]
+        private = private.replace(key, "<pool-key>")
+        self.assertEqual(wrapped.count(f"arg unix://{private}\n"), 1, wrapped)
+        self.assertEqual(bare.count("arg unix://<listen>\n"), 1, bare)
+        # Every launch, each version probe included, recorded the same
+        # executable, argv, cwd, environment and files but for that path.
+        self.assertEqual(wrapped.replace(private, "<listen>"), bare)
+        # PATH was linked to the server's socket before the turn dialled it.
+        (evidence,) = [json.loads(line) for line in wrapped_printed[2:]]
+        self.assertEqual(evidence["listen"], wrapped_listen)
+        self.assertTrue(evidence["linked"], evidence)
+        self.assertEqual(evidence["bound"], str((self.tmp / "daemon").resolve()))
         direct, *rest = bare.split("---\n")
         self.assertIn(f"cwd {self.proj}\n", direct)
         self.assertIn(
@@ -506,6 +566,7 @@ class Transparent(unittest.TestCase):
             f'arg projects={{"{self.sandbox.resolve()}"={{trust_level="trusted"}}}}', mock
         )
         self.assertIn("mock codex --rules", mock)
+        self.assertIn("arg app-server\n", mock)
 
 
 if __name__ == "__main__":

@@ -4,9 +4,13 @@
 # FAKE_ARGV and its pid to FAKE_PID, then acts as FAKE says:
 #   args               exit 0 having bound nothing
 #   record             append to FAKE_RECORD what this launch would show
-#                      Codex — the executable, argv, cwd, environment and the
-#                      config, trust, rules and hooks files it reads — then
-#                      exit 0
+#                      Codex — the executable (FAKE_EXE, else its own path),
+#                      argv, cwd, environment and the config, trust, rules and
+#                      hooks files it reads — then exit 0
+#   serve              record, then serve an app-server launch as the
+#                      repository's mock harness (FAKE_MOCK) does, so a pooled
+#                      turn completes on it, echoing its prompt; any other
+#                      launch exits 0 as record's does
 #   exit:N             exit N before binding
 #   link               link the --listen path to FAKE_SOCKDIR/s, made private
 #   dangling           link it to FAKE_SOCKDIR/s, creating nothing there
@@ -33,7 +37,7 @@ done
 # What this launch shows Codex, on stdout; refuses what it cannot read.
 record() {
   local file name names
-  printf 'exe %s\n' "$0"
+  printf 'exe %s\n' "${FAKE_EXE:-$0}"
   printf 'cwd %s\n' "$PWD"
   printf 'arg %s\n' "$@"
   names="$(compgen -e | LC_ALL=C sort)" || refuse "cannot list its environment (the error above)"
@@ -52,11 +56,13 @@ record() {
 }
 case "${FAKE:?FAKE must say how this double behaves}" in
   args) exit 0 ;;
-  record)
+  record | serve)
     seen="$(record "$@")" || exit 2 # record said why
-    printf '%s\n' "$seen" >>"${FAKE_RECORD:?FAKE=record needs FAKE_RECORD}" ||
+    printf '%s\n' "$seen" >>"${FAKE_RECORD:?FAKE=$FAKE needs FAKE_RECORD}" ||
       refuse "cannot append its record to FAKE_RECORD=$FAKE_RECORD"
-    exit 0
+    [ "$FAKE" = serve ] && [ "${1:-}" = app-server ] || exit 0
+    export MOCK_CODEX_COMPLETE_TURN=1 MOCK_CODEX_ECHO_PROMPT=1
+    exec "${FAKE_MOCK:?FAKE=serve needs FAKE_MOCK, the built oneharness-mock-harness}" "$@"
     ;;
   exit:*) exit "${FAKE#exit:}" ;;
 esac

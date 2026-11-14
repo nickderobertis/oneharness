@@ -116,6 +116,19 @@ impl World {
     /// Codex home, and `envs` on the process.
     fn oh(&self, args: &[&str], config: &Path, envs: &[(&str, &str)]) -> Output {
         let profiles = ProfileScratch::new();
+        self.command(args, config, envs, &profiles)
+            .output()
+            .expect("run oneharness")
+    }
+
+    /// The `oneharness <args>` [`World::oh`] runs, to spawn instead.
+    fn command(
+        &self,
+        args: &[&str],
+        config: &Path,
+        envs: &[(&str, &str)],
+        profiles: &ProfileScratch,
+    ) -> Command {
         let mut cmd = Command::new(workspace_bin("oneharness"));
         for (var, _) in std::env::vars().filter(|(var, _)| {
             var.starts_with("ONEHARNESS_") || var.starts_with("MOCK_") || var == "CODEX_HOME"
@@ -160,7 +173,7 @@ impl World {
         for (key, value) in envs {
             cmd.env(key, value);
         }
-        cmd.output().expect("run oneharness")
+        cmd
     }
 
     /// Where the binary makes its run overlays in this world.
@@ -1018,38 +1031,6 @@ fn print_command_shows_the_overlaid_spawn_and_creates_nothing() {
 
 #[cfg(unix)]
 #[test]
-fn an_orphaned_overlay_is_reclaimed_and_a_live_ones_is_left_alone() {
-    use fs2::FileExt;
-    let world = World::new("orphans");
-    let orphan = world.overlay_root().join("oneharness-run-overlay-0dead-1");
-    std::fs::create_dir_all(orphan.join("codex-home")).unwrap();
-    std::fs::write(orphan.join("owner.lock"), "").unwrap();
-    std::fs::write(orphan.join("real-codex-home"), world.s("codex-home")).unwrap();
-    // What a killed run's Codex created at the overlay home's top level is
-    // returned to the real home as the orphan is reclaimed.
-    std::fs::write(orphan.join("codex-home/session_index.jsonl"), "{}\n").unwrap();
-    let live = world.overlay_root().join("oneharness-run-overlay-1live-1");
-    std::fs::create_dir_all(&live).unwrap();
-    let lock = std::fs::File::create(live.join("owner.lock")).unwrap();
-    lock.lock_exclusive().unwrap();
-    let config = world.config("");
-    let output = world.oh(
-        &["run", "--harness", "claude-code", "--prompt", "p"],
-        &config,
-        &[],
-    );
-    assert!(output.status.code().is_some_and(|c| c < 2), "{output:?}");
-    assert!(!orphan.exists(), "the orphan survived the next run");
-    assert!(live.exists(), "a live run's overlay was reclaimed");
-    assert_eq!(
-        std::fs::read_to_string(world.path("codex-home/session_index.jsonl")).unwrap(),
-        "{}\n"
-    );
-    drop(lock);
-}
-
-#[cfg(unix)]
-#[test]
 fn a_granted_controlled_codex_turn_runs_its_own_app_server_and_records_its_thread() {
     let world = World::new("control");
     let tool = world.tool();
@@ -1188,4 +1169,264 @@ fn a_helper_app_server_that_never_answers_leaves_the_run_whole() {
         std::fs::read_to_string(world.path("codex-home/state_5.sqlite")).unwrap(),
         "real index"
     );
+}
+
+/// Poll `until` for up to ten seconds.
+fn eventually(what: &str, until: impl Fn() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !until() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {what}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// The processes of this user carrying `marker` as their run overlay
+/// (Linux, where `/proc` holds each process's environment).
+#[cfg(target_os = "linux")]
+fn marked(marker: &str) -> Vec<String> {
+    let needle = format!("ONEHARNESS_RUN_OVERLAY={marker}\0");
+    std::fs::read_dir("/proc")
+        .unwrap()
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .chars()
+                .all(|c| c.is_ascii_digit())
+        })
+        .filter(|e| {
+            std::fs::read(e.path().join("environ"))
+                .is_ok_and(|env| String::from_utf8_lossy(&env).contains(&needle))
+        })
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect()
+}
+
+#[cfg(unix)]
+#[test]
+fn a_killed_granted_run_is_reclaimed_by_the_next_run_and_a_live_one_beside_it_completes() {
+    let world = World::new("killed");
+    let tool = world.tool();
+    let config = world.config(&format!("allowed_tools = [\"Bash({tool})\"]\n"));
+    let granted = [
+        "run",
+        "--harness",
+        "codex",
+        "--mode",
+        "read-only",
+        "--prompt",
+        "p",
+    ];
+    let profiles = ProfileScratch::new();
+    // The killed run's Codex creates a top-level file, then waits forever.
+    let gate_killed = world.s("gate-killed");
+    let mut killed = world
+        .command(
+            &granted,
+            &config,
+            &[
+                ("MOCK_OUTPUT_GATE", gate_killed.as_str()),
+                ("MOCK_HOME_WRITE", "session_index.jsonl={}"),
+            ],
+            &profiles,
+        )
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    eventually("the killed run's overlay", || {
+        world.overlays().len() == 1
+            && std::fs::read_dir(world.overlay_root())
+                .unwrap()
+                .flatten()
+                .any(|e| e.path().join("codex-home/session_index.jsonl").is_file())
+    });
+    let killed_overlay = world.overlays().pop().unwrap();
+    let gate_live = world.s("gate-live");
+    let live = world
+        .command(
+            &granted,
+            &config,
+            &[("MOCK_OUTPUT_GATE", gate_live.as_str())],
+            &profiles,
+        )
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    eventually("the live run's overlay", || world.overlays().len() == 2);
+    killed.kill().unwrap();
+    killed.wait().unwrap();
+    // SIGKILL ran no cleanup: the killed run's overlay is still there.
+    assert!(world.overlays().contains(&killed_overlay));
+
+    let next = world.oh(
+        &["run", "--harness", "claude-code", "--prompt", "p"],
+        &config,
+        &[],
+    );
+    assert!(next.status.code().is_some_and(|c| c < 2), "{next:?}");
+    let left = world.overlays();
+    assert!(
+        !left.contains(&killed_overlay),
+        "the killed run's overlay survived: {left:?}"
+    );
+    assert_eq!(
+        left.len(),
+        1,
+        "the live run's overlay was reclaimed: {left:?}"
+    );
+    #[cfg(target_os = "linux")]
+    assert!(
+        marked(&killed_overlay).is_empty(),
+        "the killed run's Codex outlived the reclaim"
+    );
+    // What the killed run's Codex created is in the real home.
+    assert_eq!(
+        std::fs::read_to_string(world.path("codex-home/session_index.jsonl")).unwrap(),
+        "{}"
+    );
+
+    std::fs::write(&gate_live, "").unwrap();
+    let live = live.wait_with_output().unwrap();
+    let report = json(&live);
+    assert_eq!(report["results"][0]["status"], "ok", "{report}");
+    assert!(world.overlays().is_empty());
+}
+
+#[test]
+fn a_grant_under_read_only_keeps_a_lean_tool_set_narrowed() {
+    let world = World::new("tool-set");
+    let tool = world.tool();
+    let rule = format!("Bash({tool}:*)");
+    for (tool_set, tools, allowed) in [
+        // Shell is not a read-only tool, so a lean set naming it loads only
+        // what reads — and the grant adds `Bash` for its rule alone.
+        (
+            "[\"shell\", \"read\"]",
+            vec!["Read", "Bash"],
+            vec!["Read", rule.as_str()],
+        ),
+        ("[\"shell\"]", vec!["Bash"], vec![rule.as_str()]),
+    ] {
+        let toml = format!("allowed_tools = [\"Bash({tool})\"]\ntool_set = {tool_set}\n");
+        let run = spawn(&world, "claude-code", "read-only", &toml, &[]);
+        assert_eq!(flag_values(&run.argv, "--tools"), tools, "{tool_set}");
+        assert_eq!(
+            flag_values(&run.argv, "--allowedTools"),
+            allowed,
+            "{tool_set}"
+        );
+        assert_eq!(flag_value(&run.argv, "--permission-mode"), Some("dontAsk"));
+    }
+}
+
+#[test]
+fn codex_with_only_rules_it_cannot_express_runs_as_without_and_names_them() {
+    let world = World::new("codex-unexpressible");
+    let toml = "allowed_tools = [\"Edit\", \"Bash(git status)\"]\n";
+    let without = spawn(&world, "codex", "default", "", &[]);
+    let with = spawn(&world, "codex", "default", toml, &[]);
+    assert_eq!(with.argv, without.argv);
+    assert_eq!(with.env, without.env);
+    let result = &with.report["results"][0];
+    assert!(result.get("overlay_env").is_none());
+    let message = result["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["setting"] == "allowed_tools")
+        .unwrap()["message"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(message.contains("`Edit`, `Bash(git status)`"), "{message}");
+    assert!(message.contains("nothing was applied"), "{message}");
+    assert!(world.overlays().is_empty());
+}
+
+/// A granted run whose Codex creates a directory, replaces a linked file and
+/// replaces a linked directory with a file: the first two reach the real home,
+/// the third is refused naming both paths, and the run is whole.
+#[cfg(unix)]
+fn assert_teardown_returns_what_codex_wrote(world: &World, state: &Path) {
+    std::fs::create_dir_all(world.path("codex-home/blocked")).unwrap();
+    std::fs::write(world.path("codex-home/blocked/kept"), "k").unwrap();
+    let tool = world.tool();
+    let config = world.config(&format!("allowed_tools = [\"Bash({tool})\"]\n"));
+    let state = state.display().to_string();
+    let output = world.oh(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--mode",
+            "read-only",
+            "--prompt",
+            "p",
+        ],
+        &config,
+        &[
+            ("XDG_STATE_HOME", state.as_str()),
+            (
+                "MOCK_HOME_WRITE",
+                "made/deep/f=c;config.toml=model = \"n\"\n;blocked=file",
+            ),
+        ],
+    );
+    let report = json(&output);
+    assert_eq!(report["results"][0]["status"], "ok", "{report}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("could not return") && stderr.contains("a directory is in the way"),
+        "{stderr}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(world.path("codex-home/made/deep/f")).unwrap(),
+        "c"
+    );
+    assert_eq!(
+        std::fs::read_to_string(world.path("codex-home/config.toml")).unwrap(),
+        "model = \"n\"\n"
+    );
+    assert!(
+        !std::fs::symlink_metadata(world.path("codex-home/config.toml"))
+            .unwrap()
+            .is_symlink()
+    );
+    assert_eq!(
+        std::fs::read_to_string(world.path("codex-home/blocked/kept")).unwrap(),
+        "k"
+    );
+    let root = Path::new(&state).join("oneharness/run-overlays");
+    assert!(
+        !root.exists(),
+        "the overlay outlived the run under {}",
+        root.display()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn teardown_returns_what_codex_wrote_to_the_real_home() {
+    let world = World::new("teardown");
+    assert_teardown_returns_what_codex_wrote(&world, &world.path("state"));
+}
+
+/// The same across filesystems: an overlay under a tmpfs (`/dev/shm`) over a
+/// real home on disk, where a rename cannot move a file and teardown copies.
+#[cfg(target_os = "linux")]
+#[test]
+fn teardown_returns_what_codex_wrote_across_filesystems() {
+    let shm = Path::new("/dev/shm");
+    if !shm.is_dir() {
+        eprintln!("no /dev/shm on this host: the cross-filesystem teardown is covered elsewhere");
+        return;
+    }
+    let world = World::new("teardown-xfs");
+    let state = ScratchDir::under(shm, "run-allowlist-xfs").unwrap();
+    assert_teardown_returns_what_codex_wrote(&world, state.path());
 }

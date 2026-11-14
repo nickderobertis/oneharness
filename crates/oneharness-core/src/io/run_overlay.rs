@@ -487,14 +487,35 @@ fn reclaim(dir: &Path, name: &str) {
         value: name.to_string(),
     };
     let _ = marked_processes::stop_marked(&marker, Duration::from_secs(2));
-    if let Ok(real) = fs::read_to_string(dir.join(REAL_HOME_FILE)) {
+    if let Some(real) = recorded_real_home(dir) {
         CodexHome {
             home: dir.join(CODEX_HOME_DIR),
-            real: PathBuf::from(real),
+            real,
         }
         .sweep();
     }
     let _ = fs::remove_dir_all(dir);
+}
+
+/// The real home an orphan recorded, only when the record is one a sweep may
+/// write into: an absolute path to a directory that every link of the
+/// orphan's home points into. Anything else — a corrupt or foreign record —
+/// returns nothing to anywhere, and the orphan is only removed.
+fn recorded_real_home(dir: &Path) -> Option<PathBuf> {
+    let real = PathBuf::from(fs::read_to_string(dir.join(REAL_HOME_FILE)).ok()?);
+    if !real.is_absolute() || !real.is_dir() {
+        return None;
+    }
+    let mut links = 0;
+    for entry in fs::read_dir(dir.join(CODEX_HOME_DIR)).ok()?.flatten() {
+        if entry.file_type().is_ok_and(|kind| kind.is_symlink()) {
+            if !fs::read_link(entry.path()).ok()?.starts_with(&real) {
+                return None;
+            }
+            links += 1;
+        }
+    }
+    (links > 0).then_some(real)
 }
 
 fn dir_name(path: &Path) -> String {
@@ -681,7 +702,10 @@ mod tests {
 
         overlay.finish();
         assert!(!dir.exists(), "the overlay is removed");
-        assert!(!root.join("run-overlays").exists(), "an emptied root goes with it");
+        assert!(
+            !root.join("run-overlays").exists(),
+            "an emptied root goes with it"
+        );
         assert_eq!(
             fs::read_to_string(real.join("sessions").join("rollout.jsonl")).unwrap(),
             "r"
@@ -700,9 +724,43 @@ mod tests {
         );
         assert!(!real.join("rules").join(RUN_RULES_FILE).exists());
         assert_eq!(fs::read_to_string(real.join("auth.json")).unwrap(), "{}");
-        assert_eq!(fs::read_to_string(real.join("created/deep/f")).unwrap(), "c");
+        assert_eq!(
+            fs::read_to_string(real.join("created/deep/f")).unwrap(),
+            "c"
+        );
         assert_eq!(fs::read_to_string(real.join("both/kept")).unwrap(), "k");
         assert_eq!(fs::read_to_string(real.join("both/added")).unwrap(), "a");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_orphans_recorded_home_is_trusted_only_when_its_links_agree() {
+        let root = ScratchDir::new("run-overlay-test-recorded").unwrap();
+        let real = root.join("real");
+        fs::create_dir_all(&real).unwrap();
+        fs::write(real.join("auth.json"), "{}").unwrap();
+        let orphan = root.join("orphan");
+        fs::create_dir_all(orphan.join(CODEX_HOME_DIR)).unwrap();
+        symlink(
+            &real.join("auth.json"),
+            &orphan.join(CODEX_HOME_DIR).join("auth.json"),
+        )
+        .unwrap();
+        let record = |text: &str| fs::write(orphan.join(REAL_HOME_FILE), text).unwrap();
+        record(real.to_str().unwrap());
+        assert_eq!(recorded_real_home(&orphan), Some(real.clone()));
+        record("relative/home");
+        assert_eq!(recorded_real_home(&orphan), None);
+        record(root.join("missing").to_str().unwrap());
+        assert_eq!(recorded_real_home(&orphan), None);
+        let elsewhere = root.join("elsewhere");
+        fs::create_dir_all(&elsewhere).unwrap();
+        record(elsewhere.to_str().unwrap());
+        assert_eq!(
+            recorded_real_home(&orphan),
+            None,
+            "its links point elsewhere"
+        );
     }
 
     #[cfg(unix)]

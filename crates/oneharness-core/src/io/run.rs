@@ -1224,7 +1224,7 @@ pub fn run_supervised(
             // The turn's system instructions gain the grant's statement — each
             // granted executable by its absolute path — through the harness's
             // own system mapping, only where a rule is actually applied.
-            system: grant::with_statement(system, unit_grant.plan.statement.as_deref()),
+            system: grant::with_statement(system, unit_grant.plan.statement()),
             // A `--session` continue supplies the native token to resume with,
             // reusing the harness's verified `--resume` mapping; a create (or no
             // session) leaves it to the explicit `--resume` value (they are
@@ -1262,7 +1262,7 @@ pub fn run_supervised(
                 PromptDelivery::Argv
             },
             tools: lean_settings.tool_set.clone(),
-            allowed_tools: unit_grant.plan.claude_allowed.clone(),
+            allowed_tools: unit_grant.plan.claude_allowed().to_vec(),
             images: if image_frame {
                 images.clone()
             } else {
@@ -1278,12 +1278,12 @@ pub fn run_supervised(
         // A granted Codex turn runs on a home of its own, so a controlled one
         // starts its own app-server there: a pooled server's rules are its
         // home's, which would grant every lease or none.
-        let codex_rules = unit_grant.plan.codex_rules.clone();
-        if codex_rules.is_some() {
+        let codex_overlay = unit_grant.codex_overlay.clone();
+        if codex_overlay.is_some() {
             unit_app_server = None;
         }
         let mut overlay_env = std::collections::BTreeMap::new();
-        if codex_rules.is_some() && args.print_command {
+        if codex_overlay.is_some() && args.print_command {
             overlay_env.insert(
                 "CODEX_HOME".to_string(),
                 format!("{}/codex-home", run_overlay::PLANNED_OVERLAY),
@@ -1416,13 +1416,10 @@ pub fn run_supervised(
             }
             // After the catalog: it is the real home's, shared with every
             // ungranted launch, never the overlay's.
-            if let Some(rules) = &codex_rules {
+            if let Some(codex) = &codex_overlay {
                 let mut overlaid = open_codex_overlay(
-                    rules,
-                    unit_grant
-                        .codex_real_home
-                        .as_deref()
-                        .expect("a Codex grant is planned only over a real home"),
+                    &codex.rules,
+                    &codex.real_home,
                     &resolved.bin,
                     &job_env,
                     &env_remove,
@@ -1466,7 +1463,7 @@ pub fn run_supervised(
             job_plans.push(harness_plan);
         }
         let mut diagnostics = lean_delivery.diagnostics;
-        diagnostics.extend(unit_grant.plan.diagnostics.iter().cloned());
+        diagnostics.extend(unit_grant.plan.diagnostics());
         let mut calls_plan = lean_io::CallsPlan {
             diagnostics,
             codex_home: None,
@@ -5779,8 +5776,15 @@ pub(crate) fn parse_env(values: &[String]) -> Result<Vec<(String, String)>, Oneh
 /// One unit's run-level allowlist, resolved and planned for its harness.
 struct UnitGrant {
     plan: grant::GrantPlan,
-    /// The real Codex home a planned Codex grant's overlay links into.
-    codex_real_home: Option<PathBuf>,
+    /// For a Codex plan, the overlay it is applied through.
+    codex_overlay: Option<CodexOverlayPlan>,
+}
+
+/// A Codex grant's per-run rules, with the real home its overlay links into.
+#[derive(Clone)]
+struct CodexOverlayPlan {
+    rules: String,
+    real_home: PathBuf,
 }
 
 /// Resolve and plan the run-level allowlist for one unit, before anything is
@@ -5805,8 +5809,8 @@ fn plan_unit_grant(
     let rules = cfg.allowed_tools_for(selected_id);
     if rules.is_empty() {
         return Ok(UnitGrant {
-            plan: grant::GrantPlan::default(),
-            codex_real_home: None,
+            plan: grant::GrantPlan::None,
+            codex_overlay: None,
         });
     }
     let mut env: Vec<(String, String)> = spec
@@ -5859,9 +5863,17 @@ fn plan_unit_grant(
     } else {
         None
     };
+    let plan = grant::plan(spec.id, mode, &resolved, withhold.as_deref());
+    let codex_overlay = plan
+        .codex_rules()
+        .zip(codex_real_home)
+        .map(|(rules, real_home)| CodexOverlayPlan {
+            rules: rules.to_string(),
+            real_home,
+        });
     Ok(UnitGrant {
-        plan: grant::plan(spec.id, mode, &resolved, withhold.as_deref()),
-        codex_real_home,
+        plan,
+        codex_overlay,
     })
 }
 
@@ -5919,7 +5931,6 @@ struct UnitOverlay {
     /// A thread this run continued (`--resume` / `--session`), which the
     /// repair reads too.
     resumed: Option<String>,
-    /// How long building the overlay took.
     build: Duration,
 }
 

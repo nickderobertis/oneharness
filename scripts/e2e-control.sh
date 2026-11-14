@@ -361,7 +361,9 @@ if printf '%s\n' "${CONTROLLABLE[@]}" | grep -q '^codex'; then
     note "» codex: pooled-reuse — a shared server serving sequential leases keeps no per-dispatch memory"
     oh_pooled_reuse
   fi
-  if command -v codex >/dev/null 2>&1; then
+  # Not under OH_CONTROL_ONLY=pooled: the gate's journeys run that selection
+  # with a harness double standing for codex, and this phase drives the real CLI.
+  if [ "${OH_CONTROL_ONLY:-}" != pooled ] && command -v codex >/dev/null 2>&1; then
     note "» codex: run-overlay — a granted controlled turn runs its executable alone, on its own overlay home"
     oh_run_overlay
   fi

@@ -19,30 +19,152 @@
 
 use crate::domain::lean::{Diagnostic, Setting};
 use crate::domain::mode::PermissionMode;
-use crate::domain::sync::exec_policy_pattern;
+use crate::domain::sync::{exec_policy_pattern, exec_policy_statement_for, RuleList};
 
-/// Claude Code's registry id.
 const CLAUDE: &str = "claude-code";
-/// Codex's registry id.
 const CODEX: &str = "codex";
 
-/// One configured run-level rule, with any `$NAME` command resolved.
+/// The characters that make a command more than one plain word to a shell.
+const SHELL_SYNTAX: &[char] = &[
+    ';', '&', '|', '<', '>', '(', ')', '`', '$', '"', '\'', '\\', '{', '}', '#', '~', '!', '=',
+];
+
+/// The absolute path of one executable a rule grants: absolute on the host's
+/// convention, one word, and free of shell syntax — so it is exactly what an
+/// agent types, and exactly what a harness's rule can match.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutablePath(String);
+
+impl ExecutablePath {
+    /// `word` as an executable path, or `None` when it is not one.
+    #[must_use]
+    pub fn new(word: &str) -> Option<ExecutablePath> {
+        let plain = !word.is_empty()
+            && !word.contains(SHELL_SYNTAX)
+            && !word.contains(['*', '?', '['])
+            && !word.chars().any(|c| c.is_whitespace() || c.is_control());
+        (plain && std::path::Path::new(word).is_absolute())
+            .then(|| ExecutablePath(word.to_string()))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// What one resolved run-level rule grants.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuleKind {
+    /// `Bash(<abs>)` or `Bash(<abs>:*)`: one executable, by its path.
+    Executable {
+        path: ExecutablePath,
+        /// `Bash(<abs>:*)`: any arguments. `Bash(<abs>)` is the exact command
+        /// outside `read-only`; under it, both spellings grant any arguments.
+        any_arguments: bool,
+    },
+    /// Any other rule, outside `read-only` only, with a leading `$NAME`
+    /// command word resolved, passed on as text.
+    Other { resolved: String },
+}
+
+/// One configured run-level rule, resolved. Built only by [`resolve`], so a
+/// rule's kind always agrees with its text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedRule {
+    written: String,
+    kind: RuleKind,
+}
+
+impl ResolvedRule {
     /// The rule exactly as the config spells it.
-    pub written: String,
-    /// The rule with a `$NAME` command replaced by the path it resolved to;
-    /// equal to [`Self::written`] when the rule names no variable.
-    pub resolved: String,
-    /// The absolute path of the one executable a `Bash(<abs>)` or
-    /// `Bash(<abs>:*)` rule names, after resolution; `None` for any other rule.
-    pub executable: Option<String>,
+    #[must_use]
+    pub fn written(&self) -> &str {
+        &self.written
+    }
+
+    #[must_use]
+    pub fn kind(&self) -> &RuleKind {
+        &self.kind
+    }
+
+    /// The rule with a `$NAME` command replaced by the path it resolved to.
+    #[must_use]
+    pub fn resolved(&self) -> String {
+        match &self.kind {
+            RuleKind::Executable {
+                path,
+                any_arguments,
+            } => format!(
+                "Bash({}{})",
+                path.as_str(),
+                if *any_arguments { ":*" } else { "" }
+            ),
+            RuleKind::Other { resolved } => resolved.clone(),
+        }
+    }
+
+    /// The executable a `Bash(<abs>)`/`Bash(<abs>:*)` rule names.
+    #[must_use]
+    pub fn executable(&self) -> Option<&ExecutablePath> {
+        match &self.kind {
+            RuleKind::Executable { path, .. } => Some(path),
+            RuleKind::Other { .. } => None,
+        }
+    }
+}
+
+/// Why a rule cannot be granted under `read-only`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotExecutable {
+    /// Not a `Bash(...)` rule: it would grant a tool.
+    NotBash,
+    /// A bare `Bash`: the whole shell.
+    WholeShell,
+    /// `Bash()` or `Bash(:*)`.
+    Empty,
+    /// A command prefix of several words.
+    MultiWord,
+    /// A glob in the command.
+    Wildcard,
+    /// Shell syntax in the command.
+    ShellSyntax,
+    /// A command that is not an absolute path.
+    Relative,
+}
+
+impl NotExecutable {
+    #[must_use]
+    pub fn describe(self) -> &'static str {
+        match self {
+            NotExecutable::NotBash => {
+                "it is not a `Bash(...)` rule, so it would grant a tool rather than an executable"
+            }
+            NotExecutable::WholeShell => "a bare `Bash` grants the whole shell",
+            NotExecutable::Empty => "it names no command",
+            NotExecutable::MultiWord => {
+                "it names a command prefix of several words, which a harness matches as text \
+                 rather than as one executable"
+            }
+            NotExecutable::Wildcard => {
+                "it holds a wildcard, which matches more than one executable"
+            }
+            NotExecutable::ShellSyntax => {
+                "its command holds shell syntax, which no harness re-checks as one executable"
+            }
+            NotExecutable::Relative => {
+                "its command is not an absolute path, so it does not name one executable"
+            }
+        }
+    }
 }
 
 /// Why a run-level rule cannot be applied. Every variant names the rule as
 /// written, so the usage error points at the config line to change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GrantRefusal {
+    /// A command `$<name>` whose `<name>` is no variable name.
+    InvalidVariable { rule: String, name: String },
     /// A `$NAME` command whose variable is unset, or set to the empty string,
     /// in the run's environment.
     VariableUnset { rule: String, name: String },
@@ -53,12 +175,12 @@ pub enum GrantRefusal {
         name: String,
         value: String,
     },
-    /// A rule the mode cannot grant: under `read-only` only `Bash(<abs>)` and
-    /// `Bash(<abs>:*)` naming one executable are accepted.
+    /// A rule `read-only` cannot grant: only `Bash(<abs>)` and `Bash(<abs>:*)`
+    /// naming one executable are accepted there.
     NotAnExecutable {
         rule: String,
         mode: PermissionMode,
-        why: &'static str,
+        why: NotExecutable,
     },
 }
 
@@ -67,7 +189,8 @@ impl GrantRefusal {
     #[must_use]
     pub fn rule(&self) -> &str {
         match self {
-            GrantRefusal::VariableUnset { rule, .. }
+            GrantRefusal::InvalidVariable { rule, .. }
+            | GrantRefusal::VariableUnset { rule, .. }
             | GrantRefusal::VariableNotAbsolute { rule, .. }
             | GrantRefusal::NotAnExecutable { rule, .. } => rule,
         }
@@ -77,6 +200,10 @@ impl GrantRefusal {
     #[must_use]
     pub fn reason(&self) -> String {
         match self {
+            GrantRefusal::InvalidVariable { name, .. } => format!(
+                "`${name}` is not a variable name (letters, digits and `_`, not starting with a \
+                 digit)"
+            ),
             GrantRefusal::VariableUnset { name, .. } => format!(
                 "`${name}` is unset or empty in the run's environment (after `env`, `env_from` \
                  and `unset_env`), so it names no executable"
@@ -88,32 +215,13 @@ impl GrantRefusal {
             GrantRefusal::NotAnExecutable { mode, why, .. } => format!(
                 "under `--mode {}` a run-level rule may only name one executable, as \
                  `Bash(<absolute path>)` or `Bash(<absolute path>:*)` (`<absolute path>` may be \
-                 written `$NAME`): {why}",
-                mode.as_str()
+                 written `$NAME`): {}",
+                mode.as_str(),
+                why.describe()
             ),
         }
     }
 }
-
-/// Why a rule is not an executable grant, for [`GrantRefusal::NotAnExecutable`].
-mod why {
-    pub const NOT_BASH: &str = "it is not a `Bash(...)` rule, so it would grant a tool rather \
-                                than an executable";
-    pub const WHOLE_SHELL: &str = "a bare `Bash` grants the whole shell";
-    pub const EMPTY: &str = "it names no command";
-    pub const MULTI_WORD: &str = "it names a command prefix of several words, which a harness \
-                                  matches as text rather than as one executable";
-    pub const WILDCARD: &str = "it holds a wildcard, which matches more than one executable";
-    pub const RELATIVE: &str = "its command is not an absolute path, so it does not name one \
-                                executable";
-    pub const SHELL_SYNTAX: &str = "its command holds shell syntax, which no harness re-checks \
-                                    as one executable";
-}
-
-/// The characters that make a command more than one plain word to a shell.
-const SHELL_SYNTAX: &[char] = &[
-    ';', '&', '|', '<', '>', '(', ')', '`', '$', '"', '\'', '\\', '{', '}', '#', '~', '!', '=',
-];
 
 /// Resolve every rule of a run's allowlist against its environment.
 ///
@@ -146,31 +254,34 @@ fn resolve_one(
     mode: PermissionMode,
     lookup: &dyn Fn(&str) -> Option<String>,
 ) -> Result<ResolvedRule, GrantRefusal> {
-    let refuse = |why: &'static str| GrantRefusal::NotAnExecutable {
+    let refuse = |why: NotExecutable| GrantRefusal::NotAnExecutable {
         rule: rule.to_string(),
         mode,
         why,
     };
     let read_only = mode == PermissionMode::ReadOnly;
-    let Some(inner) = bash_inner(rule) else {
+    let other = |resolved: String| ResolvedRule {
+        written: rule.to_string(),
+        kind: RuleKind::Other { resolved },
+    };
+    let Some(inner) = rule
+        .trim()
+        .strip_prefix("Bash(")
+        .and_then(|rest| rest.strip_suffix(')'))
+    else {
         if read_only {
             return Err(refuse(if rule.trim() == "Bash" {
-                why::WHOLE_SHELL
+                NotExecutable::WholeShell
             } else {
-                why::NOT_BASH
+                NotExecutable::NotBash
             }));
         }
-        return Ok(ResolvedRule {
-            written: rule.to_string(),
-            resolved: rule.to_string(),
-            executable: None,
-        });
+        return Ok(other(rule.to_string()));
     };
-    let (command, suffix) = match inner.strip_suffix(":*") {
-        Some(command) => (command, ":*"),
-        None => (inner, ""),
+    let (command, any_arguments) = match inner.strip_suffix(":*") {
+        Some(command) => (command.trim(), true),
+        None => (inner.trim(), false),
     };
-    let command = command.trim();
     let (first, rest) = match command.split_once(char::is_whitespace) {
         Some((first, rest)) => (first, rest.trim_start()),
         None => (command, ""),
@@ -179,42 +290,38 @@ fn resolve_one(
         Some(name) => resolve_variable(rule, name, lookup)?,
         None => first.to_string(),
     };
-    let resolved_command = if rest.is_empty() {
-        first.clone()
+    if rest.is_empty() {
+        if let Some(path) = ExecutablePath::new(&first) {
+            return Ok(ResolvedRule {
+                written: rule.to_string(),
+                kind: RuleKind::Executable {
+                    path,
+                    any_arguments,
+                },
+            });
+        }
+    }
+    if read_only {
+        let why = if first.is_empty() {
+            NotExecutable::Empty
+        } else if !rest.is_empty() {
+            NotExecutable::MultiWord
+        } else if first.contains(['*', '?', '[']) {
+            NotExecutable::Wildcard
+        } else if first.contains(SHELL_SYNTAX) {
+            NotExecutable::ShellSyntax
+        } else {
+            NotExecutable::Relative
+        };
+        return Err(refuse(why));
+    }
+    let command = if rest.is_empty() {
+        first
     } else {
         format!("{first} {rest}")
     };
-    let resolved = format!("Bash({resolved_command}{suffix})");
-    let single_absolute = rest.is_empty() && is_absolute(&first) && !holds_syntax(&first);
-    if read_only {
-        if first.is_empty() {
-            return Err(refuse(why::EMPTY));
-        }
-        if !rest.is_empty() {
-            return Err(refuse(why::MULTI_WORD));
-        }
-        if first.contains(['*', '?', '[']) {
-            return Err(refuse(why::WILDCARD));
-        }
-        if holds_syntax(&first) {
-            return Err(refuse(why::SHELL_SYNTAX));
-        }
-        if !is_absolute(&first) {
-            return Err(refuse(why::RELATIVE));
-        }
-    }
-    Ok(ResolvedRule {
-        written: rule.to_string(),
-        resolved,
-        executable: single_absolute.then_some(first),
-    })
-}
-
-/// The text inside `Bash(...)`, or `None` for any other rule.
-fn bash_inner(rule: &str) -> Option<&str> {
-    rule.trim()
-        .strip_prefix("Bash(")
-        .and_then(|rest| rest.strip_suffix(')'))
+    let suffix = if any_arguments { ":*" } else { "" };
+    Ok(other(format!("Bash({command}{suffix})")))
 }
 
 fn resolve_variable(
@@ -228,10 +335,9 @@ fn resolve_variable(
         .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
     if !valid {
-        return Err(GrantRefusal::NotAnExecutable {
+        return Err(GrantRefusal::InvalidVariable {
             rule: rule.to_string(),
-            mode: PermissionMode::ReadOnly,
-            why: why::SHELL_SYNTAX,
+            name: name.to_string(),
         });
     }
     let value = lookup(name)
@@ -240,53 +346,91 @@ fn resolve_variable(
             rule: rule.to_string(),
             name: name.to_string(),
         })?;
-    if !is_absolute(&value)
-        || value.chars().any(|c| c.is_whitespace() || c.is_control())
-        || holds_syntax(&value)
-    {
-        return Err(GrantRefusal::VariableNotAbsolute {
+    match ExecutablePath::new(&value) {
+        Some(_) => Ok(value),
+        None => Err(GrantRefusal::VariableNotAbsolute {
             rule: rule.to_string(),
             name: name.to_string(),
             value,
-        });
+        }),
     }
-    Ok(value)
-}
-
-/// Whether `path` is absolute on the host's own convention. Pure: it reads
-/// only the string.
-fn is_absolute(path: &str) -> bool {
-    std::path::Path::new(path).is_absolute()
-}
-
-fn holds_syntax(word: &str) -> bool {
-    word.contains(SHELL_SYNTAX)
 }
 
 /// How one harness receives a run's resolved allowlist.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct GrantPlan {
-    /// Claude Code: the entries of the run's `--allowedTools`. Empty for every
-    /// other harness, and when nothing is granted.
-    pub claude_allowed: Vec<String>,
-    /// Codex: the per-run rules file's whole text, one `prefix_rule` per
-    /// translatable rule; `None` for every other harness, and when no rule
-    /// translates.
-    pub codex_rules: Option<String>,
-    /// The statement the turn's system instructions gain: each granted
-    /// executable by its absolute path and how to type it. `None` when no
-    /// `Bash` rule naming an executable is applied.
-    pub statement: Option<String>,
-    /// What the run could not apply: the whole grant on a harness that
-    /// withholds it, or each rule its harness cannot express.
-    pub diagnostics: Vec<Diagnostic>,
+pub enum GrantPlan {
+    /// No run-level rule for this harness: the run is exactly as without.
+    #[default]
+    None,
+    /// The harness withholds the whole grant, and this diagnostic says why.
+    Withheld(Diagnostic),
+    /// The harness applies grants per run, but none of these rules is one it
+    /// can express; nothing reaches it, and this diagnostic names them.
+    Unexpressible(Diagnostic),
+    /// Claude Code: the run's `--allowedTools` entries (never empty).
+    Claude {
+        allowed: Vec<String>,
+        statement: Option<String>,
+    },
+    /// Codex: the per-run rules file's whole text, and the rules it could not
+    /// express, when any.
+    Codex {
+        rules: String,
+        statement: Option<String>,
+        unmapped: Option<Diagnostic>,
+    },
 }
 
 impl GrantPlan {
+    /// Claude Code's `--allowedTools` entries; empty for any other plan.
+    #[must_use]
+    pub fn claude_allowed(&self) -> &[String] {
+        match self {
+            GrantPlan::Claude { allowed, .. } => allowed,
+            _ => &[],
+        }
+    }
+
+    /// The per-run Codex rules file's text, for a Codex plan.
+    #[must_use]
+    pub fn codex_rules(&self) -> Option<&str> {
+        match self {
+            GrantPlan::Codex { rules, .. } => Some(rules),
+            _ => None,
+        }
+    }
+
+    /// The statement the turn's system instructions gain: each granted
+    /// executable by its absolute path and how to type it. Only a plan that
+    /// applies a `Bash` rule naming an executable has one.
+    #[must_use]
+    pub fn statement(&self) -> Option<&str> {
+        match self {
+            GrantPlan::Claude { statement, .. } | GrantPlan::Codex { statement, .. } => {
+                statement.as_deref()
+            }
+            _ => None,
+        }
+    }
+
+    /// What the run could not apply: the whole grant, or each rule its
+    /// harness cannot express.
+    #[must_use]
+    pub fn diagnostics(&self) -> Vec<Diagnostic> {
+        match self {
+            GrantPlan::Withheld(d)
+            | GrantPlan::Unexpressible(d)
+            | GrantPlan::Codex {
+                unmapped: Some(d), ..
+            } => vec![d.clone()],
+            _ => Vec::new(),
+        }
+    }
+
     /// Whether any rule reaches the harness.
     #[must_use]
     pub fn applies(&self) -> bool {
-        !self.claude_allowed.is_empty() || self.codex_rules.is_some()
+        matches!(self, GrantPlan::Claude { .. } | GrantPlan::Codex { .. })
     }
 }
 
@@ -330,102 +474,99 @@ pub fn plan(
     rules: &[ResolvedRule],
     withhold: Option<&str>,
 ) -> GrantPlan {
-    let mut out = GrantPlan::default();
     if rules.is_empty() {
-        return out;
+        return GrantPlan::None;
     }
     if let Some(reason) = withhold.or_else(|| withheld_reason(id)) {
-        out.diagnostics.push(Diagnostic::new(
+        return GrantPlan::Withheld(Diagnostic::new(
             id,
             Setting::AllowedTools,
             format!(
                 "the run-level allowlist ({}) was withheld on `{id}`, which ran as it does with \
                  none: {reason}",
-                quoted(rules.iter().map(|r| r.written.as_str()))
+                quoted(rules.iter().map(ResolvedRule::written))
             ),
         ));
-        return out;
     }
     let read_only = mode == PermissionMode::ReadOnly;
-    let mut granted: Vec<&str> = Vec::new();
-    match id {
-        CLAUDE => {
-            for rule in rules {
-                match (&rule.executable, read_only) {
-                    // Under read-only a rule grants its executable with any
-                    // arguments, which Claude Code spells `:*`.
-                    (Some(path), true) => out.claude_allowed.push(format!("Bash({path}:*)")),
-                    _ => out.claude_allowed.push(rule.resolved.clone()),
-                }
-                if let Some(path) = &rule.executable {
-                    granted.push(path);
-                }
-            }
-        }
-        CODEX => {
-            let mut text = String::from(RUN_RULES_HEADER);
-            let mut unmapped: Vec<&str> = Vec::new();
-            for rule in rules {
-                let tokens = match (&rule.executable, read_only) {
-                    (Some(path), true) => Ok(vec![path.clone()]),
-                    _ => exec_policy_pattern(&rule.resolved),
-                };
-                match tokens {
-                    Ok(tokens) => {
-                        text.push_str(&format!("\n# allowed_tools: {}\n", rule.resolved));
-                        text.push_str(&crate::domain::sync::exec_policy_statement_for(
-                            &tokens, "allow",
-                        ));
-                        text.push('\n');
-                        if let Some(path) = &rule.executable {
-                            granted.push(path);
-                        }
-                    }
-                    Err(_) => unmapped.push(&rule.written),
-                }
-            }
-            if !unmapped.is_empty() {
-                out.diagnostics.push(Diagnostic::new(
-                    id,
-                    Setting::AllowedTools,
-                    format!(
-                        "Codex cannot express {} as a per-run exec-policy rule, so those rules \
-                         were not applied; the rest were",
-                        quoted(unmapped.iter().copied())
-                    ),
-                ));
-            }
-            if unmapped.len() < rules.len() {
-                out.codex_rules = Some(text);
-            }
-        }
-        _ => unreachable!("withheld_reason answers every harness but claude-code and codex"),
+    if id == CLAUDE {
+        let allowed = rules
+            .iter()
+            .map(|rule| match (rule.kind(), read_only) {
+                // Under read-only a rule grants its executable with any
+                // arguments, which Claude Code spells `:*`.
+                (RuleKind::Executable { path, .. }, true) => format!("Bash({}:*)", path.as_str()),
+                _ => rule.resolved(),
+            })
+            .collect();
+        return GrantPlan::Claude {
+            allowed,
+            statement: statement(rules.iter().filter_map(ResolvedRule::executable)),
+        };
     }
-    granted.dedup();
-    out.statement = statement(&granted);
-    out
+    let mut text = String::from(RUN_RULES_HEADER);
+    let mut unmapped: Vec<&str> = Vec::new();
+    let mut granted: Vec<&ExecutablePath> = Vec::new();
+    for rule in rules {
+        let tokens = match (rule.kind(), read_only) {
+            (RuleKind::Executable { path, .. }, true) => Ok(vec![path.as_str().to_string()]),
+            _ => exec_policy_pattern(&rule.resolved()),
+        };
+        match tokens {
+            Ok(tokens) => {
+                text.push_str(&format!("\n# allowed_tools: {}\n", rule.resolved()));
+                text.push_str(&exec_policy_statement_for(&tokens, RuleList::AllowedTools));
+                text.push('\n');
+                granted.extend(rule.executable());
+            }
+            Err(_) => unmapped.push(rule.written()),
+        }
+    }
+    let unmapped_diagnostic = |rest: &str| {
+        Diagnostic::new(
+            id,
+            Setting::AllowedTools,
+            format!(
+                "Codex cannot express {} as a per-run exec-policy rule, so {rest}",
+                quoted(unmapped.iter().copied())
+            ),
+        )
+    };
+    if unmapped.len() == rules.len() {
+        return GrantPlan::Unexpressible(unmapped_diagnostic(
+            "nothing was applied and the run ran as it does with none",
+        ));
+    }
+    GrantPlan::Codex {
+        rules: text,
+        statement: statement(granted.into_iter()),
+        unmapped: (!unmapped.is_empty())
+            .then(|| unmapped_diagnostic("those rules were not applied; the rest were")),
+    }
 }
 
 /// The statement a turn's system instructions gain for `paths`, or `None`
 /// when no executable is granted. The wording is oneharness's own; what a
 /// consumer may rely on is that each path appears in it.
-#[must_use]
-pub fn statement(paths: &[&str]) -> Option<String> {
-    if paths.is_empty() {
+fn statement<'a>(paths: impl Iterator<Item = &'a ExecutablePath>) -> Option<String> {
+    let mut list: Vec<String> = Vec::new();
+    for path in paths {
+        let quoted = format!("`{}`", path.as_str());
+        if !list.contains(&quoted) {
+            list.push(quoted);
+        }
+    }
+    if list.is_empty() {
         return None;
     }
-    let list = paths
-        .iter()
-        .map(|path| format!("`{path}`"))
-        .collect::<Vec<_>>()
-        .join(", ");
     Some(format!(
-        "This run may execute these commands: {list}. To run one, type its absolute path \
+        "This run may execute these commands: {}. To run one, type its absolute path \
          exactly as written here, as one plain command on its own — not through a variable, \
          alias or function, and with no `;`, `&&`, `||`, pipe, redirection, command \
          substitution or second line — and pass any text it needs as one quoted argument \
          (single quotes, or double quotes when the text holds an apostrophe), which may span \
-         several lines."
+         several lines.",
+        list.join(", ")
     ))
 }
 
@@ -464,6 +605,10 @@ mod tests {
         resolve(&[rule.to_string()], mode, &env).map(|mut v| v.remove(0))
     }
 
+    fn path(rule: &ResolvedRule) -> Option<&str> {
+        rule.executable().map(ExecutablePath::as_str)
+    }
+
     #[test]
     fn a_variable_command_resolves_to_its_absolute_path_in_every_spelling() {
         for (rule, resolved) in [
@@ -472,14 +617,14 @@ mod tests {
         ] {
             for mode in [PermissionMode::ReadOnly, PermissionMode::Default] {
                 let r = one(rule, mode).unwrap();
-                assert_eq!(r.resolved, resolved);
-                assert_eq!(r.executable.as_deref(), Some("/opt/bin/decline"));
-                assert_eq!(r.written, rule);
+                assert_eq!(r.resolved(), resolved);
+                assert_eq!(path(&r), Some("/opt/bin/decline"));
+                assert_eq!(r.written(), rule);
             }
         }
         let prefix = one("Bash($TOOL status:*)", PermissionMode::Default).unwrap();
-        assert_eq!(prefix.resolved, "Bash(/opt/bin/decline status:*)");
-        assert_eq!(prefix.executable, None);
+        assert_eq!(prefix.resolved(), "Bash(/opt/bin/decline status:*)");
+        assert_eq!(path(&prefix), None);
     }
 
     #[test]
@@ -505,38 +650,55 @@ mod tests {
             assert!(err.reason().contains("not one absolute path"));
         }
         let odd = one("Bash(${TOOL}:*)", PermissionMode::Default).unwrap_err();
-        assert!(matches!(odd, GrantRefusal::NotAnExecutable { .. }));
+        assert!(
+            matches!(odd, GrantRefusal::InvalidVariable { .. }),
+            "{odd:?}"
+        );
+        assert!(odd.reason().contains("is not a variable name"));
+        assert_eq!(odd.rule(), "Bash(${TOOL}:*)");
     }
 
     #[test]
     fn read_only_accepts_only_one_absolute_executable() {
-        for rule in [
-            "Edit",
-            "Write",
-            "Read",
-            "Bash",
-            "Bash(*)",
-            "Bash(/opt/bin/*)",
-            "Bash(git status:*)",
-            "Bash(/opt/bin/decline --ruling:*)",
-            "Bash(decline:*)",
-            "Bash(:*)",
-            "Bash(/opt/bin/a;b)",
+        for (rule, why) in [
+            ("Edit", NotExecutable::NotBash),
+            ("Write", NotExecutable::NotBash),
+            ("Read", NotExecutable::NotBash),
+            ("Bash", NotExecutable::WholeShell),
+            ("Bash(*)", NotExecutable::Wildcard),
+            ("Bash(/opt/bin/*)", NotExecutable::Wildcard),
+            ("Bash(git status:*)", NotExecutable::MultiWord),
+            (
+                "Bash(/opt/bin/decline --ruling:*)",
+                NotExecutable::MultiWord,
+            ),
+            ("Bash(decline:*)", NotExecutable::Relative),
+            ("Bash(:*)", NotExecutable::Empty),
+            ("Bash(/opt/bin/a;b)", NotExecutable::ShellSyntax),
         ] {
             let err = one(rule, PermissionMode::ReadOnly).unwrap_err();
             assert_eq!(err.rule(), rule);
+            assert_eq!(
+                err,
+                GrantRefusal::NotAnExecutable {
+                    rule: rule.into(),
+                    mode: PermissionMode::ReadOnly,
+                    why
+                }
+            );
             assert!(err.reason().contains("--mode read-only"), "{rule}: {err:?}");
+            assert!(err.reason().contains(why.describe()));
         }
         let ok = one("Bash(/opt/bin/decline)", PermissionMode::ReadOnly).unwrap();
-        assert_eq!(ok.executable.as_deref(), Some("/opt/bin/decline"));
+        assert_eq!(path(&ok), Some("/opt/bin/decline"));
     }
 
     #[test]
     fn other_modes_pass_any_rule_through_resolved() {
         for rule in ["Edit", "Bash(git status:*)", "Bash(decline:*)", "Bash"] {
             let r = one(rule, PermissionMode::Default).unwrap();
-            assert_eq!(r.resolved, rule);
-            assert_eq!(r.executable, None);
+            assert_eq!(r.resolved(), rule);
+            assert_eq!(path(&r), None);
         }
     }
 
@@ -547,14 +709,19 @@ mod tests {
 
     #[test]
     fn claude_gets_each_rule_on_allowed_tools_and_read_only_grants_any_arguments() {
-        let ro = rules(&["Bash($TOOL)"], PermissionMode::ReadOnly);
+        let ro = rules(&["Bash($TOOL)", "Bash($TOOL:*)"], PermissionMode::ReadOnly);
         let p = plan(CLAUDE, PermissionMode::ReadOnly, &ro, None);
-        assert_eq!(p.claude_allowed, ["Bash(/opt/bin/decline:*)"]);
-        assert!(p.statement.unwrap().contains("`/opt/bin/decline`"));
-        assert!(p.diagnostics.is_empty());
+        assert_eq!(
+            p.claude_allowed(),
+            ["Bash(/opt/bin/decline:*)", "Bash(/opt/bin/decline:*)"]
+        );
+        let statement = p.statement().unwrap();
+        assert_eq!(statement.matches("`/opt/bin/decline`").count(), 1);
+        assert!(p.diagnostics().is_empty() && p.applies());
         let def = rules(&["Bash($TOOL)", "Edit"], PermissionMode::Default);
         let p = plan(CLAUDE, PermissionMode::Default, &def, None);
-        assert_eq!(p.claude_allowed, ["Bash(/opt/bin/decline)", "Edit"]);
+        assert_eq!(p.claude_allowed(), ["Bash(/opt/bin/decline)", "Edit"]);
+        assert_eq!(p.codex_rules(), None);
     }
 
     #[test]
@@ -564,25 +731,40 @@ mod tests {
             PermissionMode::ReadOnly,
         );
         let p = plan(CODEX, PermissionMode::ReadOnly, &ro, None);
-        let text = p.codex_rules.unwrap();
+        let text = p.codex_rules().unwrap();
         assert!(text.starts_with(RUN_RULES_HEADER));
         assert!(text.contains("prefix_rule(pattern=[\"/opt/bin/decline\"], decision=\"allow\")"));
         assert!(text.contains("prefix_rule(pattern=[\"/usr/bin/x\"], decision=\"allow\")"));
         assert!(!text.contains('$'));
-        let s = p.statement.unwrap();
+        let s = p.statement().unwrap();
         assert!(s.contains("`/opt/bin/decline`") && s.contains("`/usr/bin/x`"));
+        assert!(p.claude_allowed().is_empty());
 
         let def = rules(
             &["Bash($TOOL)", "Edit", "Bash(git status:*)"],
             PermissionMode::Default,
         );
         let p = plan(CODEX, PermissionMode::Default, &def, None);
-        let text = p.codex_rules.unwrap();
+        let text = p.codex_rules().unwrap();
         assert!(text.contains("pattern=[\"git\", \"status\"]"));
         assert!(!text.contains("decline"));
-        assert_eq!(p.diagnostics.len(), 1);
-        assert!(p.diagnostics[0].message.contains("`Bash($TOOL)`, `Edit`"));
-        assert_eq!(p.statement, None);
+        let diagnostics = p.diagnostics();
+        assert_eq!(diagnostics.len(), 1);
+        assert!(diagnostics[0].message.contains("`Bash($TOOL)`, `Edit`"));
+        assert!(diagnostics[0].message.contains("the rest were"));
+        assert_eq!(p.statement(), None);
+    }
+
+    #[test]
+    fn codex_with_no_expressible_rule_applies_nothing_and_names_them_all() {
+        let def = rules(&["Edit", "Bash($TOOL)"], PermissionMode::Default);
+        let p = plan(CODEX, PermissionMode::Default, &def, None);
+        assert!(!p.applies());
+        assert_eq!(p.codex_rules(), None);
+        assert_eq!(p.statement(), None);
+        let message = &p.diagnostics()[0].message;
+        assert!(message.contains("`Edit`, `Bash($TOOL)`"), "{message}");
+        assert!(message.contains("nothing was applied"), "{message}");
     }
 
     #[test]
@@ -591,11 +773,12 @@ mod tests {
         for id in ["opencode", "copilot", "cursor", "qwen", "goose", "crush"] {
             let p = plan(id, PermissionMode::ReadOnly, &ro, None);
             assert!(!p.applies(), "{id}");
-            assert_eq!(p.statement, None);
-            assert_eq!(p.diagnostics.len(), 1);
-            assert_eq!(p.diagnostics[0].setting, Setting::AllowedTools);
-            assert!(p.diagnostics[0].message.contains("`Bash($TOOL)`"));
-            assert!(p.diagnostics[0].message.contains(&format!("`{id}`")));
+            assert_eq!(p.statement(), None);
+            let diagnostics = p.diagnostics();
+            assert_eq!(diagnostics.len(), 1);
+            assert_eq!(diagnostics[0].setting, Setting::AllowedTools);
+            assert!(diagnostics[0].message.contains("`Bash($TOOL)`"));
+            assert!(diagnostics[0].message.contains(&format!("`{id}`")));
         }
         let p = plan(
             CODEX,
@@ -604,10 +787,37 @@ mod tests {
             Some("its login is in the keyring"),
         );
         assert!(!p.applies());
-        assert!(p.diagnostics[0].message.contains("keyring"));
+        assert!(p.diagnostics()[0].message.contains("keyring"));
         assert_eq!(
             plan(CLAUDE, PermissionMode::ReadOnly, &[], None),
-            GrantPlan::default()
+            GrantPlan::None
         );
+        assert!(GrantPlan::None.diagnostics().is_empty());
+    }
+
+    #[test]
+    fn an_executable_path_is_one_absolute_plain_word() {
+        assert!(ExecutablePath::new("/opt/bin/decline").is_some());
+        for word in [
+            "",
+            "decline",
+            "/opt/my tool",
+            "/opt/a;b",
+            "/opt/*",
+            "/opt/a\nb",
+        ] {
+            assert!(ExecutablePath::new(word).is_none(), "{word:?}");
+        }
+    }
+
+    #[test]
+    fn the_statement_follows_any_system_text() {
+        assert_eq!(
+            with_statement(Some("s"), Some("t")).as_deref(),
+            Some("s\n\nt")
+        );
+        assert_eq!(with_statement(None, Some("t")).as_deref(), Some("t"));
+        assert_eq!(with_statement(Some("s"), None).as_deref(), Some("s"));
+        assert_eq!(with_statement(None, None), None);
     }
 }

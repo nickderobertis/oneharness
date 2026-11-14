@@ -24,6 +24,8 @@
 //!                   holding a newline stays one element), before answering
 //!   MOCK_ECHO_PWD   if set, write `PWD=<the inherited $PWD>` to stdout and exit
 //!                   (used to assert that --cwd keeps $PWD consistent)
+//!   MOCK_HOME_WRITE  `relpath=content;…` written under `$CODEX_HOME` while the
+//!                   harness runs, replacing a top-level link in the way
 //!   MOCK_HOME_SNAPSHOT  if set, what `$CODEX_HOME` holds while the harness
 //!                   runs is written here as JSON (links, files, directories)
 //!   MOCK_ENV_FILE   if set, the whole inherited environment is written here
@@ -1980,6 +1982,29 @@ fn exit_shortly() {
 /// turn finishes in under half a second having done nothing. The turn ends only
 /// on the `turn/completed` notification, which this emits once the interrupt
 /// naming both the thread and the turn arrives.
+/// `MOCK_HOME_WRITE`: `relpath=content` entries, `;`-separated, each written
+/// under `$CODEX_HOME` as Codex writes its own files — a top-level link in the
+/// way is replaced (as an atomic rename over it would), and parent
+/// directories are made. How a journey makes a harness create or replace a
+/// file in a run overlay's home.
+fn write_into_home(entries: &str) {
+    let home = std::path::PathBuf::from(std::env::var("CODEX_HOME").unwrap_or_default());
+    for entry in entries.split(';').filter(|e| !e.is_empty()) {
+        let (rel, content) = entry
+            .split_once('=')
+            .expect("MOCK_HOME_WRITE entry is relpath=content");
+        let path = home.join(rel);
+        let top = home.join(rel.split('/').next().unwrap_or(rel));
+        if std::fs::symlink_metadata(&top).is_ok_and(|m| m.file_type().is_symlink()) {
+            std::fs::remove_file(&top).expect("replace the link in the way");
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("make the entry's directories");
+        }
+        std::fs::write(&path, content).expect("write the entry");
+    }
+}
+
 /// `MOCK_HOME_SNAPSHOT`: write, as one JSON object, what the directory
 /// `$CODEX_HOME` names holds WHILE the harness runs — each entry as
 /// `{"link": <target>}`, `{"file": <contents>}` or `{"dir": {…}}`, recursing
@@ -2809,6 +2834,10 @@ pub fn run() -> ! {
         }
         let input = serde_json::json!({ "argv": argv, "stdin": stdin });
         let _ = std::fs::write(path, input.to_string());
+    }
+
+    if let Ok(entries) = std::env::var("MOCK_HOME_WRITE") {
+        write_into_home(&entries);
     }
 
     if let Ok(path) = std::env::var("MOCK_HOME_SNAPSHOT") {

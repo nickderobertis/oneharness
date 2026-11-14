@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.29.0](https://github.com/nickderobertis/oneharness/compare/v0.28.8...v0.29.0) - 2026-11-14
+
+### Added
+
+- *(config)* [**breaking**] move the sync-policy fields into their own [sync] section ([#1597](https://github.com/nickderobertis/oneharness/pull/1597))
+
 <!-- llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] A changelog entry records what this release changed, as of this release; it is the migration note a consumer reads when upgrading, not a live copy of the config contract to keep in step. That contract's source is `domain::config` (`FileConfig`, `SyncConfig`, `parse`'s refusal) and `io::sync`'s guard, pinned by the `crates/oneharness-e2e/tests/cli.rs` `[sync]` journeys and the README's *Syncing harness configs* section. -->
 
 ### Changed

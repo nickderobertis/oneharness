@@ -63,7 +63,7 @@ case "${FAKE:?FAKE must say how this double behaves}" in
     if [ "$FAKE" = serve ] && [ "${1:-}" = app-server ]; then
       # The pool writes its entry's server.json once this server has spawned,
       # before it dials it.
-      for _ in $(seq 500); do
+      for ((waited = 0; waited < 500; waited++)); do
         [ ! -f server.json ] || break
         sleep 0.02
       done

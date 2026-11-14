@@ -107,7 +107,7 @@ trust_refused() {
   if (_oh_codex_trust_config "$1" "$2") >"$scratch/trust.log" 2>&1; then
     fail "the trust config of $1 into $2 must fail"
   fi
-  cat "$scratch/trust.log"
+  cat "$scratch/trust.log" || fail "could not read back $scratch/trust.log; check $scratch permissions"
 }
 expect_refusal() {
   printf '%s\n' "$1" | grep -qF "$2" || fail "the trust config's failure must say '$2': $1"

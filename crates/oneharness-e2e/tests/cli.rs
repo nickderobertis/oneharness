@@ -14469,6 +14469,32 @@ fn every_misplaced_sync_policy_field_is_named_at_once() {
 }
 
 #[test]
+fn an_unknown_harness_under_sync_stops_every_command_before_anything_is_written() {
+    // `[sync.harness.<id>]` is checked against the registry like
+    // `[harness.<id>]`: a typo'd id must never be a policy `sync` silently drops.
+    let fx = ConfigFixture::new("sync-unknown-harness", "", "");
+    let config = fx.dir.join("policy.toml");
+    std::fs::write(
+        &config,
+        "[sync.harness.claude-cod]\nallowed_tools = [\"Read\"]\n",
+    )
+    .unwrap();
+    let argv_file = fx.dir.join("spawned.argv");
+    let before = tree_bytes(&fx.dir);
+    for verb in POLICY_VERBS {
+        let output = drive_policy_verb(&fx, &config, verb, &argv_file);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{verb:?}: {stderr}");
+        assert!(
+            stderr.contains("unknown harness id `claude-cod` in `[sync.harness]`. valid ids: "),
+            "{verb:?}: {stderr}"
+        );
+        assert!(!argv_file.exists(), "{verb:?} spawned a harness");
+        assert_eq!(tree_bytes(&fx.dir), before, "{verb:?} wrote something");
+    }
+}
+
+#[test]
 fn no_key_selects_another_config_shape() {
     // A version or format marker beside today's top-level policy is an unknown
     // field like any other: it is never read as a request for the old meaning.

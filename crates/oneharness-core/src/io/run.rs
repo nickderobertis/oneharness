@@ -1878,7 +1878,7 @@ pub fn run_supervised(
     {
         result.overlay_env = env;
         if let Some(overlaid) = overlaid.take() {
-            overlaid.finish(result.session_id.as_deref());
+            result.overlay_timings = Some(overlaid.finish(result.session_id.as_deref()));
         }
     }
     drop(unit_overlays);
@@ -4671,6 +4671,7 @@ fn planned_result(
         calls: None,
         diagnostics: Vec::new(),
         overlay_env: std::collections::BTreeMap::new(),
+        overlay_timings: None,
         session_id: None,
         events: None,
         events_source: None,
@@ -4718,6 +4719,7 @@ fn skipped_result(
         calls: None,
         diagnostics: Vec::new(),
         overlay_env: std::collections::BTreeMap::new(),
+        overlay_timings: None,
         session_id: None,
         events: None,
         events_source: None,
@@ -5080,6 +5082,7 @@ fn executed_result(
         calls: None,
         diagnostics: Vec::new(),
         overlay_env: std::collections::BTreeMap::new(),
+        overlay_timings: None,
         session_id,
         events: normalized_events,
         events_source,
@@ -5914,6 +5917,8 @@ struct UnitOverlay {
     /// A thread this run continued (`--resume` / `--session`), which the
     /// repair reads too.
     resumed: Option<String>,
+    /// How long building the overlay took.
+    build: Duration,
 }
 
 impl UnitOverlay {
@@ -5932,8 +5937,10 @@ impl UnitOverlay {
     }
 
     /// Record the run's thread in the real home's index, then remove the
-    /// overlay (returning what Codex wrote at its top level).
-    fn finish(self, session: Option<&str>) {
+    /// overlay (returning what Codex wrote at its top level). Answers what
+    /// the overlay cost.
+    fn finish(self, session: Option<&str>) -> crate::domain::report::OverlayTimings {
+        let started = Instant::now();
         let args = Self::launch_args();
         let launch = HelperLaunch {
             bin: &self.bin,
@@ -5948,10 +5955,15 @@ impl UnitOverlay {
         }
         // Sweep first, so a file Codex created is in the real home before the
         // repair app-server starts there.
+        let build = self.build;
         let UnitOverlay { overlay, .. } = self;
         overlay.sweep_now();
         overlay.repair_threads(&launch, &threads);
         overlay.finish();
+        crate::domain::report::OverlayTimings {
+            build_ms: millis(build),
+            teardown_ms: millis(started.elapsed()),
+        }
     }
 }
 
@@ -5965,6 +5977,7 @@ fn open_codex_overlay(
     env_remove: &[String],
     cwd: Option<&std::path::Path>,
 ) -> Result<UnitOverlay, OneharnessError> {
+    let started = Instant::now();
     let failed = |source: std::io::Error| OneharnessError::RunOverlay { source };
     let mut overlay = RunOverlay::create().map_err(failed)?;
     let home = overlay.codex_home(real_home, rules).map_err(failed)?;
@@ -5985,7 +5998,12 @@ fn open_codex_overlay(
         env_remove: env_remove.to_vec(),
         cwd: cwd.map(std::path::Path::to_path_buf),
         resumed: None,
+        build: started.elapsed(),
     })
+}
+
+fn millis(elapsed: Duration) -> u64 {
+    u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]
@@ -6015,6 +6033,7 @@ mod tests {
             calls: None,
             diagnostics: Vec::new(),
             overlay_env: std::collections::BTreeMap::new(),
+            overlay_timings: None,
             session_id: None,
             events: None,
             events_source: None,

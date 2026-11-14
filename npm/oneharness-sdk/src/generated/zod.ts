@@ -40,6 +40,7 @@ import type {
   FallThrough,
   FallThroughReason,
   FallbackReport,
+  OverlayTimings,
   RunReport,
   RunResult,
   RunWork,
@@ -3233,6 +3234,17 @@ export const OutputFormatSchema: z.ZodType<OutputFormat> = z.union([
   z.literal("stream-json"),
 ]);
 
+export const OverlayTimingsSchema: z.ZodType<OverlayTimings> = z.looseObject({
+  build_ms: z
+    .int()
+    .gte(0)
+    .refine((value) => value !== undefined, { message: "Required" }),
+  teardown_ms: z
+    .int()
+    .gte(0)
+    .refine((value) => value !== undefined, { message: "Required" }),
+});
+
 export const PermissionModeSchema: z.ZodType<PermissionMode> = z.union([
   z.literal("read-only"),
   z.literal("plan"),
@@ -3420,6 +3432,7 @@ export const RunResultSchema: z.ZodType<RunResult> = z.looseObject({
   observed_model: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
   output_format: z.lazy(() => OutputFormatSchema).refine((value) => value !== undefined, { message: "Required" }),
   overlay_env: z.record(z.string(), z.string()).optional(),
+  overlay_timings: z.union([z.lazy(() => OverlayTimingsSchema), z.null()]).optional(),
   prompt: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
   schema_attempts: z.union([z.int().gte(0), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
   schema_error: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),

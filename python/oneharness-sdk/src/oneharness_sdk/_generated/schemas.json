@@ -15724,6 +15724,28 @@
           }
         ]
       },
+      "OverlayTimings": {
+        "description": "What one run's overlay cost ([`RunResult::overlay_timings`]).",
+        "properties": {
+          "build_ms": {
+            "description": "Milliseconds from creating the overlay to the harness being ready to\nspawn on it: its links, its rules and (for an indexed Codex home) its\nseeded thread index.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "teardown_ms": {
+            "description": "Milliseconds from the harness's end to the overlay being gone: what\nCodex recorded returned to the real home, the real index repaired, and\nthe directory removed.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "build_ms",
+          "teardown_ms"
+        ],
+        "type": "object"
+      },
       "PermissionMode": {
         "description": "The unified approval mode, from least to most autonomy. A harness may not\nsupport every value (see [`crate::domain::harness::HarnessSpec::mode`]); the\ncommand layer refuses an unsupported one before spawning, never silently\ndowngrading it.",
         "oneOf": [
@@ -15884,6 +15906,17 @@
             },
             "description": "The environment the run's overlay sets on the harness \u2014 present only\nwhen a run-level allowlist is applied through one (Codex's per-run\n`CODEX_HOME`, and the marker every process of the run carries). Under\n`--print-command` the overlay directory is shown as `<run-overlay>`,\nsince a dry run creates nothing. The directory is removed when the run\nends. Absent when empty. Added in report schema `0.15`.",
             "type": "object"
+          },
+          "overlay_timings": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/OverlayTimings"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the run's overlay cost, beside its turn: building it before the\nharness spawned and tearing it down after. Present only when a run\nwent through one. Added in report schema `0.15`."
           },
           "prompt": {
             "description": "The prompt this result ran, set only on a **batch** run (one harness\nfanned over N prompts), where each result has its own prompt. `null` on an\nordinary run, where the single top-level `prompt` applies to every result.",
@@ -17075,6 +17108,28 @@
           }
         ]
       },
+      "OverlayTimings": {
+        "description": "What one run's overlay cost ([`RunResult::overlay_timings`]).",
+        "properties": {
+          "build_ms": {
+            "description": "Milliseconds from creating the overlay to the harness being ready to\nspawn on it: its links, its rules and (for an indexed Codex home) its\nseeded thread index.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "teardown_ms": {
+            "description": "Milliseconds from the harness's end to the overlay being gone: what\nCodex recorded returned to the real home, the real index repaired, and\nthe directory removed.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "build_ms",
+          "teardown_ms"
+        ],
+        "type": "object"
+      },
       "PermissionMode": {
         "description": "The unified approval mode, from least to most autonomy. A harness may not\nsupport every value (see [`crate::domain::harness::HarnessSpec::mode`]); the\ncommand layer refuses an unsupported one before spawning, never silently\ndowngrading it.",
         "oneOf": [
@@ -17399,6 +17454,17 @@
             },
             "description": "The environment the run's overlay sets on the harness \u2014 present only\nwhen a run-level allowlist is applied through one (Codex's per-run\n`CODEX_HOME`, and the marker every process of the run carries). Under\n`--print-command` the overlay directory is shown as `<run-overlay>`,\nsince a dry run creates nothing. The directory is removed when the run\nends. Absent when empty. Added in report schema `0.15`.",
             "type": "object"
+          },
+          "overlay_timings": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/OverlayTimings"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the run's overlay cost, beside its turn: building it before the\nharness spawned and tearing it down after. Present only when a run\nwent through one. Added in report schema `0.15`."
           },
           "prompt": {
             "description": "The prompt this result ran, set only on a **batch** run (one harness\nfanned over N prompts), where each result has its own prompt. `null` on an\nordinary run, where the single top-level `prompt` applies to every result.",

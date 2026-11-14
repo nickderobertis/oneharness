@@ -2346,6 +2346,28 @@
           }
         ]
       },
+      "OverlayTimings": {
+        "description": "What one run's overlay cost ([`RunResult::overlay_timings`]).",
+        "type": "object",
+        "properties": {
+          "build_ms": {
+            "description": "Milliseconds from creating the overlay to the harness being ready to\nspawn on it: its links, its rules and (for an indexed Codex home) its\nseeded thread index.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "teardown_ms": {
+            "description": "Milliseconds from the harness's end to the overlay being gone: what\nCodex recorded returned to the real home, the real index repaired, and\nthe directory removed.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "build_ms",
+          "teardown_ms"
+        ]
+      },
       "PermissionMode": {
         "description": "The unified approval mode, from least to most autonomy. A harness may not\nsupport every value (see [`crate::domain::harness::HarnessSpec::mode`]); the\ncommand layer refuses an unsupported one before spawning, never silently\ndowngrading it.",
         "oneOf": [
@@ -2507,6 +2529,17 @@
             "additionalProperties": {
               "type": "string"
             }
+          },
+          "overlay_timings": {
+            "description": "What the run's overlay cost, beside its turn: building it before the\nharness spawned and tearing it down after. Present only when a run\nwent through one. Added in report schema `0.15`.",
+            "anyOf": [
+              {
+                "$ref": "#/$defs/OverlayTimings"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "prompt": {
             "description": "The prompt this result ran, set only on a **batch** run (one harness\nfanned over N prompts), where each result has its own prompt. `null` on an\nordinary run, where the single top-level `prompt` applies to every result.",
@@ -3624,6 +3657,28 @@
           }
         ]
       },
+      "OverlayTimings": {
+        "description": "What one run's overlay cost ([`RunResult::overlay_timings`]).",
+        "type": "object",
+        "properties": {
+          "build_ms": {
+            "description": "Milliseconds from creating the overlay to the harness being ready to\nspawn on it: its links, its rules and (for an indexed Codex home) its\nseeded thread index.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "teardown_ms": {
+            "description": "Milliseconds from the harness's end to the overlay being gone: what\nCodex recorded returned to the real home, the real index repaired, and\nthe directory removed.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "build_ms",
+          "teardown_ms"
+        ]
+      },
       "PermissionMode": {
         "description": "The unified approval mode, from least to most autonomy. A harness may not\nsupport every value (see [`crate::domain::harness::HarnessSpec::mode`]); the\ncommand layer refuses an unsupported one before spawning, never silently\ndowngrading it.",
         "oneOf": [
@@ -3949,6 +4004,17 @@
             "additionalProperties": {
               "type": "string"
             }
+          },
+          "overlay_timings": {
+            "description": "What the run's overlay cost, beside its turn: building it before the\nharness spawned and tearing it down after. Present only when a run\nwent through one. Added in report schema `0.15`.",
+            "anyOf": [
+              {
+                "$ref": "#/$defs/OverlayTimings"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "prompt": {
             "description": "The prompt this result ran, set only on a **batch** run (one harness\nfanned over N prompts), where each result has its own prompt. `null` on an\nordinary run, where the single top-level `prompt` applies to every result.",

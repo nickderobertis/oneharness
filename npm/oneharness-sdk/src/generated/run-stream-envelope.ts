@@ -660,6 +660,12 @@ export interface RunResult {
     [k: string]: string;
   } | undefined;
   /**
+   * What the run's overlay cost, beside its turn: building it before the
+   * harness spawned and tearing it down after. Present only when a run
+   * went through one. Added in report schema `0.15`.
+   */
+  overlay_timings?: OverlayTimings | null | undefined;
+  /**
    * The prompt this result ran, set only on a **batch** run (one harness
    * fanned over N prompts), where each result has its own prompt. `null` on an
    * ordinary run, where the single top-level `prompt` applies to every result.
@@ -795,6 +801,24 @@ export interface Diagnostic {
    */
   message: string;
   setting: Setting;
+  [k: string]: unknown;
+}
+/**
+ * What one run's overlay cost ([`RunResult::overlay_timings`]).
+ */
+export interface OverlayTimings {
+  /**
+   * Milliseconds from creating the overlay to the harness being ready to
+   * spawn on it: its links, its rules and (for an indexed Codex home) its
+   * seeded thread index.
+   */
+  build_ms: number;
+  /**
+   * Milliseconds from the harness's end to the overlay being gone: what
+   * Codex recorded returned to the real home, the real index repaired, and
+   * the directory removed.
+   */
+  teardown_ms: number;
   [k: string]: unknown;
 }
 /**

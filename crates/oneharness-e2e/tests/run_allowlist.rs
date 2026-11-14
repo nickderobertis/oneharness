@@ -396,6 +396,12 @@ fn codex_runs_on_an_overlay_home_linking_the_real_one_with_one_rules_file_of_its
     let env = env_of(&env_file);
     let home = env["CODEX_HOME"].as_str().unwrap();
     assert_eq!(result["overlay_env"]["CODEX_HOME"], home);
+    for phase in ["build_ms", "teardown_ms"] {
+        assert!(
+            result["overlay_timings"][phase].is_u64(),
+            "{phase}: {result}"
+        );
+    }
     // The overlay home is the run's own: under the temp dir, outside the
     // project and the real home.
     assert!(home.starts_with(&world.s("tmp")), "{home}");
@@ -575,7 +581,7 @@ fn a_variable_resolves_from_the_runs_own_environment() {
     // A variant's `env_from` maps the name from another parent variable.
     let toml = String::from(
         "[harness.claude-code.variant.work]\nallowed_tools = [\"Bash($GRANTED)\"]\n\
-         env_from = { GRANTED = \"SOURCE_OF_GRANT\" }\n"
+         env_from = { GRANTED = \"SOURCE_OF_GRANT\" }\n",
     );
     let config = world.config(&toml);
     let argv_file = world.path("argv-env-from");

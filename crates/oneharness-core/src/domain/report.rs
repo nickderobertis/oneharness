@@ -19,6 +19,19 @@ use crate::domain::session::SessionPhase;
 use crate::domain::signals::{FailureKind, Usage};
 use crate::domain::usage::UtcInstant;
 
+/// What one run's overlay cost ([`RunResult::overlay_timings`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct OverlayTimings {
+    /// Milliseconds from creating the overlay to the harness being ready to
+    /// spawn on it: its links, its rules and (for an indexed Codex home) its
+    /// seeded thread index.
+    pub build_ms: u64,
+    /// Milliseconds from the harness's end to the overlay being gone: what
+    /// Codex recorded returned to the real home, the real index repaired, and
+    /// the directory removed.
+    pub teardown_ms: u64,
+}
+
 /// Bumped when the JSON shape changes in a way consumers must notice.
 ///
 /// Shared by every non-history report on stdout — `run`, `list`, `detect`,
@@ -558,6 +571,11 @@ pub struct RunResult {
     /// ends. Absent when empty. Added in report schema `0.15`.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub overlay_env: std::collections::BTreeMap<String, String>,
+    /// What the run's overlay cost, beside its turn: building it before the
+    /// harness spawned and tearing it down after. Present only when a run
+    /// went through one. Added in report schema `0.15`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overlay_timings: Option<OverlayTimings>,
     /// Best-effort harness session id for continuation; `null` when none is
     /// exposed. Surfaced for a consumer to thread into `--resume`, and consumed
     /// by oneharness itself when `--session` is in play (it is captured into the
@@ -1333,6 +1351,7 @@ mod tests {
             calls: None,
             diagnostics: Vec::new(),
             overlay_env: std::collections::BTreeMap::new(),
+            overlay_timings: None,
             session_id: None,
             events: None,
             events_source: None,

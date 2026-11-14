@@ -24,6 +24,7 @@
       "{workspaceRoot}/scripts/e2e-network-budget.sh",
       "{workspaceRoot}/scripts/e2e-claude.sh",
       "{workspaceRoot}/scripts/e2e-codex.sh",
+      "{workspaceRoot}/scripts/e2e-codex-rendezvous.sh",
       "{workspaceRoot}/scripts/e2e-control.sh",
       "{workspaceRoot}/scripts/e2e-copilot.sh",
       "{workspaceRoot}/scripts/e2e-crush.sh",

@@ -15,6 +15,7 @@
     "default": [
       "{projectRoot}/**/*",
       "{workspaceRoot}/scripts/e2e-codex.sh",
+      "{workspaceRoot}/scripts/e2e-codex-rendezvous.sh",
       "{workspaceRoot}/scripts/codex-stall-endpoint.py"
     ]
   },

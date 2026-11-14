@@ -1086,7 +1086,10 @@ static REGISTRY: &[HarnessSpec] = &[
         // `oh_mock_enforce codex` phase does.
         mock_rewrite: Some(RewriteShape::ClaudeNested),
         // Project .codex/hooks.json, restored after the run; the opt-in flags
-        // the probe proved necessary are auto-appended to the argv.
+        // the probe proved necessary are auto-appended to the argv, and from
+        // codex 0.169.0, which loads no project layer of an untrusted cwd
+        // under `exec`, so is a per-run trust of the cwd
+        // (`mock::project_trust_args`).
         mock_delivery: Some(MockDelivery::ProjectHooks {
             extra_args: &[
                 "-c",

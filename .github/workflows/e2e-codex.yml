@@ -27,6 +27,7 @@ on:
       - scripts/e2e-netmeasure.py
       - scripts/install-e2e.sh
       - scripts/e2e-codex.sh
+      - scripts/e2e-codex-rendezvous.sh
       - scripts/e2e-network-budget.sh
       - scripts/network-recorder-preflight.sh
       - live/pr-matrix/harness/codex/**

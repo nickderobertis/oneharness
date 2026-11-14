@@ -697,8 +697,12 @@ class Settings(unittest.TestCase):
 # What the signal module offers on Windows; any other name read at import time
 # breaks test discovery on the Windows leg before a skip can apply.
 WINDOWS_SIGNALS = ("SIGABRT", "SIGBREAK", "SIGFPE", "SIGILL", "SIGINT", "SIGSEGV", "SIGTERM")
-IMPORT_WITHOUT_POSIX_SIGNALS = """
-import importlib.util, pathlib, signal, sys
+IMPORT_WITHOUT_POSIX_APIS = """
+import ctypes, importlib.util, os, pathlib, signal, sys
+# Load ctypes for the host before simulating Git Bash's Windows platform.
+sys.platform = "cygwin"
+if hasattr(os, "geteuid"):
+    delattr(os, "geteuid")
 for name in [n for n in dir(signal) if n.startswith("SIG") and not n.startswith("SIG_")]:
     if name not in sys.argv[1].split(","):
         delattr(signal, name)
@@ -716,7 +720,7 @@ for path in sys.argv[2:]:
 
 
 class ImportsOnWindows(unittest.TestCase):
-    def test_every_test_module_and_the_measurer_import_without_posix_only_signals(self) -> None:
+    def test_every_test_module_and_the_measurer_import_without_posix_only_apis(self) -> None:
         here = Path(__file__).resolve().parent
         modules = [*sorted(here.glob("test_*.py")), ROOT / "scripts" / "e2e-netmeasure.py"]
         run = subprocess.run(
@@ -724,7 +728,7 @@ class ImportsOnWindows(unittest.TestCase):
                 sys.executable,
                 "-I",
                 "-c",
-                IMPORT_WITHOUT_POSIX_SIGNALS,
+                IMPORT_WITHOUT_POSIX_APIS,
                 ",".join(WINDOWS_SIGNALS),
                 *map(str, modules),
             ],

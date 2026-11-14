@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::domain::gate::DenyShape;
+use crate::domain::harness::HarnessSpec;
 
 /// How a harness expresses "allow this call, but with these rewritten
 /// arguments" from a pre-tool hook. Every variant is live-verified (the
@@ -99,6 +100,82 @@ pub fn hook_command(exe: &str, id: &str, rules: Option<&str>, spy: Option<&str>)
         command.push_str(spy);
     }
     command
+}
+
+/// The spellings a project directory's trust may be looked up under: each an
+/// absolute path, in either platform's spelling (`/…`, `C:\…` or `C:/…`, or a
+/// `\\…` UNC path), named once, in the order they were added.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProjectTrustKeys(Vec<String>);
+
+impl ProjectTrustKeys {
+    /// Add `key` unless it is not absolute or is already named; whether it was
+    /// added.
+    pub fn push(&mut self, key: String) -> bool {
+        if !is_absolute_spelling(&key) || self.0.contains(&key) {
+            return false;
+        }
+        self.0.push(key);
+        true
+    }
+
+    /// The keys, in the order they were added.
+    #[must_use]
+    pub fn as_slice(&self) -> &[String] {
+        &self.0
+    }
+
+    /// Whether no key was added.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+/// Whether `key` spells an absolute path on Unix or Windows. Judged on the text
+/// alone, so a Windows key is recognised on any host.
+fn is_absolute_spelling(key: &str) -> bool {
+    let bytes = key.as_bytes();
+    key.starts_with('/')
+        || key.starts_with(r"\\")
+        || (bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && matches!(bytes[2], b'\\' | b'/'))
+}
+
+/// The argv that trusts the project a [`MockDelivery::ProjectHooks`] install
+/// wrote into, for this invocation only, where the harness loads no project
+/// hooks without it; empty for every other harness. `spec` is the registry
+/// entry the install was for, and `project_keys` are the spellings of the
+/// working directory the harness may look its trust up under.
+///
+/// Codex 0.169.0 (openai/codex#60041) stopped trusting the cwd of a
+/// writable-sandbox `codex exec` implicitly, so every project `.codex/` layer
+/// — the mock's `hooks.json` with it — stays disabled until the project is
+/// trusted. Codex's `--trust` would persist the grant into the user's
+/// config.toml; an inline-table `-c projects={…}` grants it for the run alone
+/// and merges with the trust already saved there. (The dotted
+/// `projects."<dir>".trust_level` spelling cannot carry a path with a `.` in
+/// it: Codex splits the key on every dot and ignores the setting.)
+pub fn project_trust_args(spec: &HarnessSpec, project_keys: &ProjectTrustKeys) -> Vec<String> {
+    if spec.id != "codex" || project_keys.is_empty() {
+        return Vec::new();
+    }
+    let entries: Vec<String> = project_keys
+        .as_slice()
+        .iter()
+        .map(|key| {
+            format!(
+                "{}={{trust_level=\"trusted\"}}",
+                toml::Value::from(key.as_str())
+            )
+        })
+        .collect();
+    vec![
+        "-c".to_string(),
+        format!("projects={{{}}}", entries.join(",")),
+    ]
 }
 
 /// The settings JSON a [`MockDelivery::SettingsFlag`] harness receives: a
@@ -878,6 +955,67 @@ mod tests {
             hook_command("oh", "claude-code", Some("r.json"), None),
             "oh mock claude-code --rules r.json"
         );
+    }
+
+    /// Codex's trust override is one inline table naming every spelling, each
+    /// a TOML basic string — a Windows path's backslashes escaped, a dotted
+    /// directory kept whole — that parses back to exactly those keys.
+    #[test]
+    fn project_trust_args_grant_codex_each_spelling_for_the_run() {
+        let spellings = [
+            "/tmp/tmp.Ab1/project",
+            r"C:\Users\runneradmin\AppData\Local\Temp\tmp.X",
+        ];
+        let mut keys = ProjectTrustKeys::default();
+        for key in spellings {
+            assert!(keys.push(key.to_string()), "{key}");
+        }
+        let codex = crate::domain::harness::by_id("codex").expect("codex is registered");
+        let args = project_trust_args(codex, &keys);
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[0], "-c");
+        let value = args[1]
+            .strip_prefix("projects=")
+            .expect("a projects override");
+        let parsed: toml::Table = toml::from_str(&format!("projects = {value}")).expect("TOML");
+        let projects = parsed["projects"].as_table().expect("an inline table");
+        assert_eq!(projects.len(), spellings.len());
+        for key in spellings {
+            assert_eq!(
+                projects[key]["trust_level"].as_str(),
+                Some("trusted"),
+                "{key}"
+            );
+        }
+    }
+
+    /// Only Codex gates its project hooks on trust; no other harness's argv
+    /// grows, and Codex's does not without a directory to trust.
+    #[test]
+    fn project_trust_args_are_codex_only() {
+        let mut keys = ProjectTrustKeys::default();
+        keys.push("/work".to_string());
+        for spec in crate::domain::harness::all() {
+            if spec.id != "codex" {
+                assert!(project_trust_args(spec, &keys).is_empty(), "{}", spec.id);
+            }
+        }
+        let codex = crate::domain::harness::by_id("codex").expect("codex is registered");
+        assert!(project_trust_args(codex, &ProjectTrustKeys::default()).is_empty());
+    }
+
+    /// A trust key is an absolute path in either platform's spelling, named
+    /// once; an empty, relative or repeated one is refused.
+    #[test]
+    fn project_trust_keys_admit_only_new_absolute_spellings() {
+        let mut keys = ProjectTrustKeys::default();
+        for key in ["/a", r"C:\a", "D:/a", r"\\host\share"] {
+            assert!(keys.push(key.to_string()), "{key}");
+        }
+        for key in ["", "a/b", "C:", "C:a", r"\a", "/a"] {
+            assert!(!keys.push(key.to_string()), "{key:?}");
+        }
+        assert_eq!(keys.as_slice(), ["/a", r"C:\a", "D:/a", r"\\host\share"]);
     }
 
     #[test]

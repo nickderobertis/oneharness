@@ -16,7 +16,11 @@ import json
 import math
 import os
 import re
+import shlex
+import shutil
 import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Callable, NamedTuple, Optional
@@ -728,6 +732,271 @@ class CodexSuite(BudgetCase):
         self.assertIn(
             f"largest: launch {probe['launch_id']} (phase usage-probe, kind app-server",
             selected.stdout,
+        )
+
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "the suite's controlled turn runs hermetically on the Linux leg alone",
+    )
+    def test_the_rendezvous_check_passes_when_its_server_stopped_before_the_step(self) -> None:
+        tmp = scratch(self)
+        # A zero linger: the pool stops the controlled turn's server the moment
+        # its lease ends, before `oneharness run` returns, so it is gone by the
+        # time the post-turn step runs.
+        run = self.run_codex(tmp, ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS="0")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("» usage:", run.stderr)
+        # Each server's stop reached its wrapper, which went with Codex and
+        # took the private path it had Codex bind.
+        sockets = list((tmp / "state" / "oneharness" / "servers").glob("*/sock/*"))
+        self.assertEqual([p for p in sockets if p.name.startswith(".")], [], sockets)
+
+    def short_state(self) -> Path:
+        """A state directory short enough that the pool's --listen path fits
+        `sun_path`, so the mock binds it directly and leaves no link to read,
+        as a Codex that stopped linking its rendezvous would."""
+        state = Path(tempfile.mkdtemp(prefix="oh-", dir="/tmp"))
+        self.addCleanup(shutil.rmtree, state, True)
+        listen = state / "oneharness/servers/codex-app-server-0123456789abcdef/sock/app-server.sock"
+        self.assertLess(len(str(listen)), 100, listen)
+        return state
+
+    def run_with_evidence_read(
+        self, tmp: Path, before: str, **extra: str
+    ) -> subprocess.CompletedProcess[str]:
+        """The suite, its step's `jq` read of the rendezvous evidence first
+        running the bash `before` (the evidence file is `$1`)."""
+        real = shutil.which("jq")
+        self.assertIsNotNone(
+            real, "no jq on PATH; install it (the codex suite reads every record with it)"
+        )
+        need_builds(self)
+        hooked = tmp / "hooked-jq"
+        hooked.mkdir()
+        (hooked / "jq").write_text(
+            "#!/usr/bin/env bash\n"
+            'for arg in "$@"; do case "$arg" in */rendezvous.jsonl)\n'
+            f'  set -- "$arg" "$@"; {before}\n'
+            "  shift; break ;;\n"
+            "esac; done\n"
+            f'exec {shlex.quote(str(real))} "$@"\n'
+        )
+        (hooked / "jq").chmod(0o755)
+        env = suite_env(tmp, "codex", OH_E2E_PHASE_LIMIT="3", **extra)
+        first, rest = env["PATH"].split(os.pathsep, 1)
+        env["PATH"] = os.pathsep.join((first, str(hooked), rest))
+        return run_suite("codex", env)
+
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "the suite's controlled turn runs hermetically on the Linux leg alone",
+    )
+    def test_the_rendezvous_verdict_stands_when_judged_after_its_server_exited(self) -> None:
+        # The step's read of the evidence is held until no pool record is left,
+        # the zero-linger server having exited, and notes that it waited: the
+        # verdict is then the evidence's alone, a pass on a clean rendezvous and
+        # the drift on a moved one.
+        cases = {
+            "clean": lambda tmp: {},
+            "drift": lambda tmp: {"CODEX_MOCK_DAEMON_DIR": str(tmp / "elsewhere")},
+        }
+        for case, extra in cases.items():
+            with self.subTest(rendezvous=case):
+                tmp = scratch(self)
+                waited = tmp / "waited"
+                run = self.run_with_evidence_read(
+                    tmp,
+                    "for _ in $(seq 300); do"
+                    ' compgen -G "$XDG_STATE_HOME/oneharness/servers/*/server.json" >/dev/null ||'
+                    f" {{ echo gone >{shlex.quote(str(waited))}; break; }}; sleep 0.1; done",
+                    ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS="0",
+                    **extra(tmp),
+                )
+                if case == "clean":
+                    self.assertEqual(run.returncode, 0, run.stderr)
+                    self.assertIn("» usage:", run.stderr)
+                else:
+                    self.assertNotEqual(run.returncode, 0, run.stderr)
+                    self.assertIn(
+                        f"and bound its socket under {(tmp / 'elsewhere').resolve()}, not /tmp/codex-daemon-",
+                        run.stderr,
+                    )
+                self.assertEqual(waited.read_text(), "gone\n", run.stderr)
+
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "the suite's controlled turn runs hermetically on the Linux leg alone",
+    )
+    def test_the_rendezvous_step_names_an_override_removed_before_its_read(self) -> None:
+        tmp = scratch(self)
+        gone = tmp / "gone"
+        # Remove the override after the controlled turn, so launch validation
+        # accepts it and the check itself diagnoses its disappearance.
+        run = self.run_with_evidence_read(
+            tmp,
+            f"rm -rf {shlex.quote(str(gone))}",
+            ONEHARNESS_INTERNAL_CODEX_DAEMON_DIR=str(gone),
+            CODEX_MOCK_DAEMON_DIR=str(gone),
+        )
+        self.assertNotEqual(run.returncode, 0, run.stderr)
+        self.assertIn(f"ONEHARNESS_INTERNAL_CODEX_DAEMON_DIR={gone} is not a directory", run.stderr)
+
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "the suite's controlled turn runs hermetically on the Linux leg alone",
+    )
+    def test_the_rendezvous_step_names_evidence_it_cannot_read_or_that_holds_nothing(
+        self,
+    ) -> None:
+        cases = {
+            "unreadable": (
+                "echo 'jq: error: simulated' >&2; exit 2",
+                "FAIL: codex rendezvous: cannot read the rendezvous evidence",
+            ),
+            "malformed": (
+                'printf \'{"listen": "x"}\\n\' >"$1"',
+                'not a rendezvous record: {"listen":"x"}',
+            ),
+            # As when a server started before the suite served its turn.
+            "empty": (
+                ': >"$1"',
+                "FAIL: codex rendezvous: no shared codex server started through"
+                " scripts/e2e-codex-rendezvous.sh during the controlled turn",
+            ),
+        }
+        for case, (before, said) in cases.items():
+            with self.subTest(evidence=case):
+                run = self.run_with_evidence_read(scratch(self), before)
+                self.assertNotEqual(run.returncode, 0, run.stderr)
+                self.assertIn(said, run.stderr)
+
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "the suite's controlled turn runs hermetically on the Linux leg alone",
+    )
+    def test_the_rendezvous_step_fails_evidence_of_a_loosened_socket_directory(self) -> None:
+        # Codex refuses any directory but 0700 today (the mock does too), so a
+        # server that recorded 0755 is one whose Codex accepted it: the
+        # evidence it would have written stands in for that Codex.
+        real = shutil.which("jq")
+        self.assertIsNotNone(real, "no jq on PATH; install it")
+        loosen = (
+            f'{shlex.quote(str(real))} -c \'.mode = "755"\' "$1" >"$1.loose"'
+            ' && mv -f "$1.loose" "$1"'
+        )
+        run = self.run_with_evidence_read(scratch(self), loosen)
+        self.assertNotEqual(run.returncode, 0, run.stderr)
+        self.assertRegex(
+            run.stderr,
+            r"FAIL: codex rendezvous: /tmp/codex-daemon-\d+ is mode 755, not the 0700 Codex demands",
+        )
+
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "the suite's controlled turn runs hermetically on the Linux leg alone",
+    )
+    def test_the_rendezvous_step_fails_a_socket_directory_with_a_special_bit_set(self) -> None:
+        # A real socket directory of the test's own (the launch's and the
+        # mock's overrides, never the host's): 0700 passes, and setuid,
+        # setgid or sticky on top fails the step's verdict, as Codex demands
+        # exactly 0700 — the mock, checking only the low bits, binds them all.
+        for bits in (0o700, 0o1700, 0o2700, 0o4700):
+            with self.subTest(mode=oct(bits)):
+                tmp = scratch(self)
+                daemon = tmp / "daemon"
+                daemon.mkdir()
+                daemon.chmod(bits)
+                self.assertEqual(daemon.stat().st_mode & 0o7777, bits)
+                run = self.run_codex(
+                    tmp,
+                    ONEHARNESS_INTERNAL_CODEX_DAEMON_DIR=str(daemon),
+                    CODEX_MOCK_DAEMON_DIR=str(daemon),
+                )
+                if bits == 0o700:
+                    self.assertEqual(run.returncode, 0, run.stderr)
+                    self.assertIn("» usage:", run.stderr)
+                else:
+                    self.assertNotEqual(run.returncode, 0, run.stderr)
+                    self.assertIn(
+                        f"FAIL: codex rendezvous: {daemon.resolve()} is mode {bits:o},"
+                        " not the 0700 Codex demands of it",
+                        run.stderr,
+                    )
+
+    @unittest.skipUnless(
+        sys.platform.startswith("linux") and os.geteuid() != 0,
+        "the suite's controlled turn runs hermetically on the Linux leg alone, and root"
+        " removes a read-only directory's contents",
+    )
+    def test_a_rendezvous_scratch_directory_it_cannot_remove_is_named(self) -> None:
+        tmp = scratch(self)
+        # A read-only directory left in the scratch directory as the step reads
+        # its evidence, so removing it at the suite's end fails.
+        held = '"$(dirname "$1")/held"'
+        run = self.run_with_evidence_read(tmp, f"mkdir {held} && : >{held}/f && chmod 555 {held}")
+        for left in (tmp / "live-tmp").glob("oh-codex-rendezvous.*/held"):
+            left.chmod(0o755)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertRegex(
+            run.stderr,
+            r"could not remove the scratch directory \S+/oh-codex-rendezvous\.\w+ \(rm's error above\)"
+            " — delete it by hand",
+        )
+
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "the suite's controlled turn runs hermetically on the Linux leg alone",
+    )
+    def test_the_rendezvous_setup_names_a_temp_dir_it_cannot_use(self) -> None:
+        tmp = scratch(self)
+        missing = tmp / "no-such-tmp"
+        run = self.run_codex(tmp, TMPDIR=str(missing))
+        self.assertNotEqual(run.returncode, 0, run.stderr)
+        self.assertIn("FAIL: codex rendezvous: could not create a scratch directory", run.stderr)
+        self.assertNotIn("» controlled turn:", run.stderr)
+
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "the suite's controlled turn runs hermetically on the Linux leg alone",
+    )
+    def test_the_rendezvous_check_fails_a_turn_whose_server_left_no_link(self) -> None:
+        tmp = scratch(self)
+        state = self.short_state()
+        run = self.run_codex(tmp, XDG_STATE_HOME=str(state))
+        self.assertNotEqual(run.returncode, 0, run.stderr)
+        self.assertIn("PASS: codex live e2e\n» controlled turn:", run.stderr)
+        self.assertIn(
+            f"FAIL: codex rendezvous: the shared server bound {state}/oneharness/servers/",
+            run.stderr,
+        )
+        self.assertIn("itself rather than linking that --listen path", run.stderr)
+
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "the suite's controlled turn runs hermetically on the Linux leg alone",
+    )
+    def test_a_suite_that_dies_in_its_controlled_turn_leaves_no_rendezvous_scratch(self) -> None:
+        tmp = scratch(self)
+        # The server refuses the turn's thread, which ends the suite.
+        run = self.run_codex(tmp, CODEX_MOCK_FAULT="refuse-thread-start")
+        self.assertNotEqual(run.returncode, 0, run.stderr)
+        self.assertIn("» controlled turn:", run.stderr)
+        self.assertNotIn("codex rendezvous:", run.stderr)
+        self.assertEqual(list((tmp / "live-tmp").glob("oh-codex-rendezvous.*")), [])
+
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "the suite's controlled turn runs hermetically on the Linux leg alone",
+    )
+    def test_the_rendezvous_check_fails_a_server_bound_outside_codexs_rendezvous(self) -> None:
+        tmp = scratch(self)
+        # The mock binds its socket where Codex would if Codex moved its
+        # rendezvous: the check must name that drift.
+        elsewhere = tmp / "elsewhere"
+        run = self.run_codex(tmp, CODEX_MOCK_DAEMON_DIR=str(elsewhere))
+        self.assertNotEqual(run.returncode, 0, run.stderr)
+        self.assertIn(
+            f"and bound its socket under {elsewhere.resolve()}, not /tmp/codex-daemon-", run.stderr
         )
 
     def test_a_phase_whose_launch_the_shim_could_not_measure_fails_the_check_step(self) -> None:

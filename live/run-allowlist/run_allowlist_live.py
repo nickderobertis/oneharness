@@ -1,6 +1,6 @@
 """Live proof of the run-level allowlist against the real Claude Code and Codex.
 
-    run_allowlist_live.py [--harness claude-code,codex] [--codex-path exec|control|both]
+    run_allowlist_live.py [--harness claude-code,codex,opencode] [--codex-path exec|control|both]
                           [--only GROUP,...] [--scratch DIR] [--keep]
     run_allowlist_live.py --budget-telemetry PATH       the budget workload alone
 
@@ -23,7 +23,8 @@ a `[sync] allowed_tools` rule granting `touch`, which `oneharness sync` writes
 into the worktree before any turn.
 
 Groups (`--only`): sync, probes, posture, lifecycle, kill, concurrency, session,
-record (Codex), login (Codex), keyring (Codex). Exits 0 when every check
+record (Codex), login (Codex), keyring (Codex); OpenCode, which withholds the
+grant, runs `withheld` alone: each turn granted and not, the same outcome. Exits 0 when every check
 passed; otherwise prints each failure and exits 1. Quiet but for one line per
 check group and every failure.
 """
@@ -171,9 +172,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.endpoint.rejected_bearers.append(self.headers.get("authorization") or "")
             self._json({"error": {"message": "unauthorized", "code": "invalid_token"}}, 401)
             return
-        anthropic = path.endswith("/messages")
-        responses = path.endswith("/responses")
-        if not (anthropic or responses):
+        dialect = (
+            "anthropic"
+            if path.endswith("/messages")
+            else "responses"
+            if path.endswith("/responses")
+            else "chat"
+            if path.endswith("/chat/completions")
+            else ""
+        )
+        if not dialect:
             self._json({"error": {"message": f"unknown path {path}"}}, 404)
             return
         # The turn's own prompt is the last one: a resumed conversation also
@@ -181,13 +189,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         marks = list(MARK.finditer(json.dumps(body)))
         found = marks[-1] if marks else None
         tools = [t.get("name") or t.get("type", "") for t in body.get("tools") or []]
+        anthropic = dialect
         with self.endpoint.lock:
             script = self.endpoint.scripts.get(found.group(1)) if found else None
         if script is None or not tools:
             # A side request (a title, a summary) or a turn this run never scripted.
             self._answer(anthropic, body, None)
             return
-        made, results = history(anthropic, body, found.group(0))
+        made, results = history(dialect, body, found.group(0))
         script.requests.append({"made": made, "results": results, "at": time.time()})
         script.seen.set()
         if script.hold is not None:
@@ -200,18 +209,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         self._answer(anthropic, body, call)
 
-    def _answer(self, anthropic: bool, body: dict[str, Any], call: Optional[Call]) -> None:
-        if anthropic:
-            answer_anthropic(self, body, call)
-        else:
-            answer_responses(self, body, call)
+    def _answer(self, dialect: str, body: dict[str, Any], call: Optional[Call]) -> None:
+        {"anthropic": answer_anthropic, "responses": answer_responses, "chat": answer_chat}[
+            dialect
+        ](self, body, call)
 
 
-def history(anthropic: bool, body: dict[str, Any], mark: str) -> tuple[int, list[str]]:
+def history(dialect: str, body: dict[str, Any], mark: str) -> tuple[int, list[str]]:
     """(tool calls the model made, tool results the harness returned) since the
     turn's own prompt — a resumed conversation carries earlier turns' too."""
     made, results = 0, []
-    if anthropic:
+    if dialect == "chat":
+        messages = body.get("messages") or []
+        start = max((i for i, m in enumerate(messages) if mark in json.dumps(m)), default=0)
+        for m in messages[start:]:
+            if m.get("role") == "assistant":
+                made += len(m.get("tool_calls") or [])
+            if m.get("role") == "tool":
+                results.append(_text(m.get("content")))
+        return made, results
+    if dialect == "anthropic":
         messages = body.get("messages") or []
         start = max((i for i, m in enumerate(messages) if mark in json.dumps(m)), default=0)
         for m in messages[start:]:
@@ -302,6 +319,61 @@ def answer_anthropic(h: Handler, body: dict[str, Any], call: Optional[Call]) -> 
             ("message_stop", {"type": "message_stop"}),
         ]
     )
+
+
+def answer_chat(h: Handler, body: dict[str, Any], call: Optional[Call]) -> None:
+    """An OpenAI Chat Completions stream (OpenCode's openai-compatible provider)."""
+    base = {
+        "id": "chatcmpl-" + uuid.uuid4().hex[:16],
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": "m",
+    }
+    if call is None:
+        delta: dict[str, Any] = {"role": "assistant", "content": "done"}
+        finish = "stop"
+    else:
+        name, args = {
+            "shell": ("bash", {"command": call.cmd, "description": "live probe"}),
+            "write": ("write", {"filePath": call.path, "content": call.content}),
+            "edit": (
+                "edit",
+                {"filePath": call.path, "oldString": "worktree", "newString": "pwned"},
+            ),
+            "task": (
+                "task",
+                {"description": "live probe", "prompt": call.cmd, "subagent_type": "general"},
+            ),
+            "read": ("read", {"filePath": call.path}),
+        }[call.kind]
+        delta = {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "index": 0,
+                    "id": "call_" + uuid.uuid4().hex[:12],
+                    "type": "function",
+                    "function": {"name": name, "arguments": json.dumps(args)},
+                }
+            ],
+        }
+        finish = "tool_calls"
+    chunks = [
+        {**base, "choices": [{"index": 0, "delta": delta, "finish_reason": None}]},
+        {**base, "choices": [{"index": 0, "delta": {}, "finish_reason": finish}]},
+        {
+            **base,
+            "choices": [],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        },
+    ]
+    h.send_response(200)
+    h.send_header("content-type", "text/event-stream")
+    h.end_headers()
+    for chunk in chunks:
+        h.wfile.write(("data: " + json.dumps(chunk) + "\n\n").encode())
+    h.wfile.write(b"data: [DONE]\n\n")
+    h.wfile.flush()
 
 
 def answer_responses(h: Handler, body: dict[str, Any], call: Optional[Call]) -> None:
@@ -428,7 +500,9 @@ class World:
 
     @property
     def home(self) -> Path:
-        return self.root / ("codex-home" if self.harness == "codex" else "claude-config")
+        return self.root / {"codex": "codex-home", "opencode": "opencode-home"}.get(
+            self.harness, "claude-config"
+        )
 
     @property
     def grant(self) -> Path:
@@ -470,6 +544,30 @@ class World:
         self.home.mkdir(parents=True, exist_ok=True)
         if self.harness == "codex":
             write_codex_home(self.home, self.endpoint.port)
+        if self.harness == "opencode":
+            (self.home / "config" / "opencode").mkdir(parents=True, exist_ok=True)
+            (self.home / "data" / "opencode").mkdir(parents=True, exist_ok=True)
+            (self.home / "config" / "opencode" / "opencode.json").write_text(
+                json.dumps(
+                    {
+                        "autoupdate": False,
+                        "share": "disabled",
+                        "model": "scripted/m",
+                        "small_model": "scripted/m",
+                        "provider": {
+                            "scripted": {
+                                "npm": "@ai-sdk/openai-compatible",
+                                "name": "scripted",
+                                "options": {
+                                    "baseURL": f"http://127.0.0.1:{self.endpoint.port}/v1",
+                                    "apiKey": "scripted",
+                                },
+                                "models": {"m": {"name": "m", "tool_call": True}},
+                            }
+                        },
+                    }
+                )
+            )
         self.write_config(grant=True)
         if self.harness == "codex":
             # A home Codex has already used, as a real one is: its sessions/
@@ -522,6 +620,10 @@ class World:
         (self.root / "user.toml").touch()
         if self.harness == "codex":
             env.update(CODEX_HOME=str(self.home), CODEX_SCRIPTED_KEY="scripted")
+        elif self.harness == "opencode":
+            env.update(
+                XDG_CONFIG_HOME=str(self.home / "config"), XDG_DATA_HOME=str(self.home / "data")
+            )
         else:
             env.update(
                 CLAUDE_CONFIG_DIR=str(self.home),
@@ -1257,6 +1359,58 @@ def group_record(world: World, fails: Failures) -> None:
     )
 
 
+def group_withheld(world: World, fails: Failures) -> None:
+    """A harness that withholds the grant (OpenCode) runs exactly as it does
+    with none, on its real CLI, and its report says so."""
+    label = f"{world.harness} withheld"
+    for probe in probes():
+        if probe.id not in ("granted-plain", "touch-worktree", "redirect-out"):
+            continue
+        outcomes = []
+        for grant in (True, False):
+            world.write_config(grant=grant)
+            before, before_records = snapshot(world), records(world)
+            turn, script = run_turn(
+                world,
+                f"{probe.id}-{uuid.uuid4().hex[:6]}",
+                [probe.call(world)],
+                describe(probe.call(world)),
+            )
+            after = snapshot(world)
+            result = (turn.report.get("results") or [{}])[0]
+            changed = sorted(k for k in set(before) | set(after) if before.get(k) != after.get(k))
+            outcomes.append((changed, records(world)[len(before_records) :]))
+            diags = [
+                d for d in result.get("diagnostics") or [] if d.get("setting") == "allowed_tools"
+            ]
+            fails.check(decided(script) is not None, f"{label} {probe.id}: no decision recorded")
+            fails.check(
+                len(diags) == (1 if grant else 0),
+                f"{label} {probe.id}: grant={grant} diagnostics {diags}",
+            )
+            fails.check(
+                "overlay_env" not in result, f"{label} {probe.id}: a withheld run used an overlay"
+            )
+            # Undo the turn's effects so both runs start from the same state.
+            for path in changed:
+                if Path(path).parent == world.wt:
+                    Path(path).unlink(missing_ok=True)
+            if world.log.exists():
+                world.log.write_text(
+                    "".join(
+                        line + "\n"
+                        for line in world.log.read_text().splitlines()[: len(before_records)]
+                    )
+                )
+        strip = lambda o: ([c.replace(str(world.wt), "") for c in o[0]], o[1])  # noqa: E731
+        fails.check(
+            strip(outcomes[0]) == strip(outcomes[1]),
+            f"{label} {probe.id}: the withheld run did {outcomes[0]}, the run without a grant "
+            f"{outcomes[1]}",
+        )
+    world.write_config(grant=True)
+
+
 def jwt(claims: dict[str, Any]) -> str:
     enc = lambda obj: base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()  # noqa: E731
     return f"{enc({'alg': 'none', 'typ': 'JWT'})}.{enc(claims)}.c2ln"
@@ -1473,7 +1627,7 @@ def budget_workload(world: World, path: Path) -> None:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--harness", default="claude-code,codex")
+    parser.add_argument("--harness", default="claude-code,codex,opencode")
     parser.add_argument("--codex-path", default="exec", choices=("exec", "control", "both"))
     parser.add_argument("--only", default="")
     parser.add_argument("--scratch", type=Path)
@@ -1525,6 +1679,8 @@ def main(argv: list[str]) -> int:
                 ("concurrency", lambda w: group_concurrency(w, fails)),
                 ("session", lambda w: group_session(w, fails)),
             ]
+            if world.harness == "opencode":
+                groups = [("withheld", lambda w: group_withheld(w, fails))]
             if world.harness == "codex" and not world.control:
                 groups += [
                     ("record", lambda w: group_record(w, fails)),

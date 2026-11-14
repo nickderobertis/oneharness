@@ -423,8 +423,9 @@ pub fn statement(paths: &[&str]) -> Option<String> {
         "This run may execute these commands: {list}. To run one, type its absolute path \
          exactly as written here, as one plain command on its own — not through a variable, \
          alias or function, and with no `;`, `&&`, `||`, pipe, redirection, command \
-         substitution or second line — and pass any text it needs as one single-quoted \
-         argument, which may span several lines."
+         substitution or second line — and pass any text it needs as one quoted argument \
+         (single quotes, or double quotes when the text holds an apostrophe), which may span \
+         several lines."
     ))
 }
 

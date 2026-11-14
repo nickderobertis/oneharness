@@ -363,10 +363,10 @@ live-cursor: _live-install
 live-schema: _live-install
     ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-schema.sh
 
-# Live proof of the run-level `allowed_tools`: Claude Code and Codex `exec`
-# under `--mode read-only`, each real CLI against a scripted model endpoint (no
-# model quota). Codex's `--control` half runs in `live-control`. See
-# live/run-allowlist/AGENTS.md.
+# Live proof of the run-level `allowed_tools`: Claude Code, Codex `exec` and
+# OpenCode (which withholds it) under `--mode read-only`, each real CLI against
+# a scripted model endpoint (no model quota). Codex's `--control` half runs in
+# `live-control`. See live/run-allowlist/AGENTS.md.
 live-run-allowlist: _live-install
     ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" uv run --no-project python live/run-allowlist/run_allowlist_live.py
 

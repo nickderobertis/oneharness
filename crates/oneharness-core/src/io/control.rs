@@ -99,6 +99,37 @@ const HOLD_ABORT_ENV: &str = "ONEHARNESS_INTERNAL_HOLD_ABORT";
 #[cfg(feature = "mock-harness")]
 const HOLD_REDIRECT_WRITTEN_ENV: &str = "ONEHARNESS_INTERNAL_HOLD_REDIRECT_WRITTEN";
 
+/// What the [`HOLD_ABORT_ENV`] seam waits for.
+#[cfg(feature = "mock-harness")]
+#[derive(Clone, Copy)]
+enum AbortHold {
+    /// The aborted turn's end has reached the run (or the run released).
+    TurnEnded,
+    /// The run has released its candidate.
+    Released,
+}
+
+#[cfg(feature = "mock-harness")]
+impl AbortHold {
+    /// The hold `HOLD_ABORT_ENV` names, if any. A value it does not name is
+    /// warned about and holds nothing, so a mistyped journey fails on its own
+    /// assertions rather than on a hold it never asked for.
+    fn from_env() -> Option<Self> {
+        let raw = std::env::var(HOLD_ABORT_ENV).ok()?;
+        match raw.as_str() {
+            "turn-ended" => Some(Self::TurnEnded),
+            "released" => Some(Self::Released),
+            _ => {
+                eprintln!(
+                    "oneharness: warning: ignoring {HOLD_ABORT_ENV}={raw:?}: expected \
+                     `turn-ended` or `released`"
+                );
+                None
+            }
+        }
+    }
+}
+
 /// Poll `done` until it holds, for one of the seams above. Bounded, so a
 /// journey whose interleaving never comes gets its own failure back rather
 /// than a hung suite.
@@ -1039,15 +1070,14 @@ impl ControlHandle {
     /// redirection not yet handed on. Holds no lock while it waits.
     #[cfg(feature = "mock-harness")]
     fn hold_abort_written(&self) {
-        let Ok(until) = std::env::var(HOLD_ABORT_ENV) else {
-            return;
-        };
-        if until == "released" {
-            hold_until("the run's release", || self.mechanism().is_none());
-        } else {
-            hold_until("the aborted turn's end", || {
+        match AbortHold::from_env() {
+            None => {}
+            Some(AbortHold::Released) => {
+                hold_until("the run's release", || self.mechanism().is_none());
+            }
+            Some(AbortHold::TurnEnded) => hold_until("the aborted turn's end", || {
                 matches!(&*self.redirect(), Redirect::Answered(_)) || self.mechanism().is_none()
-            });
+            }),
         }
     }
 

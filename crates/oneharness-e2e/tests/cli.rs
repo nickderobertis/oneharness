@@ -33701,6 +33701,7 @@ fn a_redirect_whose_run_exits_first_is_refused_and_never_delivered() {
     }
 }
 
+// llmlint: ignore-block[e2e_not_mocked, tests_mirror_real_usage] Each journey drives the real built `oneharness run --control` and a separate `oneharness interrupt`; only the harness process is the repository's Claude double, because real Claude Code cannot be made to answer an abort at a chosen instant inside the gate, and its redirect is held live by scripts/e2e-control.sh (`oh_control_redirect_enforce`). Each race sits between two threads inside the run — the opening and the interrupt, or the interrupt and the run's stdout reader — so no input a user sends can place it deterministically; the `ONEHARNESS_INTERNAL_HOLD_*` seams, compiled only into the `mock-harness` test build, hold the run at exactly that point and nothing else, the structural substitute for the interleaving a loaded host produces by chance (as onejudge's stress runs did).
 /// An interrupt that lands while the turn is opening — its stdin parked, so
 /// the run is live to the control socket, but its prompt not yet written — is
 /// written after that prompt, never before it: an abort that is the harness's
@@ -33806,6 +33807,8 @@ fn a_redirect_whose_aborted_turn_ended_before_the_run_released_is_refused_no_act
     assert_undelivered(&answer, &report, "no_active_turn", "released");
     assert_eq!(carried(&received), 0, "{received}");
 }
+
+// llmlint: ignore-end[e2e_not_mocked, tests_mirror_real_usage]
 
 /// A redirect whose aborted turn never ends would hold the supervisor
 /// forever, so past the run's delivery deadline a message nothing has claimed

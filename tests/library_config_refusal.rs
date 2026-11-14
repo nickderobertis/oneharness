@@ -73,7 +73,6 @@ const MISPLACED: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// Assert `message` names the file, the field and its `[sync]` spelling.
 fn assert_names(message: &str, file: &Path, field: &str, spelling: &str) {
     let file = file.display().to_string();
     for expected in [file.as_str(), field, spelling] {

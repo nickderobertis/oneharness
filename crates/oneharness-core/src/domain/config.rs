@@ -581,7 +581,10 @@ pub fn parse(text: &str) -> Result<FileConfig, String> {
 /// allowlist.
 const SYNC_ONLY_FIELDS: [&str; 3] = ["denied_tools", "hooks", "settings"];
 
-/// Where a misplaced sync-policy field belongs in `[sync]`.
+/// The spelling a refusal tells the user to write instead. `denied_tools` is
+/// a list, so it stays a key of the `[sync…]` table; `hooks` and `settings`
+/// are tables of their own. A top-level `settings` has no top-level home in
+/// `[sync]` (its shape is per harness), so it points at the per-harness one.
 fn sync_spelling(field: &str, table: Option<&str>) -> String {
     match (field, table) {
         ("hooks", None) => "`[[sync.hooks]]`".to_string(),
@@ -653,7 +656,10 @@ fn misplaced_sync_policy(text: &str) -> Option<String> {
     ))
 }
 
-/// Whether a parsed document sets `allowed_tools` anywhere outside `[sync]`.
+/// A file refused for a misplaced field that also sets `allowed_tools` outside
+/// `[sync]` is almost certainly one an earlier release synced from, so the
+/// refusal adds that its `allowed_tools` changed meaning too. Otherwise the user
+/// would move only the refused fields and lose the allow list from sync.
 fn has_run_level_allowed_tools(table: &toml::Table) -> bool {
     let holds = |value: &toml::Value| value.get("allowed_tools").is_some();
     table.contains_key("allowed_tools")

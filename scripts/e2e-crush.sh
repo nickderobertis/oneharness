@@ -28,9 +28,9 @@ oh_long_prompt_enforce crush
 # it entirely (options.disabled_tools) — so each phase gets its own sandbox.
 ok="$(oh_enforce_file ok)"
 blocked="$(oh_enforce_file blocked)"
-oh_sync_enforce crush "[harness.crush]
+oh_sync_enforce crush "[sync.harness.crush]
 allowed_tools = [\"bash\"]" "$ok" present allow
-oh_sync_enforce crush "[harness.crush]
+oh_sync_enforce crush "[sync.harness.crush]
 denied_tools = [\"bash\"]" "$blocked" absent deny
 note "PASS: crush sync enforcement"
 

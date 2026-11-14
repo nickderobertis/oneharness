@@ -151,9 +151,9 @@ run fails with a usage error before spawning.
   statements (`allow` / `forbidden`); a rule its patterns cannot express is
   reported per rule in `unmapped_rules`, never widened. OpenCode's `permission`
   is a policy map, not a list, so the lists are rejected for it — express it
-  with `[harness.opencode.settings]` instead. A rule aimed at a harness with no
-  mapping is a parse error (per-harness fields) or reported `unmapped` (top
-  level) — never silently dropped.
+  with `[sync.harness.opencode.settings]` instead. A rule aimed at a harness
+  with no mapping is a parse error (`[sync.harness.<id>]` fields) or reported
+  `unmapped` (the top of `[sync]`) — never silently dropped.
 - **hooks** — Claude Code's `hooks` table in `.claude/settings.json`. Other
   harnesses keep hooks in places oneharness doesn't manage yet (Copilot's
   `.github/hooks/`, Cursor's `hooks.json`, OpenCode's JS plugins).
@@ -336,7 +336,7 @@ oneharness list                                   # describe the registry
 oneharness detect --all                           # which harnesses are installed (+ versions)
 oneharness config                                 # effective layered config + where each value came from
 oneharness sync                                   # merge the unified settings into each harness's own config file
-oneharness sync --global                          # install [[hooks]] into the user-global config instead of the project
+oneharness sync --global                          # install [[sync.hooks]] into the user-global config instead of the project
 oneharness run --all --prompt "…"                 # a fallback chain over every harness: the first that can run does
 oneharness run --all --run-mode parallel --prompt "…"  # run everywhere at once
 oneharness run --harness claude-code,codex --prompt-file task.md
@@ -576,8 +576,8 @@ comma-separated like their repeatable flags (`ONEHARNESS_HARNESSES=claude-code,c
 `ONEHARNESS_MODELS=opus,sonnet` for the model fan-out),
 booleans take `true`/`false` (or `1`/`0`), and an empty value counts as unset. A
 malformed value (bad boolean/integer/format, unknown harness id) is the same
-loud usage error a file would raise. The sync-policy fields (`allowed_tools`,
-`denied_tools`, `hooks`, `settings`), the `[env]` table, and the
+loud usage error a file would raise. The `[sync]` section (every sync-policy
+field), the run-level `allowed_tools`, the `[env]` table, and the
 `[harness.<id>]` overrides have no env form by design.
 
 ```console
@@ -643,9 +643,10 @@ model = "claude-opus-4-8"
 A `[harness.<id>.variant.<name>]` section is an opt-in named preset selected
 everywhere as `<id>:<name>`. `--all` selects base harnesses only; variants never
 silently join an all-run. Names match `[A-Za-z0-9][A-Za-z0-9_-]{0,63}`.
-Variants accept the same model/bin/args/env/reasoning and sync fields as their
-base section. Precedence is built-ins → top level → base harness → variant →
-CLI. Each report result retains the base `harness`, and also records `variant`
+Variants accept the same model/bin/args/env/reasoning fields as their base
+section; a variant's sync policy sits in `[sync.harness.<id>.variant.<name>]`
+(either table declares the variant). Precedence is built-ins → top level → base
+harness → variant → CLI. Each report result retains the base `harness`, and also records `variant`
 and the composed `harness_id`.
 
 Credential values stay outside committed config. Within a variant child,
@@ -699,19 +700,8 @@ require_available = false       # --require-available
 history = false                 # --history / --no-history (opt-in run history)
 history_dir = "~/logs/oh"       # --history-dir (default: platform state dir)
 history_pointer_file = "run/pointers.jsonl"  # --history-pointer-file (see Run history)
-allowed_tools = ["Bash(git log:*)"]  # synced into each harness's config file
-denied_tools = ["Bash(rm:*)"]        # (see `oneharness sync` below)
-
-# A normalized pre-tool hook, fanned across every synced harness and rendered
-# into each one's native shape (a shared config file, a dedicated hooks file,
-# or a plugin). `{harness}` is replaced with the harness id. Unlike the
-# verbatim `[harness.<id>.hooks]` table below, this reaches ALL harnesses.
-[[hooks]]
-command = "mygate hook {harness}"   # required; {harness} → claude-code, codex, …
-matcher = "Bash"                    # optional tool-name matcher (harness dialect)
-timeout = 10                        # optional; honored where the schema has one
-# plugin_name = "mygate"            # optional identity for plugin/Copilot files
-# harnesses = ["claude-code"]       # optional; default = every synced harness
+# allowed_tools = ["Read"]      # the run-level allowlist: never synced, and this
+#                               # release refuses a run that sets it (see below)
 
 [env]                           # --env, for every harness
 RUST_LOG = "warn"
@@ -720,7 +710,6 @@ RUST_LOG = "warn"
 model = "claude-sonnet-4-5"     # each harness can name its own model
 bin = "/opt/claude"             # like --bin (the flag and ONEHARNESS_BIN_* win)
 args = ["--max-turns", "6"]     # extra argv appended for this harness only
-allowed_tools = ["Bash(git status --short)", "Bash(git diff --check)"]
 env = { ANTHROPIC_LOG = "debug" }
 
 [harness.claude-code.variant.work]
@@ -739,28 +728,130 @@ shared_model_catalog = false    # codex only: Codex fetches its own catalog per 
 model_catalog_refresh_seconds = 600  # codex only: shared catalog's age limit (default 3600)
 app_server = "per-dispatch"     # codex only: a --control turn on its own app-server child (default "shared")
 
+# Everything `oneharness sync` writes into each harness's own config file lives
+# in `[sync]`, and nothing else does (see *Syncing harness configs* below).
+[sync]
+allowed_tools = ["Bash(git log:*)"]  # synced into each harness's allow list
+denied_tools = ["Bash(rm:*)"]        # synced into each harness's deny list
+
+# A normalized pre-tool hook, fanned across every synced harness and rendered
+# into each one's native shape (a shared config file, a dedicated hooks file,
+# or a plugin). `{harness}` is replaced with the harness id. Unlike the
+# verbatim `[sync.harness.<id>.hooks]` table below, this reaches ALL harnesses.
+[[sync.hooks]]
+command = "mygate hook {harness}"   # required; {harness} → claude-code, codex, …
+matcher = "Bash"                    # optional tool-name matcher (harness dialect)
+timeout = 10                        # optional; honored where the schema has one
+# plugin_name = "mygate"            # optional identity for plugin/Copilot files
+# harnesses = ["claude-code"]       # optional; default = every synced harness
+
+[sync.harness.claude-code]      # per-harness sync policy: beats the top of [sync]
+allowed_tools = ["Bash(git status --short)", "Bash(git diff --check)"]
+
 # Lifecycle hooks, in the harness's own hooks schema, synced into its config
 # file (Claude Code's .claude/settings.json `hooks` key) uninterpreted.
-[harness.claude-code.hooks]
+[sync.harness.claude-code.hooks]
 PreToolUse = [{ matcher = "Bash", hooks = [{ type = "command", command = "./validate.sh" }] }]
+
+# A variant's sync policy beats its harness's for a sync selecting it.
+[sync.harness.claude-code.variant.work]
+denied_tools = ["Bash(git push:*)"]
 
 # Raw settings merged verbatim into a harness's config file — the escape
 # hatch for shapes the unified fields don't model, like OpenCode's
 # permission policy map.
-[harness.opencode.settings.permission]
+[sync.harness.opencode.settings.permission]
 edit = "deny"
 bash = { "git *" = "allow" }
 ```
 
 ### Syncing harness configs
 
-`allowed_tools`, `denied_tools`, `hooks`, `settings`, and the top-level
-`[[hooks]]` are **sync settings**: instead of being passed on each invocation,
-**`oneharness sync`** merges them into each harness's *own* project config file
-(the *synced config file* column in the matrix). That makes oneharness a
-config-sync dev tool: state the policy once in `oneharness.toml`, run `sync`,
-and it governs Claude Code, Codex, Cursor, Qwen, crush, and OpenCode even when
-they're used directly — oneharness is not needed at run time.
+The **`[sync]` section** holds the sync settings, and nothing else does: instead
+of being passed on each invocation, **`oneharness sync`** merges them into each
+harness's *own* project config file (the *synced config file* column in the
+matrix). That makes oneharness a config-sync dev tool: state the policy once in
+`oneharness.toml`, run `sync`, and it governs Claude Code, Codex, Cursor, Qwen,
+crush, and OpenCode even when they're used directly — oneharness is not needed
+at run time. A key's place says where it takes effect: inside `[sync]` it is
+written into harness files; outside it, it applies to a run.
+
+| table | fields |
+|-------|--------|
+| `[sync]` | `allowed_tools`, `denied_tools` (rule lists), and `[[sync.hooks]]` (normalized hooks) |
+| `[sync.harness.<id>]` | `allowed_tools`, `denied_tools`, `hooks` (the harness's verbatim hooks table), `settings` (a raw settings table) |
+| `[sync.harness.<id>.variant.<name>]` | the same four |
+
+A variant's value beats its harness's, which beats the top of `[sync]`; files
+layer (and `extends` folds) per field exactly as the rest of the config does.
+`sync` reads its policy from `[sync]` alone, and `[sync]` has no env form or
+flag. A config that sets no sync-policy field and no `allowed_tools` needs no
+edit: it loads, runs, and syncs exactly as before.
+
+**Outside `[sync]`, `allowed_tools` is the run-level allowlist** — at the top
+level, in `[harness.<id>]`, or in a variant, with the same rule syntax,
+precedence, and `extends` folding, and reported by `oneharness config` with its
+source. `sync` never writes it. **This release does not apply it yet:** a `run`
+whose resolved config holds a run-level rule stops with a usage error before
+anything is spawned, naming the rule and saying this release does not apply a
+run-level allowlist; a later release applies it per run.
+
+**`denied_tools`, `hooks` / `[[hooks]]`, and `settings` outside `[sync]` are
+refused.** Every command — `run`, `sync` in every mode, `config`, and the
+library's config load — stops with exit 2 before anything is written or
+spawned, naming the file, each misplaced field, and its `[sync]` spelling. That
+holds in every file of an `extends` chain. There is one config shape and no
+version key: a key such as `config_version` is an unknown field like any other.
+
+#### Migrating from top-level sync settings
+
+Before this release every sync-policy field sat at the top level or in
+`[harness.<id>]`. Move each into `[sync]`:
+
+```toml
+# Old spelling — now refused (and a top-level allowed_tools no longer syncs):
+allowed_tools = ["Bash(git log:*)"]
+denied_tools = ["Bash(rm:*)"]
+[[hooks]]
+command = "mygate hook {harness}"
+[harness.claude-code]
+model = "claude-sonnet-4-5"
+allowed_tools = ["Read"]
+[harness.opencode.settings.permission]
+edit = "deny"
+```
+
+```toml
+# New spelling — what `sync` writes is byte-for-byte what the old spelling wrote:
+[sync]
+allowed_tools = ["Bash(git log:*)"]
+denied_tools = ["Bash(rm:*)"]
+[[sync.hooks]]
+command = "mygate hook {harness}"
+[sync.harness.claude-code]
+allowed_tools = ["Read"]
+[sync.harness.opencode.settings.permission]
+edit = "deny"
+[harness.claude-code]           # run-level fields stay where they were
+model = "claude-sonnet-4-5"
+```
+
+**A top-level (or per-harness) `allowed_tools` changed meaning.** It no longer
+syncs: it is the run-level allowlist, so it must move to `[sync]
+allowed_tools` (or `[sync.harness.<id>] allowed_tools`) to keep being synced,
+and in this release `run` refuses it until a later release applies it per run.
+
+**The sync guard** keeps an unmoved file from silently erasing what an earlier
+release synced from it. In every mode, `sync` refuses with exit 2, writing
+nothing, when a rule it would remove from a harness's allow list — or rewrite
+out of the Codex rules file, which even a plain `sync` rewrites whole — is the
+translation of a rule in the resolved run-level `allowed_tools`; the error
+names the file and `[sync] allowed_tools`. `--exact` is the other mode that
+removes allow-list entries, so it meets the guard on the JSON harnesses too;
+`--global` writes no permission file and never does. The guard fires only on
+that evidence, so a config whose run-level rules were never synced never sees
+it. It recognizes an entry only in the spelling `sync` writes: a hand-edited
+harness file holding the same rule in another spelling is not caught.
 
 **Codex** takes the permission lists into its own execpolicy rules file,
 `.codex/rules/oneharness.rules` under the project. Codex loads
@@ -770,7 +861,7 @@ project is **trusted** (`[projects."<path>"] trust_level = "trusted"` in the
 user's `config.toml`; a linked worktree inherits its main checkout's trust).
 oneharness owns that file wholly: it starts with a generated-do-not-edit
 comment, and every sync that changes it rewrites it whole, in either mode.
-Nothing else is written under `.codex/` beyond the `[[hooks]]` file below. The
+Nothing else is written under `.codex/` beyond the `[[sync.hooks]]` file below. The
 source stays the Claude-dialect strings; each rule's words are split the way a
 POSIX shell splits them:
 
@@ -789,14 +880,14 @@ rules still succeeds, and `--check` treats the file as in sync when it equals
 the translatable subset. The rules are proven honored by a directly started
 Codex (not through `oneharness run`) by the `oh_codex_rules_enforce` live phase.
 
-Hooks come in two forms. A `[harness.<id>.hooks]` table is written *verbatim*
-in that harness's own hooks schema, so it only reaches harnesses whose hooks
-live in the config file oneharness already syncs (Claude Code). A top-level
-`[[hooks]]` entry is **normalized**: oneharness renders it into each harness's
+Hooks come in two forms. A `[sync.harness.<id>.hooks]` table is written
+*verbatim* in that harness's own hooks schema, so it only reaches harnesses
+whose hooks live in the config file oneharness already syncs (Claude Code). A
+`[[sync.hooks]]` entry is **normalized**: oneharness renders it into each harness's
 native shape and delivers it the right way for that harness — merged into a
 shared file (Claude Code, Qwen, crush), written to a dedicated hooks file
 (Codex, Cursor, Copilot), or installed as a plugin (Goose's manifest +
-`hooks.json`, OpenCode's JS shim). One `[[hooks]]` entry therefore installs the
+`hooks.json`, OpenCode's JS shim). One `[[sync.hooks]]` entry therefore installs the
 same gate into **all eight** harnesses. The per-harness install appears under a
 `hooks` array in each entry of the `sync` JSON report.
 
@@ -806,11 +897,11 @@ oneharness sync --check          # CI mode: exit 1 (writing nothing) if out of s
 oneharness sync --exact          # hold every allow/deny list to exactly the config's
 oneharness sync --check --exact  # CI mode for that: extras in a list are out of sync too
 oneharness sync --harness claude-code --cwd ~/proj
-oneharness sync --global         # install [[hooks]] into the user-global config (~ / $XDG_CONFIG_HOME)
+oneharness sync --global         # install [[sync.hooks]] into the user-global config (~ / $XDG_CONFIG_HOME)
 ```
 
 By default `sync` writes the **project** config files. `--global` instead
-installs the normalized `[[hooks]]` into each harness's **user-global** location
+installs the normalized `[[sync.hooks]]` into each harness's **user-global** location
 (`~/.claude/settings.json`, `~/.codex/hooks.json`, `~/.copilot/hooks/…`,
 `$XDG_CONFIG_HOME/crush/crush.json`, `$XDG_CONFIG_HOME/opencode/plugin/…`, etc.),
 so the gate applies to every project. Permission rules and raw `settings` are
@@ -832,7 +923,7 @@ SyncMode::Exact)` in `oneharness-core`.
 
 #### The runtime gate (`oneharness gate`)
 
-A normalized `[[hooks]]` entry's `command` is what each harness runs before a
+A normalized `[[sync.hooks]]` entry's `command` is what each harness runs before a
 tool call. **`oneharness gate <id>`** is a ready-made such command: it reads the
 harness's pre-tool hook event on **stdin**, and — when the event matches
 `--deny-if-contains <substr>` — emits that harness's native *deny* verdict on
@@ -1111,12 +1202,12 @@ catalog is about 623 KB, at the top of its estimate; a `--control` launch
 fetches it twice; the apps MCP connection, which the reading missed, is the
 largest request a session makes; and the cloud config bundle made no request.
 
-**The standing-policy path** — a `[[hooks]]` entry synced into the harness's
+**The standing-policy path** — a `[[sync.hooks]]` entry synced into the harness's
 own config — remains available for policies that should persist (and is how
 qwen's user-scope delivery works):
 
 ```toml
-[[hooks]]
+[[sync.hooks]]
 command = "oneharness mock {harness} --rules /tmp/ws/rules.json --spy-file /tmp/ws/spy.jsonl"
 ```
 
@@ -3121,7 +3212,7 @@ unprivileged user namespaces. A model-free phase (`oh_codex_rules_match`) asks
 that Windows argv, so a Linux run proves the Windows match as well.
 
 The live check also proves **hook enforcement** the same way: it syncs a
-`[[hooks]]` entry whose command is `oneharness gate <id>` into the harness's own
+`[[sync.hooks]]` entry whose command is `oneharness gate <id>` into the harness's own
 config, then drives the real CLI under bypass (so the hook is the sole decider)
 through a marked command (the gate must block it) and an unmarked one (the gate
 must let it run). For **Qwen** the gate is synced with `--global` — Qwen only

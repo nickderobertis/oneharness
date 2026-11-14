@@ -301,7 +301,7 @@ pub enum Command {
     /// contract): every field's value and which config file (or built-in
     /// default) it came from.
     Config(ConfigArgs),
-    /// Merge the unified settings (permission rules, hooks, raw settings
+    /// Merge the `[sync]` policy (permission rules, hooks, raw settings
     /// tables) into each harness's own project config file, so the policy
     /// also applies when the tools are used directly, without oneharness.
     /// Non-destructive: unrelated keys are preserved, lists are unioned. Reports
@@ -315,7 +315,7 @@ pub enum Command {
     /// Run the pre-tool gate for a harness: read that harness's hook event on
     /// stdin and, when it matches, emit the harness's native *deny* verdict on
     /// stdout (otherwise nothing — the call proceeds). This is what an installed
-    /// `[[hooks]]` hook invokes, so it is the runtime proof a synced hook is
+    /// `[[sync.hooks]]` hook invokes, so it is the runtime proof a synced hook is
     /// honored. Always exits 0 (a gate never blocks on its own error).
     Gate(GateArgs),
     /// Run the mock/spy responder for a harness: read its pre-tool hook event
@@ -324,7 +324,7 @@ pub enum Command {
     /// the message as tool feedback) or an *input rewrite* (the call runs with
     /// substituted arguments, e.g. a shell command swapped for a stub printing
     /// canned output). No match, or no rules, emits nothing (the call proceeds
-    /// — spy-only). Installed the same way as `gate`, via a `[[hooks]]` entry;
+    /// — spy-only). Installed the same way as `gate`, via a `[[sync.hooks]]` entry;
     /// exits 0 on any post-startup fault (never blocks a call on its own
     /// error), while a bad ruleset or an action the harness cannot express is
     /// a loud usage error up front.
@@ -1320,7 +1320,7 @@ pub struct SyncArgs {
     pub exact: bool,
 
     /// Install hooks into the user-global config location (resolved from $HOME /
-    /// $XDG_CONFIG_HOME) instead of the project. Only `[[hooks]]` entries have a
+    /// $XDG_CONFIG_HOME) instead of the project. Only `[[sync.hooks]]` entries have a
     /// global mapping; permission rules and raw `settings` are project-scoped, so
     /// a config that sets them is a usage error under --global.
     #[arg(long)]

@@ -1831,7 +1831,8 @@ describe("OneHarness", () => {
 		const project = await scratch("config");
 		await writeFile(
 			resolve(project, "oneharness.toml"),
-			'harnesses = ["codex"]\nmode = "bypass"\n',
+			'harnesses = ["codex"]\nmode = "bypass"\n' +
+				'[sync.harness.claude-code]\ndenied_tools = ["Bash(rm:*)"]\n',
 		);
 		// `noConfig` is deliberately absent: this asserts the project layer is
 		// read and attributed, which is the whole of what the verb reports.
@@ -1839,6 +1840,10 @@ describe("OneHarness", () => {
 		expect(report.harnesses.value).toEqual(["codex"]);
 		expect(report.harnesses.source).toContain("oneharness.toml");
 		expect(report.mode.value).toBe("bypass");
+		const denied = report.sync.harness["claude-code"]?.denied_tools;
+		expect(denied?.value).toEqual(["Bash(rm:*)"]);
+		expect(denied?.source).toContain("oneharness.toml");
+		expect(report.allowed_tools.value).toBeNull();
 	}, 30_000);
 
 	test("layers each config path as its own --config, later files winning", async () => {
@@ -1860,7 +1865,7 @@ describe("OneHarness", () => {
 		const project = await scratch("sync");
 		await writeFile(
 			resolve(project, "oneharness.toml"),
-			'allowed_tools = ["Bash(echo:*)"]\n',
+			'[sync]\nallowed_tools = ["Bash(echo:*)"]\n',
 		);
 		// `--check` exits non-zero precisely because a file *would* change, and
 		// the method has to surface that as the report rather than as a throw.
@@ -1898,7 +1903,7 @@ describe("OneHarness", () => {
 		const project = await scratch("sync-exact");
 		await writeFile(
 			resolve(project, "oneharness.toml"),
-			'allowed_tools = ["Bash(echo:*)"]\n',
+			'[sync]\nallowed_tools = ["Bash(echo:*)"]\n',
 		);
 		await mkdir(resolve(project, ".claude"), { recursive: true });
 		await writeFile(

@@ -1,4 +1,4 @@
-//! `oneharness sync` — merge the unified settings (permission rules, hooks,
+//! `oneharness sync` — merge the `[sync]` policy (permission rules, hooks,
 //! raw settings tables) into each harness's own project config file, so the
 //! policy also governs the tools when they're used directly, without
 //! oneharness.

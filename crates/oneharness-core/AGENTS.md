@@ -324,7 +324,7 @@ boundary every surface (the CLI, the SDKs, an embedder) drives.
   makes the aborted turn's OWN submission fail (opencode answers its held-open
   prompt request with a refusal), and that refusal is not the run's outcome.
   `gate <id>` is the odd one out: the runtime pre-tool gate an
-  installed `[[hooks]]` hook invokes, reading a harness's hook event on stdin and
+  installed `[[sync.hooks]]` hook invokes, reading a harness's hook event on stdin and
   emitting its native deny verdict on stdout (pure shapes in `domain::gate`). It
   exists to prove a synced hook is *honored* end to end (the per-harness live
   e2e drives a real harness through it), not to be a policy engine — that is the
@@ -491,12 +491,23 @@ shape. When you add one:
   columns (`model`, `system`, bypass, allow/deny rules, hooks, output format,
   `--resume`), which document how each unified setting reaches (or doesn't
   reach) the harness — and the `supports_*` capability fields in the registry.
-  Policy settings (`allowed_tools`/`denied_tools`/`hooks`/`settings`) are
+  Policy settings (`allowed_tools`/`denied_tools`/`hooks`/`settings`) live
+  only in the `[sync]` section (`domain::config::SyncConfig`: `[sync]`,
+  `[sync.harness.<id>]`, `[sync.harness.<id>.variant.<name>]`) and are
   delivered by `oneharness sync` into the harness's own config file (the
   `SyncSpec` in the registry — file path + key paths, sourced from that CLI's
   docs, never guessed). They follow the loud-absence rule: no mapping means a
-  parse error for `[harness.<id>]` fields and an `unmapped` entry in the sync
-  report (plus a stderr warning) for top-level ones — never a silent drop. The
+  parse error for `[sync.harness.<id>]` fields and an `unmapped` entry in the
+  sync report (plus a stderr warning) for `[sync]`-top ones — never a silent
+  drop. Outside `[sync]`, `allowed_tools` is the run-level allowlist
+  (`FileConfig::allowed_tools_for`), which `sync` never writes and `run`
+  refuses until it is applied; `denied_tools`/`hooks`/`settings` outside
+  `[sync]` are refused in `domain::config::parse` (naming each and its
+  `[sync]` spelling) after the document's other unknown keys, so no key can
+  select another reading. The one old-file check is `sync`'s guard
+  (`io::sync::refuse_removing_run_level_rules`): it refuses, before any write,
+  to remove or rewrite away an entry that is the translation of a run-level
+  rule — never add a second detection of an old file. The
   sync merge is non-destructive by contract: unrelated keys untouched, lists
   unioned (idempotent re-sync), unparseable files refused and left intact,
   writes atomic. Keep those properties test-pinned when touching it. `--exact`

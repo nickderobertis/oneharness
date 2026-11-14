@@ -14883,6 +14883,154 @@ fn the_sync_guard_reads_the_resolved_run_level_rules_and_lets_a_kept_rule_stay()
     }
 }
 
+/// The user config is the lower layer of the scoped-policy journey: every
+/// per-harness field, and a variant with its own rules and settings.
+const SCOPED_SYNC_USER: &str = r#"[sync.harness.claude-code]
+allowed_tools = ["Read"]
+denied_tools = ["Bash(rm:*)"]
+[sync.harness.claude-code.hooks]
+PreToolUse = [{ matcher = "Bash", hooks = [{ type = "command", command = "./base.sh" }] }]
+[sync.harness.claude-code.settings]
+model = "base-model"
+theme = "dark"
+[sync.harness.claude-code.variant.work]
+denied_tools = ["Bash(git push:*)"]
+[sync.harness.claude-code.variant.work.settings]
+model = "user-work-model"
+includeCoAuthoredBy = false
+"#;
+
+/// The project config layered over [`SCOPED_SYNC_USER`]: it replaces the
+/// harness's allow list and gives the variant hooks and a settings table of
+/// its own.
+const SCOPED_SYNC_PROJECT: &str = r#"[sync.harness.claude-code]
+allowed_tools = ["Edit"]
+[sync.harness.claude-code.variant.work.hooks]
+PostToolUse = [{ matcher = "Edit", hooks = [{ type = "command", command = "./work.sh" }] }]
+[sync.harness.claude-code.variant.work.settings]
+model = "work-model"
+"#;
+
+#[test]
+fn scoped_sync_policy_layers_per_field_and_a_variant_replaces_its_harness_tables() {
+    // Each `[sync.harness.<id>]` and variant field layers on its own across
+    // files, with the later file winning. A `hooks` or `settings` table replaces
+    // whole, never merging key by key. A selected variant's field beats its
+    // harness's, and an unset one inherits it.
+    let sync_into = |tag: &str, selector: &str| -> Value {
+        let fx = ConfigFixture::new(tag, SCOPED_SYNC_PROJECT, SCOPED_SYNC_USER);
+        let output = run_with_config(
+            &[
+                "sync",
+                "--harness",
+                selector,
+                "--cwd",
+                &fx.cwd(),
+                "--compact",
+            ],
+            &[],
+            &fx.user_config(),
+        );
+        assert!(output.status.success(), "{selector}: {output:?}");
+        read_json(&std::path::Path::new(&fx.cwd()).join(".claude/settings.json"))
+    };
+
+    // The base harness: the project's allow list over the user's, and the
+    // user's deny list, hooks and settings, which the project does not set.
+    assert_eq!(
+        sync_into("scoped-sync-base", "claude-code"),
+        serde_json::json!({
+            "permissions": { "allow": ["Edit"], "deny": ["Bash(rm:*)"] },
+            "hooks": {
+                "PreToolUse": [{
+                    "matcher": "Bash",
+                    "hooks": [{ "type": "command", "command": "./base.sh" }]
+                }]
+            },
+            "model": "base-model",
+            "theme": "dark"
+        })
+    );
+
+    // The variant: the harness's allow list (the variant sets none), its own
+    // deny list, and its own hooks and settings in place of the harness's.
+    // The settings table is the project's alone: the user's
+    // `includeCoAuthoredBy` and the harness's `theme` are both gone.
+    assert_eq!(
+        sync_into("scoped-sync-variant", "claude-code:work"),
+        serde_json::json!({
+            "permissions": { "allow": ["Edit"], "deny": ["Bash(git push:*)"] },
+            "hooks": {
+                "PostToolUse": [{
+                    "matcher": "Edit",
+                    "hooks": [{ "type": "command", "command": "./work.sh" }]
+                }]
+            },
+            "model": "work-model"
+        })
+    );
+
+    // `config` reports each field where the file sets it, with the file that
+    // won.
+    let fx = ConfigFixture::new("scoped-sync-report", SCOPED_SYNC_PROJECT, SCOPED_SYNC_USER);
+    let output = run_with_config(
+        &["config", "--cwd", &fx.cwd(), "--compact"],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(output.status.success(), "{output:?}");
+    let report = json_stdout(&output);
+    let project = std::path::Path::new(&fx.cwd())
+        .join("oneharness.toml")
+        .display()
+        .to_string();
+    let user = fx.user_config().display().to_string();
+    let claude = &report["sync"]["harness"]["claude-code"];
+    let work = &claude["variant"]["work"];
+    for (field, value, source) in [
+        (
+            &claude["allowed_tools"],
+            serde_json::json!(["Edit"]),
+            &project,
+        ),
+        (
+            &claude["denied_tools"],
+            serde_json::json!(["Bash(rm:*)"]),
+            &user,
+        ),
+        (
+            &claude["settings"],
+            serde_json::json!({ "model": "base-model", "theme": "dark" }),
+            &user,
+        ),
+        (
+            &work["denied_tools"],
+            serde_json::json!(["Bash(git push:*)"]),
+            &user,
+        ),
+        (
+            &work["hooks"],
+            serde_json::json!({
+                "PostToolUse": [{
+                    "matcher": "Edit",
+                    "hooks": [{ "type": "command", "command": "./work.sh" }]
+                }]
+            }),
+            &project,
+        ),
+        (
+            &work["settings"],
+            serde_json::json!({ "model": "work-model" }),
+            &project,
+        ),
+    ] {
+        assert_eq!(field["value"], value, "{report}");
+        assert_eq!(field["source"], source.as_str(), "{report}");
+    }
+    assert_eq!(claude["hooks"]["source"], user.as_str(), "{report}");
+    assert_eq!(work["allowed_tools"]["value"], Value::Null, "{report}");
+}
+
 #[test]
 fn a_sync_policy_in_an_extends_parent_merges_under_the_child() {
     let fx = ConfigFixture::new("sync-extends", "", "");

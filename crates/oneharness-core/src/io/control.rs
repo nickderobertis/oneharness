@@ -587,7 +587,12 @@ impl ControlHandle {
     /// The interrupt waiting on that redirection is answered here too — with
     /// `not_running`, since the candidate it was aimed at is gone — so the
     /// supervisor learns the message is still theirs rather than being told it
-    /// was delivered.
+    /// was delivered — unless the turn it aborted had already ended (its end
+    /// arrived while the abort was being written, and the interrupt had not yet
+    /// come back to write the replacement): then the turn is what ended first,
+    /// and the answer is `no_active_turn`, as it is when the replacement's
+    /// write fails because the harness has gone. Which of the two threads gets
+    /// there first must not change what the supervisor is told.
     pub(crate) fn release(&self) {
         let undelivered = matches!(
             self.mechanism().take(),
@@ -603,6 +608,9 @@ impl ControlHandle {
                 "oneharness: warning: the interrupted turn ended before its redirection could be \
                  delivered; the message was not carried to another candidate"
             );
+        }
+        if matches!(held, Redirect::Answered(_)) {
+            self.settle_delivery(turn_ended_undelivered(None));
         }
         self.settle_delivery(run_ended_undelivered());
     }
@@ -2891,6 +2899,90 @@ mod tests {
         let events = handle.events();
         assert_eq!(events.len(), 1, "{events:?}");
         assert!(events[0].is_redirected(), "{events:?}");
+    }
+
+    #[test]
+    fn a_run_released_after_its_aborted_turn_ended_refuses_the_redirection_no_active_turn() {
+        // The turn's end arrives while the abort is being written, so the
+        // interrupt owes the replacement prompt; but the harness exits and the
+        // run releases its candidate before the interrupt's write has returned
+        // to deliver it. The aborted turn ended first, so the refusal is the
+        // `no_active_turn` a failed replacement write gives — not a
+        // `not_running` that depends on which thread got there first.
+        struct Gated {
+            entered: std::sync::mpsc::Sender<()>,
+            release: std::sync::mpsc::Receiver<()>,
+            written: Arc<Mutex<Vec<u8>>>,
+        }
+        impl io::Write for Gated {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                let _ = self.entered.send(());
+                let _ = self.release.recv();
+                self.written
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let dir = temp_dir("redirect-released-answered");
+        let path = socket_path(&dir, "live")
+            .expect("a short fixture name fits every platform's socket-address budget");
+        let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
+        let handle = listener.handle();
+        let (entered, writing) = std::sync::mpsc::channel();
+        let (release, gate) = std::sync::mpsc::channel();
+        let written = Arc::new(Mutex::new(Vec::new()));
+        handle.bind(Binding::Stdin);
+        *handle
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            TurnState::Active(Box::new(Gated {
+                entered,
+                release: gate,
+                written: Arc::clone(&written),
+            }));
+
+        let pending = send_in_background(&path, "do X instead");
+        writing.recv().unwrap();
+        assert!(
+            !handle.advance(r#"{"type":"result","subtype":"error_during_execution"}"#),
+            "a turn that may be the abort's answer is kept open for its redirection"
+        );
+        // The run is over: its candidate is released while the abort's write
+        // is still in progress, and has taken the redirection before it.
+        let releasing = std::thread::spawn({
+            let handle = Arc::clone(&handle);
+            move || handle.release()
+        });
+        wait_for("the release to take the redirection", || {
+            matches!(&*handle.redirect(), Redirect::None)
+        });
+        release.send(()).unwrap();
+        releasing.join().unwrap();
+
+        let response = pending.join().unwrap();
+        assert_eq!(
+            response.reason(),
+            Some(ControlReason::NoActiveTurn),
+            "{response:?}"
+        );
+        assert!(
+            response
+                .to_line()
+                .contains("the redirection was not delivered"),
+            "{response:?}"
+        );
+        let written = String::from_utf8(written.lock().unwrap().clone()).unwrap();
+        assert!(written.contains("control_request"), "{written}");
+        assert!(!written.contains("do X instead"), "{written}");
+        let events = handle.events();
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].reason(), Some(ControlReason::NoActiveTurn));
     }
 
     #[test]

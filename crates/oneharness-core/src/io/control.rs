@@ -913,6 +913,13 @@ impl ControlHandle {
         matches!(&*self.redirect(), Redirect::Deliverable(_))
     }
 
+    /// Whether an interrupt has started writing its abort frame, so a test can
+    /// hold a turn's opening until the abort is on its way.
+    #[cfg(all(test, unix))]
+    fn redirect_is_aborting(&self) -> bool {
+        matches!(&*self.redirect(), Redirect::Aborting(_))
+    }
+
     /// Shorten how long a redirection may wait to be written, so a test can
     /// reach the withdrawal without waiting out the real deadline.
     #[cfg(all(test, unix))]
@@ -1089,6 +1096,58 @@ impl ControlHandle {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = TurnState::Active(Box::new(stdin));
+    }
+
+    /// Park the child's stdin and open the turn on it with `prompt`, in one
+    /// step an interrupt cannot land inside.
+    ///
+    /// The turn is interruptible only once its opening frames are written. An
+    /// abort written before the prompt is the harness's first line, aimed at a
+    /// turn that does not exist yet: a strict harness exits on it, and one that
+    /// shrugs it off runs the whole prompt before the redirection is written.
+    /// So the frames are written under the SAME acquisition of the `state` lock
+    /// that parks stdin, and an interrupt arriving meanwhile waits on that lock
+    /// in its own write and then lands as an abort of the turn just opened.
+    ///
+    /// The frames are rendered first, under the `mechanism` lock alone; only the
+    /// `state` lock is held while they are written, and no other lock is taken
+    /// under it, so this nests inside the `mechanism`, `redirect`, `state` order
+    /// rather than inverting it. A full stdin pipe only delays the write: the
+    /// child drains its stdin without waiting on anything this run holds (its
+    /// stdout is drained by its own reader thread), and the interrupt waiting on
+    /// the lock holds no other lock while it waits.
+    ///
+    /// A write that fails leaves the turn parked, as a run whose prompt never
+    /// arrived — the harness's own exit and output then report it.
+    pub(crate) fn open_turn(
+        &self,
+        stdin: std::process::ChildStdin,
+        prompt: &str,
+    ) -> io::Result<()> {
+        let frames = self.open_frames(prompt);
+        self.open_turn_with(Box::new(stdin), &frames, || {})
+    }
+
+    /// [`Self::open_turn`] over any sink. `parked` runs once the turn's lock
+    /// is held and before its frames are written — the seam a test holds the
+    /// opening at.
+    fn open_turn_with(
+        &self,
+        mut sink: Box<dyn io::Write + Send>,
+        frames: &[String],
+        parked: impl FnOnce(),
+    ) -> io::Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        parked();
+        let written = frames.iter().try_for_each(|frame| {
+            sink.write_all(frame.as_bytes())?;
+            sink.flush()
+        });
+        *state = TurnState::Active(sink);
+        written
     }
 
     /// Mark a turn in flight on a shared app-server connection: `sink` sends
@@ -2732,6 +2791,102 @@ mod tests {
         assert_eq!(events.len(), 1, "{events:?}");
         assert!(events[0].is_redirected(), "{events:?}");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_interrupt_that_arrives_while_the_turn_is_opening_is_written_after_its_prompt() {
+        use std::io::BufRead;
+        // The window a loaded host hits at the start of a run: the child's
+        // stdin is parked, so the turn is live to the control socket, but its
+        // prompt is not written yet. An abort written into that gap is the
+        // harness's first line — before any turn exists to abort — so a
+        // harness that requires a prompt first exits without ending a turn, and
+        // the redirection is refused `not_running` once the run is over.
+        //
+        // A scripted harness, strict as Claude Code's stream input and
+        // onejudge's double are: a first line that is not a prompt makes it
+        // say so and exit 2. Otherwise it answers the abort with its
+        // end-of-turn document and echoes what it is sent next.
+        const ANSWER: &str = r#"{"type":"result","subtype":"error_during_execution"}"#;
+        const NO_PROMPT: &str = r#"{"type":"system","subtype":"first_line_was_not_a_prompt"}"#;
+        let dir = temp_dir("redirect-opening");
+        let path = socket_path(&dir, "live")
+            .expect("a short fixture name fits every platform's socket-address budget");
+        let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
+        let handle = listener.handle();
+        handle.bind(Binding::Stdin);
+        let mut child = std::process::Command::new("sh")
+            .args([
+                "-c",
+                &format!(
+                    "IFS= read -r first; case \"$first\" in *'\"type\":\"user\"'*) ;; \
+                     *) printf '%s\\n' '{NO_PROMPT}'; exit 2;; esac; \
+                     IFS= read -r abort; printf '%s\\n' '{ANSWER}'; exec cat"
+                ),
+            ])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        // The run's own reading of the harness's output, as its stdout loop
+        // does it, and — once the harness has exited — the release the run
+        // performs after it.
+        let spoke = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let heard = Arc::clone(&spoke);
+        let stdout = child.stdout.take().unwrap();
+        let reading = Arc::clone(&handle);
+        let reader = std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            for line in io::BufReader::new(stdout).lines() {
+                let line = line.unwrap();
+                let over = reading.advance(&line);
+                heard.store(true, std::sync::atomic::Ordering::SeqCst);
+                if over {
+                    reading.end_turn();
+                }
+                seen.push((line, over));
+            }
+            reading.release();
+            seen
+        });
+
+        // The opening is held once stdin is parked and before its prompt goes
+        // out, while the interrupt arrives and writes its abort — until the
+        // harness has answered whatever reached it first, or the abort is
+        // waiting on a stdin someone else holds (the opening itself, or the
+        // abort's own write, which then lands first anyway).
+        let mut pending = None;
+        let frames = handle.open_frames("start the task");
+        let opened = handle.open_turn_with(Box::new(child.stdin.take().unwrap()), &frames, || {
+            pending = Some(send_in_background(&path, "do X instead"));
+            wait_for("the interrupt to write its abort, or wait to", || {
+                spoke.load(std::sync::atomic::Ordering::SeqCst)
+                    || (handle.redirect_is_aborting() && handle.state.try_lock().is_err())
+            });
+        });
+
+        let response = pending.unwrap().join().unwrap();
+        assert!(
+            response.is_redirected(),
+            "an interrupt that arrived as the turn opened must redirect it: {response:?}"
+        );
+        assert!(opened.is_ok(), "{opened:?}");
+        handle.end_turn();
+        let seen = reader.join().unwrap();
+        child.wait().ok();
+        assert_eq!(seen.len(), 2, "{seen:?}");
+        assert_eq!(
+            seen[0],
+            (ANSWER.to_string(), false),
+            "the prompt came first, and the abort ended its turn"
+        );
+        let echoed: serde_json::Value = serde_json::from_str(&seen[1].0).unwrap();
+        assert_eq!(echoed["type"], "user");
+        assert_eq!(echoed["message"]["content"][0]["text"], "do X instead");
+        let events = handle.events();
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert!(events[0].is_redirected(), "{events:?}");
     }
 
     #[test]

@@ -759,12 +759,8 @@ where
     // prompt and reports its own error, which is more useful than a panic.
     if let Some(control) = control {
         if let Some(stdin) = process.take_stdin() {
-            control.handle.begin_turn(stdin);
-            for frame in control.handle.open_frames(&control.prompt) {
-                if let Err(err) = control.handle.write_line(&frame) {
-                    eprintln!("oneharness: warning: could not open the controlled turn: {err}");
-                    break;
-                }
+            if let Err(err) = control.handle.open_turn(stdin, &control.prompt) {
+                eprintln!("oneharness: warning: could not open the controlled turn: {err}");
             }
         }
     }

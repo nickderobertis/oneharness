@@ -101,6 +101,14 @@ pub struct BuildCtx<'a> {
     /// together in the claude-code adapter. Other harnesses receive their tool
     /// set as args from [`crate::domain::lean::deliver`].
     pub tools: Option<&'a [ToolClass]>,
+    /// The run-level allowlist's Claude Code entries, already resolved
+    /// ([`crate::domain::grant::GrantPlan::claude_allowed`]). Only claude-code
+    /// reads it: non-empty, they ride `--allowedTools`, and under `read-only`
+    /// the run moves from `bypassPermissions` to `dontAsk` with `Bash` added to
+    /// its `--tools` and the read tools allowed beside the rules, so the shell
+    /// runs only what a rule names. Empty — every run without a run-level
+    /// allowlist — the argv is exactly what it was before the field existed.
+    pub allowed_tools: &'a [String],
 }
 
 /// How the user prompt reaches the harness.
@@ -1784,27 +1792,46 @@ fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
     } else {
         a.push(c.prompt.into());
     }
+    // A run-level allowlist under read-only cannot ride `bypassPermissions`,
+    // which would run any command once `Bash` is offered: `dontAsk` refuses
+    // whatever no rule allows, so the read tools are allowed beside the
+    // granted executables (without them `dontAsk` refuses a Read outside the
+    // worktree and a WebFetch, which today's read-only allows).
+    let granted_read_only = !c.allowed_tools.is_empty() && c.mode == PermissionMode::ReadOnly;
     a.push("--permission-mode".into());
-    a.push(claude_permission_mode(c.mode).into());
+    a.push(if granted_read_only {
+        "dontAsk".into()
+    } else {
+        claude_permission_mode(c.mode).into()
+    });
     // read-only: narrow the built-in set to the tools that only read. A lean
     // `tool_set` is the same one list (intersected with read-only's under that
     // mode), because a second `--tools` would widen the first.
-    match c.tools {
-        Some(classes) => {
-            let names = lean::claude_tool_names(classes, c.mode, CLAUDE_READ_ONLY_TOOLS);
-            a.push(lean::claude_tools_flag().into());
-            if names.is_empty() {
-                a.push(String::new());
-            }
-            a.extend(names.into_iter().map(String::from));
+    let read_tools: Option<Vec<&str>> = match c.tools {
+        Some(classes) => Some(lean::claude_tool_names(
+            classes,
+            c.mode,
+            CLAUDE_READ_ONLY_TOOLS,
+        )),
+        None if c.mode == PermissionMode::ReadOnly => Some(CLAUDE_READ_ONLY_TOOLS.to_vec()),
+        None => None,
+    };
+    if let Some(names) = &read_tools {
+        a.push(lean::claude_tools_flag().into());
+        if names.is_empty() && !granted_read_only {
+            a.push(String::new());
         }
-        None if c.mode == PermissionMode::ReadOnly => {
-            a.push(lean::claude_tools_flag().into());
-            for tool in CLAUDE_READ_ONLY_TOOLS {
-                a.push((*tool).into());
-            }
+        a.extend(names.iter().map(|name| (*name).to_string()));
+        if granted_read_only {
+            a.push("Bash".into());
         }
-        None => {}
+    }
+    if !c.allowed_tools.is_empty() {
+        a.push("--allowedTools".into());
+        if granted_read_only {
+            a.extend(read_tools.iter().flatten().map(|name| (*name).to_string()));
+        }
+        a.extend(c.allowed_tools.iter().cloned());
     }
     if let Some(m) = c.model {
         a.push("--model".into());
@@ -2464,6 +2491,7 @@ mod tests {
             analytics: false,
             model_catalog: None,
             tools: None,
+            allowed_tools: &[],
         }
     }
 
@@ -3014,6 +3042,7 @@ mod tests {
             analytics: false,
             model_catalog: None,
             tools: None,
+            allowed_tools: &[],
         };
         let argv = (spec.build_argv)(&ctx);
         assert!(
@@ -3099,6 +3128,7 @@ mod tests {
             analytics: false,
             model_catalog: None,
             tools: None,
+            allowed_tools: &[],
         }
     }
 

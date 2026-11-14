@@ -41,6 +41,7 @@ use crate::domain::control::{self, ControlReport, ControlShape, DialAddress};
 use crate::domain::dialogue::{Dialogue, DialogueConfig, DialogueResume};
 use crate::domain::events::ActionEvent;
 use crate::domain::fallback::{self, RunMode};
+use crate::domain::grant;
 use crate::domain::harness::{self, BuildCtx, HarnessIdentity, HarnessSpec, PromptDelivery};
 use crate::domain::http::{self, HttpShape};
 use crate::domain::lean;
@@ -68,6 +69,7 @@ use crate::io::identity::{
 };
 use crate::io::lean as lean_io;
 use crate::io::model_catalog;
+use crate::io::run_overlay::{self, HelperLaunch, RunOverlay};
 use crate::io::runner::{self, Job, NextRun, Outcome, ProcessSupervisor, SpawnControls};
 use crate::io::server_pool;
 use crate::io::session as session_io;
@@ -632,6 +634,13 @@ pub fn run_supervised(
     };
     let loaded = config_io::load(&args.config, args.no_config, &project_start)?;
     let cfg = &loaded.config;
+    // A granted run killed before it could remove its overlay (SIGKILL) left
+    // the directory, and maybe its harness, behind with the owner lock
+    // released. Every run that may spawn reclaims such orphans first; a live
+    // run's overlay is locked and left alone.
+    if !args.print_command {
+        run_overlay::reclaim_orphans();
+    }
 
     // stdin can be consumed only once total, so `--prompt-file -` and
     // `--system-file -` cannot both read it (repeated `--prompt-file -` is caught
@@ -708,7 +717,6 @@ pub fn run_supervised(
             .cloned()
             .collect()
     };
-    refuse_run_level_allowlist(args, cfg, &selected_ids, &project_start)?;
     // `--run-mode` (CLI beats config; an unset mode is `RunMode::default()` —
     // the one source, which `config::explain` reports from too — on every
     // surface: a library caller, the CLI and the SDKs; `parallel` is the
@@ -1060,6 +1068,12 @@ pub fn run_supervised(
     // return path below). Never populated under --print-command (nothing spawns).
     let mut temp_files = TempPromptFiles::default();
     let mut unit_calls: Vec<lean_io::CallsPlan> = Vec::with_capacity(units.len());
+    // Per unit beside it: the overlay a granted Codex unit runs through (with
+    // what repairing the real home's thread index needs once the turn ends),
+    // and the environment the overlay sets, which the result reports.
+    let mut unit_overlays: Vec<Option<UnitOverlay>> = Vec::with_capacity(units.len());
+    let mut unit_overlay_env: Vec<std::collections::BTreeMap<String, String>> =
+        Vec::with_capacity(units.len());
 
     for (spec, selected_id, unit_model, unit_prompt) in &units {
         let spec = *spec;
@@ -1072,7 +1086,7 @@ pub fn run_supervised(
         // The prompt this candidate would open its turn with, kept only when it
         // is planned for the control delivery (so it never appears on the argv).
         let mut unit_control_prompt: Option<String> = None;
-        let unit_app_server = (unit_control == Some(control::ControlShape::CodexAppServer)
+        let mut unit_app_server = (unit_control == Some(control::ControlShape::CodexAppServer)
             && cfg.app_server_for(selected_id) == crate::domain::config::AppServerMode::Shared)
             .then(|| SharedAppServer {
                 plugins: cfg.plugins_for(selected_id),
@@ -1154,6 +1168,19 @@ pub fn run_supervised(
             Vec::new()
         };
         let lean_delivery = lean::deliver(spec.id, &lean_settings, &codex_mcp, mode);
+        // The run-level allowlist, resolved against the environment this unit
+        // would spawn with and planned for its harness. Empty — every run whose
+        // config sets none — it changes nothing below.
+        let unit_grant = plan_unit_grant(
+            cfg,
+            spec,
+            selected_id,
+            mode,
+            &project_start,
+            args.cwd.as_deref(),
+            &lean_delivery.env,
+            &cli_env,
+        )?;
         // Ahead of every caller-supplied arg, so a caller's own later override
         // of the same key still wins.
         let mut extra: Vec<String> = lean_delivery.args.clone();
@@ -1194,7 +1221,10 @@ pub fn run_supervised(
             // with a reasoning suffix above for a model-suffix harness (cursor).
             // The *recorded* model (in the result) stays the plain `unit_model`.
             model: plan_model,
-            system: system.map(str::to_string),
+            // The turn's system instructions gain the grant's statement — each
+            // granted executable by its absolute path — through the harness's
+            // own system mapping, only where a rule is actually applied.
+            system: grant::with_statement(system, unit_grant.plan.statement.as_deref()),
             // A `--session` continue supplies the native token to resume with,
             // reusing the harness's verified `--resume` mapping; a create (or no
             // session) leaves it to the explicit `--resume` value (they are
@@ -1232,6 +1262,7 @@ pub fn run_supervised(
                 PromptDelivery::Argv
             },
             tools: lean_settings.tool_set.clone(),
+            allowed_tools: unit_grant.plan.claude_allowed.clone(),
             images: if image_frame {
                 images.clone()
             } else {
@@ -1244,11 +1275,33 @@ pub fn run_supervised(
         };
         let shared_model_catalog =
             harness::has_plugins_toggle(spec.id) && cfg.shared_model_catalog_for(selected_id);
+        // A granted Codex turn runs on a home of its own, so a controlled one
+        // starts its own app-server there: a pooled server's rules are its
+        // home's, which would grant every lease or none.
+        let codex_rules = unit_grant.plan.codex_rules.clone();
+        if codex_rules.is_some() {
+            unit_app_server = None;
+        }
+        let mut overlay_env = std::collections::BTreeMap::new();
+        if codex_rules.is_some() && args.print_command {
+            overlay_env.insert(
+                "CODEX_HOME".to_string(),
+                format!("{}/codex-home", run_overlay::PLANNED_OVERLAY),
+            );
+            overlay_env.insert(
+                run_overlay::MARKER_ENV.to_string(),
+                run_overlay::PLANNED_OVERLAY.to_string(),
+            );
+        }
+        let mut unit_overlay: Option<UnitOverlay> = None;
 
+        // The unit's own system text: the run's, plus the grant's statement
+        // where a rule is applied, so a materialized system file carries both.
+        let unit_system = harness_plan.system.clone();
         plan_input(
             &mut harness_plan,
             spec,
-            system,
+            unit_system.as_deref(),
             jobs.len(),
             &mut temp_files,
             true,
@@ -1324,7 +1377,7 @@ pub fn run_supervised(
             plan_input(
                 &mut harness_plan,
                 spec,
-                system,
+                unit_system.as_deref(),
                 job_index,
                 &mut temp_files,
                 false,
@@ -1345,9 +1398,36 @@ pub fn run_supervised(
             job_env.extend(lean_delivery.env.iter().cloned());
             job_env.extend(variant_environment(cfg, selected_id, &project_start)?);
             job_env.extend(cli_env.iter().cloned());
-            let env_remove = cfg
+            let mut env_remove = cfg
                 .variant_for(selected_id)
                 .map_or_else(Vec::new, |variant| variant.unset_env.clone());
+            if let Some(rules) = &codex_rules {
+                let mut overlaid = open_codex_overlay(
+                    rules,
+                    unit_grant
+                        .codex_real_home
+                        .as_deref()
+                        .expect("a Codex grant is planned only over a real home"),
+                    &resolved.bin,
+                    &job_env,
+                    &env_remove,
+                    args.cwd.as_deref(),
+                )?;
+                overlaid.resumed = harness_plan.resume.clone();
+                let (marker_name, marker_value) = overlaid.overlay.marker();
+                job_env.push((
+                    "CODEX_HOME".to_string(),
+                    overlaid.home.display().to_string(),
+                ));
+                job_env.push((marker_name.clone(), marker_value.clone()));
+                env_remove.retain(|name| name != "CODEX_HOME" && name != &marker_name);
+                overlay_env.insert(
+                    "CODEX_HOME".to_string(),
+                    overlaid.home.display().to_string(),
+                );
+                overlay_env.insert(marker_name, marker_value);
+                unit_overlay = Some(overlaid);
+            }
             if shared_model_catalog {
                 let choice = model_catalog::resolve(&model_catalog::CatalogLaunch {
                     bin: &resolved.bin,
@@ -1383,15 +1463,24 @@ pub fn run_supervised(
             });
             job_plans.push(harness_plan);
         }
+        let mut diagnostics = lean_delivery.diagnostics;
+        diagnostics.extend(unit_grant.plan.diagnostics.iter().cloned());
         let mut calls_plan = lean_io::CallsPlan {
-            diagnostics: lean_delivery.diagnostics,
+            diagnostics,
             codex_home: None,
             codex_resumed_from: None,
         };
         if spec.id == "codex" && jobs.len() > jobs_before {
-            calls_plan.codex_home = jobs
-                .last()
-                .and_then(|job| lean_io::codex_home(&job.env, &job.env_remove, job.cwd.as_deref()));
+            // An overlaid run's rollout is in the real home its `sessions/`
+            // links to, which outlives the overlay.
+            calls_plan.codex_home = unit_overlay
+                .as_ref()
+                .map(|overlaid| overlaid.real_home.clone())
+                .or_else(|| {
+                    jobs.last().and_then(|job| {
+                        lean_io::codex_home(&job.env, &job.env_remove, job.cwd.as_deref())
+                    })
+                });
             if let Some(thread) = job_plans.last().and_then(|plan| plan.resume.clone()) {
                 calls_plan.note_codex_resume(&thread);
             }
@@ -1399,6 +1488,8 @@ pub fn run_supervised(
         unit_calls.push(calls_plan);
         control_prompts.push(unit_control_prompt);
         control_app_servers.push(unit_app_server);
+        unit_overlays.push(unit_overlay);
+        unit_overlay_env.push(overlay_env);
     }
     debug_assert_eq!(control_prompts.len(), plan.len());
 
@@ -1776,6 +1867,21 @@ pub fn run_supervised(
         apply_result_identity(result, selected_id);
         lean_io::attach(result, calls_plan);
     }
+    // Every granted turn has ended (and a controlled one's own app-server has
+    // retired with it): record each thread the run touched in the real home's
+    // thread index, return what Codex wrote at the overlay home's top level,
+    // and remove the overlay.
+    for ((result, overlaid), env) in results
+        .iter_mut()
+        .zip(unit_overlays.iter_mut())
+        .zip(unit_overlay_env)
+    {
+        result.overlay_env = env;
+        if let Some(overlaid) = overlaid.take() {
+            overlaid.finish(result.session_id.as_deref());
+        }
+    }
+    drop(unit_overlays);
     if let Some(report) = fallback_report.as_mut() {
         for (fallthrough, result) in report.fell_through.iter_mut().zip(&results) {
             fallthrough.harness = result.harness_id.clone();
@@ -4564,6 +4670,7 @@ fn planned_result(
         usage_source: None,
         calls: None,
         diagnostics: Vec::new(),
+        overlay_env: std::collections::BTreeMap::new(),
         session_id: None,
         events: None,
         events_source: None,
@@ -4610,6 +4717,7 @@ fn skipped_result(
         usage_source: None,
         calls: None,
         diagnostics: Vec::new(),
+        overlay_env: std::collections::BTreeMap::new(),
         session_id: None,
         events: None,
         events_source: None,
@@ -4971,6 +5079,7 @@ fn executed_result(
         usage_source,
         calls: None,
         diagnostics: Vec::new(),
+        overlay_env: std::collections::BTreeMap::new(),
         session_id,
         events: normalized_events,
         events_source,
@@ -5057,6 +5166,9 @@ struct HarnessPlan {
     model_catalog: Option<PathBuf>,
     /// The lean `tool_set`, carried to [`BuildCtx::tools`].
     tools: Option<Vec<lean::ToolClass>>,
+    /// The run-level allowlist's Claude Code entries, carried to
+    /// [`BuildCtx::allowed_tools`]; empty for every other harness.
+    allowed_tools: Vec<String>,
     /// The images a [`PromptDelivery::MessageFrame`] carries (claude-code);
     /// empty otherwise — a path-taking harness has them in `extra`.
     images: Vec<lean::ImageInput>,
@@ -5149,6 +5261,7 @@ impl HarnessPlan {
             analytics: self.analytics,
             model_catalog: self.model_catalog.as_deref(),
             tools: self.tools.as_deref(),
+            allowed_tools: &self.allowed_tools,
         };
         let argv = harness::argv_with_caller_args(self.spec, &ctx, &self.extra);
         let prompt =
@@ -5658,36 +5771,220 @@ pub(crate) fn parse_env(values: &[String]) -> Result<Vec<(String, String)>, Oneh
         .collect()
 }
 
-/// Refuse a run whose resolved config holds a run-level `allowed_tools` rule
-/// for any selected harness, before anything is spawned. Outside `[sync]`,
-/// `allowed_tools` is the run-level allowlist, which this release does not
-/// apply: running anyway would silently ignore a permission the config asks
-/// for, so the run stops and names it.
-fn refuse_run_level_allowlist(
-    args: &RunRequest,
+/// One unit's run-level allowlist, resolved and planned for its harness.
+struct UnitGrant {
+    plan: grant::GrantPlan,
+    /// The real Codex home a planned Codex grant's overlay links into.
+    codex_real_home: Option<PathBuf>,
+}
+
+/// Resolve and plan the run-level allowlist for one unit, before anything is
+/// spawned. Empty when the config sets none for the unit's selector — then
+/// nothing is read and the plan is empty.
+///
+/// A `$NAME` command resolves against the environment the unit would spawn
+/// with: the harness's own defaults and its mode's, the lean settings', the
+/// config's `env` and the identity's `env_from`, then `--env`, with
+/// `unset_env` removing a name last — the same layering the job gets.
+#[allow(clippy::too_many_arguments)] // llmlint: ignore[suppressions_justified] Each argument is one input of the unit's spawn environment or identity, read at the one call site in the unit loop; a struct would only restate the loop's locals.
+fn plan_unit_grant(
     cfg: &crate::domain::config::FileConfig,
-    selected_ids: &[String],
+    spec: &'static HarnessSpec,
+    selected_id: &str,
+    mode: PermissionMode,
     project_start: &std::path::Path,
-) -> Result<(), OneharnessError> {
-    let Some((id, rules)) = selected_ids.iter().find_map(|id| {
-        let rules = cfg.allowed_tools_for(id);
-        (!rules.is_empty()).then_some((id, rules))
-    }) else {
-        return Ok(());
+    cwd: Option<&std::path::Path>,
+    lean_env: &[(String, String)],
+    cli_env: &[(String, String)],
+) -> Result<UnitGrant, OneharnessError> {
+    let rules = cfg.allowed_tools_for(selected_id);
+    if rules.is_empty() {
+        return Ok(UnitGrant {
+            plan: grant::GrantPlan::default(),
+            codex_real_home: None,
+        });
+    }
+    let mut env: Vec<(String, String)> = spec
+        .default_env
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    if let Some(ms) = spec.mode(mode) {
+        env.extend(ms.env.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+    }
+    env.extend(lean_env.iter().cloned());
+    env.extend(variant_environment(cfg, selected_id, project_start)?);
+    env.extend(cli_env.iter().cloned());
+    let env_remove = cfg
+        .variant_for(selected_id)
+        .map_or_else(Vec::new, |variant| variant.unset_env.clone());
+    let lookup = |name: &str| -> Option<String> {
+        if env_remove.iter().any(|removed| removed == name) {
+            return None;
+        }
+        env.iter()
+            .rev()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.clone())
+            .or_else(|| std::env::var(name).ok())
     };
-    // Only on refusal: read the layers again to name the file the rules are in.
-    let layers = config_io::load_layers(&args.config, args.no_config, project_start)?;
-    let source_file = crate::domain::config::allowed_tools_source(&layers, id)
-        .unwrap_or("the loaded config")
-        .to_string();
-    Err(OneharnessError::RunLevelAllowlistNotApplied {
-        harness: id.clone(),
-        rules: rules
-            .iter()
-            .map(|rule| format!("`{rule}`"))
-            .collect::<Vec<_>>()
-            .join(", "),
-        source_file,
+    let resolved = grant::resolve(rules, mode, &lookup).map_err(|refusal| {
+        OneharnessError::RunAllowlistRefused {
+            harness: selected_id.to_string(),
+            rule: refusal.rule().to_string(),
+            reason: refusal.reason(),
+        }
+    })?;
+    let mut codex_real_home = None;
+    let withhold = if spec.id == "codex" {
+        let fallback_cwd;
+        let cwd = match cwd {
+            Some(cwd) => cwd,
+            None => {
+                fallback_cwd = project_start.to_path_buf();
+                &fallback_cwd
+            }
+        };
+        let home = lean_io::codex_home(&env, &env_remove, Some(cwd));
+        let reason = codex_withhold(home.as_deref(), cfg.args_for(selected_id));
+        if reason.is_none() {
+            codex_real_home = home;
+        }
+        reason
+    } else {
+        None
+    };
+    Ok(UnitGrant {
+        plan: grant::plan(spec.id, mode, &resolved, withhold.as_deref()),
+        codex_real_home,
+    })
+}
+
+/// Why this Codex run cannot carry a grant through an overlay home, or `None`
+/// when it can.
+fn codex_withhold(home: Option<&std::path::Path>, args: &[String]) -> Option<String> {
+    if !run_overlay::links_supported() {
+        return Some(
+            "an overlay home links into the real one, which this platform cannot do without \
+             privilege"
+                .to_string(),
+        );
+    }
+    let Some(home) = home.filter(|home| home.is_dir()) else {
+        return Some(format!(
+            "its home{} does not exist, so an overlay has no login or sessions to link to",
+            home.map(|h| format!(" `{}`", h.display()))
+                .unwrap_or_default()
+        ));
+    };
+    let configured = std::fs::read_to_string(home.join("config.toml"))
+        .ok()
+        .and_then(|text| text.parse::<toml::Table>().ok())
+        .and_then(|table| {
+            table
+                .get("cli_auth_credentials_store")
+                .and_then(toml::Value::as_str)
+                .map(str::to_string)
+        });
+    let overridden = args.iter().rev().find_map(|arg| {
+        arg.strip_prefix("cli_auth_credentials_store=")
+            .map(|value| value.trim_matches(['"', '\'']).to_string())
+    });
+    match overridden.or(configured).as_deref() {
+        Some(store @ ("keyring" | "auto")) => Some(format!(
+            "its login may be stored in the OS keyring (`cli_auth_credentials_store = \"{store}\"`), \
+             which Codex keys by the home's path, so an overlay home cannot reach it"
+        )),
+        _ => None,
+    }
+}
+
+/// A granted Codex unit's open overlay, with what finishing it needs.
+struct UnitOverlay {
+    overlay: RunOverlay,
+    home: PathBuf,
+    real_home: PathBuf,
+    bin: String,
+    /// The unit's environment without the overlay's `CODEX_HOME`, so the
+    /// repair app-server runs on the real home exactly as the identity's
+    /// ungranted turn would.
+    env: Vec<(String, String)>,
+    env_remove: Vec<String>,
+    cwd: Option<PathBuf>,
+    /// A thread this run continued (`--resume` / `--session`), which the
+    /// repair reads too.
+    resumed: Option<String>,
+}
+
+impl UnitOverlay {
+    fn launch_args() -> Vec<String> {
+        [
+            "app-server",
+            "-c",
+            "features.plugins=false",
+            "-c",
+            "features.apps=false",
+            "-c",
+            "analytics.enabled=false",
+        ]
+        .map(String::from)
+        .to_vec()
+    }
+
+    /// Record the run's thread in the real home's index, then remove the
+    /// overlay (returning what Codex wrote at its top level).
+    fn finish(self, session: Option<&str>) {
+        let args = Self::launch_args();
+        let launch = HelperLaunch {
+            bin: &self.bin,
+            args: &args,
+            env: &self.env,
+            env_remove: &self.env_remove,
+            cwd: self.cwd.as_deref(),
+        };
+        let mut threads: Vec<String> = session.map(str::to_string).into_iter().collect();
+        if let Some(resumed) = self.resumed.filter(|r| !threads.contains(r)) {
+            threads.push(resumed);
+        }
+        // Sweep first, so a file Codex created is in the real home before the
+        // repair app-server starts there.
+        let UnitOverlay { overlay, .. } = self;
+        overlay.sweep_now();
+        overlay.repair_threads(&launch, &threads);
+        overlay.finish();
+    }
+}
+
+/// Create a granted Codex unit's overlay: its home linking `real_home`, its
+/// per-run rules, and its own thread index seeded by `bin`.
+fn open_codex_overlay(
+    rules: &str,
+    real_home: &std::path::Path,
+    bin: &str,
+    env: &[(String, String)],
+    env_remove: &[String],
+    cwd: Option<&std::path::Path>,
+) -> Result<UnitOverlay, OneharnessError> {
+    let failed = |source: std::io::Error| OneharnessError::RunOverlay { source };
+    let mut overlay = RunOverlay::create().map_err(failed)?;
+    let home = overlay.codex_home(real_home, rules).map_err(failed)?;
+    let args = UnitOverlay::launch_args();
+    overlay.seed_thread_index(&HelperLaunch {
+        bin,
+        args: &args,
+        env,
+        env_remove,
+        cwd,
+    });
+    Ok(UnitOverlay {
+        overlay,
+        home,
+        real_home: real_home.to_path_buf(),
+        bin: bin.to_string(),
+        env: env.to_vec(),
+        env_remove: env_remove.to_vec(),
+        cwd: cwd.map(std::path::Path::to_path_buf),
+        resumed: None,
     })
 }
 
@@ -5717,6 +6014,7 @@ mod tests {
             usage_source: None,
             calls: None,
             diagnostics: Vec::new(),
+            overlay_env: std::collections::BTreeMap::new(),
             session_id: None,
             events: None,
             events_source: None,
@@ -5862,6 +6160,7 @@ mod tests {
             analytics: false,
             model_catalog: None,
             tools: None,
+            allowed_tools: Vec::new(),
             images: Vec::new(),
         }
     }

@@ -102,6 +102,7 @@ fn finished_result() -> report::RunResult {
         usage_source: None,
         calls: None,
         diagnostics: Vec::new(),
+        overlay_env: std::collections::BTreeMap::new(),
         session_id: None,
         events: None,
         events_source: None,

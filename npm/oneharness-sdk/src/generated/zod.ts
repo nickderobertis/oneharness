@@ -542,6 +542,7 @@ export const HarnessInfoSchema: z.ZodType<HarnessInfo> = z.looseObject({
   supports_prompt_stdin: z.boolean().refine((value) => value !== undefined, { message: "Required" }),
   supports_reasoning: z.boolean().refine((value) => value !== undefined, { message: "Required" }),
   supports_resume: z.boolean().refine((value) => value !== undefined, { message: "Required" }),
+  supports_run_allowed_tools: z.boolean().refine((value) => value !== undefined, { message: "Required" }),
   supports_skills_off: z.boolean().refine((value) => value !== undefined, { message: "Required" }),
   supports_system_file: z.boolean().refine((value) => value !== undefined, { message: "Required" }),
   supports_tool_set: z.boolean().refine((value) => value !== undefined, { message: "Required" }),
@@ -3418,6 +3419,7 @@ export const RunResultSchema: z.ZodType<RunResult> = z.looseObject({
   model: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
   observed_model: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
   output_format: z.lazy(() => OutputFormatSchema).refine((value) => value !== undefined, { message: "Required" }),
+  overlay_env: z.record(z.string(), z.string()).optional(),
   prompt: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
   schema_attempts: z.union([z.int().gte(0), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
   schema_error: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
@@ -3523,6 +3525,7 @@ export const SettingSchema: z.ZodType<Setting> = z.union([
   z.literal("load_mcp"),
   z.literal("images"),
   z.literal("calls"),
+  z.literal("allowed_tools"),
 ]);
 
 export const StatusSchema: z.ZodType<Status> = z.union([

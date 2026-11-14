@@ -68,6 +68,14 @@ use crate::domain::usage::UtcInstant;
 /// the other run-level fields changes meaning: it is the run-level allowlist,
 /// which `sync` never writes. Not additive, hence the bump.
 ///
+/// `0.15` applies the run-level allowlist (`allowed_tools` outside `[sync]`)
+/// to a run: a harness that withholds it reports a diagnostic whose `setting`
+/// is the new `allowed_tools` [`crate::domain::lean::Setting`] value, a result
+/// run through a per-run overlay carries `overlay_env`, and the `list` report
+/// gains each harness's `supports_run_allowed_tools`. The new enum value is why
+/// the bump matters: a consumer that matches `setting` exhaustively learns of
+/// it only from the version.
+///
 /// `0.12` adds [`FailureKind::AppServerLost`] and its `"app-server-lost"`
 /// fallback reason: a pooled Codex dispatch whose shared app-server went away
 /// under its live turn. A new enum value, so exhaustive consumers learn of it
@@ -103,7 +111,7 @@ use crate::domain::usage::UtcInstant;
 ///
 /// `0.4` added the `config` report's `stream` field (the layered `--stream`
 /// value, with its provenance).
-pub const SCHEMA_VERSION: &str = "0.14";
+pub const SCHEMA_VERSION: &str = "0.15";
 
 /// How a harness emits its result, which decides how `text` is extracted.
 ///
@@ -542,6 +550,14 @@ pub struct RunResult {
     /// empty. Added in report schema `0.13`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub diagnostics: Vec<Diagnostic>,
+    /// The environment the run's overlay sets on the harness — present only
+    /// when a run-level allowlist is applied through one (Codex's per-run
+    /// `CODEX_HOME`, and the marker every process of the run carries). Under
+    /// `--print-command` the overlay directory is shown as `<run-overlay>`,
+    /// since a dry run creates nothing. The directory is removed when the run
+    /// ends. Absent when empty. Added in report schema `0.15`.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub overlay_env: std::collections::BTreeMap<String, String>,
     /// Best-effort harness session id for continuation; `null` when none is
     /// exposed. Surfaced for a consumer to thread into `--resume`, and consumed
     /// by oneharness itself when `--session` is in play (it is captured into the
@@ -1316,6 +1332,7 @@ mod tests {
             usage_source: None,
             calls: None,
             diagnostics: Vec::new(),
+            overlay_env: std::collections::BTreeMap::new(),
             session_id: None,
             events: None,
             events_source: None,

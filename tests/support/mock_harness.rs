@@ -24,6 +24,8 @@
 //!                   holding a newline stays one element), before answering
 //!   MOCK_ECHO_PWD   if set, write `PWD=<the inherited $PWD>` to stdout and exit
 //!                   (used to assert that --cwd keeps $PWD consistent)
+//!   MOCK_HOME_SNAPSHOT  if set, what `$CODEX_HOME` holds while the harness
+//!                   runs is written here as JSON (links, files, directories)
 //!   MOCK_ENV_FILE   if set, the whole inherited environment is written here
 //!                   as one JSON object before answering
 //!   MOCK_CLAUDE_SESSIONS / MOCK_CODEX_SESSIONS / MOCK_COMPACT_BEGUN  act like
@@ -1978,6 +1980,38 @@ fn exit_shortly() {
 /// turn finishes in under half a second having done nothing. The turn ends only
 /// on the `turn/completed` notification, which this emits once the interrupt
 /// naming both the thread and the turn arrives.
+/// `MOCK_HOME_SNAPSHOT`: write, as one JSON object, what the directory
+/// `$CODEX_HOME` names holds WHILE the harness runs — each entry as
+/// `{"link": <target>}`, `{"file": <contents>}` or `{"dir": {…}}`, recursing
+/// into real directories only. How a journey proves a run overlay's home links
+/// the real one and carries its own rules, though it is gone afterwards.
+fn record_home_snapshot(path: &str) {
+    fn describe(dir: &std::path::Path) -> serde_json::Value {
+        let mut out = serde_json::Map::new();
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let path = entry.path();
+            let value = match std::fs::symlink_metadata(&path) {
+                Ok(meta) if meta.file_type().is_symlink() => serde_json::json!({
+                    "link": std::fs::read_link(&path).unwrap_or_default().display().to_string()
+                }),
+                Ok(meta) if meta.is_dir() => serde_json::json!({ "dir": describe(&path) }),
+                _ => serde_json::json!({
+                    "file": std::fs::read_to_string(&path).unwrap_or_default()
+                }),
+            };
+            out.insert(name, value);
+        }
+        serde_json::Value::Object(out)
+    }
+    let home = std::env::var("CODEX_HOME").unwrap_or_default();
+    let snapshot = serde_json::json!({
+        "home": home,
+        "entries": describe(std::path::Path::new(&home)),
+    });
+    let _ = std::fs::write(path, snapshot.to_string());
+}
+
 fn run_codex_app_server(log_path: &str) -> ! {
     use serde_json::{json, Value};
     let attempt = scripted_attempt();
@@ -2046,6 +2080,20 @@ fn run_codex_app_server(log_path: &str) -> ! {
                 "jsonrpc": "2.0",
                 "id": id,
                 "result": open_response("mock-codex-thread", &message),
+            })),
+            // What a run overlay's helper app-servers ask: an empty listing to
+            // build a thread index over, and a read of each thread the granted
+            // turn touched. Answered so the exchange ends at once; the frames
+            // are in the log a test reads.
+            Some("thread/list") => send(&json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {"data": [], "nextCursor": null},
+            })),
+            Some("thread/read") => send(&json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {"thread": {"id": message["params"]["threadId"]}},
             })),
             // Rejoining the thread the client named, exactly as the real
             // app-server does: `ThreadResumeResponse` carries the same required
@@ -2761,6 +2809,10 @@ pub fn run() -> ! {
         }
         let input = serde_json::json!({ "argv": argv, "stdin": stdin });
         let _ = std::fs::write(path, input.to_string());
+    }
+
+    if let Ok(path) = std::env::var("MOCK_HOME_SNAPSHOT") {
+        record_home_snapshot(&path);
     }
 
     if let Ok(path) = std::env::var("MOCK_ENV_FILE") {

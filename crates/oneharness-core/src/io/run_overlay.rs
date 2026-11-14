@@ -1,0 +1,654 @@
+//! The per-run overlay a run-level allowlist reaches a harness through.
+//!
+//! Some harnesses read their permission rules only from their own home
+//! directory: Codex honours an exec-policy rule only from `$CODEX_HOME/rules/`
+//! (`spike-command-grant`). Writing the run's rule there would grant every
+//! session of that user; writing it nowhere would grant nothing. So a granted
+//! run gets a directory of its own under the host temp dir — outside the
+//! project and every harness home — and the harness is pointed at a home built
+//! inside it whose entries link back to the real home's.
+//!
+//! What makes the overlay the run's alone:
+//!
+//! - **It is removed when the run ends** — on success, failure, timeout, and an
+//!   interrupt the run's signal handler turns into a cancellation — because a
+//!   [`RunOverlay`] removes its directory when dropped.
+//! - **An orphan is reclaimed.** A run killed before it could clean up (SIGKILL)
+//!   leaves its directory behind with its owner lock released; the next
+//!   `oneharness run` finds it with [`reclaim_orphans`], stops every process
+//!   that still carries its [`MARKER_ENV`], returns what the harness recorded to
+//!   the real home, and removes it. A live run's lock is held, so a run beside
+//!   it is never touched.
+//! - **What the harness records lands in the real home.** Every entry is a
+//!   symlink, so sessions, logs, the login (`auth.json`, which Codex resolves
+//!   through the link and renames over its target) and every other file are
+//!   written in place. A file the harness creates or replaces at the home's top
+//!   level is moved into the real home when the run ends ([`CodexHome::sweep`]).
+//!
+//! The one exception is Codex's thread index (`state_<n>.sqlite`). Its rows
+//! store each rollout's absolute path, which Codex builds from `CODEX_HOME`
+//! without resolving links, and codex-cli 0.159.2 refuses to resume a thread
+//! whose stored path no longer exists ("no rollout found for thread id"). So
+//! the overlay keeps its own index, seeded from one Codex builds over an empty
+//! home (already backfilled, so it never rescans the real `sessions/` tree),
+//! and after the turn [`RunOverlay::repair_threads`] asks a Codex app-server on the real
+//! home to read each thread the run touched: finding no row, Codex locates the
+//! rollout under the real `sessions/` and writes the row with its real path.
+
+use std::fs;
+use std::io::{self, BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use fs2::FileExt;
+use serde_json::{json, Value};
+use wait_timeout::ChildExt;
+
+use crate::domain::grant::RUN_RULES_FILE;
+use crate::io::marked_processes::{self, ProcessMarker};
+use crate::io::scratch::{ScratchDir, PREFIX};
+
+/// The environment variable every process an overlay's run starts carries,
+/// whose value is the overlay directory's name: how [`reclaim_orphans`] finds
+/// a killed run's harness, which may have outlived it.
+pub const MARKER_ENV: &str = "ONEHARNESS_RUN_OVERLAY";
+
+/// What `--print-command` shows in place of the overlay directory a run would
+/// create: a dry run creates nothing on disk.
+pub const PLANNED_OVERLAY: &str = "<run-overlay>";
+
+/// The scratch tag every overlay directory's name opens with, after
+/// [`PREFIX`].
+const TAG: &str = "run-overlay-";
+
+/// The file inside an overlay its owning run holds an exclusive lock on for
+/// the run's lifetime.
+const OWNER_LOCK: &str = "owner.lock";
+
+/// The file recording the real Codex home an overlay's home links into, read
+/// back when an orphan is reclaimed.
+const REAL_HOME_FILE: &str = "real-codex-home";
+
+/// The overlay home's directory name inside the overlay.
+const CODEX_HOME_DIR: &str = "codex-home";
+
+/// How long an overlay with no owner lock yet may exist before it counts as
+/// an orphan (a run killed between creating the directory and locking it).
+const UNLOCKED_GRACE: Duration = Duration::from_secs(60);
+
+/// How long one helper app-server exchange may take before it is abandoned.
+const HELPER_DEADLINE: Duration = Duration::from_secs(15);
+
+/// One granted run's overlay directory: locked while it lives, removed when
+/// dropped.
+#[derive(Debug)]
+pub struct RunOverlay {
+    // Field order is drop order: the lock is released (and its file handle
+    // closed, which Windows needs) before the directory is removed.
+    _lock: fs::File,
+    codex: Option<CodexHome>,
+    dir: ScratchDir,
+}
+
+impl RunOverlay {
+    /// Create and lock a fresh overlay directory.
+    ///
+    /// # Errors
+    ///
+    /// Creating the directory or its lock file failed.
+    pub fn create() -> io::Result<RunOverlay> {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.subsec_nanos());
+        let tag = format!("{TAG}{}{nanos:x}", NEXT.fetch_add(1, Ordering::Relaxed));
+        let dir = ScratchDir::new(&tag)?;
+        let lock = fs::File::create(dir.join(OWNER_LOCK))?;
+        lock.lock_exclusive()?;
+        Ok(RunOverlay {
+            _lock: lock,
+            codex: None,
+            dir,
+        })
+    }
+
+    /// The overlay directory.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        self.dir.path()
+    }
+
+    /// The `(name, value)` every process of this run carries.
+    #[must_use]
+    pub fn marker(&self) -> (String, String) {
+        (MARKER_ENV.to_string(), dir_name(self.dir.path()))
+    }
+
+    /// Build the Codex home this run is pointed at, linking every entry of
+    /// `real` but its `rules/` and thread index, with `rules/` linking each of
+    /// the real home's rule files beside one file holding `rules_text`.
+    ///
+    /// # Errors
+    ///
+    /// Reading the real home or creating a link failed.
+    pub fn codex_home(&mut self, real: &Path, rules_text: &str) -> io::Result<PathBuf> {
+        let home = self.dir.join(CODEX_HOME_DIR);
+        fs::create_dir_all(&home)?;
+        if let Some(real) = real.to_str() {
+            fs::write(self.dir.join(REAL_HOME_FILE), real)?;
+        }
+        for entry in fs::read_dir(real)? {
+            let name = entry?.file_name();
+            let text = name.to_string_lossy();
+            if text == "rules" || is_thread_index(&text) {
+                continue;
+            }
+            symlink(&real.join(&name), &home.join(&name))?;
+        }
+        let rules = home.join("rules");
+        fs::create_dir_all(&rules)?;
+        if let Ok(entries) = fs::read_dir(real.join("rules")) {
+            for entry in entries {
+                let name = entry?.file_name();
+                if name != RUN_RULES_FILE {
+                    symlink(&real.join("rules").join(&name), &rules.join(&name))?;
+                }
+            }
+        }
+        fs::write(rules.join(RUN_RULES_FILE), rules_text)?;
+        self.codex = Some(CodexHome {
+            home: home.clone(),
+            real: real.to_path_buf(),
+        });
+        Ok(home)
+    }
+
+    /// Seed the overlay home's thread index with one `bin` builds over an
+    /// empty home, so the run never backfills the real `sessions/` tree. Only
+    /// when the real home keeps an index; a seed that cannot be built leaves
+    /// the home without one, and Codex then indexes what it finds — slower
+    /// but correct.
+    pub fn seed_thread_index(&self, launch: &HelperLaunch<'_>) {
+        let Some(codex) = self.codex.as_ref().filter(|codex| codex.indexed()) else {
+            return;
+        };
+        let template = self.dir.join("thread-index-seed");
+        if fs::create_dir_all(&template).is_err() {
+            return;
+        }
+        let built = exchange(
+            launch,
+            &template,
+            self.marker(),
+            &[("thread/list", json!({}))],
+        );
+        if let Err(error) = built {
+            eprintln!(
+                "oneharness: warning: could not build the run overlay's Codex thread index \
+                 ({error}); Codex will index the home itself"
+            );
+        }
+        if let Ok(entries) = fs::read_dir(&template) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                if is_thread_index(&name.to_string_lossy()) {
+                    let _ = fs::copy(entry.path(), codex.home.join(&name));
+                }
+            }
+        }
+        let _ = fs::remove_dir_all(&template);
+    }
+
+    /// After a granted Codex turn has ended, have a Codex app-server on the
+    /// real home read each thread the run touched, so the real thread index
+    /// holds it under its real rollout path. Best-effort: a thread Codex has no
+    /// row for is still found by resume, which writes the row itself.
+    pub fn repair_threads(&self, launch: &HelperLaunch<'_>, threads: &[String]) {
+        let Some(codex) = self.codex.as_ref().filter(|codex| codex.indexed()) else {
+            return;
+        };
+        if threads.is_empty() {
+            return;
+        }
+        let requests: Vec<(&str, Value)> = threads
+            .iter()
+            .map(|thread| ("thread/read", json!({ "threadId": thread })))
+            .collect();
+        if let Err(error) = exchange(launch, &codex.real, self.marker(), &requests) {
+            eprintln!(
+                "oneharness: warning: could not record the granted run's Codex thread in the \
+                 real home's index ({error}); resuming it still finds it"
+            );
+        }
+    }
+
+    /// Return what the harness created or replaced at the overlay home's top
+    /// level (and in its `rules/`) to the real home now, while the overlay
+    /// stays. Dropping the overlay sweeps again, which finds nothing new.
+    pub fn sweep_now(&self) {
+        if let Some(codex) = &self.codex {
+            codex.sweep();
+        }
+    }
+
+    /// Return what the harness recorded at the home's top level to the real
+    /// home, then remove the overlay. Dropping the overlay does the same.
+    pub fn finish(self) {}
+}
+
+impl Drop for RunOverlay {
+    fn drop(&mut self) {
+        if let Some(codex) = &self.codex {
+            codex.sweep();
+        }
+    }
+}
+
+/// How a helper Codex app-server is launched: the run's own executable and
+/// launch settings, its environment, and its working directory.
+#[derive(Debug, Clone)]
+pub struct HelperLaunch<'a> {
+    pub bin: &'a str,
+    /// The argv after the executable (`app-server` and its launch settings).
+    pub args: &'a [String],
+    pub env: &'a [(String, String)],
+    pub env_remove: &'a [String],
+    pub cwd: Option<&'a Path>,
+}
+
+/// The real home and overlay home of one run's Codex overlay.
+#[derive(Debug)]
+struct CodexHome {
+    home: PathBuf,
+    real: PathBuf,
+}
+
+impl CodexHome {
+    /// Whether the real home keeps a thread index. One that does not has
+    /// nothing to seed from or repair: Codex indexes it on its next run, as it
+    /// would after an ungranted one.
+    fn indexed(&self) -> bool {
+        fs::read_dir(&self.real).is_ok_and(|entries| {
+            entries
+                .flatten()
+                .any(|entry| is_thread_index(&entry.file_name().to_string_lossy()))
+        })
+    }
+
+    /// Move every entry Codex created or replaced (a regular file or
+    /// directory where a link was, or a new name) into the real home. The
+    /// overlay's own thread index and run rules stay behind.
+    fn sweep(&self) {
+        sweep_dir(&self.home, &self.real, &|name| {
+            name == "rules" || is_thread_index(name)
+        });
+        sweep_dir(
+            &self.home.join("rules"),
+            &self.real.join("rules"),
+            &|name| name == RUN_RULES_FILE,
+        );
+    }
+}
+
+fn sweep_dir(from: &Path, to: &Path, keep: &dyn Fn(&str) -> bool) {
+    let Ok(entries) = fs::read_dir(from) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if keep(&name.to_string_lossy()) {
+            continue;
+        }
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if kind.is_symlink() {
+            continue;
+        }
+        if fs::create_dir_all(to).is_err() {
+            return;
+        }
+        if let Err(error) = move_into(&entry.path(), &to.join(&name)) {
+            eprintln!(
+                "oneharness: warning: could not return `{}` from the run overlay to `{}`: {error}",
+                entry.path().display(),
+                to.display()
+            );
+        }
+    }
+}
+
+/// Move `from` to `to`, replacing a file there and merging into a directory
+/// there, across filesystems when a rename cannot.
+fn move_into(from: &Path, to: &Path) -> io::Result<()> {
+    let to_meta = fs::symlink_metadata(to).ok();
+    if from.is_dir() {
+        if to_meta.as_ref().is_some_and(fs::Metadata::is_dir) {
+            for entry in fs::read_dir(from)? {
+                let entry = entry?;
+                move_into(&entry.path(), &to.join(entry.file_name()))?;
+            }
+            return fs::remove_dir_all(from);
+        }
+    } else if to_meta.as_ref().is_some_and(fs::Metadata::is_dir) {
+        return Err(io::Error::other("a directory is in the way"));
+    }
+    if fs::rename(from, to).is_ok() {
+        return Ok(());
+    }
+    if from.is_dir() {
+        fs::create_dir_all(to)?;
+        for entry in fs::read_dir(from)? {
+            let entry = entry?;
+            move_into(&entry.path(), &to.join(entry.file_name()))?;
+        }
+        fs::remove_dir_all(from)
+    } else {
+        fs::copy(from, to)?;
+        fs::remove_file(from)
+    }
+}
+
+/// Whether `name` is part of Codex's thread index (`state_<n>.sqlite` and its
+/// SQLite companions), which an overlay keeps for itself.
+#[must_use]
+pub fn is_thread_index(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix("state_") else {
+        return false;
+    };
+    let digits = rest.chars().take_while(char::is_ascii_digit).count();
+    if digits == 0 {
+        return false;
+    }
+    matches!(
+        &rest[digits..],
+        ".sqlite" | ".sqlite-wal" | ".sqlite-shm" | ".sqlite-journal"
+    )
+}
+
+/// Reclaim every overlay under the host temp dir whose run is gone.
+///
+/// Called as a run starts. Returns the overlays it removed.
+pub fn reclaim_orphans() -> Vec<PathBuf> {
+    reclaim_under(&std::env::temp_dir())
+}
+
+fn reclaim_under(root: &Path) -> Vec<PathBuf> {
+    let prefix = format!("{PREFIX}{TAG}");
+    let Ok(entries) = fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut reclaimed = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with(&prefix) || !entry.file_type().is_ok_and(|t| t.is_dir()) {
+            continue;
+        }
+        let dir = entry.path();
+        let lock = match fs::OpenOptions::new()
+            .write(true)
+            .open(dir.join(OWNER_LOCK))
+        {
+            Ok(lock) => lock,
+            Err(_) => {
+                let young = entry
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.elapsed().ok())
+                    .is_none_or(|age| age < UNLOCKED_GRACE);
+                if young {
+                    continue;
+                }
+                reclaim(&dir, &name);
+                reclaimed.push(dir);
+                continue;
+            }
+        };
+        if lock.try_lock_exclusive().is_err() {
+            continue;
+        }
+        reclaim(&dir, &name);
+        drop(lock);
+        let _ = fs::remove_dir_all(&dir);
+        reclaimed.push(dir);
+    }
+    reclaimed
+}
+
+fn reclaim(dir: &Path, name: &str) {
+    let marker = ProcessMarker {
+        name: MARKER_ENV.to_string(),
+        value: name.to_string(),
+    };
+    let _ = marked_processes::stop_marked(&marker, Duration::from_secs(2));
+    if let Ok(real) = fs::read_to_string(dir.join(REAL_HOME_FILE)) {
+        CodexHome {
+            home: dir.join(CODEX_HOME_DIR),
+            real: PathBuf::from(real),
+        }
+        .sweep();
+    }
+    let _ = fs::remove_dir_all(dir);
+}
+
+fn dir_name(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+#[cfg(unix)]
+fn symlink(target: &Path, link: &Path) -> io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(not(unix))]
+fn symlink(_target: &Path, _link: &Path) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "a run overlay links into the real home, which this platform cannot do without privilege",
+    ))
+}
+
+/// Whether this platform can build an overlay home of links.
+#[must_use]
+pub fn links_supported() -> bool {
+    cfg!(unix)
+}
+
+/// Start a Codex app-server on `home`, initialize it, send `requests` in turn
+/// and wait for each reply, then close its stdin and wait for it to exit.
+fn exchange(
+    launch: &HelperLaunch<'_>,
+    home: &Path,
+    marker: (String, String),
+    requests: &[(&str, Value)],
+) -> Result<(), String> {
+    let mut command = Command::new(launch.bin);
+    command
+        .args(launch.args)
+        .envs(launch.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .env("CODEX_HOME", home)
+        .env(&marker.0, &marker.1)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    for name in launch.env_remove {
+        if name != "CODEX_HOME" {
+            command.env_remove(name);
+        }
+    }
+    if let Some(cwd) = launch.cwd {
+        command.current_dir(cwd);
+    }
+    let mut child = command.spawn().map_err(|e| e.to_string())?;
+    let mut stdin = child.stdin.take().ok_or("no stdin")?;
+    let stdout = child.stdout.take().ok_or("no stdout")?;
+    let (tx, rx) = mpsc::channel::<Value>();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            if let Ok(value) = serde_json::from_str::<Value>(&line) {
+                if tx.send(value).is_err() {
+                    break;
+                }
+            }
+        }
+    });
+    let deadline = Instant::now() + HELPER_DEADLINE;
+    let send = |stdin: &mut std::process::ChildStdin,
+                id: u64,
+                method: &str,
+                params: Value|
+     -> Result<(), String> {
+        let frame = json!({ "id": id, "method": method, "params": params });
+        writeln!(stdin, "{frame}").map_err(|e| e.to_string())?;
+        stdin.flush().map_err(|e| e.to_string())?;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let reply = rx
+                .recv_timeout(left)
+                .map_err(|_| format!("no reply to `{method}`"))?;
+            if reply.get("id").and_then(Value::as_u64) == Some(id) {
+                return match reply.get("error") {
+                    Some(error) => Err(format!("`{method}` failed: {error}")),
+                    None => Ok(()),
+                };
+            }
+        }
+    };
+    let mut outcome = send(
+        &mut stdin,
+        0,
+        "initialize",
+        json!({ "clientInfo": { "name": "oneharness", "version": env!("CARGO_PKG_VERSION") } }),
+    );
+    if outcome.is_ok() {
+        let _ = writeln!(stdin, "{}", json!({ "method": "initialized" }));
+        for (id, (method, params)) in (1..).zip(requests) {
+            if let Err(error) = send(&mut stdin, id, method, params.clone()) {
+                outcome = Err(error);
+                break;
+            }
+        }
+    }
+    drop(stdin);
+    let waited = child.wait_timeout(Duration::from_secs(5)).ok().flatten();
+    if waited.is_none() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    outcome
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_thread_index_is_the_state_database_and_its_companions_only() {
+        for name in [
+            "state_5.sqlite",
+            "state_5.sqlite-wal",
+            "state_5.sqlite-shm",
+            "state_12.sqlite-journal",
+        ] {
+            assert!(is_thread_index(name), "{name}");
+        }
+        for name in [
+            "state.sqlite",
+            "state_x.sqlite",
+            "state_5.sqlite.bak",
+            "thread_history_1.sqlite",
+            "logs_2.sqlite",
+            "sessions",
+        ] {
+            assert!(!is_thread_index(name), "{name}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_overlay_home_links_the_real_home_and_returns_what_codex_wrote() {
+        let real = ScratchDir::new("run-overlay-test-real").unwrap();
+        fs::create_dir_all(real.join("sessions")).unwrap();
+        fs::write(real.join("auth.json"), "{}").unwrap();
+        fs::write(real.join("config.toml"), "a = 1\n").unwrap();
+        fs::write(real.join("state_5.sqlite"), "real index").unwrap();
+        fs::create_dir_all(real.join("rules")).unwrap();
+        fs::write(real.join("rules").join("user.rules"), "# user\n").unwrap();
+
+        let mut overlay = RunOverlay::create().unwrap();
+        let dir = overlay.path().to_path_buf();
+        let home = overlay.codex_home(real.path(), "# run\n").unwrap();
+        assert!(fs::symlink_metadata(home.join("auth.json"))
+            .unwrap()
+            .is_symlink());
+        assert!(fs::symlink_metadata(home.join("sessions"))
+            .unwrap()
+            .is_symlink());
+        assert!(!home.join("state_5.sqlite").exists());
+        assert!(fs::symlink_metadata(home.join("rules").join("user.rules"))
+            .unwrap()
+            .is_symlink());
+        assert_eq!(
+            fs::read_to_string(home.join("rules").join(RUN_RULES_FILE)).unwrap(),
+            "# run\n"
+        );
+        // What Codex would do during a turn: write through a link, replace a
+        // linked file, create a new top-level file and its own index.
+        fs::write(home.join("sessions").join("rollout.jsonl"), "r").unwrap();
+        fs::remove_file(home.join("config.toml")).unwrap();
+        fs::write(home.join("config.toml"), "a = 2\n").unwrap();
+        fs::write(home.join("session_index.jsonl"), "i").unwrap();
+        fs::write(home.join("state_5.sqlite"), "overlay index").unwrap();
+
+        overlay.finish();
+        assert!(!dir.exists(), "the overlay is removed");
+        assert_eq!(
+            fs::read_to_string(real.join("sessions").join("rollout.jsonl")).unwrap(),
+            "r"
+        );
+        assert_eq!(
+            fs::read_to_string(real.join("config.toml")).unwrap(),
+            "a = 2\n"
+        );
+        assert_eq!(
+            fs::read_to_string(real.join("session_index.jsonl")).unwrap(),
+            "i"
+        );
+        assert_eq!(
+            fs::read_to_string(real.join("state_5.sqlite")).unwrap(),
+            "real index"
+        );
+        assert!(!real.join("rules").join(RUN_RULES_FILE).exists());
+        assert_eq!(fs::read_to_string(real.join("auth.json")).unwrap(), "{}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_an_overlay_whose_owner_is_gone_is_reclaimed() {
+        let root = ScratchDir::new("run-overlay-test-root").unwrap();
+        let live = root.join(format!("{PREFIX}{TAG}live"));
+        fs::create_dir_all(&live).unwrap();
+        let held = fs::File::create(live.join(OWNER_LOCK)).unwrap();
+        held.lock_exclusive().unwrap();
+        let dead = root.join(format!("{PREFIX}{TAG}dead"));
+        fs::create_dir_all(dead.join(CODEX_HOME_DIR)).unwrap();
+        fs::File::create(dead.join(OWNER_LOCK)).unwrap();
+        let fresh = root.join(format!("{PREFIX}{TAG}fresh"));
+        fs::create_dir_all(&fresh).unwrap();
+        let other = root.join(format!("{PREFIX}something-else"));
+        fs::create_dir_all(&other).unwrap();
+
+        let reclaimed = reclaim_under(root.path());
+        assert_eq!(reclaimed, [dead.clone()]);
+        assert!(!dead.exists());
+        assert!(live.exists() && fresh.exists() && other.exists());
+        drop(held);
+    }
+}

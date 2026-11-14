@@ -1,0 +1,1091 @@
+//! End-to-end journeys for the run-level allowlist: `allowed_tools` outside
+//! `[sync]`, applied by `oneharness run` to that one run and written nowhere
+//! that outlives it.
+//!
+//! Each drives the real `oneharness` binary over a TOML config, with the mock
+//! harness standing in for the harness process, and asserts what that process
+//! received — its argv, its environment and, for Codex, what its per-run
+//! overlay home held while it ran (`MOCK_HOME_SNAPSHOT`) — and what the report
+//! and the disk say afterwards.
+//!
+//! Why the harness process is the mock, stated once for every journey's
+//! `e2e_not_mocked` suppression below: the deterministic gate cannot run the
+//! paid, authenticated CLIs, so only that process is replaced, at the existing
+//! `--bin` seam. What holds the mechanism to the real harnesses is
+//! `scripts/e2e-run-allowlist.sh` (`just live-run-allowlist`), which drives
+//! the same configs through the installed Claude Code and Codex against a
+//! scripted model endpoint and asserts what each CLI's own permission check,
+//! sandbox and execution did.
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+use oneharness_core::io::scratch::ScratchDir;
+use serde_json::Value;
+
+#[path = "../../../tests/profile-scratch/profile_scratch.rs"]
+mod profile_scratch;
+use profile_scratch::ProfileScratch;
+
+fn workspace_bin(name: &str) -> PathBuf {
+    let test_exe = std::env::current_exe().expect("test executable path");
+    let profile_dir = test_exe
+        .parent()
+        .and_then(Path::parent)
+        .expect("test executable under <target>/<profile>/deps");
+    let path = profile_dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+    assert!(
+        path.is_file(),
+        "{} is not built; run this suite through its Nx target (`just e2e`)",
+        path.display()
+    );
+    path
+}
+
+// llmlint: ignore-block[e2e_not_mocked] These journeys must drive the real built `oneharness` against the repository's mock harness standing in for each harness's process: that is this change's stated acceptance bar, since the paid, authenticated CLIs cannot run in the deterministic gate. Only the harness subprocess is replaced, at the existing `--bin` seam; scripts/e2e-run-allowlist.sh holds the same configs to the real Claude Code and Codex.
+fn mock() -> String {
+    workspace_bin("oneharness-mock-harness")
+        .display()
+        .to_string()
+}
+
+fn bin(id: &str) -> String {
+    format!("{id}={}", mock())
+}
+// llmlint: ignore-end[e2e_not_mocked]
+
+/// One journey's world: a project directory, a temp dir the binary is pointed
+/// at (so the overlays it makes, and must remove, are this journey's alone), a
+/// real Codex home, and the granted executable.
+struct World {
+    dir: ScratchDir,
+}
+
+/// The executable every journey grants.
+const TOOL: &str = "grant-tool";
+
+impl World {
+    fn new(tag: &str) -> World {
+        let dir = ScratchDir::new(&format!("run-allowlist-{tag}")).unwrap();
+        for sub in [
+            "project",
+            "tmp",
+            "home",
+            "bin",
+            "codex-home/sessions",
+            "codex-home/rules",
+        ] {
+            std::fs::create_dir_all(dir.join(sub)).unwrap();
+        }
+        std::fs::write(
+            dir.join("codex-home/auth.json"),
+            "{\"auth_mode\":\"apikey\"}\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("codex-home/config.toml"), "model = \"m\"\n").unwrap();
+        std::fs::write(
+            dir.join("codex-home/rules/user.rules"),
+            "prefix_rule(pattern=[\"ls\"], decision=\"allow\")\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("bin").join(TOOL), "#!/bin/sh\n").unwrap();
+        std::fs::write(dir.join("user.toml"), "").unwrap();
+        World { dir }
+    }
+
+    fn tool(&self) -> String {
+        self.dir.join("bin").join(TOOL).display().to_string()
+    }
+
+    fn path(&self, rel: &str) -> PathBuf {
+        self.dir.join(rel)
+    }
+
+    fn s(&self, rel: &str) -> String {
+        self.path(rel).display().to_string()
+    }
+
+    fn config(&self, toml: &str) -> PathBuf {
+        let path = self.dir.join("oneharness.toml");
+        std::fs::write(&path, toml).unwrap();
+        path
+    }
+
+    /// `oneharness <args>` under `config`, with the world's temp dir, home and
+    /// Codex home, and `envs` on the process.
+    fn oh(&self, args: &[&str], config: &Path, envs: &[(&str, &str)]) -> Output {
+        let profiles = ProfileScratch::new();
+        let mut cmd = Command::new(workspace_bin("oneharness"));
+        for (var, _) in std::env::vars().filter(|(var, _)| {
+            var.starts_with("ONEHARNESS_") || var.starts_with("MOCK_") || var == "CODEX_HOME"
+        }) {
+            cmd.env_remove(var);
+        }
+        cmd.env("ONEHARNESS_CONFIG", self.path("user.toml"))
+            .env("TMPDIR", self.path("tmp"))
+            .env("TMP", self.path("tmp"))
+            .env("TEMP", self.path("tmp"))
+            .env("HOME", self.path("home"))
+            .env("CODEX_HOME", self.path("codex-home"));
+        let mut argv: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
+        if args.first() == Some(&"run") {
+            argv.extend([
+                "--env".into(),
+                profiles.as_str().into(),
+                "--cwd".into(),
+                self.s("project"),
+                "--config".into(),
+                config.display().to_string(),
+            ]);
+            for id in [
+                "claude-code",
+                "codex",
+                "opencode",
+                "goose",
+                "qwen",
+                "crush",
+                "copilot",
+                "cursor",
+            ] {
+                argv.extend(["--bin".into(), bin(id)]);
+            }
+        } else if args.first() != Some(&"list") {
+            argv.extend(["--config".into(), config.display().to_string()]);
+            argv.extend(["--cwd".into(), self.s("project")]);
+        }
+        argv.extend(["--format".into(), "json".into()]);
+        cmd.args(&argv);
+        for (key, value) in envs {
+            cmd.env(key, value);
+        }
+        cmd.output().expect("run oneharness")
+    }
+
+    /// Every run overlay still under the world's temp dir.
+    fn overlays(&self) -> Vec<String> {
+        std::fs::read_dir(self.path("tmp"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains("run-overlay"))
+            .collect()
+    }
+}
+
+fn json(output: &Output) -> Value {
+    serde_json::from_slice(&output.stdout).unwrap_or_else(|err| {
+        panic!(
+            "stdout was not JSON ({err}):\n{}\n--- stderr ---\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+    })
+}
+
+fn argv_of(file: &Path) -> Vec<String> {
+    std::fs::read_to_string(file)
+        .unwrap_or_else(|e| panic!("{} was not recorded: {e}", file.display()))
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+fn env_of(file: &Path) -> serde_json::Map<String, Value> {
+    let mut env: serde_json::Map<String, Value> =
+        serde_json::from_str(&std::fs::read_to_string(file).unwrap()).unwrap();
+    // Per-invocation by construction: the coverage profile path.
+    env.remove("LLVM_PROFILE_FILE");
+    env
+}
+
+/// What one granted (or ungranted) run delivered to its harness.
+struct Spawn {
+    report: Value,
+    argv: Vec<String>,
+    env: serde_json::Map<String, Value>,
+}
+
+fn spawn(world: &World, harness: &str, mode: &str, toml: &str, extra: &[&str]) -> Spawn {
+    let config = world.config(toml);
+    let argv_file = world.path("argv");
+    let env_file = world.path("env.json");
+    let _ = std::fs::remove_file(&argv_file);
+    let _ = std::fs::remove_file(&env_file);
+    let mut args = vec![
+        "run",
+        "--harness",
+        harness,
+        "--mode",
+        mode,
+        "--prompt",
+        "judge it",
+    ];
+    args.extend_from_slice(extra);
+    let argv_s = argv_file.display().to_string();
+    let env_s = env_file.display().to_string();
+    let output = world.oh(
+        &args,
+        &config,
+        &[("MOCK_ARGV_FILE", &argv_s), ("MOCK_ENV_FILE", &env_s)],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        output.status.code().is_some_and(|c| c == 0 || c == 1),
+        "{harness} {mode}: {stderr}"
+    );
+    Spawn {
+        report: json(&output),
+        argv: argv_of(&argv_file),
+        env: env_of(&env_file),
+    }
+}
+
+const READ_TOOLS: [&str; 5] = ["Read", "Grep", "Glob", "WebFetch", "WebSearch"];
+
+/// The flag a Claude Code argv carries and every value after it up to the
+/// next flag.
+fn flag_values<'a>(argv: &'a [String], flag: &str) -> Vec<&'a str> {
+    let Some(at) = argv.iter().position(|a| a == flag) else {
+        return Vec::new();
+    };
+    argv[at + 1..]
+        .iter()
+        .take_while(|a| !a.starts_with("--"))
+        .map(String::as_str)
+        .collect()
+}
+
+fn flag_value<'a>(argv: &'a [String], flag: &str) -> Option<&'a str> {
+    argv.iter()
+        .position(|a| a == flag)
+        .and_then(|at| argv.get(at + 1))
+        .map(String::as_str)
+}
+
+#[test]
+fn claude_code_gets_the_resolved_grant_on_its_own_flags_and_nothing_written() {
+    let world = World::new("claude");
+    let tool = world.tool();
+    let toml = format!("allowed_tools = [\"Bash($GRANTED)\"]\n[env]\nGRANTED = \"{tool}\"\n");
+    let before = tree(&world.path("project"));
+    let run = spawn(&world, "claude-code", "read-only", &toml, &[]);
+    let argv = &run.argv;
+    assert_eq!(
+        flag_value(argv, "--permission-mode"),
+        Some("dontAsk"),
+        "{argv:?}"
+    );
+    let mut tools = READ_TOOLS.to_vec();
+    tools.push("Bash");
+    assert_eq!(flag_values(argv, "--tools"), tools);
+    let mut allowed = READ_TOOLS.to_vec();
+    let rule = format!("Bash({tool}:*)");
+    allowed.push(&rule);
+    assert_eq!(flag_values(argv, "--allowedTools"), allowed);
+    assert!(argv.iter().all(|a| !a.contains("$GRANTED")), "{argv:?}");
+    // Claude Code gets its grant on the argv alone: no overlay, no env.
+    assert!(!run.env.contains_key("ONEHARNESS_RUN_OVERLAY"));
+    assert!(run.report["results"][0].get("overlay_env").is_none());
+    assert_eq!(
+        tree(&world.path("project")),
+        before,
+        "the project gained a file"
+    );
+    assert!(world.overlays().is_empty());
+    assert!(
+        run.report["results"][0]["diagnostics"]
+            .as_array()
+            .is_none_or(|d| d.iter().all(|d| d["setting"] != "allowed_tools")),
+        "{}",
+        run.report
+    );
+}
+
+#[test]
+fn outside_read_only_the_rules_join_claude_codes_allowed_tools() {
+    let world = World::new("claude-modes");
+    let tool = world.tool();
+    let toml = format!("allowed_tools = [\"Bash({tool}:*)\", \"Edit\"]\n");
+    for (mode, native) in [
+        ("default", "dontAsk"),
+        ("plan", "plan"),
+        ("auto", "auto"),
+        ("bypass", "bypassPermissions"),
+    ] {
+        let run = spawn(&world, "claude-code", mode, &toml, &[]);
+        assert_eq!(
+            flag_value(&run.argv, "--permission-mode"),
+            Some(native),
+            "{mode}"
+        );
+        assert_eq!(
+            flag_values(&run.argv, "--allowedTools"),
+            [format!("Bash({tool}:*)").as_str(), "Edit"],
+            "{mode}"
+        );
+        assert!(
+            flag_values(&run.argv, "--tools").is_empty(),
+            "{mode}: {:?}",
+            run.argv
+        );
+    }
+}
+
+/// Every entry under `dir`, with its bytes (or link target), for a
+/// before/after comparison.
+fn tree(dir: &Path) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let rel = path.strip_prefix(root).unwrap().display().to_string();
+            let meta = std::fs::symlink_metadata(&path).unwrap();
+            if meta.file_type().is_symlink() {
+                out.push((
+                    rel,
+                    format!("-> {}", std::fs::read_link(&path).unwrap().display()),
+                ));
+            } else if meta.is_dir() {
+                out.push((rel.clone(), "/".into()));
+                walk(root, &path, out);
+            } else {
+                out.push((
+                    rel,
+                    String::from_utf8_lossy(&std::fs::read(&path).unwrap()).into_owned(),
+                ));
+            }
+        }
+    }
+    walk(dir, dir, &mut out);
+    out.sort();
+    out
+}
+
+#[cfg(unix)]
+#[test]
+fn codex_runs_on_an_overlay_home_linking_the_real_one_with_one_rules_file_of_its_own() {
+    let world = World::new("codex");
+    let tool = world.tool();
+    let toml = format!("allowed_tools = [\"Bash($GRANTED:*)\"]\n[env]\nGRANTED = \"{tool}\"\n");
+    let config = world.config(&toml);
+    let snapshot = world.path("snapshot.json");
+    let env_file = world.path("env.json");
+    let real_before = tree(&world.path("codex-home"));
+    let project_before = tree(&world.path("project"));
+    let output = world.oh(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--mode",
+            "read-only",
+            "--prompt",
+            "judge it",
+        ],
+        &config,
+        &[
+            ("MOCK_HOME_SNAPSHOT", snapshot.to_str().unwrap()),
+            ("MOCK_ENV_FILE", env_file.to_str().unwrap()),
+        ],
+    );
+    let report = json(&output);
+    let result = &report["results"][0];
+    let env = env_of(&env_file);
+    let home = env["CODEX_HOME"].as_str().unwrap();
+    assert_eq!(result["overlay_env"]["CODEX_HOME"], home);
+    // The overlay home is the run's own: under the temp dir, outside the
+    // project and the real home.
+    assert!(home.starts_with(&world.s("tmp")), "{home}");
+    assert!(home.contains("run-overlay"), "{home}");
+    assert!(env["ONEHARNESS_RUN_OVERLAY"]
+        .as_str()
+        .is_some_and(|m| home.contains(m)));
+    let snap: Value = serde_json::from_str(&std::fs::read_to_string(&snapshot).unwrap()).unwrap();
+    let entries = &snap["entries"];
+    for name in ["auth.json", "config.toml", "sessions"] {
+        assert_eq!(
+            entries[name]["link"],
+            world.s(&format!("codex-home/{name}")),
+            "{name}: {entries}"
+        );
+    }
+    let rules = &entries["rules"]["dir"];
+    assert_eq!(
+        rules["user.rules"]["link"],
+        world.s("codex-home/rules/user.rules")
+    );
+    let run_rules = rules["oneharness-run.rules"]["file"].as_str().unwrap();
+    assert!(
+        run_rules.contains(&format!(
+            "prefix_rule(pattern=[\"{tool}\"], decision=\"allow\")"
+        )),
+        "{run_rules}"
+    );
+    assert!(
+        !run_rules.contains('$'),
+        "a rule names a variable: {run_rules}"
+    );
+    // Today's sandbox is unchanged: the grant rides the rules file alone.
+    let argv: Vec<&str> = result["command"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a.as_str().unwrap())
+        .collect();
+    assert!(
+        argv.windows(2).any(|w| w == ["--sandbox", "read-only"]),
+        "{argv:?}"
+    );
+    // Nothing outlives the run, and nothing reached the project or the home.
+    assert!(world.overlays().is_empty(), "{:?}", world.overlays());
+    assert!(!Path::new(home).exists());
+    assert_eq!(tree(&world.path("codex-home")), real_before);
+    assert_eq!(tree(&world.path("project")), project_before);
+}
+
+#[cfg(unix)]
+#[test]
+fn outside_read_only_codex_takes_its_rules_through_the_same_overlay() {
+    let world = World::new("codex-modes");
+    let tool = world.tool();
+    let toml = format!("allowed_tools = [\"Bash({tool}:*)\", \"Edit\"]\n");
+    let config = world.config(&toml);
+    for mode in ["default", "auto", "bypass"] {
+        let snapshot = world.path(&format!("snapshot-{mode}.json"));
+        let output = world.oh(
+            &[
+                "run",
+                "--harness",
+                "codex",
+                "--mode",
+                mode,
+                "--prompt",
+                "judge it",
+            ],
+            &config,
+            &[("MOCK_HOME_SNAPSHOT", snapshot.to_str().unwrap())],
+        );
+        let report = json(&output);
+        if report["results"][0]["status"] == "error" || !snapshot.exists() {
+            // `auto` is not a mode codex supports: refused before spawning.
+            assert_eq!(output.status.code(), Some(2), "{mode}: {report}");
+            continue;
+        }
+        let snap: Value =
+            serde_json::from_str(&std::fs::read_to_string(&snapshot).unwrap()).unwrap();
+        let run_rules = snap["entries"]["rules"]["dir"]["oneharness-run.rules"]["file"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{mode}: {snap}"));
+        assert!(
+            run_rules.contains(&format!("pattern=[\"{tool}\"]")),
+            "{mode}: {run_rules}"
+        );
+        let diagnostics = report["results"][0]["diagnostics"].as_array().unwrap();
+        assert!(
+            diagnostics.iter().any(|d| d["setting"] == "allowed_tools"
+                && d["message"].as_str().unwrap().contains("`Edit`")),
+            "{mode}: {diagnostics:?}"
+        );
+    }
+    assert!(world.overlays().is_empty());
+}
+
+#[test]
+fn the_grant_layers_as_allowed_tools_always_has() {
+    let world = World::new("layering");
+    let tool = world.tool();
+    let parent = world.path("parent.toml");
+    std::fs::write(
+        &parent,
+        format!(
+            "model = \"inherited-model\"\nallowed_tools = [\"Bash({tool}-parent)\"]\n\
+             [sync]\nallowed_tools = [\"Bash(git status:*)\"]\n"
+        ),
+    )
+    .unwrap();
+    let rules_of = |toml: &str, harness: &str| -> (Vec<String>, Vec<String>) {
+        let run = spawn(&world, harness, "read-only", toml, &[]);
+        let allowed = flag_values(&run.argv, "--allowedTools")
+            .into_iter()
+            .filter(|r| r.starts_with("Bash("))
+            .map(str::to_string)
+            .collect();
+        (allowed, run.argv.clone())
+    };
+    // A child that sets only its grant keeps every key it inherits.
+    let child = format!("extends = \"{}\"\n", parent.display());
+    let (allowed, argv) = rules_of(&child, "claude-code");
+    assert_eq!(allowed, [format!("Bash({tool}-parent:*)")]);
+    assert_eq!(flag_value(&argv, "--model"), Some("inherited-model"));
+    let child = format!(
+        "extends = \"{}\"\nallowed_tools = [\"Bash({tool})\"]\n",
+        parent.display()
+    );
+    let (allowed, argv) = rules_of(&child, "claude-code");
+    assert_eq!(allowed, [format!("Bash({tool}:*)")]);
+    assert_eq!(flag_value(&argv, "--model"), Some("inherited-model"));
+    // `[harness.<id>]` beats top level, and a variant beats its harness.
+    let toml = format!(
+        "allowed_tools = [\"Bash({tool}-top)\"]\n\
+         [harness.claude-code]\nallowed_tools = [\"Bash({tool}-harness)\"]\n\
+         [harness.claude-code.variant.work]\nallowed_tools = [\"Bash({tool}-variant)\"]\n"
+    );
+    assert_eq!(
+        rules_of(&toml, "claude-code").0,
+        [format!("Bash({tool}-harness:*)")]
+    );
+    assert_eq!(
+        rules_of(&toml, "claude-code:work").0,
+        [format!("Bash({tool}-variant:*)")]
+    );
+    let toml = format!(
+        "allowed_tools = [\"Bash({tool}-top)\"]\n[harness.claude-code.variant.work]\nmodel = \"w\"\n"
+    );
+    assert_eq!(
+        rules_of(&toml, "claude-code:work").0,
+        [format!("Bash({tool}-top:*)")]
+    );
+}
+
+#[test]
+fn a_variable_resolves_from_the_runs_own_environment() {
+    let world = World::new("resolve");
+    let a = world.s("bin/from-env-table");
+    let b = world.s("bin/from-flag");
+    let c = world.s("bin/from-env-from");
+    // An absolute `env_from` value names an identity home, which must exist.
+    std::fs::write(&c, "").unwrap();
+    let allowed = |run: &Spawn| -> Vec<String> {
+        flag_values(&run.argv, "--allowedTools")
+            .into_iter()
+            .filter(|r| r.starts_with("Bash("))
+            .map(str::to_string)
+            .collect()
+    };
+    let toml = format!("allowed_tools = [\"Bash($GRANTED)\"]\n[env]\nGRANTED = \"{a}\"\n");
+    let run = spawn(&world, "claude-code", "read-only", &toml, &[]);
+    assert_eq!(allowed(&run), [format!("Bash({a}:*)")]);
+    // `--env` wins over `[env]`, as it does for the spawn.
+    let flag = format!("GRANTED={b}");
+    let run = spawn(&world, "claude-code", "read-only", &toml, &["--env", &flag]);
+    assert_eq!(allowed(&run), [format!("Bash({b}:*)")]);
+    // A variant's `env_from` maps the name from another parent variable.
+    let toml = String::from(
+        "[harness.claude-code.variant.work]\nallowed_tools = [\"Bash($GRANTED)\"]\n\
+         env_from = { GRANTED = \"SOURCE_OF_GRANT\" }\n"
+    );
+    let config = world.config(&toml);
+    let argv_file = world.path("argv-env-from");
+    let output = world.oh(
+        &[
+            "run",
+            "--harness",
+            "claude-code:work",
+            "--mode",
+            "read-only",
+            "--prompt",
+            "p",
+        ],
+        &config,
+        &[
+            ("SOURCE_OF_GRANT", &c),
+            ("MOCK_ARGV_FILE", argv_file.to_str().unwrap()),
+        ],
+    );
+    assert!(
+        output.status.code().is_some_and(|code| code < 2),
+        "{output:?}"
+    );
+    let argv = argv_of(&argv_file);
+    assert!(flag_values(&argv, "--allowedTools").contains(&format!("Bash({c}:*)").as_str()));
+    // `unset_env` removes the name the rule reads, which is then unset.
+    let toml = format!(
+        "allowed_tools = [\"Bash($GRANTED)\"]\n[env]\nGRANTED = \"{a}\"\n\
+         [harness.claude-code.variant.bare]\nunset_env = [\"GRANTED\"]\n"
+    );
+    let config = world.config(&toml);
+    let output = world.oh(
+        &[
+            "run",
+            "--harness",
+            "claude-code:bare",
+            "--mode",
+            "read-only",
+            "--prompt",
+            "p",
+        ],
+        &config,
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("`$GRANTED` is unset or empty"));
+}
+
+#[test]
+fn an_unusable_rule_is_refused_before_anything_spawns() {
+    let world = World::new("refusals");
+    let argv_file = world.path("argv");
+    let check = |toml: &str, mode: &str, envs: &[(&str, &str)], wants: &[&str]| {
+        let config = world.config(toml);
+        let mut envs = envs.to_vec();
+        let argv_s = argv_file.display().to_string();
+        envs.push(("MOCK_ARGV_FILE", &argv_s));
+        for harness in ["claude-code", "codex", "opencode"] {
+            let output = world.oh(
+                &["run", "--harness", harness, "--mode", mode, "--prompt", "p"],
+                &config,
+                &envs,
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert_eq!(output.status.code(), Some(2), "{harness} {toml}: {stderr}");
+            for want in wants {
+                assert!(
+                    stderr.contains(want),
+                    "{harness} {toml}: {want:?} not in {stderr}"
+                );
+            }
+            assert!(stderr.contains("Nothing was spawned"), "{stderr}");
+            assert!(
+                !argv_file.exists(),
+                "{harness} {toml}: a harness was spawned"
+            );
+            assert!(output.stdout.is_empty());
+        }
+    };
+    check(
+        "allowed_tools = [\"Bash($NOT_SET_ANYWHERE)\"]\n",
+        "default",
+        &[],
+        &[
+            "rule `Bash($NOT_SET_ANYWHERE)`",
+            "`$NOT_SET_ANYWHERE` is unset or empty",
+        ],
+    );
+    check(
+        "allowed_tools = [\"Bash($GRANTED:*)\"]\n",
+        "read-only",
+        &[("GRANTED", "")],
+        &["rule `Bash($GRANTED:*)`", "`$GRANTED` is unset or empty"],
+    );
+    check(
+        "allowed_tools = [\"Bash($GRANTED)\"]\n",
+        "default",
+        &[("GRANTED", "bin/decline")],
+        &[
+            "rule `Bash($GRANTED)`",
+            "holds `bin/decline`, which is not one absolute path",
+        ],
+    );
+    for (rule, why) in [
+        ("Bash(decline:*)", "not an absolute path"),
+        ("Edit", "not a `Bash(...)` rule"),
+        ("Write", "not a `Bash(...)` rule"),
+        ("Read", "not a `Bash(...)` rule"),
+        ("Bash(/usr/bin/*)", "wildcard"),
+        ("Bash(/usr/bin/git status:*)", "several words"),
+    ] {
+        check(
+            &format!("allowed_tools = [\"{rule}\"]\n"),
+            "read-only",
+            &[],
+            &[&format!("rule `{rule}`"), "under `--mode read-only`", why],
+        );
+    }
+}
+
+#[test]
+fn the_turn_is_told_the_granted_path_only_where_the_grant_applies() {
+    let world = World::new("statement");
+    let tool = world.tool();
+    let toml = format!("allowed_tools = [\"Bash({tool})\"]\nsystem = \"be a judge\"\n");
+    // Claude Code: the native system file carries the statement.
+    let record = world.path("system.json");
+    let config = world.config(&toml);
+    let output = world.oh(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--mode",
+            "read-only",
+            "--prompt",
+            "p",
+        ],
+        &config,
+        &[("MOCK_SYSTEM_FILE_RECORD", record.to_str().unwrap())],
+    );
+    assert!(output.status.code().is_some_and(|c| c < 2), "{output:?}");
+    let system: Value = serde_json::from_str(&std::fs::read_to_string(&record).unwrap()).unwrap();
+    let contents = system["contents"].as_str().unwrap();
+    assert!(contents.starts_with("be a judge"), "{contents}");
+    assert!(contents.contains(&format!("`{tool}`")), "{contents}");
+    // Codex: the statement is folded into the turn it is sent.
+    let input = world.path("input.json");
+    let output = world.oh(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--mode",
+            "read-only",
+            "--prompt",
+            "p",
+        ],
+        &config,
+        &[("MOCK_INPUT_FILE", input.to_str().unwrap())],
+    );
+    assert!(output.status.code().is_some_and(|c| c < 2), "{output:?}");
+    let sent = std::fs::read_to_string(&input).unwrap();
+    assert!(sent.contains(&format!("`{tool}`")), "{sent}");
+    // A withheld grant, and a run with none, add nothing.
+    for (harness, toml) in [
+        ("opencode", toml.as_str()),
+        ("claude-code", "system = \"be a judge\"\n"),
+    ] {
+        let config = world.config(toml);
+        let _ = std::fs::remove_file(&input);
+        let output = world.oh(
+            &[
+                "run",
+                "--harness",
+                harness,
+                "--mode",
+                "read-only",
+                "--prompt",
+                "p",
+            ],
+            &config,
+            &[("MOCK_INPUT_FILE", input.to_str().unwrap())],
+        );
+        assert!(output.status.code().is_some_and(|c| c < 2), "{output:?}");
+        let sent = std::fs::read_to_string(&input).unwrap();
+        assert!(!sent.contains(&tool), "{harness}: {sent}");
+        assert!(!sent.contains("This run may execute"), "{harness}: {sent}");
+    }
+}
+
+#[test]
+fn a_harness_that_withholds_runs_as_it_would_with_none_and_says_so() {
+    let world = World::new("withheld");
+    let tool = world.tool();
+    // Read-only where the harness has it; the three that do not are held to
+    // the same withholding under the mode they share with every harness.
+    for (harness, mode) in [
+        ("opencode", "read-only"),
+        ("copilot", "read-only"),
+        ("cursor", "read-only"),
+        ("qwen", "read-only"),
+        ("goose", "bypass"),
+        ("crush", "bypass"),
+    ] {
+        let without = spawn(&world, harness, mode, "", &[]);
+        let with = spawn(
+            &world,
+            harness,
+            mode,
+            &format!("allowed_tools = [\"Bash({tool})\"]\n"),
+            &[],
+        );
+        assert_eq!(with.argv, without.argv, "{harness}");
+        assert_eq!(with.env, without.env, "{harness}");
+        let diagnostics = with.report["results"][0]["diagnostics"].as_array().unwrap();
+        let withheld: Vec<&Value> = diagnostics
+            .iter()
+            .filter(|d| d["setting"] == "allowed_tools")
+            .collect();
+        assert_eq!(withheld.len(), 1, "{harness}: {diagnostics:?}");
+        let message = withheld[0]["message"].as_str().unwrap();
+        assert!(message.contains(&format!("`Bash({tool})`")), "{message}");
+        assert!(
+            message.contains(&format!("withheld on `{harness}`")),
+            "{message}"
+        );
+        assert_eq!(withheld[0]["harness"], harness);
+        assert!(without.report["results"][0]
+            .get("diagnostics")
+            .is_none_or(|d| {
+                d.as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|d| d["setting"] != "allowed_tools")
+            }));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_codex_login_in_the_keyring_withholds_the_grant() {
+    let world = World::new("keyring");
+    std::fs::write(
+        world.path("codex-home/config.toml"),
+        "cli_auth_credentials_store = \"keyring\"\n",
+    )
+    .unwrap();
+    let tool = world.tool();
+    let without = spawn(&world, "codex", "read-only", "", &[]);
+    let with = spawn(
+        &world,
+        "codex",
+        "read-only",
+        &format!("allowed_tools = [\"Bash({tool})\"]\n"),
+        &[],
+    );
+    assert_eq!(with.argv, without.argv);
+    assert_eq!(with.env, without.env);
+    assert_eq!(with.env["CODEX_HOME"], world.s("codex-home"));
+    let message = with.report["results"][0]["diagnostics"][0]["message"]
+        .as_str()
+        .unwrap();
+    assert!(message.contains("keyring"), "{message}");
+    assert!(world.overlays().is_empty());
+}
+
+#[test]
+fn with_no_run_level_allowlist_a_sync_section_changes_nothing_a_run_spawns() {
+    let world = World::new("byte-identical");
+    let tool = world.tool();
+    let sync = format!("[sync]\nallowed_tools = [\"Bash({tool}:*)\", \"Bash(touch:*)\"]\n");
+    for (harness, modes) in [
+        (
+            "claude-code",
+            &["read-only", "default", "plan", "auto", "bypass"][..],
+        ),
+        ("codex", &["read-only", "default", "bypass"][..]),
+    ] {
+        for mode in modes {
+            let project_before = tree(&world.path("project"));
+            let bare = spawn(&world, harness, mode, "", &[]);
+            let synced = spawn(&world, harness, mode, &sync, &[]);
+            assert_eq!(synced.argv, bare.argv, "{harness} {mode}");
+            assert_eq!(synced.env, bare.env, "{harness} {mode}");
+            assert_eq!(
+                tree(&world.path("project")),
+                project_before,
+                "{harness} {mode}"
+            );
+            assert!(synced.report["results"][0].get("overlay_env").is_none());
+            assert!(world.overlays().is_empty());
+        }
+    }
+}
+
+#[test]
+fn sync_writes_only_the_sync_section_and_run_applies_only_the_run_level_grant() {
+    let world = World::new("both");
+    let tool = world.tool();
+    let toml = format!(
+        "allowed_tools = [\"Bash({tool})\"]\n[sync]\nallowed_tools = [\"Bash(touch:*)\"]\n"
+    );
+    let config = world.config(&toml);
+    let synced = world.oh(&["sync", "--harness", "claude-code,codex"], &config, &[]);
+    assert!(synced.status.success(), "{synced:?}");
+    let settings = std::fs::read_to_string(world.path("project/.claude/settings.json")).unwrap();
+    let settings: Value = serde_json::from_str(&settings).unwrap();
+    assert_eq!(
+        settings["permissions"]["allow"],
+        serde_json::json!(["Bash(touch:*)"])
+    );
+    let rules =
+        std::fs::read_to_string(world.path("project/.codex/rules/oneharness.rules")).unwrap();
+    assert!(rules.contains("pattern=[\"touch\"]"), "{rules}");
+    assert!(!rules.contains(&tool), "{rules}");
+
+    let run = spawn(&world, "claude-code", "read-only", &toml, &[]);
+    let allowed = flag_values(&run.argv, "--allowedTools");
+    assert!(
+        allowed.contains(&format!("Bash({tool}:*)").as_str()),
+        "{allowed:?}"
+    );
+    assert!(!allowed.iter().any(|r| r.contains("touch")), "{allowed:?}");
+    #[cfg(unix)]
+    {
+        let snapshot = world.path("snapshot.json");
+        let output = world.oh(
+            &[
+                "run",
+                "--harness",
+                "codex",
+                "--mode",
+                "read-only",
+                "--prompt",
+                "p",
+            ],
+            &config,
+            &[("MOCK_HOME_SNAPSHOT", snapshot.to_str().unwrap())],
+        );
+        assert!(output.status.code().is_some_and(|c| c < 2));
+        let snap: Value =
+            serde_json::from_str(&std::fs::read_to_string(&snapshot).unwrap()).unwrap();
+        let run_rules = snap["entries"]["rules"]["dir"]["oneharness-run.rules"]["file"]
+            .as_str()
+            .unwrap();
+        assert!(
+            run_rules.contains(&tool) && !run_rules.contains("touch"),
+            "{run_rules}"
+        );
+    }
+}
+
+#[test]
+fn print_command_shows_the_overlaid_spawn_and_creates_nothing() {
+    let world = World::new("print");
+    let tool = world.tool();
+    let config = world.config(&format!("allowed_tools = [\"Bash({tool})\"]\n"));
+    let tmp_before = tree(&world.path("tmp"));
+    let home_before = tree(&world.path("codex-home"));
+    let output = world.oh(
+        &[
+            "run",
+            "--harness",
+            "claude-code,codex",
+            "--mode",
+            "read-only",
+            "--prompt",
+            "p",
+            "--print-command",
+        ],
+        &config,
+        &[],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let report = json(&output);
+    let claude: Vec<String> = report["results"][0]["command"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a.as_str().unwrap().to_string())
+        .collect();
+    assert!(flag_values(&claude, "--allowedTools").contains(&format!("Bash({tool}:*)").as_str()));
+    assert_eq!(flag_value(&claude, "--permission-mode"), Some("dontAsk"));
+    if cfg!(unix) {
+        assert_eq!(
+            report["results"][1]["overlay_env"]["CODEX_HOME"],
+            "<run-overlay>/codex-home"
+        );
+    }
+    assert_eq!(
+        tree(&world.path("tmp")),
+        tmp_before,
+        "a dry run wrote under the temp dir"
+    );
+    assert_eq!(tree(&world.path("codex-home")), home_before);
+}
+
+#[cfg(unix)]
+#[test]
+fn an_orphaned_overlay_is_reclaimed_and_a_live_ones_is_left_alone() {
+    use fs2::FileExt;
+    let world = World::new("orphans");
+    let orphan = world.path("tmp/oneharness-run-overlay-0dead-1");
+    std::fs::create_dir_all(orphan.join("codex-home")).unwrap();
+    std::fs::write(orphan.join("owner.lock"), "").unwrap();
+    std::fs::write(orphan.join("real-codex-home"), world.s("codex-home")).unwrap();
+    // What a killed run's Codex created at the overlay home's top level is
+    // returned to the real home as the orphan is reclaimed.
+    std::fs::write(orphan.join("codex-home/session_index.jsonl"), "{}\n").unwrap();
+    let live = world.path("tmp/oneharness-run-overlay-1live-1");
+    std::fs::create_dir_all(&live).unwrap();
+    let lock = std::fs::File::create(live.join("owner.lock")).unwrap();
+    lock.lock_exclusive().unwrap();
+    let config = world.config("");
+    let output = world.oh(
+        &["run", "--harness", "claude-code", "--prompt", "p"],
+        &config,
+        &[],
+    );
+    assert!(output.status.code().is_some_and(|c| c < 2), "{output:?}");
+    assert!(!orphan.exists(), "the orphan survived the next run");
+    assert!(live.exists(), "a live run's overlay was reclaimed");
+    assert_eq!(
+        std::fs::read_to_string(world.path("codex-home/session_index.jsonl")).unwrap(),
+        "{}\n"
+    );
+    drop(lock);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_granted_controlled_codex_turn_runs_its_own_app_server_and_records_its_thread() {
+    let world = World::new("control");
+    let tool = world.tool();
+    // A home Codex has indexed: the overlay seeds its own index and, after the
+    // turn, has the real home read the thread.
+    std::fs::write(world.path("codex-home/state_5.sqlite"), "real index").unwrap();
+    let config = world.config(&format!("allowed_tools = [\"Bash({tool})\"]\n"));
+    let log = world.path("app-server.log");
+    let env_file = world.path("env.json");
+    let output = world.oh(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--mode",
+            "read-only",
+            "--prompt",
+            "judge it",
+            "--control",
+            "--session",
+            "granted",
+            "--session-dir",
+            &world.s("sessions"),
+        ],
+        &config,
+        &[
+            ("MOCK_CODEX_APP_SERVER_LOG", log.to_str().unwrap()),
+            ("MOCK_CODEX_COMPLETE_TURN", "1"),
+            ("MOCK_ENV_FILE", env_file.to_str().unwrap()),
+        ],
+    );
+    let report = json(&output);
+    assert!(
+        output.status.success(),
+        "{report}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result = &report["results"][0];
+    // Not the pooled server: a pooled turn's app-server listens on a socket,
+    // and its `app_server` report says `shared`.
+    assert_ne!(
+        report["control"]["app_server"]["mode"], "shared",
+        "{report}"
+    );
+    let frames: Vec<Value> = std::fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect();
+    let methods: Vec<&str> = frames.iter().filter_map(|f| f["method"].as_str()).collect();
+    assert!(
+        methods.contains(&"thread/list"),
+        "the index seed ran: {methods:?}"
+    );
+    assert!(methods.contains(&"turn/start"), "{methods:?}");
+    let read = frames
+        .iter()
+        .find(|f| f["method"] == "thread/read")
+        .unwrap_or_else(|| panic!("the real home never read the thread: {methods:?}"));
+    assert_eq!(read["params"]["threadId"], result["session_id"]);
+    assert!(world.overlays().is_empty());
+    assert_eq!(
+        std::fs::read_to_string(world.path("codex-home/state_5.sqlite")).unwrap(),
+        "real index",
+        "the real index is Codex's to change, never the overlay's"
+    );
+}
+
+#[test]
+fn list_says_which_harnesses_apply_a_run_level_allowlist() {
+    let world = World::new("list");
+    let config = world.config("");
+    let output = world.oh(&["list"], &config, &[]);
+    assert!(output.status.success(), "{output:?}");
+    let listed = json(&output);
+    for h in listed["harnesses"].as_array().unwrap() {
+        let id = h["id"].as_str().unwrap();
+        let applied = id == "claude-code" || (id == "codex" && cfg!(unix));
+        assert_eq!(h["supports_run_allowed_tools"], applied, "{id}");
+    }
+}

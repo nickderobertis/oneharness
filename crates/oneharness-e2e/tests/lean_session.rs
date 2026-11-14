@@ -2366,15 +2366,15 @@ fn the_list_text_view_states_each_lean_capability() {
     };
     assert_eq!(
         row("claude-code"),
-        "auto_compact yes · compact_now yes · tool_set yes · skills_off yes · mcp_off yes · images yes · call_usage yes"
+        "auto_compact yes · compact_now yes · tool_set yes · skills_off yes · mcp_off yes · images yes · call_usage yes · run_allowed_tools yes"
     );
     assert_eq!(
         row("codex"),
-        "auto_compact yes · compact_now yes · tool_set no · skills_off yes · mcp_off yes · images yes · call_usage yes"
+        "auto_compact yes · compact_now yes · tool_set no · skills_off yes · mcp_off yes · images yes · call_usage yes · run_allowed_tools yes"
     );
     assert_eq!(
         row("goose"),
-        "auto_compact no · compact_now no · tool_set no · skills_off no · mcp_off no · images no · call_usage no"
+        "auto_compact no · compact_now no · tool_set no · skills_off no · mcp_off no · images no · call_usage no · run_allowed_tools no"
     );
 }
 

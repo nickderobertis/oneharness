@@ -558,6 +558,14 @@ pub fn exec_policy_statement(list: RuleList, rule: &str) -> Option<String> {
         .map(|tokens| prefix_rule(&tokens, list.exec_policy_decision()))
 }
 
+/// The `prefix_rule(...)` statement for `tokens` with `decision` — the shape
+/// [`rules_plan_for`] writes, for a caller (the run-level allowlist's per-run
+/// rules file) that resolved its own tokens.
+#[must_use]
+pub fn exec_policy_statement_for(tokens: &[String], decision: &str) -> String {
+    prefix_rule(tokens, decision)
+}
+
 /// One `prefix_rule(...)` statement. A token never holds a control character
 /// (`shell_words` refuses them), so a JSON string literal is also a valid
 /// Starlark one: the only escapes it can contain are `\"` and `\\`.

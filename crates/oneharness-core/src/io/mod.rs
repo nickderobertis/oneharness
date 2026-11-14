@@ -44,6 +44,8 @@ pub mod registry;
 // caller reaches the same engine without a subprocess hop.
 pub mod run;
 pub mod runner;
+// The per-run overlay a run-level allowlist reaches a harness's home through.
+pub mod run_overlay;
 // A self-removing temp directory. Public because the three builds that need it
 // — this crate's unit tests, the binary crate's unit tests, and the
 // integration-test binaries — are three separate compilation units, and a

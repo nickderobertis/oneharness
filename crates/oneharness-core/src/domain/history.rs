@@ -2926,6 +2926,7 @@ mod tests {
             usage_source: None,
             calls: None,
             diagnostics: Vec::new(),
+            overlay_env: std::collections::BTreeMap::new(),
             session_id: Some("abc-123".to_string()),
             events: None,
             events_source: None,

@@ -56,7 +56,7 @@ oh_stream_assert opencode
 # the explicit allow pattern is the positive control.
 ok="$(oh_enforce_file ok)"
 blocked="$(oh_enforce_file blocked)"
-policy="[harness.opencode.settings.permission.bash]
+policy="[sync.harness.opencode.settings.permission.bash]
 \"touch $ok\" = \"allow\"
 \"touch $blocked\" = \"deny\""
 oh_sync_enforce opencode "$policy" "$ok" present allow
@@ -102,8 +102,8 @@ oh_opencode_session_id_forwarded() {
     sb="$(mktemp -d)"
     sb="$(oh_native_path "$sb")"
     git init -q "$sb" 2>/dev/null || true
-    cat >"$sb/oneharness.toml" <<TOML
-[[hooks]]
+    cat >"$sb/oneharness.toml" <<TOML || fail "opencode: could not write the gate config into $sb; check that the host temp dir is writable"
+[[sync.hooks]]
 command = "$bin gate opencode --deny-if-contains $needle"
 harnesses = ["opencode"]
 plugin_name = "ohsess"

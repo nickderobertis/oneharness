@@ -2391,8 +2391,11 @@ oh_codex_rules_match() {
   file="rules-allow-${RANDOM}${RANDOM}.txt"
   dir="rules-deny-${RANDOM}${RANDOM}"
   cfg="$scratch/oneharness.toml"
-  printf '[harness.codex]\nallowed_tools = ["Bash(rm -f %s:*)", "Bash(Remove-Item -Force %s:*)"]\ndenied_tools = ["Bash(mkdir %s:*)"]\n' \
-    "$file" "$file" "$dir" >"$cfg"
+  printf '[sync.harness.codex]\nallowed_tools = ["Bash(rm -f %s:*)", "Bash(Remove-Item -Force %s:*)"]\ndenied_tools = ["Bash(mkdir %s:*)"]\n' \
+    "$file" "$file" "$dir" >"$cfg" || {
+    rm -rf "$scratch" || printf 'codex: could not remove the scratch dir %s; delete it by hand\n' "$scratch" >&2
+    fail "codex: could not write the sync config $cfg; check that the host temp dir is writable"
+  }
   if ! out="$(ONEHARNESS_NO_CONFIG='' "$bin" sync --harness codex --cwd "$(oh_native_path "$scratch")" \
     --config "$(oh_native_path "$cfg")" --compact 2>&1)"; then
     printf '%s\n' "$out" >&2
@@ -2518,8 +2521,11 @@ oh_codex_rules_enforce() {
 
   cfg="$scratch/oneharness.toml"
   # Each rule names only the scratch path its half needs.
-  printf '[harness.codex]\nallowed_tools = ["Bash(%s:*)"]\ndenied_tools = ["Bash(mkdir %s:*)"]\n' \
-    "$del" "$dir" >"$cfg"
+  printf '[sync.harness.codex]\nallowed_tools = ["Bash(%s:*)"]\ndenied_tools = ["Bash(mkdir %s:*)"]\n' \
+    "$del" "$dir" >"$cfg" || {
+    rm -rf "$scratch" || printf 'codex: could not remove the scratch dir %s; delete it by hand\n' "$scratch" >&2
+    fail "codex: could not write the sync config $cfg; check that the host temp dir is writable"
+  }
   if ! out="$(ONEHARNESS_NO_CONFIG='' "$bin" sync --harness codex --cwd "$proj" \
     --config "$cfg" --compact 2>&1)"; then
     printf '%s\n' "$out" >&2
@@ -3368,12 +3374,12 @@ _oh_control_mode_enforce_once() {
 
 # --- hook enforcement --------------------------------------------------------
 
-# Live proof that a synced `[[hooks]]` gate is HONORED by the real harness — the
+# Live proof that a synced `[[sync.hooks]]` gate is HONORED by the real harness — the
 # hook counterpart to `oh_sync_enforce`, and the only check that the installed
 # hook file is in a shape the real CLI loads and fires (the hermetic suite can
 # only prove the file was written correctly).
 #
-# It syncs a `[[hooks]]` entry whose command is `oneharness gate <id>` into the
+# It syncs a `[[sync.hooks]]` entry whose command is `oneharness gate <id>` into the
 # harness's OWN config, then drives the harness (via `oneharness run`, under
 # bypass so the hook is the sole decider) through two commands:
 #   * deny  — a `touch` whose path carries a unique marker. The gate matches the
@@ -3416,8 +3422,8 @@ oh_hook_enforce() {
   denyfile="$sandbox/$marker.txt"
   allowfile="$sandbox/ohgate-allowed-${RANDOM}${RANDOM}.txt"
 
-  cat >"$sandbox/oneharness.toml" <<TOML
-[[hooks]]
+  cat >"$sandbox/oneharness.toml" <<TOML || fail "$id: could not write the gate config into $sandbox; check that the host temp dir is writable"
+[[sync.hooks]]
 command = "$bin gate $id --deny-if-contains $marker"
 harnesses = ["$id"]
 plugin_name = "ohgate"

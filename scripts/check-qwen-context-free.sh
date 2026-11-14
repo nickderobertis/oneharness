@@ -260,7 +260,7 @@ esac
 # 2b. The synced-settings turn: the config's rules are synced into the turn's
 #     own empty folder, which then holds qwen's settings file and nothing else,
 #     and the turn loads no context and passes on the marker alone.
-printf '[harness.qwen]\nallowed_tools = ["run_shell_command(ls)"]\n' >"$tmp/sync.toml" || fixture_failed "$tmp/sync.toml"
+printf '[sync.harness.qwen]\nallowed_tools = ["run_shell_command(ls)"]\n' >"$tmp/sync.toml" || fixture_failed "$tmp/sync.toml"
 # shellcheck disable=SC2016 # expanded by the driven shell
 drive "$root" 'oh_echo_without_context qwen --sync "$SYNC_TOML"' SYNC_TOML="$tmp/sync.toml"
 [ "$rc" -eq 0 ] || fail "the context-free synced-settings turn failed: $out"
@@ -276,7 +276,7 @@ fi
 
 # 2c. A config sync refuses stops before launching, names the config, and
 #     gives the sandbox back.
-printf '[harness.qwen]\nallowed_tools = 3\n' >"$tmp/bad-sync.toml" || fixture_failed "$tmp/bad-sync.toml"
+printf '[sync.harness.qwen]\nallowed_tools = 3\n' >"$tmp/bad-sync.toml" || fixture_failed "$tmp/bad-sync.toml"
 # shellcheck disable=SC2016 # expanded by the driven shell
 drive "$root" 'oh_echo_without_context qwen --sync "$SYNC_TOML"' SYNC_TOML="$tmp/bad-sync.toml"
 [ "$rc" -ne 0 ] || fail "a config sync refused was accepted: $out"

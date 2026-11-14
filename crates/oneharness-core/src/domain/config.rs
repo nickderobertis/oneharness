@@ -237,25 +237,17 @@ pub struct FileConfig {
     /// Labels attached to every history record from a run. Layers merge by key;
     /// higher-precedence values replace only the same key.
     pub history_labels: Option<HistoryLabels>,
-    /// Tool/permission rules the harness may use without prompting, in each
-    /// harness's native rule syntax. Delivered by `oneharness sync`, which
-    /// merges them into the harness's own project config file (Claude Code's
-    /// `.claude/settings.json` `permissions.allow`, Cursor's `.cursor/cli.json`,
-    /// Qwen's `.qwen/settings.json`, crush's `crush.json`) so the policy also
-    /// applies outside oneharness. A harness with no mapping reports the rule
-    /// as `unmapped` in the sync report rather than dropping it silently.
+    /// The run-level allowlist: tool/permission rules, in the unified rule
+    /// syntax, that one run may use. `oneharness sync` never writes it — what
+    /// `sync` writes lives in [`Self::sync`]. This release does not apply it
+    /// either: a `run` whose resolved config holds a run-level rule is refused
+    /// before anything is spawned. Resolved variant, then harness, then this
+    /// top-level value ([`Self::allowed_tools_for`]).
     pub allowed_tools: Option<Vec<String>>,
-    /// Deny rules; synced like `allowed_tools` (for crush this lands in
-    /// `options.disabled_tools`, hiding the tool entirely).
-    pub denied_tools: Option<Vec<String>>,
-    /// Normalized pre-tool hooks, each fanned across the synced harnesses by
-    /// `oneharness sync` and rendered into every harness's native shape (a
-    /// shared config file, a dedicated hooks file, or a plugin). Unlike the
-    /// verbatim per-harness `[harness.<id>.hooks]` table — which is one
-    /// harness's own schema, limited to harnesses whose hooks share their
-    /// config file — a `[[hooks]]` entry is harness-agnostic and reaches all of
-    /// them. The two are independent and may both be set.
-    pub hooks: Option<Vec<HookEntry>>,
+    /// The sync policy: everything `oneharness sync` writes into each
+    /// harness's own config file, and nothing else (`[sync]`).
+    #[serde(default)]
+    pub sync: SyncConfig,
     /// Extra environment for every harness process (like repeated `--env`).
     #[serde(default)]
     pub env: BTreeMap<String, String>,
@@ -315,23 +307,9 @@ pub struct HarnessConfig {
     /// (`"per-dispatch"`). Resolved apart from `args`, like `plugins`. See
     /// [`FileConfig::app_server_for`].
     pub app_server: Option<AppServerMode>,
-    /// Allow rules for this harness only; beats the top-level `allowed_tools`.
-    /// Rejected at parse time when the harness's config file has no allow-list
-    /// concept (`oneharness sync` could not deliver it), so a rule that cannot
-    /// apply fails loudly.
+    /// The run-level allowlist for this harness only; beats the top-level
+    /// `allowed_tools`. Never synced (see [`FileConfig::allowed_tools`]).
     pub allowed_tools: Option<Vec<String>>,
-    /// Deny rules for this harness only; beats the top-level `denied_tools`.
-    pub denied_tools: Option<Vec<String>>,
-    /// Lifecycle hooks, as an uninterpreted table in the harness's own hooks
-    /// schema. Synced into the harness's config file (Claude Code's
-    /// `.claude/settings.json` `hooks` key); rejected at parse time for a
-    /// harness whose hooks oneharness has no file mapping for.
-    pub hooks: Option<toml::Value>,
-    /// Raw settings merged verbatim into this harness's project config file by
-    /// `oneharness sync` — the escape hatch for config shapes the unified
-    /// fields don't model (e.g. OpenCode's `permission` policy map). Rejected
-    /// at parse time for a harness with no known project config file.
-    pub settings: Option<toml::Value>,
     /// Extra environment for this harness only; beats the top-level `[env]`.
     #[serde(default)]
     pub env: BTreeMap<String, String>,
@@ -465,10 +443,8 @@ pub struct VariantConfig {
     pub analytics: Option<bool>,
     /// This variant's `app_server`, beating its harness's.
     pub app_server: Option<AppServerMode>,
+    /// This variant's run-level allowlist, beating its harness's.
     pub allowed_tools: Option<Vec<String>>,
-    pub denied_tools: Option<Vec<String>>,
-    pub hooks: Option<toml::Value>,
-    pub settings: Option<toml::Value>,
     #[serde(default)]
     // llmlint: ignore[invalid_states_unrepresentable] This map shares the established TOML `[env]` string-key contract; `validate` checks every key before FileConfig is exposed, preserving backward-compatible merging without a second map-key representation.
     pub env: BTreeMap<String, String>,
@@ -482,7 +458,77 @@ pub struct VariantConfig {
     pub unset_env: Vec<String>,
 }
 
-/// One `[[hooks]]` entry: a pre-tool gate installed into each targeted harness.
+/// The `[sync]` section: the policy `oneharness sync` writes into each
+/// harness's own project config file. It holds every sync-policy field and
+/// nothing else, so a key's place says where it takes effect: inside `[sync]`
+/// it is written into harness files, outside it applies to a run.
+///
+/// Precedence mirrors the run-level fields: a variant's value beats its
+/// harness's, which beats this section's top.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SyncConfig {
+    /// Allow rules, in the unified rule syntax, merged into each harness's
+    /// allow list (Claude Code's `.claude/settings.json` `permissions.allow`,
+    /// Cursor's `.cursor/cli.json`, Qwen's `.qwen/settings.json`, crush's
+    /// `crush.json`) or translated into Codex's rules file, so the policy also
+    /// applies outside oneharness. A harness with no mapping reports the rule
+    /// as `unmapped` in the sync report rather than dropping it silently.
+    pub allowed_tools: Option<Vec<String>>,
+    /// Deny rules; synced like `allowed_tools` (for crush this lands in
+    /// `options.disabled_tools`, hiding the tool entirely).
+    pub denied_tools: Option<Vec<String>>,
+    /// Normalized pre-tool hooks (`[[sync.hooks]]`), each fanned across the
+    /// synced harnesses and rendered into every harness's native shape (a
+    /// shared config file, a dedicated hooks file, or a plugin). Unlike the
+    /// verbatim per-harness `[sync.harness.<id>.hooks]` table — which is one
+    /// harness's own schema, limited to harnesses whose hooks share their
+    /// config file — an entry here is harness-agnostic and reaches all of
+    /// them. The two are independent and may both be set.
+    pub hooks: Option<Vec<HookEntry>>,
+    /// Per-harness sync policy (`[sync.harness.<id>]`), keyed by canonical
+    /// harness id.
+    #[serde(default)]
+    // llmlint: ignore[invalid_states_unrepresentable] This is the deny-unknown-fields TOML boundary DTO, keyed exactly like the established `[harness.<id>]` map beside it: `validate` refuses an unknown id (naming `[sync.harness]`) before any FileConfig is exposed, and a registry-typed key could not carry the unknown spelling that refusal has to quote.
+    pub harness: BTreeMap<String, SyncHarnessConfig>,
+}
+
+/// One harness's sync policy (`[sync.harness.<id>]`). Each field beats the
+/// same field at the top of `[sync]` for this harness only. Rejected at parse
+/// time when the harness's config file has no place for the field, so a rule
+/// that cannot land fails loudly.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SyncHarnessConfig {
+    /// Allow rules for this harness only.
+    pub allowed_tools: Option<Vec<String>>,
+    /// Deny rules for this harness only.
+    pub denied_tools: Option<Vec<String>>,
+    /// Lifecycle hooks, as an uninterpreted table in the harness's own hooks
+    /// schema, synced into the harness's config file (Claude Code's
+    /// `.claude/settings.json` `hooks` key).
+    pub hooks: Option<toml::Value>,
+    /// Raw settings merged verbatim into this harness's project config file —
+    /// the escape hatch for config shapes the unified fields don't model
+    /// (e.g. OpenCode's `permission` policy map).
+    pub settings: Option<toml::Value>,
+    /// Per-variant sync policy (`[sync.harness.<id>.variant.<name>]`).
+    #[serde(default)]
+    pub variant: BTreeMap<VariantName, SyncVariantConfig>,
+}
+
+/// One variant's sync policy (`[sync.harness.<id>.variant.<name>]`), beating
+/// its harness's for a sync that selects the variant.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SyncVariantConfig {
+    pub allowed_tools: Option<Vec<String>>,
+    pub denied_tools: Option<Vec<String>>,
+    pub hooks: Option<toml::Value>,
+    pub settings: Option<toml::Value>,
+}
+
+/// One `[[sync.hooks]]` entry: a pre-tool gate installed into each targeted harness.
 /// The `command` may contain `{harness}`, replaced with the harness id when the
 /// hook is built (so one entry can route `mygate hook {harness}` to every CLI).
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize, schemars::JsonSchema)]
@@ -514,10 +560,121 @@ pub struct HookEntry {
 /// One document only: an `extends` is read into [`FileConfig::extends`] and
 /// not followed, and nothing is merged. Following a chain needs the declaring
 /// file's directory, which only `io::config::load` / `load_layers` hold.
+///
+/// A sync-policy field outside `[sync]` — `denied_tools`, `hooks` (or
+/// `[[hooks]]`) or `settings`, at the top level, in `[harness.<id>]` or in a
+/// variant — is refused with a message naming each one and its `[sync]`
+/// spelling. Any other unknown key (a version or format key among them) is
+/// refused as the unknown field it is, ahead of that message, so no key ever
+/// selects another reading of the file.
 pub fn parse(text: &str) -> Result<FileConfig, String> {
-    let config: FileConfig = toml::from_str(text).map_err(|e| e.to_string())?;
+    let config: FileConfig = match toml::from_str(text) {
+        Ok(config) => config,
+        Err(error) => return Err(misplaced_sync_policy(text).unwrap_or_else(|| error.to_string())),
+    };
     validate(&config)?;
     Ok(config)
+}
+
+/// The fields that belong to `[sync]` alone and are refused anywhere else.
+/// `allowed_tools` is not among them: outside `[sync]` it is the run-level
+/// allowlist.
+const SYNC_ONLY_FIELDS: [&str; 3] = ["denied_tools", "hooks", "settings"];
+
+/// The spelling a refusal tells the user to write instead. `denied_tools` is
+/// a list, so it stays a key of the `[sync…]` table; `hooks` and `settings`
+/// are tables of their own. A top-level `settings` has no top-level home in
+/// `[sync]` (its shape is per harness), so it points at the per-harness one.
+fn sync_spelling(field: &str, table: Option<&str>) -> String {
+    match (field, table) {
+        ("hooks", None) => "`[[sync.hooks]]`".to_string(),
+        ("settings", None) => "`[sync.harness.<id>.settings]`".to_string(),
+        (field, None) => format!("`[sync] {field}`"),
+        ("denied_tools", Some(table)) => format!("`[sync.{table}] denied_tools`"),
+        (field, Some(table)) => format!("`[sync.{table}.{field}]`"),
+    }
+}
+
+/// The refusal for `text` when the only thing keeping it from deserializing
+/// is sync-policy fields outside `[sync]`, or another error ahead of it; `None`
+/// when `text` holds no misplaced field (the original error then stands).
+fn misplaced_sync_policy(text: &str) -> Option<String> {
+    let mut table: toml::Table = toml::from_str(text).ok()?;
+    let mut found = Vec::new();
+    let mut take = |section: &mut toml::Table, place: Option<String>| {
+        for field in SYNC_ONLY_FIELDS {
+            if section.remove(field).is_some() {
+                found.push((field, place.clone()));
+            }
+        }
+    };
+    take(&mut table, None);
+    if let Some(toml::Value::Table(harnesses)) = table.get_mut("harness") {
+        for (id, section) in harnesses.iter_mut() {
+            let toml::Value::Table(section) = section else {
+                continue;
+            };
+            take(section, Some(format!("harness.{id}")));
+            if let Some(toml::Value::Table(variants)) = section.get_mut("variant") {
+                for (name, variant) in variants.iter_mut() {
+                    if let toml::Value::Table(variant) = variant {
+                        take(variant, Some(format!("harness.{id}.variant.{name}")));
+                    }
+                }
+            }
+        }
+    }
+    if found.is_empty() {
+        return None;
+    }
+    // Another fault (an unknown key such as a version marker, a bad value) is
+    // reported as itself: the file is never read in some other shape.
+    if let Err(error) = toml::Value::Table(table.clone()).try_into::<FileConfig>() {
+        return Some(error.to_string());
+    }
+    let moves = found
+        .iter()
+        .map(|(field, place)| {
+            let at = place
+                .as_ref()
+                .map_or_else(|| "at the top level".to_string(), |t| format!("in `[{t}]`"));
+            format!(
+                "`{field}` {at} belongs in {}",
+                sync_spelling(field, place.as_deref())
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    let allowlist_note = if has_run_level_allowed_tools(&table) {
+        ". `allowed_tools` outside `[sync]` is now the run-level allowlist, which \
+         `sync` never writes: move it to `[sync] allowed_tools` to keep syncing it"
+    } else {
+        ""
+    };
+    Some(format!(
+        "sync-policy fields are accepted only in the `[sync]` section: {moves}{allowlist_note}"
+    ))
+}
+
+/// A file refused for a misplaced field that also sets `allowed_tools` outside
+/// `[sync]` is almost certainly one an earlier release synced from, so the
+/// refusal adds that its `allowed_tools` changed meaning too. Otherwise the user
+/// would move only the refused fields and lose the allow list from sync.
+fn has_run_level_allowed_tools(table: &toml::Table) -> bool {
+    let holds = |value: &toml::Value| value.get("allowed_tools").is_some();
+    table.contains_key("allowed_tools")
+        || table
+            .get("harness")
+            .and_then(toml::Value::as_table)
+            .is_some_and(|harnesses| {
+                harnesses.values().any(|section| {
+                    holds(section)
+                        || section
+                            .get("variant")
+                            .and_then(toml::Value::as_table)
+                            .is_some_and(|variants| variants.values().any(holds))
+                })
+            })
 }
 
 /// The default `model_catalog_refresh_seconds`: a shared Codex model catalog
@@ -628,99 +785,23 @@ fn validate(config: &FileConfig) -> Result<(), String> {
             ));
         }
     }
-    // A `[[hooks]]` entry must carry a command, and any harness it explicitly
-    // targets must be one oneharness can install a hook into — a hook that
-    // could never land is a loud error, not a silent drop.
-    for entry in config.hooks.iter().flatten() {
-        if entry.command.trim().is_empty() {
-            return Err("a `[[hooks]]` entry needs a non-empty `command`".to_string());
-        }
-        for id in entry.harnesses.iter().flatten() {
-            if id.contains(':') {
-                return Err(format!(
-                    "`[[hooks]].harnesses` accepts base harness ids, not variant selector `{id}`; variants share one synced harness config"
-                ));
-            }
-            let Some(spec) = harness::by_id(id) else {
-                return Err(format!(
-                    "unknown harness id `{id}`. valid ids: {}",
-                    harness::valid_ids()
-                ));
-            };
-            if spec.hooks.is_none() {
-                return Err(format!(
-                    "`[[hooks]]` targets harness `{id}`, which oneharness cannot install a hook into"
-                ));
-            }
+    for id in config.sync.harness.keys() {
+        if harness::by_id(id).is_none() {
+            return Err(format!(
+                "unknown harness id `{id}` in `[sync.harness]`. valid ids: {}",
+                harness::valid_ids()
+            ));
         }
     }
-    // Sync settings scoped to a harness whose config file (if any) has no
-    // place for them are rejected here, at parse time: a permission rule or
-    // hook that silently would not land is worse than an error.
     for (id, h) in &config.harness {
-        let spec = harness::by_id(id).expect("ids validated above");
         for name in h.variant.keys() {
             validate_variant_name(name.as_str())?;
         }
         // These keys become flags on one harness's own launches; nowhere else
         // is there a flag for them to become, so setting one there is a mistake.
         refuse_codex_launch_keys_elsewhere(id, h)?;
-        let sync = spec.sync.as_ref();
-        // A raw `settings` table is merged into a JSON config file; Codex's
-        // rules file has no keys to merge it into.
-        let takes_settings = sync.is_some_and(|value| value.format() == harness::SyncFormat::Json);
-        let unsupported = [
-            (h.allowed_tools.is_some() && !sync.is_some_and(SyncSpec::carries_allowed_tools))
-                .then_some("allowed_tools"),
-            (h.denied_tools.is_some() && !sync.is_some_and(SyncSpec::carries_denied_tools))
-                .then_some("denied_tools"),
-            (h.hooks.is_some() && sync.and_then(|s| s.hooks_path).is_none()).then_some("hooks"),
-            (h.settings.is_some() && !takes_settings).then_some("settings"),
-        ];
-        if let Some(setting) = unsupported.into_iter().flatten().next() {
-            return Err(format!(
-                "`oneharness sync` cannot deliver `{setting}` for harness `{id}`: its \
-                 config file has no mapping for it. Use `[harness.{id}.settings]` if the \
-                 harness has a config file (see `sync_file` in `oneharness list`), or \
-                 `[harness.{id}] args` for flag-based harnesses"
-            ));
-        }
-        // Both are merged into a JSON object, so anything but a table would
-        // corrupt the harness's config file — reject the shape up front.
-        for (name, value) in [("hooks", &h.hooks), ("settings", &h.settings)] {
-            if value.as_ref().is_some_and(|v| !v.is_table()) {
-                return Err(format!(
-                    "`{name}` for harness `{id}` must be a table (e.g. `[harness.{id}.{name}]`)"
-                ));
-            }
-        }
-        for (name, variant) in &h.variant {
-            let unsupported = [
-                (variant.allowed_tools.is_some()
-                    && !sync.is_some_and(SyncSpec::carries_allowed_tools))
-                .then_some("allowed_tools"),
-                (variant.denied_tools.is_some()
-                    && !sync.is_some_and(SyncSpec::carries_denied_tools))
-                .then_some("denied_tools"),
-                (variant.hooks.is_some() && sync.and_then(|value| value.hooks_path).is_none())
-                    .then_some("hooks"),
-                (variant.settings.is_some() && !takes_settings).then_some("settings"),
-            ];
-            if let Some(setting) = unsupported.into_iter().flatten().next() {
-                return Err(format!(
-                    "`oneharness sync` cannot deliver `{setting}` for harness variant \
-                     `{id}:{name}`"
-                ));
-            }
-            for (field, value) in [("hooks", &variant.hooks), ("settings", &variant.settings)] {
-                if value.as_ref().is_some_and(|value| !value.is_table()) {
-                    return Err(format!(
-                        "`{field}` for harness variant `{id}:{name}` must be a table"
-                    ));
-                }
-            }
-        }
     }
+    validate_sync(&config.sync)?;
     for key in config
         .env
         .keys()
@@ -752,6 +833,106 @@ fn validate(config: &FileConfig) -> Result<(), String> {
     {
         if let Some((_, name)) = composed.split_once(':') {
             validate_variant_name(name)?;
+        }
+    }
+    Ok(())
+}
+
+/// Validate the `[sync]` section: every `[[sync.hooks]]` entry can land, and
+/// every per-harness field has a place in that harness's config file.
+fn validate_sync(sync_config: &SyncConfig) -> Result<(), String> {
+    // A `[[sync.hooks]]` entry must carry a command, and any harness it
+    // explicitly targets must be one oneharness can install a hook into — a
+    // hook that could never land is a loud error, not a silent drop.
+    for entry in sync_config.hooks.iter().flatten() {
+        if entry.command.trim().is_empty() {
+            return Err("a `[[sync.hooks]]` entry needs a non-empty `command`".to_string());
+        }
+        for id in entry.harnesses.iter().flatten() {
+            if id.contains(':') {
+                return Err(format!(
+                    "`[[sync.hooks]].harnesses` accepts base harness ids, not variant selector `{id}`; variants share one synced harness config"
+                ));
+            }
+            let Some(spec) = harness::by_id(id) else {
+                return Err(format!(
+                    "unknown harness id `{id}`. valid ids: {}",
+                    harness::valid_ids()
+                ));
+            };
+            if spec.hooks.is_none() {
+                return Err(format!(
+                    "`[[sync.hooks]]` targets harness `{id}`, which oneharness cannot install a hook into"
+                ));
+            }
+        }
+    }
+    // Sync settings scoped to a harness whose config file (if any) has no
+    // place for them are rejected here, at parse time: a permission rule or
+    // hook that silently would not land is worse than an error.
+    for (id, h) in &sync_config.harness {
+        let spec = harness::by_id(id).expect("ids validated by the caller");
+        for name in h.variant.keys() {
+            validate_variant_name(name.as_str())?;
+        }
+        let sync = spec.sync.as_ref();
+        // A raw `settings` table is merged into a JSON config file; Codex's
+        // rules file has no keys to merge it into.
+        let takes_settings = sync.is_some_and(|value| value.format() == harness::SyncFormat::Json);
+        let unsupported = |allowed: bool, denied: bool, hooks: bool, settings: bool| {
+            [
+                (allowed && !sync.is_some_and(SyncSpec::carries_allowed_tools))
+                    .then_some("allowed_tools"),
+                (denied && !sync.is_some_and(SyncSpec::carries_denied_tools))
+                    .then_some("denied_tools"),
+                (hooks && sync.and_then(|s| s.hooks_path).is_none()).then_some("hooks"),
+                (settings && !takes_settings).then_some("settings"),
+            ]
+            .into_iter()
+            .flatten()
+            .next()
+        };
+        if let Some(setting) = unsupported(
+            h.allowed_tools.is_some(),
+            h.denied_tools.is_some(),
+            h.hooks.is_some(),
+            h.settings.is_some(),
+        ) {
+            return Err(format!(
+                "`oneharness sync` cannot deliver `{setting}` for harness `{id}`: its \
+                 config file has no mapping for it. Use `[sync.harness.{id}.settings]` if \
+                 the harness has a config file (see `sync_file` in `oneharness list`), or \
+                 `[harness.{id}] args` for flag-based harnesses"
+            ));
+        }
+        // Both are merged into a JSON object, so anything but a table would
+        // corrupt the harness's config file — reject the shape up front.
+        for (name, value) in [("hooks", &h.hooks), ("settings", &h.settings)] {
+            if value.as_ref().is_some_and(|v| !v.is_table()) {
+                return Err(format!(
+                    "`{name}` for harness `{id}` must be a table (e.g. `[sync.harness.{id}.{name}]`)"
+                ));
+            }
+        }
+        for (name, variant) in &h.variant {
+            if let Some(setting) = unsupported(
+                variant.allowed_tools.is_some(),
+                variant.denied_tools.is_some(),
+                variant.hooks.is_some(),
+                variant.settings.is_some(),
+            ) {
+                return Err(format!(
+                    "`oneharness sync` cannot deliver `{setting}` for harness variant \
+                     `{id}:{name}`"
+                ));
+            }
+            for (field, value) in [("hooks", &variant.hooks), ("settings", &variant.settings)] {
+                if value.as_ref().is_some_and(|value| !value.is_table()) {
+                    return Err(format!(
+                        "`{field}` for harness variant `{id}:{name}` must be a table"
+                    ));
+                }
+            }
         }
     }
     Ok(())
@@ -989,9 +1170,6 @@ pub fn merge(base: FileConfig, over: FileConfig) -> FileConfig {
             analytics: o.analytics.or(entry.analytics.take()),
             app_server: o.app_server.or(entry.app_server.take()),
             allowed_tools: o.allowed_tools.or(entry.allowed_tools.take()),
-            denied_tools: o.denied_tools.or(entry.denied_tools.take()),
-            hooks: o.hooks.or(entry.hooks.take()),
-            settings: o.settings.or(entry.settings.take()),
             env: merged_env,
             variant: merge_variant_maps(std::mem::take(&mut entry.variant), o.variant),
         };
@@ -1028,9 +1206,42 @@ pub fn merge(base: FileConfig, over: FileConfig) -> FileConfig {
         history_pointer_file: over.history_pointer_file.or(base.history_pointer_file),
         history_labels,
         allowed_tools: over.allowed_tools.or(base.allowed_tools),
+        sync: merge_sync(base.sync, over.sync),
+        env,
+        harness,
+    }
+}
+
+/// Layer one `[sync]` section over another exactly as [`merge`] layers the
+/// run-level fields: per field, per harness id, per variant name, `over`
+/// winning wherever it sets a value. `hooks` and `settings` tables replace
+/// whole, as they always have.
+fn merge_sync(base: SyncConfig, over: SyncConfig) -> SyncConfig {
+    let mut harness = base.harness;
+    for (id, o) in over.harness {
+        let entry = harness.entry(id).or_default();
+        let mut variant = std::mem::take(&mut entry.variant);
+        for (name, ov) in o.variant {
+            let e = variant.entry(name).or_default();
+            *e = SyncVariantConfig {
+                allowed_tools: ov.allowed_tools.or(e.allowed_tools.take()),
+                denied_tools: ov.denied_tools.or(e.denied_tools.take()),
+                hooks: ov.hooks.or(e.hooks.take()),
+                settings: ov.settings.or(e.settings.take()),
+            };
+        }
+        *entry = SyncHarnessConfig {
+            allowed_tools: o.allowed_tools.or(entry.allowed_tools.take()),
+            denied_tools: o.denied_tools.or(entry.denied_tools.take()),
+            hooks: o.hooks.or(entry.hooks.take()),
+            settings: o.settings.or(entry.settings.take()),
+            variant,
+        };
+    }
+    SyncConfig {
+        allowed_tools: over.allowed_tools.or(base.allowed_tools),
         denied_tools: over.denied_tools.or(base.denied_tools),
         hooks: over.hooks.or(base.hooks),
-        env,
         harness,
     }
 }
@@ -1059,9 +1270,6 @@ fn merge_variant_maps(
             analytics: o.analytics.or(e.analytics.take()),
             app_server: o.app_server.or(e.app_server.take()),
             allowed_tools: o.allowed_tools.or(e.allowed_tools.take()),
-            denied_tools: o.denied_tools.or(e.denied_tools.take()),
-            hooks: o.hooks.or(e.hooks.take()),
-            settings: o.settings.or(e.settings.take()),
             env,
             env_file: o.env_file.or(e.env_file.take()),
             env_from,
@@ -1208,8 +1416,9 @@ impl FileConfig {
             .unwrap_or_default()
     }
 
-    /// Allow rules for one harness: its `[harness.<id>]` override, else the
-    /// top-level `allowed_tools`. (CLI `--allowed-tools` beats both.)
+    /// The run-level allowlist for one harness: its variant's, else its
+    /// `[harness.<id>]` value, else the top-level `allowed_tools`. Never
+    /// synced; [`SyncConfig::allowed_tools_for`] is what `sync` writes.
     pub fn allowed_tools_for(&self, id: &str) -> &[String] {
         let (base, _) = self.split_harness_id(id);
         if let Some(value) = self
@@ -1225,60 +1434,12 @@ impl FileConfig {
             .unwrap_or(&[])
     }
 
-    /// Deny rules for one harness, resolved like [`Self::allowed_tools_for`].
-    pub fn denied_tools_for(&self, id: &str) -> &[String] {
-        let (base, _) = self.split_harness_id(id);
-        if let Some(value) = self
-            .variant_for(id)
-            .and_then(|variant| variant.denied_tools.as_deref())
-        {
-            return value;
-        }
-        self.harness
-            .get(base)
-            .and_then(|h| h.denied_tools.as_deref())
-            .or(self.denied_tools.as_deref())
-            .unwrap_or(&[])
-    }
-
-    /// The hooks table for one harness, if configured (per-harness only:
-    /// hooks schemas are harness-specific, so there is no top-level form).
-    pub fn hooks_for(&self, id: &str) -> Option<&toml::Value> {
-        let (base, _) = self.split_harness_id(id);
-        self.variant_for(id)
-            .and_then(|variant| variant.hooks.as_ref())
-            .or_else(|| self.harness.get(base).and_then(|h| h.hooks.as_ref()))
-    }
-
-    /// The normalized `[[hooks]]` that apply to harness `id`, ready to install:
-    /// entries with no `harnesses` filter or one naming `id`, with `{harness}`
-    /// substituted in the command. Order follows the config (later entries
-    /// install after earlier ones).
-    pub fn hook_specs_for(&self, id: &str) -> Vec<HookSpec> {
-        self.hooks
-            .iter()
-            .flatten()
-            .filter(|entry| match &entry.harnesses {
-                Some(ids) => ids.iter().any(|h| h == id),
-                None => true,
-            })
-            .map(|entry| HookSpec {
-                command: entry.command.replace("{harness}", id),
-                matcher: entry.matcher.clone(),
-                timeout: entry.timeout,
-                plugin_name: entry.plugin_name.clone(),
-                description: None,
-            })
-            .collect()
-    }
-
-    /// The raw settings table for one harness, if configured (per-harness
-    /// only: the shape is that harness's own config schema).
-    pub fn settings_for(&self, id: &str) -> Option<&toml::Value> {
-        let (base, _) = self.split_harness_id(id);
-        self.variant_for(id)
-            .and_then(|variant| variant.settings.as_ref())
-            .or_else(|| self.harness.get(base).and_then(|h| h.settings.as_ref()))
+    /// Whether the composed selector `<id>:<name>` names a declared variant:
+    /// one with a `[harness.<id>.variant.<name>]` table, a
+    /// `[sync.harness.<id>.variant.<name>]` table, or both. A bare id names
+    /// no variant and is never declared by this.
+    pub fn declares_variant(&self, composed: &str) -> bool {
+        self.variant_for(composed).is_some() || self.sync.variant_for(composed).is_some()
     }
 
     /// The configured environment for one harness, in application order:
@@ -1300,6 +1461,119 @@ impl FileConfig {
         }
         env
     }
+}
+
+impl SyncConfig {
+    /// The `[sync.harness.<id>.variant.<name>]` policy a composed selector
+    /// names, if declared.
+    pub fn variant_for(&self, composed: &str) -> Option<&SyncVariantConfig> {
+        let (id, name) = composed.split_once(':')?;
+        self.harness.get(id)?.variant.get(name)
+    }
+
+    /// Allow rules `sync` writes for one harness (or composed variant
+    /// selector): the variant's, else `[sync.harness.<id>]`, else `[sync]`'s.
+    pub fn allowed_tools_for(&self, id: &str) -> &[String] {
+        let base = id.split_once(':').map_or(id, |(base, _)| base);
+        self.variant_for(id)
+            .and_then(|variant| variant.allowed_tools.as_deref())
+            .or_else(|| {
+                self.harness
+                    .get(base)
+                    .and_then(|h| h.allowed_tools.as_deref())
+            })
+            .or(self.allowed_tools.as_deref())
+            .unwrap_or(&[])
+    }
+
+    /// Deny rules for one harness, resolved like [`Self::allowed_tools_for`].
+    pub fn denied_tools_for(&self, id: &str) -> &[String] {
+        let base = id.split_once(':').map_or(id, |(base, _)| base);
+        self.variant_for(id)
+            .and_then(|variant| variant.denied_tools.as_deref())
+            .or_else(|| {
+                self.harness
+                    .get(base)
+                    .and_then(|h| h.denied_tools.as_deref())
+            })
+            .or(self.denied_tools.as_deref())
+            .unwrap_or(&[])
+    }
+
+    /// The verbatim hooks table for one harness, if configured (per-harness
+    /// only: hooks schemas are harness-specific, so `[[sync.hooks]]` is the
+    /// harness-agnostic form).
+    pub fn hooks_for(&self, id: &str) -> Option<&toml::Value> {
+        let base = id.split_once(':').map_or(id, |(base, _)| base);
+        self.variant_for(id)
+            .and_then(|variant| variant.hooks.as_ref())
+            .or_else(|| self.harness.get(base).and_then(|h| h.hooks.as_ref()))
+    }
+
+    /// The normalized `[[sync.hooks]]` that apply to harness `id`, ready to
+    /// install: entries with no `harnesses` filter or one naming `id`, with
+    /// `{harness}` substituted in the command. Order follows the config (later
+    /// entries install after earlier ones).
+    pub fn hook_specs_for(&self, id: &str) -> Vec<HookSpec> {
+        self.hooks
+            .iter()
+            .flatten()
+            .filter(|entry| match &entry.harnesses {
+                Some(ids) => ids.iter().any(|h| h == id),
+                None => true,
+            })
+            .map(|entry| HookSpec {
+                command: entry.command.replace("{harness}", id),
+                matcher: entry.matcher.clone(),
+                timeout: entry.timeout,
+                plugin_name: entry.plugin_name.clone(),
+                description: None,
+            })
+            .collect()
+    }
+
+    /// The raw settings table for one harness, if configured (per-harness
+    /// only: the shape is that harness's own config schema).
+    pub fn settings_for(&self, id: &str) -> Option<&toml::Value> {
+        let base = id.split_once(':').map_or(id, |(base, _)| base);
+        self.variant_for(id)
+            .and_then(|variant| variant.settings.as_ref())
+            .or_else(|| self.harness.get(base).and_then(|h| h.settings.as_ref()))
+    }
+}
+
+/// Where the run-level `allowed_tools` resolved for `id` comes from: the last
+/// of `layers` that sets the field at the place [`FileConfig::allowed_tools_for`]
+/// resolves it from (the variant, else the harness, else the top level).
+/// `None` when no layer sets it. Pure.
+#[must_use]
+pub fn allowed_tools_source<'a>(layers: &'a [(String, FileConfig)], id: &str) -> Option<&'a str> {
+    let (base, name) = id
+        .split_once(':')
+        .map_or((id, None), |(base, name)| (base, Some(name)));
+    let last = |get: &dyn Fn(&FileConfig) -> bool| {
+        layers
+            .iter()
+            .rev()
+            .find(|(_, config)| get(config))
+            .map(|(path, _)| path.as_str())
+    };
+    name.and_then(|name| {
+        last(&|c| {
+            c.harness
+                .get(base)
+                .and_then(|h| h.variant.get(name))
+                .is_some_and(|v| v.allowed_tools.is_some())
+        })
+    })
+    .or_else(|| {
+        last(&|c| {
+            c.harness
+                .get(base)
+                .is_some_and(|h| h.allowed_tools.is_some())
+        })
+    })
+    .or_else(|| last(&|c| c.allowed_tools.is_some()))
 }
 
 /// The `source` recorded for a value that comes from no file: the built-in
@@ -1401,9 +1675,12 @@ pub struct ConfigReport {
     pub history_pointer_file: Field<String>,
     /// Per-key provenance for history labels.
     pub history_labels: BTreeMap<String, Field<String>>,
+    // The run-level allowlist (`allowed_tools` outside `[sync]`), never
+    // synced. `//`, like the comment above: a doc comment would inline a copy.
     pub allowed_tools: Field<Vec<String>>,
-    pub denied_tools: Field<Vec<String>>,
-    pub hooks: Field<Vec<HookEntry>>,
+    /// The `[sync]` section, mirroring the file's shape, each value with its
+    /// provenance: what `oneharness sync` writes into each harness's files.
+    pub sync: SyncPolicyReport,
     /// Per-key provenance for the top-level `[env]`.
     pub env: BTreeMap<String, Field<String>>,
     /// Per-harness overrides, with per-field provenance.
@@ -1441,12 +1718,6 @@ pub struct HarnessReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app_server: Option<Field<AppServerMode>>,
     pub allowed_tools: Field<Vec<String>>,
-    pub denied_tools: Field<Vec<String>>,
-    // llmlint: ignore[invalid_states_unrepresentable] These two fields are deliberately raw passthrough TOML — the whole point is that oneharness does not interpret a harness's own settings table — so the schema says "an arbitrary object", which is the honest description of an uninterpreted value.
-    #[schemars(with = "serde_json::Map<String, serde_json::Value>")]
-    pub hooks: Field<toml::Value>,
-    #[schemars(with = "serde_json::Map<String, serde_json::Value>")]
-    pub settings: Field<toml::Value>,
     pub env: BTreeMap<String, Field<String>>,
     pub variant: BTreeMap<String, VariantReport>,
 }
@@ -1484,15 +1755,94 @@ pub struct VariantReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app_server: Option<Field<AppServerMode>>,
     pub allowed_tools: Field<Vec<String>>,
+    pub env_file: Field<String>,
+    pub env_from: BTreeMap<String, Field<String>>,
+    pub unset_env: Field<Vec<String>>,
+    pub env: BTreeMap<String, Field<String>>,
+}
+
+/// The `[sync]` section of the `config` report: every sync-policy field, in
+/// the file's own shape, with provenance.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct SyncPolicyReport {
+    pub allowed_tools: Field<Vec<String>>,
+    pub denied_tools: Field<Vec<String>>,
+    pub hooks: Field<Vec<HookEntry>>,
+    /// Per-harness sync policy (`[sync.harness.<id>]`), with provenance,
+    /// keyed by the registry's id.
+    pub harness: BTreeMap<&'static str, SyncHarnessPolicyReport>,
+}
+
+/// One harness's `[sync.harness.<id>]` policy, with provenance.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct SyncHarnessPolicyReport {
+    pub allowed_tools: Field<Vec<String>>,
+    pub denied_tools: Field<Vec<String>>,
+    // llmlint: ignore[invalid_states_unrepresentable] These two fields are deliberately raw passthrough TOML — the whole point is that oneharness does not interpret a harness's own settings table — so the schema says "an arbitrary object", which is the honest description of an uninterpreted value.
+    #[schemars(with = "serde_json::Map<String, serde_json::Value>")]
+    pub hooks: Field<toml::Value>,
+    #[schemars(with = "serde_json::Map<String, serde_json::Value>")]
+    pub settings: Field<toml::Value>,
+    pub variant: BTreeMap<VariantName, SyncVariantPolicyReport>,
+}
+
+/// One variant's `[sync.harness.<id>.variant.<name>]` policy, with provenance.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct SyncVariantPolicyReport {
+    pub allowed_tools: Field<Vec<String>>,
     pub denied_tools: Field<Vec<String>>,
     #[schemars(with = "serde_json::Map<String, serde_json::Value>")]
     pub hooks: Field<toml::Value>,
     #[schemars(with = "serde_json::Map<String, serde_json::Value>")]
     pub settings: Field<toml::Value>,
-    pub env_file: Field<String>,
-    pub env_from: BTreeMap<String, Field<String>>,
-    pub unset_env: Field<Vec<String>>,
-    pub env: BTreeMap<String, Field<String>>,
+}
+
+/// The `[sync]` section of `layers`, resolved with provenance like every
+/// other field of the report.
+fn explain_sync(layers: &[(String, FileConfig)]) -> SyncPolicyReport {
+    let ids: std::collections::BTreeSet<&String> = layers
+        .iter()
+        .flat_map(|(_, c)| c.sync.harness.keys())
+        .collect();
+    let mut harness = BTreeMap::new();
+    for id in ids {
+        let section = |c: &FileConfig| c.sync.harness.get(id).cloned();
+        let names: std::collections::BTreeSet<&VariantName> = layers
+            .iter()
+            .filter_map(|(_, c)| c.sync.harness.get(id))
+            .flat_map(|h| h.variant.keys())
+            .collect();
+        let mut variant = BTreeMap::new();
+        for name in names {
+            let of = |c: &FileConfig| c.sync.harness.get(id)?.variant.get(name.as_str()).cloned();
+            variant.insert(
+                name.clone(),
+                SyncVariantPolicyReport {
+                    allowed_tools: pick(layers, |c| of(c).and_then(|v| v.allowed_tools)),
+                    denied_tools: pick(layers, |c| of(c).and_then(|v| v.denied_tools)),
+                    hooks: pick(layers, |c| of(c).and_then(|v| v.hooks)),
+                    settings: pick(layers, |c| of(c).and_then(|v| v.settings)),
+                },
+            );
+        }
+        let id_key = harness::by_id(id).expect("ids validated at parse").id;
+        harness.insert(
+            id_key,
+            SyncHarnessPolicyReport {
+                allowed_tools: pick(layers, |c| section(c).and_then(|h| h.allowed_tools)),
+                denied_tools: pick(layers, |c| section(c).and_then(|h| h.denied_tools)),
+                hooks: pick(layers, |c| section(c).and_then(|h| h.hooks)),
+                settings: pick(layers, |c| section(c).and_then(|h| h.settings)),
+                variant,
+            },
+        );
+    }
+    SyncPolicyReport {
+        allowed_tools: pick(layers, |c| c.sync.allowed_tools.clone()),
+        denied_tools: pick(layers, |c| c.sync.denied_tools.clone()),
+        hooks: pick(layers, |c| c.sync.hooks.clone()),
+        harness,
+    }
 }
 
 /// The last layer that sets the field wins — the same precedence [`merge`]
@@ -1663,9 +2013,6 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
                             .or_inherited(&harness_app_server, AppServerMode::default())
                     }),
                     allowed_tools: pick(layers, |c| variant(c).and_then(|v| v.allowed_tools)),
-                    denied_tools: pick(layers, |c| variant(c).and_then(|v| v.denied_tools)),
-                    hooks: pick(layers, |c| variant(c).and_then(|v| v.hooks)),
-                    settings: pick(layers, |c| variant(c).and_then(|v| v.settings)),
                     env_file: pick(layers, |c| variant(c).and_then(|v| v.env_file)),
                     unset_env: pick(layers, |c| variant(c).map(|v| v.unset_env)),
                     env: v_env,
@@ -1691,9 +2038,6 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
                 app_server: takes_codex_launch_keys
                     .then(|| harness_app_server.or_default(AppServerMode::default())),
                 allowed_tools: pick(layers, |c| section(c).and_then(|h| h.allowed_tools)),
-                denied_tools: pick(layers, |c| section(c).and_then(|h| h.denied_tools)),
-                hooks: pick(layers, |c| section(c).and_then(|h| h.hooks)),
-                settings: pick(layers, |c| section(c).and_then(|h| h.settings)),
                 env: h_env,
                 variant: variants,
             },
@@ -1733,8 +2077,7 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
         history_pointer_file: pick(layers, |c| c.history_pointer_file.clone()),
         history_labels,
         allowed_tools: pick(layers, |c| c.allowed_tools.clone()),
-        denied_tools: pick(layers, |c| c.denied_tools.clone()),
-        hooks: pick(layers, |c| c.hooks.clone()),
+        sync: explain_sync(layers),
         env,
         harness,
     }
@@ -1785,7 +2128,20 @@ ANTHROPIC_API_KEY = "ANTHROPIC_API_KEY_WORK"
         let config = parsed(
             r#"
 allowed_tools = ["top-allow"]
+[sync]
+allowed_tools = ["sync-top-allow"]
 denied_tools = ["top-deny"]
+[sync.harness.claude-code.hooks]
+base = true
+[sync.harness.claude-code.settings]
+base = true
+[sync.harness.claude-code.variant.work]
+allowed_tools = ["sync-variant-allow"]
+denied_tools = ["variant-deny"]
+[sync.harness.claude-code.variant.work.hooks]
+variant = true
+[sync.harness.claude-code.variant.work.settings]
+variant = true
 [env]
 SHARED = "top"
 [harness.claude-code]
@@ -1795,21 +2151,12 @@ args = ["base-arg"]
 [harness.claude-code.env]
 SHARED = "base"
 BASE_ONLY = "yes"
-[harness.claude-code.hooks]
-base = true
-[harness.claude-code.settings]
-base = true
 [harness.claude-code.variant.work]
 reasoning = "variant-reasoning"
 bin = "variant-bin"
 allowed_tools = ["variant-allow"]
-denied_tools = ["variant-deny"]
 [harness.claude-code.variant.work.env]
 SHARED = "variant"
-[harness.claude-code.variant.work.hooks]
-variant = true
-[harness.claude-code.variant.work.settings]
-variant = true
 "#,
         );
         assert_eq!(
@@ -1822,15 +2169,19 @@ variant = true
             ["variant-allow"]
         );
         assert_eq!(
-            config.denied_tools_for("claude-code:work"),
+            config.sync.allowed_tools_for("claude-code:work"),
+            ["sync-variant-allow"]
+        );
+        assert_eq!(
+            config.sync.denied_tools_for("claude-code:work"),
             ["variant-deny"]
         );
         assert_eq!(
-            config.hooks_for("claude-code:work").unwrap()["variant"].as_bool(),
+            config.sync.hooks_for("claude-code:work").unwrap()["variant"].as_bool(),
             Some(true)
         );
         assert_eq!(
-            config.settings_for("claude-code:work").unwrap()["variant"].as_bool(),
+            config.sync.settings_for("claude-code:work").unwrap()["variant"].as_bool(),
             Some(true)
         );
         assert_eq!(
@@ -1846,15 +2197,21 @@ variant = true
         assert_eq!(config.bin_for("claude-code"), Some("base-bin"));
         assert_eq!(config.args_for("claude-code"), ["base-arg"]);
         assert_eq!(config.allowed_tools_for("claude-code"), ["top-allow"]);
-        assert_eq!(config.denied_tools_for("claude-code"), ["top-deny"]);
         assert_eq!(
-            config.hooks_for("claude-code").unwrap()["base"].as_bool(),
+            config.sync.allowed_tools_for("claude-code"),
+            ["sync-top-allow"]
+        );
+        assert_eq!(config.sync.denied_tools_for("claude-code"), ["top-deny"]);
+        assert_eq!(
+            config.sync.hooks_for("claude-code").unwrap()["base"].as_bool(),
             Some(true)
         );
         assert_eq!(
-            config.settings_for("claude-code").unwrap()["base"].as_bool(),
+            config.sync.settings_for("claude-code").unwrap()["base"].as_bool(),
             Some(true)
         );
+        assert!(config.declares_variant("claude-code:work"));
+        assert!(!config.declares_variant("claude-code:missing"));
         assert!(config.variant_for("claude-code:missing").is_none());
     }
 
@@ -1954,25 +2311,25 @@ variant = true
     fn normalized_hooks_filter_and_substitute_per_harness() {
         let c = parsed(
             r#"
-            [[hooks]]
+            [[sync.hooks]]
             command = "mygate hook {harness}"
             matcher = "Bash"
             timeout = 10
 
-            [[hooks]]
+            [[sync.hooks]]
             command = "extra hook"
             harnesses = ["codex"]
             "#,
         );
         // The unfiltered entry applies everywhere with `{harness}` resolved; the
         // filtered one only adds to codex.
-        let claude = c.hook_specs_for("claude-code");
+        let claude = c.sync.hook_specs_for("claude-code");
         assert_eq!(claude.len(), 1);
         assert_eq!(claude[0].command, "mygate hook claude-code");
         assert_eq!(claude[0].matcher.as_deref(), Some("Bash"));
         assert_eq!(claude[0].timeout, Some(10));
 
-        let codex = c.hook_specs_for("codex");
+        let codex = c.sync.hook_specs_for("codex");
         assert_eq!(codex.len(), 2);
         assert_eq!(codex[0].command, "mygate hook codex");
         assert_eq!(codex[1].command, "extra hook");
@@ -1980,32 +2337,220 @@ variant = true
 
     #[test]
     fn hooks_merge_replaces_the_list_per_layer() {
-        let base = parsed("[[hooks]]\ncommand = \"user gate\"");
-        let over = parsed("[[hooks]]\ncommand = \"project gate\"");
+        let base = parsed("[[sync.hooks]]\ncommand = \"user gate\"");
+        let over = parsed("[[sync.hooks]]\ncommand = \"project gate\"");
         let merged = merge(base, over);
-        let specs = merged.hook_specs_for("claude-code");
+        let specs = merged.sync.hook_specs_for("claude-code");
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].command, "project gate");
     }
 
     #[test]
     fn an_empty_hook_command_is_rejected() {
-        let err = parse("[[hooks]]\ncommand = \"  \"").unwrap_err();
+        let err = parse("[[sync.hooks]]\ncommand = \"  \"").unwrap_err();
         assert!(err.contains("non-empty `command`"), "{err}");
     }
 
     #[test]
     fn a_hook_targeting_an_unknown_harness_is_rejected() {
-        let err = parse("[[hooks]]\ncommand = \"x\"\nharnesses = [\"bogus\"]").unwrap_err();
+        let err = parse("[[sync.hooks]]\ncommand = \"x\"\nharnesses = [\"bogus\"]").unwrap_err();
         assert!(err.contains("bogus"), "{err}");
     }
 
     #[test]
     fn a_hook_targeting_a_variant_is_rejected() {
-        let err =
-            parse("[[hooks]]\ncommand = \"x\"\nharnesses = [\"claude-code:-bad\"]").unwrap_err();
+        let err = parse("[[sync.hooks]]\ncommand = \"x\"\nharnesses = [\"claude-code:-bad\"]")
+            .unwrap_err();
         assert!(err.contains("accepts base harness ids"), "{err}");
         assert!(err.contains("claude-code:-bad"), "{err}");
+    }
+
+    #[test]
+    fn a_sync_policy_field_outside_sync_is_refused_naming_its_sync_spelling() {
+        for (text, field, place, spelling) in [
+            (
+                "denied_tools = [\"x\"]",
+                "denied_tools",
+                "at the top level",
+                "`[sync] denied_tools`",
+            ),
+            (
+                "[[hooks]]\ncommand = \"g\"",
+                "hooks",
+                "at the top level",
+                "`[[sync.hooks]]`",
+            ),
+            (
+                "[settings]\nx = 1",
+                "settings",
+                "at the top level",
+                "`[sync.harness.<id>.settings]`",
+            ),
+            (
+                "[harness.claude-code]\ndenied_tools = [\"x\"]",
+                "denied_tools",
+                "in `[harness.claude-code]`",
+                "`[sync.harness.claude-code] denied_tools`",
+            ),
+            (
+                "[harness.claude-code.hooks]\nPreToolUse = []",
+                "hooks",
+                "in `[harness.claude-code]`",
+                "`[sync.harness.claude-code.hooks]`",
+            ),
+            (
+                "[harness.opencode.settings]\nx = 1",
+                "settings",
+                "in `[harness.opencode]`",
+                "`[sync.harness.opencode.settings]`",
+            ),
+            (
+                "[harness.claude-code.variant.work]\ndenied_tools = [\"x\"]",
+                "denied_tools",
+                "in `[harness.claude-code.variant.work]`",
+                "`[sync.harness.claude-code.variant.work] denied_tools`",
+            ),
+            (
+                "[harness.claude-code.variant.work.settings]\nx = 1",
+                "settings",
+                "in `[harness.claude-code.variant.work]`",
+                "`[sync.harness.claude-code.variant.work.settings]`",
+            ),
+        ] {
+            let err = parse(text).unwrap_err();
+            assert!(
+                err.contains("accepted only in the `[sync]` section"),
+                "{text} -> {err}"
+            );
+            assert!(
+                err.contains(&format!("`{field}` {place} belongs in {spelling}")),
+                "{text} -> {err}"
+            );
+            assert!(!err.contains("run-level allowlist"), "{text} -> {err}");
+        }
+        // Every misplaced field is named at once, and a run-level
+        // `allowed_tools` beside them is called out as no longer synced.
+        let err = parse(
+            "allowed_tools = [\"a\"]\ndenied_tools = [\"d\"]\n[harness.claude-code.hooks]\nX = 1",
+        )
+        .unwrap_err();
+        assert!(err.contains("`denied_tools` at the top level"), "{err}");
+        assert!(err.contains("`hooks` in `[harness.claude-code]`"), "{err}");
+        assert!(err.contains("move it to `[sync] allowed_tools`"), "{err}");
+    }
+
+    #[test]
+    fn a_version_key_is_an_unknown_field_even_beside_misplaced_policy() {
+        for key in ["config_version = 2", "version = 1", "format = \"v1\""] {
+            for text in [
+                format!("{key}\ndenied_tools = [\"x\"]"),
+                format!("denied_tools = [\"x\"]\n{key}"),
+                format!("{key}\nallowed_tools = [\"x\"]"),
+            ] {
+                let err = parse(&text).unwrap_err();
+                let name = key.split(' ').next().unwrap();
+                assert!(
+                    err.contains(&format!("unknown field `{name}`")),
+                    "{text} -> {err}"
+                );
+                assert!(!err.contains("`[sync]` section"), "{text} -> {err}");
+            }
+        }
+    }
+
+    #[test]
+    fn run_level_allowed_tools_parse_anywhere_and_never_reach_sync() {
+        // A harness with no sync mapping takes a run-level list: it is not
+        // sync policy, so the file mapping does not bound it.
+        let c = parsed(
+            "allowed_tools = [\"top\"]\n[harness.copilot]\nallowed_tools = [\"h\"]\n\
+             [harness.copilot.variant.w]\nallowed_tools = [\"v\"]",
+        );
+        assert_eq!(c.allowed_tools_for("codex"), ["top"]);
+        assert_eq!(c.allowed_tools_for("copilot"), ["h"]);
+        assert_eq!(c.allowed_tools_for("copilot:w"), ["v"]);
+        assert!(c.sync.allowed_tools_for("codex").is_empty());
+        assert!(c.sync == SyncConfig::default());
+        // The same field inside `[sync]` is bound by the mapping.
+        let err = parse("[sync.harness.copilot]\nallowed_tools = [\"h\"]").unwrap_err();
+        assert!(err.contains("cannot deliver `allowed_tools`"), "{err}");
+    }
+
+    #[test]
+    fn allowed_tools_source_names_the_layer_its_resolved_value_comes_from() {
+        let layers = vec![
+            ("/a.toml".to_string(), parsed("allowed_tools = [\"a\"]")),
+            (
+                "/b.toml".to_string(),
+                parsed("[harness.claude-code]\nallowed_tools = [\"b\"]"),
+            ),
+            (
+                "/c.toml".to_string(),
+                parsed("allowed_tools = [\"c\"]\n[harness.claude-code.variant.w]\nallowed_tools = [\"w\"]"),
+            ),
+        ];
+        assert_eq!(allowed_tools_source(&layers, "codex"), Some("/c.toml"));
+        assert_eq!(
+            allowed_tools_source(&layers, "claude-code"),
+            Some("/b.toml")
+        );
+        assert_eq!(
+            allowed_tools_source(&layers, "claude-code:w"),
+            Some("/c.toml")
+        );
+        assert_eq!(allowed_tools_source(&layers[1..2], "codex"), None);
+    }
+
+    #[test]
+    fn the_sync_section_merges_and_explains_like_the_run_level_fields() {
+        let base = parsed(concat!(
+            "[sync]\nallowed_tools = [\"user\"]\ndenied_tools = [\"user-deny\"]\n",
+            "[sync.harness.claude-code]\nallowed_tools = [\"user-claude\"]\n",
+            "[sync.harness.claude-code.variant.work]\ndenied_tools = [\"user-work\"]\n",
+        ));
+        let over = parsed(concat!(
+            "[sync]\nallowed_tools = [\"project\"]\n",
+            "[sync.harness.claude-code.variant.work]\nallowed_tools = [\"project-work\"]\n",
+        ));
+        let layers = vec![
+            ("/user.toml".to_string(), base.clone()),
+            ("/project.toml".to_string(), over.clone()),
+        ];
+        let merged = merge(base, over);
+        assert_eq!(merged.sync.allowed_tools_for("codex"), ["project"]);
+        assert_eq!(merged.sync.denied_tools_for("codex"), ["user-deny"]);
+        assert_eq!(
+            merged.sync.allowed_tools_for("claude-code"),
+            ["user-claude"]
+        );
+        assert_eq!(
+            merged.sync.allowed_tools_for("claude-code:work"),
+            ["project-work"]
+        );
+        assert_eq!(
+            merged.sync.denied_tools_for("claude-code:work"),
+            ["user-work"]
+        );
+        assert!(merged.declares_variant("claude-code:work"));
+        assert!(merged.variant_for("claude-code:work").is_none());
+
+        let report = explain(&layers);
+        assert_eq!(
+            report.sync.allowed_tools.source.as_deref(),
+            Some("/project.toml")
+        );
+        assert_eq!(
+            report.sync.denied_tools.source.as_deref(),
+            Some("/user.toml")
+        );
+        let work = &report.sync.harness["claude-code"].variant["work"];
+        assert_eq!(work.allowed_tools.source.as_deref(), Some("/project.toml"));
+        assert_eq!(work.denied_tools.source.as_deref(), Some("/user.toml"));
+        assert!(report.allowed_tools.value.is_none(), "nothing run-level");
+        assert!(
+            report.harness.is_empty(),
+            "no `[harness]` table was written"
+        );
     }
 
     #[test]
@@ -2169,22 +2714,23 @@ model = "child-home"
     fn allow_deny_and_hooks_parse_at_both_levels() {
         let c = parsed(
             r#"
+            [sync]
             allowed_tools = ["Bash(git log:*)"]
             denied_tools = ["Bash(rm:*)"]
 
-            [harness.cursor]
+            [sync.harness.cursor]
             allowed_tools = ["Shell(git)"]
 
-            [harness.claude-code.hooks]
+            [sync.harness.claude-code.hooks]
             PreToolUse = [{ matcher = "Bash", hooks = [{ type = "command", command = "./check.sh" }] }]
             "#,
         );
         // Per-harness beats top-level; others fall through to the top level.
-        assert_eq!(c.allowed_tools_for("cursor"), ["Shell(git)"]);
-        assert_eq!(c.allowed_tools_for("claude-code"), ["Bash(git log:*)"]);
-        assert_eq!(c.denied_tools_for("claude-code"), ["Bash(rm:*)"]);
-        assert!(c.hooks_for("claude-code").is_some());
-        assert!(c.hooks_for("cursor").is_none());
+        assert_eq!(c.sync.allowed_tools_for("cursor"), ["Shell(git)"]);
+        assert_eq!(c.sync.allowed_tools_for("claude-code"), ["Bash(git log:*)"]);
+        assert_eq!(c.sync.denied_tools_for("claude-code"), ["Bash(rm:*)"]);
+        assert!(c.sync.hooks_for("claude-code").is_some());
+        assert!(c.sync.hooks_for("cursor").is_none());
     }
 
     #[test]
@@ -2194,28 +2740,31 @@ model = "child-home"
         // else; opencode's permission shape is a map, not a list; only
         // claude-code has a hooks mapping.
         for (text, what) in [
-            ("[harness.codex.settings]\nmodel = \"x\"", "settings"),
+            ("[sync.harness.codex.settings]\nmodel = \"x\"", "settings"),
             (
-                "[harness.codex.variant.work.settings]\nmodel = \"x\"",
+                "[sync.harness.codex.variant.work.settings]\nmodel = \"x\"",
                 "settings",
             ),
-            ("[harness.codex]\nhooks = {}", "hooks"),
+            ("[sync.harness.codex]\nhooks = {}", "hooks"),
             (
-                "[harness.copilot]\nallowed_tools = [\"x\"]",
+                "[sync.harness.copilot]\nallowed_tools = [\"x\"]",
                 "allowed_tools",
             ),
             (
-                "[harness.opencode]\nallowed_tools = [\"x\"]",
+                "[sync.harness.opencode]\nallowed_tools = [\"x\"]",
                 "allowed_tools",
             ),
-            ("[harness.crush]\nhooks = {}", "hooks"),
-            ("[harness.cursor.hooks]\nbeforeShellExecution = []", "hooks"),
+            ("[sync.harness.crush]\nhooks = {}", "hooks"),
             (
-                "[harness.goose.settings]\nGOOSE_MODE = \"auto\"",
+                "[sync.harness.cursor.hooks]\nbeforeShellExecution = []",
+                "hooks",
+            ),
+            (
+                "[sync.harness.goose.settings]\nGOOSE_MODE = \"auto\"",
                 "settings",
             ),
             (
-                "[harness.copilot.variant.work]\nallowed_tools = [\"x\"]",
+                "[sync.harness.copilot.variant.work]\nallowed_tools = [\"x\"]",
                 "allowed_tools",
             ),
         ] {
@@ -2227,13 +2776,13 @@ model = "child-home"
         // qwen deny (permissions.deny) and crush deny (options.disabled_tools),
         // which file sync supports even though no CLI flag does.
         for text in [
-            "[harness.qwen]\ndenied_tools = [\"Shell\"]",
-            "[harness.crush]\ndenied_tools = [\"bash\"]",
-            "[harness.cursor]\nallowed_tools = [\"Shell(ls)\"]",
-            "[harness.claude-code.hooks]\nPreToolUse = []",
-            "[harness.opencode.settings.permission]\nedit = \"deny\"",
-            "[harness.codex]\nallowed_tools = [\"Bash(ls:*)\"]\ndenied_tools = [\"Bash(rm:*)\"]",
-            "[harness.codex.variant.work]\ndenied_tools = [\"Bash(rm:*)\"]",
+            "[sync.harness.qwen]\ndenied_tools = [\"Shell\"]",
+            "[sync.harness.crush]\ndenied_tools = [\"bash\"]",
+            "[sync.harness.cursor]\nallowed_tools = [\"Shell(ls)\"]",
+            "[sync.harness.claude-code.hooks]\nPreToolUse = []",
+            "[sync.harness.opencode.settings.permission]\nedit = \"deny\"",
+            "[sync.harness.codex]\nallowed_tools = [\"Bash(ls:*)\"]\ndenied_tools = [\"Bash(rm:*)\"]",
+            "[sync.harness.codex.variant.work]\ndenied_tools = [\"Bash(rm:*)\"]",
         ] {
             assert!(parse(text).is_ok(), "{text} should parse");
         }
@@ -2244,9 +2793,9 @@ model = "child-home"
         // A scalar would be merged into the harness's JSON config as a bare
         // value, corrupting it — the shape is validated before anything else.
         for text in [
-            "[harness.claude-code]\nhooks = \"oops\"",
-            "[harness.claude-code]\nsettings = 3",
-            "[harness.opencode]\nsettings = [\"list\"]",
+            "[sync.harness.claude-code]\nhooks = \"oops\"",
+            "[sync.harness.claude-code]\nsettings = 3",
+            "[sync.harness.opencode]\nsettings = [\"list\"]",
         ] {
             let err = parse(text).unwrap_err();
             assert!(err.contains("must be a table"), "{text} -> {err}");
@@ -2258,10 +2807,11 @@ model = "child-home"
         // Like hooks, a project-level settings table replaces the user-level
         // one wholesale (no deep merge across oneharness layers — the deep
         // merge happens against the harness's own file, at sync time).
-        let base = parsed("[harness.opencode.settings.permission]\nedit = \"deny\"");
-        let over = parsed("[harness.opencode.settings.permission.bash]\n\"git *\" = \"allow\"");
+        let base = parsed("[sync.harness.opencode.settings.permission]\nedit = \"deny\"");
+        let over =
+            parsed("[sync.harness.opencode.settings.permission.bash]\n\"git *\" = \"allow\"");
         let merged = merge(base, over);
-        let settings = merged.settings_for("opencode").unwrap();
+        let settings = merged.sync.settings_for("opencode").unwrap();
         assert!(settings.get("permission").unwrap().get("bash").is_some());
         assert!(
             settings.get("permission").unwrap().get("edit").is_none(),
@@ -2271,17 +2821,21 @@ model = "child-home"
 
     #[test]
     fn merge_replaces_rule_lists_per_field() {
-        let base = parsed("allowed_tools = [\"user-rule\"]\ndenied_tools = [\"user-deny\"]");
-        let over = parsed("allowed_tools = [\"project-rule\"]");
+        let base =
+            parsed("[sync]\nallowed_tools = [\"user-rule\"]\ndenied_tools = [\"user-deny\"]");
+        let over = parsed("[sync]\nallowed_tools = [\"project-rule\"]");
         let merged = merge(base, over);
-        assert_eq!(merged.allowed_tools.as_deref().unwrap(), ["project-rule"]);
-        assert_eq!(merged.denied_tools.as_deref().unwrap(), ["user-deny"]);
+        assert_eq!(
+            merged.sync.allowed_tools.as_deref().unwrap(),
+            ["project-rule"]
+        );
+        assert_eq!(merged.sync.denied_tools.as_deref().unwrap(), ["user-deny"]);
 
         // Per-harness hooks: the project's table replaces the user's whole.
-        let base = parsed("[harness.claude-code.hooks]\nPreToolUse = []");
-        let over = parsed("[harness.claude-code.hooks]\nPostToolUse = []");
+        let base = parsed("[sync.harness.claude-code.hooks]\nPreToolUse = []");
+        let over = parsed("[sync.harness.claude-code.hooks]\nPostToolUse = []");
         let merged = merge(base, over);
-        let hooks = merged.hooks_for("claude-code").unwrap();
+        let hooks = merged.sync.hooks_for("claude-code").unwrap();
         assert!(hooks.get("PostToolUse").is_some());
         assert!(
             hooks.get("PreToolUse").is_none(),
@@ -2292,15 +2846,18 @@ model = "child-home"
     #[test]
     fn explain_covers_rules_and_hooks() {
         let report = explain(&layers(
-            "allowed_tools = [\"user-rule\"]",
-            "[harness.claude-code]\nallowed_tools = [\"claude-rule\"]\n[harness.claude-code.hooks]\nPreToolUse = []",
+            "[sync]\nallowed_tools = [\"user-rule\"]",
+            "[sync.harness.claude-code]\nallowed_tools = [\"claude-rule\"]\n[sync.harness.claude-code.hooks]\nPreToolUse = []",
         ));
         assert_eq!(
-            report.allowed_tools.value.as_deref().unwrap(),
+            report.sync.allowed_tools.value.as_deref().unwrap(),
             ["user-rule"]
         );
-        assert_eq!(report.allowed_tools.source.as_deref(), Some("/user.toml"));
-        let claude = &report.harness["claude-code"];
+        assert_eq!(
+            report.sync.allowed_tools.source.as_deref(),
+            Some("/user.toml")
+        );
+        let claude = &report.sync.harness["claude-code"];
         assert_eq!(
             claude.allowed_tools.source.as_deref(),
             Some("/project.toml")

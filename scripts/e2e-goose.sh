@@ -26,7 +26,7 @@ oh_assert_echoed goose "$marker"
 # Goose folds supplied system text into its stdin user turn; both must arrive.
 oh_long_prompt_enforce goose
 
-# Hook enforcement: a synced `[[hooks]]` gate, installed as a Goose plugin, must
+# Hook enforcement: a synced `[[sync.hooks]]` gate, installed as a Goose plugin, must
 # block a marked command and let an unmarked one through (Goose fires PreToolUse
 # hooks even under GOOSE_MODE=auto, which oneharness's bypass requests).
 note "» hook enforcement: the synced plugin gate must block a marked command"

@@ -943,7 +943,7 @@ pub fn report(request: &UsageRequest) -> Result<UsageReport, OneharnessError> {
     // silently collapsed onto the base harness's credentials.
     for id in request.harness.iter().chain(&request.exclude) {
         if let Some((base, variant)) = id.split_once(':') {
-            if loaded.config.variant_for(id).is_none() {
+            if !loaded.config.declares_variant(id) {
                 return Err(OneharnessError::UnknownHarnessVariant {
                     id: id.clone(),
                     base: base.to_string(),

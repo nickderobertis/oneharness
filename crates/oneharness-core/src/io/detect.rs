@@ -258,7 +258,7 @@ pub fn detect(request: &DetectRequest) -> Result<DetectReport, OneharnessError> 
     let loaded = crate::io::config::load(&request.config, request.no_config, start)?;
     for id in request.harness.iter().chain(&request.exclude) {
         if let Some((base, variant)) = id.split_once(':') {
-            if loaded.config.variant_for(id).is_none() {
+            if !loaded.config.declares_variant(id) {
                 return Err(OneharnessError::UnknownHarnessVariant {
                     id: id.clone(),
                     base: base.to_string(),

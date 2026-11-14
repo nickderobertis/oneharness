@@ -820,13 +820,19 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
         """Attribute a project-file value to the file it came from."""
         project = scratch(self, "config")
         (project / "oneharness.toml").write_text(
-            'harnesses = ["codex"]\nmode = "bypass"\n', encoding="utf-8"
+            'harnesses = ["codex"]\nmode = "bypass"\n'
+            '[sync.harness.claude-code]\ndenied_tools = ["Bash(rm:*)"]\n',
+            encoding="utf-8",
         )
         with without_ambient_overrides():
             report = await self.layered(project).config({"cwd": str(project)})
         self.assertEqual(report["harnesses"]["value"], ["codex"])
         self.assertIn("oneharness.toml", report["harnesses"]["source"])
         self.assertEqual(report["mode"]["value"], "bypass")
+        denied = report["sync"]["harness"]["claude-code"]["denied_tools"]
+        self.assertEqual(denied["value"], ["Bash(rm:*)"])
+        self.assertIn("oneharness.toml", denied["source"])
+        self.assertIsNone(report["allowed_tools"]["value"])
 
     async def test_config_layers_each_path_as_its_own_config_later_winning(self) -> None:
         """Pass each config path as its own `--config`, a later file winning."""
@@ -847,7 +853,7 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
         """Report what a check would change, write it, then change nothing."""
         project = scratch(self, "sync")
         (project / "oneharness.toml").write_text(
-            'allowed_tools = ["Bash(echo:*)"]\n', encoding="utf-8"
+            '[sync]\nallowed_tools = ["Bash(echo:*)"]\n', encoding="utf-8"
         )
         client = self.layered(project)
         options: SyncOptions = {"cwd": str(project), "harnesses": ["claude-code"]}
@@ -867,7 +873,7 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
         """Under `exact`, a hand-added entry is pending, named, then removed."""
         project = scratch(self, "sync-exact")
         (project / "oneharness.toml").write_text(
-            'allowed_tools = ["Bash(echo:*)"]\n', encoding="utf-8"
+            '[sync]\nallowed_tools = ["Bash(echo:*)"]\n', encoding="utf-8"
         )
         (project / ".claude").mkdir()
         settings = project / ".claude" / "settings.json"

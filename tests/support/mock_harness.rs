@@ -3578,6 +3578,10 @@ mod listen_server {
         approvals: Vec<Value>,
         interrupts: Vec<Value>,
         releases: Vec<Value>,
+        /// Every `thread/unsubscribe` as it arrives, before anything holds its
+        /// answer: a dispatch sends it only once its own turn is over, so a
+        /// reader waiting on it waits on the dispatch rather than the server.
+        unsubscribing: Vec<Value>,
         /// The server's own resident memory after each thread it opened.
         open_rss: Vec<u64>,
     }
@@ -3727,6 +3731,7 @@ mod listen_server {
             approvals: Vec::new(),
             interrupts: Vec::new(),
             releases: Vec::new(),
+            unsubscribing: Vec::new(),
             open_rss: Vec::new(),
         }));
         lock(&server).save();
@@ -3954,6 +3959,7 @@ mod listen_server {
                 "approvals": self.approvals,
                 "interrupts": self.interrupts,
                 "releases": self.releases,
+                "unsubscribing": self.unsubscribing,
                 "open_rss": self.open_rss,
             });
             let tmp = dir.join(format!("state-{}.json.tmp", self.pid));
@@ -4264,7 +4270,7 @@ mod listen_server {
                 let Ok(frame) = serde_json::from_str::<Value>(&text) else {
                     continue;
                 };
-                hold(server, &frame);
+                hold(server, conn, &frame);
                 handle(server, conn, &text, &frame);
             }
             // A shut read side reads nothing more on either platform; what
@@ -4309,7 +4315,7 @@ mod listen_server {
     /// dispatch held idle, before its turn), `thread/unsubscribe` for
     /// MOCK_CODEX_UNSUBSCRIBE_DELAY_MS (a dispatch whose turn has ended still
     /// releasing its thread).
-    fn hold(server: &Shared, frame: &Value) {
+    fn hold(server: &Shared, conn: u64, frame: &Value) {
         let set_knob = |name: &str| {
             frame
                 .pointer(&format!(
@@ -4350,11 +4356,16 @@ mod listen_server {
                     .pointer("/params/threadId")
                     .and_then(Value::as_str)
                     .unwrap_or_default();
-                let delay = lock(server)
+                let mut s = lock(server);
+                s.unsubscribing
+                    .push(json!({"thread": thread, "conn": conn}));
+                s.save();
+                let delay = s
                     .threads
                     .get(thread)
                     .and_then(|t| t.knob("MOCK_CODEX_UNSUBSCRIBE_DELAY_MS"))
                     .map(|ms| whole::<u64>("MOCK_CODEX_UNSUBSCRIBE_DELAY_MS", ms));
+                drop(s);
                 if let Some(ms) = delay {
                     std::thread::sleep(std::time::Duration::from_millis(ms));
                 }

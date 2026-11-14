@@ -2318,21 +2318,16 @@ fn setup_mock(
 /// The spellings a harness may look the trust of `dir` up under: the absolute
 /// path as given, and its canonical form (symlinks resolved; on Windows the
 /// long name with backslashes, the `\\?\` verbatim prefix dropped as Codex's
-/// `dunce::canonicalize` drops it), each once.
-fn project_trust_keys(dir: &std::path::Path) -> Vec<String> {
-    let mut keys = Vec::new();
-    let mut push = |key: String| {
-        if !key.is_empty() && !keys.contains(&key) {
-            keys.push(key);
-        }
-    };
+/// `dunce::canonicalize` drops it).
+fn project_trust_keys(dir: &std::path::Path) -> mock::ProjectTrustKeys {
+    let mut keys = mock::ProjectTrustKeys::default();
     if let Ok(absolute) = std::path::absolute(dir) {
-        push(absolute.display().to_string());
+        keys.push(absolute.display().to_string());
     }
     // A directory that cannot be resolved (missing) has no canonical form to
     // name; its absolute spelling still stands.
     if let Ok(canonical) = std::fs::canonicalize(dir) {
-        push(without_verbatim_prefix(canonical.display().to_string()));
+        keys.push(without_verbatim_prefix(canonical.display().to_string()));
     }
     keys
 }
@@ -6388,7 +6383,7 @@ mod tests {
         let dir = crate::io::scratch::ScratchDir::new("trust-keys").unwrap();
         let missing = dir.join("gone");
         assert_eq!(
-            project_trust_keys(&missing),
+            project_trust_keys(&missing).as_slice(),
             [missing.display().to_string()]
         );
         assert!(project_trust_keys(std::path::Path::new("")).is_empty());
@@ -6407,7 +6402,7 @@ mod tests {
         std::os::unix::fs::symlink(&real, &link).unwrap();
         let canonical = std::fs::canonicalize(&real).unwrap();
         assert_eq!(
-            project_trust_keys(&link),
+            project_trust_keys(&link).as_slice(),
             [link.display().to_string(), canonical.display().to_string()]
         );
     }

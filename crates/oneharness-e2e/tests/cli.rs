@@ -41800,10 +41800,14 @@ fn a_controlled_run_starts_its_shared_server_under_a_pinned_marker_and_recovers_
         let record: Value =
             serde_json::from_str(&std::fs::read_to_string(&records[0]).unwrap()).unwrap();
         let marker = record["marker"].as_str().unwrap_or_default().to_string();
-        let pid = record["pid"].as_i64().unwrap_or_default();
+        let pid = record["pid"]
+            .as_i64()
+            .and_then(|pid| libc::pid_t::try_from(pid).ok())
+            .filter(|pid| *pid > 0)
+            .unwrap_or_else(|| panic!("{tag}: no server pid in {record}"));
         // SAFETY: plain integers; the pid is the server this run started.
         unsafe {
-            libc::kill(pid as libc::pid_t, libc::SIGKILL);
+            libc::kill(pid, libc::SIGKILL);
         }
         std::fs::remove_file(&records[0]).unwrap();
         if pinned {

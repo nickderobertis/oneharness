@@ -101,7 +101,6 @@ CYGPATH
   grep -qF 'cygpath -wl could not convert' "$scratch/trust.log" ||
     fail "the trust config's failure must name the cygpath -wl conversion: $(cat "$scratch/trust.log")"
 done
-# Each other way the trust config can fail stops the journey naming it.
 # Prints why `_oh_codex_trust_config $1 $2` failed, failing if it did not.
 trust_refused() {
   if (_oh_codex_trust_config "$1" "$2") >"$scratch/trust.log" 2>&1; then

@@ -1691,13 +1691,28 @@ fn a_pooled_interrupt_answers_from_its_own_record_and_never_waits_unbounded() {
             ("MOCK_CODEX_INTERRUPT_SILENT", "1"),
         ],
     ));
-    wait_for("the turn to end", Duration::from_secs(20), || {
-        pool.server_pids().len() == 1
-            && pool.state(pool.server_pids()[0])["turns"]
-                .as_array()
-                .is_some_and(|turns| turns.iter().any(|t| t["status"] == "completed"))
-    });
+    // Waited on the dispatch, not the server: the server records its turn
+    // completed as it queues `turn/completed`, before the dispatch has read it,
+    // and an interrupt asked in that gap still finds the turn live in the
+    // dispatch's record and goes to the server. The dispatch asks to release
+    // its thread only after its own record has seen the turn end.
+    wait_for(
+        "the dispatch to release its ended turn's thread",
+        Duration::from_secs(20),
+        || {
+            pool.server_pids().len() == 1
+                && pool.state(pool.server_pids()[0])["unsubscribing"]
+                    .as_array()
+                    .is_some_and(|asks| !asks.is_empty())
+        },
+    );
     let server = pool.the_server();
+    assert!(
+        pool.state(server)["turns"]
+            .as_array()
+            .is_some_and(|turns| turns.iter().any(|t| t["status"] == "completed")),
+        "the turn ended before its thread was released"
+    );
     let started = Instant::now();
     let by_cli = interrupt(&pool, "ending").0;
     let by_socket = control_request(&pool.socket("ending"), INTERRUPT_LINE);

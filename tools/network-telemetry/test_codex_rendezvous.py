@@ -389,6 +389,44 @@ class Wrapper(unittest.TestCase):
         )
 
 
+@unittest.skipIf(WINDOWS, "e2e-codex.sh fronts codex with the wrapper on the unix legs alone")
+class Resolved(unittest.TestCase):
+    """e2e-lib.sh's _oh_resolved_file, which spells the real codex as the
+    server pool's resolve_executable does: every link followed."""
+
+    def resolve(self, path: Path) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [BASH, "-c", 'source "$1"; _oh_resolved_file "$2"', "resolve", str(LIB), str(path)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+
+    def test_a_chain_of_links_through_a_linked_directory_resolves_as_realpath_does(self) -> None:
+        tmp = scratch(self)
+        (tmp / "real" / "lib").mkdir(parents=True)
+        (tmp / "real" / "lib" / "codex.js").write_text("")
+        (tmp / "linked").symlink_to(tmp / "real")
+        (tmp / "bin").mkdir()
+        (tmp / "bin" / "hop").symlink_to("../linked/lib/codex.js")
+        (tmp / "bin" / "codex").symlink_to(tmp / "bin" / "hop")
+        entry = tmp / "linked" / ".." / "bin" / "codex"
+        run = self.resolve(entry)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stdout, os.path.realpath(entry))
+        self.assertEqual(run.stdout, str((tmp / "real" / "lib" / "codex.js").resolve()))
+
+    def test_a_link_loop_fails_naming_the_path(self) -> None:
+        tmp = scratch(self)
+        (tmp / "a").symlink_to(tmp / "b")
+        (tmp / "b").symlink_to(tmp / "a")
+        run = self.resolve(tmp / "a")
+        self.assertNotEqual(run.returncode, 0)
+        self.assertEqual(run.stdout, "")
+        self.assertIn(f"{tmp / 'a'}: too many levels of symbolic links", run.stderr)
+
+
 # The launches the live Codex failures were in, made exactly as the suite
 # makes them: the denied-tools journey's codex started directly in its trusted
 # scratch project with the synced rules file, the shell-rewrite journey's
@@ -423,7 +461,16 @@ class Transparent(unittest.TestCase):
         # `sun_path`'s 104 bytes, which oneharness refuses before launching.
         self.tmp = Path(tempfile.mkdtemp(prefix="oh-", dir="/tmp"))
         self.addCleanup(shutil.rmtree, self.tmp, True)
-        self.bin = self.tmp / "bin"
+        # Every journey's scratch, and the double's directory on PATH, is
+        # reached through a link, as macOS's /tmp resolves through /private:
+        # Codex looks a project up by the physical spelling, the suite passes
+        # the linked one, and the pool launches the resolved executable where
+        # a PATH lookup launches the linked one.
+        self.real = self.tmp / "real"
+        self.real.mkdir()
+        self.base = self.tmp / "linked"
+        self.base.symlink_to(self.real)
+        self.bin = self.base / "bin"
         self.bin.mkdir()
         self.record = self.tmp / "record"
         # The pool starts a shared server from a scrubbed environment, so the
@@ -442,13 +489,6 @@ class Transparent(unittest.TestCase):
             + f'FAKE_EXE="$0" exec bash {shlex.quote(str(FAKE))} "$@"\n'
         )
         (self.bin / "codex").chmod(0o755)
-        # Every journey's scratch is reached through a link, as macOS's temp
-        # dir under /var/folders resolves through /private: Codex looks a
-        # project up by the physical spelling, the suite passes the linked one.
-        self.real = self.tmp / "real"
-        self.real.mkdir()
-        self.base = self.tmp / "linked"
-        self.base.symlink_to(self.real)
         self.proj = self.base / "rules" / "project"
         self.proj.mkdir(parents=True)
         self.home = self.base / "rules" / "codex-home"

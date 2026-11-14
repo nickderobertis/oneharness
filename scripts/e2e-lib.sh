@@ -311,6 +311,26 @@ _OH_SHIM_CMD=()
 _OH_PHASE_KEY=""
 _OH_PHASE_COUNT=0
 
+# File `$1` with every link followed, its own and its directories', as
+# realpath(3) resolves it; fails on a link loop or an unreadable directory.
+_oh_resolved_file() {
+  local path="$1" target dir hops=0
+  while [ -L "$path" ]; do
+    [ "$hops" -lt 40 ] || {
+      echo "$1: too many levels of symbolic links" >&2
+      return 1
+    }
+    target="$(readlink "$path")" || return 1
+    case "$target" in
+      /*) path="$target" ;;
+      *) path="$(dirname "$path")/$target" ;;
+    esac
+    hops=$((hops + 1))
+  done
+  dir="$(cd -P "$(dirname "$path")" && pwd -P)" || return 1
+  printf '%s/%s' "${dir%/}" "$(basename "$path")"
+}
+
 # The first `$1` on PATH that is not one of these shims (a directory holding
 # `.oh-network-shims` is skipped), so a suite started under another suite's
 # shims still wraps the real executable.
@@ -2587,20 +2607,29 @@ _oh_codex_rendezvous_cleanup() {
 # PATH again before it runs Codex, so every launch sees the PATH it would
 # without it. Its scratch directory goes however the suite ends; the check of
 # what it records is scripts/e2e-codex.sh's oh_codex_rendezvous_check.
+#
+# A PATH lookup launches the wrapper by its PATH spelling, the server pool by
+# its resolved one (crates/oneharness-core/src/io/app_server.rs
+# resolve_executable), and the wrapper hands Codex on spelled the same way:
+# the real codex as found on PATH, or resolved. So that the two spellings
+# always differ, PATH's `codex` is a link to the wrapper itself.
 oh_codex_rendezvous_setup() {
-  local real dir
+  local real resolved dir
   real="$(_oh_unshimmed codex)" || return 0 # no codex: the first turn reports it
+  resolved="$(_oh_resolved_file "$real")" ||
+    fail "codex rendezvous: cannot resolve $real, the codex on PATH, through its links (the error above); check that \`ls -l $real\` and its directories are readable"
   dir="$(mktemp -d "${TMPDIR:-/tmp}/oh-codex-rendezvous.XXXXXX")" ||
     fail "codex rendezvous: could not create a scratch directory — check that the host temp dir is writable"
   _oh_codex_rendezvous_dir="$dir"
   trap _oh_codex_rendezvous_cleanup EXIT
   # llmlint: ignore-block[changed_behavior_has_e2e] mktemp has just made this directory, private to this user, so writing the evidence file and the wrapper in it fails only on a full or read-only filesystem, which no unprivileged journey can stage between these lines; the directory's own failure is test_the_rendezvous_setup_names_a_temp_dir_it_cannot_use's.
-  {
-    : >"$dir/rendezvous.jsonl" &&
-      printf '#!/usr/bin/env bash\nexec bash %q --real %q --evidence %q --drop-path %q -- "$@"\n' \
-        "$OH_REPO_ROOT/scripts/e2e-codex-rendezvous.sh" "$real" "$dir/rendezvous.jsonl" "$dir" >"$dir/codex" &&
-      chmod +x "$dir/codex"
-  } || fail "codex rendezvous: cannot write the evidence file or the wrapper in $dir; check that the host temp dir is writable"
+  local unwritable="codex rendezvous: cannot write the evidence file or the wrapper in $dir; check that the host temp dir is writable"
+  { : >"$dir/rendezvous.jsonl" && mkdir "$dir/resolved"; } || fail "$unwritable"
+  # shellcheck disable=SC2016 # $0, $real and $@ are the wrapper's own, expanded as it runs
+  printf '#!/usr/bin/env bash\nreal=%q\n[ "$0" = %q ] || real=%q\nexec bash %q --real "$real" --evidence %q --drop-path %q -- "$@"\n' \
+    "$real" "$dir/codex" "$resolved" "$OH_REPO_ROOT/scripts/e2e-codex-rendezvous.sh" \
+    "$dir/rendezvous.jsonl" "$dir" >"$dir/resolved/codex" || fail "$unwritable"
+  { chmod +x "$dir/resolved/codex" && ln -s resolved/codex "$dir/codex"; } || fail "$unwritable"
   # llmlint: ignore-end[changed_behavior_has_e2e]
   PATH="$dir:$PATH"
   export PATH

@@ -14,7 +14,8 @@
   "namedInputs": {
     "default": [
       "{projectRoot}/**/*",
-      "{workspaceRoot}/scripts/e2e-control.sh"
+      "{workspaceRoot}/scripts/e2e-control.sh",
+      "{workspaceRoot}/live/run-allowlist/run_allowlist_live.py"
     ]
   },
   "targets": {

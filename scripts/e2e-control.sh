@@ -112,7 +112,13 @@ have_env() {
 #                 heartbeat stops within DEAD_LEASE_SWEEP_INTERVAL (2 s) plus
 #                 DEAD_LEASE_STOP_DEADLINE (5 s);
 #   pooled-reuse  (Linux) the sustained-reuse workload, then onebudgetspec's
-#                 check over live/control/budgets.yaml.
+#                 check of live/control/budgets.yaml's memory budget;
+#   run-overlay   a controlled turn under a run-level allowlist: the granted
+#                 executable runs, every refusal holds, its overlay home is
+#                 the run's alone (live/run-allowlist/run_allowlist_live.py
+#                 --codex-path control, against a scripted model endpoint, so
+#                 it needs no Codex login), then (Linux) the budget workload
+#                 and onebudgetspec's check of codex-run-overlay-added-seconds.
 # OH_CONTROL_ONLY=pooled runs these alone (the gate's journeys drive them with
 # the mock harness standing for codex).
 
@@ -314,8 +320,33 @@ oh_pooled_reuse() {
   uv sync --project "$OH_REPO_ROOT/python" --frozen --no-install-workspace --quiet ||
     fail "pooled-reuse: could not install onebudgetspec (uv sync); run 'just bootstrap', then rerun"
   (cd "$OH_REPO_ROOT/live/control" &&
-    uv run --project "$OH_REPO_ROOT/python" --frozen --no-sync onebudgetspec check budgets.yaml) ||
+    uv run --project "$OH_REPO_ROOT/python" --frozen --no-sync onebudgetspec check budgets.yaml \
+      --id codex-shared-server-rss-growth) ||
     fail "pooled-reuse: the shared app-server memory budget (live/control/budgets.yaml) failed; its readings are above"
+}
+
+oh_run_overlay() {
+  _oh_phase run-overlay
+  ONEHARNESS_BIN="$BIN" uv run --no-project python "$OH_REPO_ROOT/live/run-allowlist/run_allowlist_live.py" \
+    --harness codex --codex-path control ||
+    fail "run-overlay: a granted controlled Codex turn broke a guarantee; each failed check is above"
+  case "$(uname -s)" in
+    Linux*) ;;
+    *)
+      note "  SKIP run-overlay budget: measured on Linux only; not run on $(uname -s)"
+      return 0
+      ;;
+  esac
+  ONEHARNESS_BIN="$BIN" uv run --no-project python "$OH_REPO_ROOT/live/run-allowlist/run_allowlist_live.py" \
+    --budget-telemetry "$OH_REPO_ROOT/target/e2e-telemetry/run-overlay/codex-turn.json" ||
+    fail "run-overlay: the budget workload failed; its error is above"
+  # llmlint: ignore[work_goes_through_command_surface] The same frozen sync pooled-reuse runs before its onebudgetspec check, for the same reason: the live-control CI leg reaches this phase without `just bootstrap`.
+  uv sync --project "$OH_REPO_ROOT/python" --frozen --no-install-workspace --quiet ||
+    fail "run-overlay: could not install onebudgetspec (uv sync); run 'just bootstrap', then rerun"
+  (cd "$OH_REPO_ROOT/live/control" &&
+    uv run --project "$OH_REPO_ROOT/python" --frozen --no-sync onebudgetspec check budgets.yaml \
+      --id codex-run-overlay-added-seconds) ||
+    fail "run-overlay: the granted-turn budget (live/control/budgets.yaml) failed; its figures are above"
 }
 
 if printf '%s\n' "${CONTROLLABLE[@]}" | grep -q '^codex'; then
@@ -329,6 +360,10 @@ if printf '%s\n' "${CONTROLLABLE[@]}" | grep -q '^codex'; then
     oh_pooled_kill
     note "» codex: pooled-reuse — a shared server serving sequential leases keeps no per-dispatch memory"
     oh_pooled_reuse
+  fi
+  if command -v codex >/dev/null 2>&1; then
+    note "» codex: run-overlay — a granted controlled turn runs its executable alone, on its own overlay home"
+    oh_run_overlay
   fi
 fi
 if [ "${OH_CONTROL_ONLY:-}" = pooled ]; then

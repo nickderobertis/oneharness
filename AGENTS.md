@@ -73,7 +73,7 @@ follow-ups (see "After the main task").
   `workspace-integration`, `rust-coverage`, `shell-coverage`,
   `shell-toolchain`, `scripts`, the paid `live-*` suites
   (claude, codex, opencode, goose, qwen, crush, copilot, cursor, schema,
-  control, variants) and the dispatch-only `explore-*` probes (control,
+  control, variants, run-allowlist) and the dispatch-only `explore-*` probes (control,
   cursor-stdin, events, hooks).
 - **Excluded, and why:** web-app/React/Next.js/asdf-plugin/skills-repo guidance
   do not apply; release artifacts are handled by the existing Cargo/GitHub

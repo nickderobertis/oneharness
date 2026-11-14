@@ -15,7 +15,12 @@ measurement: a kill before the supervisor exists leaves neither.
 ARGV runs inside a fresh unprivileged user + network + mount + PID namespace
 whose only interface is a `pasta` TAP device; when the launch's whole process tree has exited (every descendant,
 detached and double-forked included, inherits the namespace and is reaped by
-its init), one measurement line is appended to FILE. The launch runs as the
+its init), one measurement line is appended to FILE. A descendant still running
+`OH_E2E_NET_DESCENDANT_GRACE` seconds (default 5, 0 for none) after the launch's
+own process exited is a resident service, not part of the launch — cursor-agent
+leaves its `worker-server` running for later invocations — so the namespace is
+stopped then, as at the deadline, rather than holding the launch's exit until
+the deadline: unmeasured, the caller would have seen that exit long before. The launch runs as the
 measurer's own uid and gid (`become`), not as the root pasta's namespace maps
 them to, and a TCP port it listens on answers on the host's loopback too, the
 way oneharness dials a control server it started:
@@ -45,8 +50,9 @@ stops the namespace and records what it measured.
 A stop this process receives reaches a launch that runs directly as that same
 signal, and SIGKILL 5 s later. Stopping the namespace, at the deadline
 (`OH_E2E_NET_DEADLINE` seconds after the launch starts, default 1800, 0 for
-none) or because this process was signalled, sends SIGTERM to every process in
-it and SIGKILL 5 s later.
+none), once the descendant grace after the launch's exit has passed, or because
+this process was signalled, sends SIGTERM to every process in it and SIGKILL
+5 s later.
 
 `OH_E2E_NET_OBSERVER`, a JSON argv, is the self-check's seam: that command is
 started inside the namespace before the counters are first read, with the
@@ -83,6 +89,12 @@ KILL_GRACE = 5.0
 # measurer records it anyway.
 REAP_WAIT = 2.0
 DEFAULT_DEADLINE = 1800.0
+# How long the launch's descendants may run on after its own process exits
+# before the namespace is stopped. Detached work that ends on its own (the
+# self-check's double-forked transfer, moving 8 MB within a second of the exit)
+# finishes well inside it; a resident service (cursor-agent's `worker-server`,
+# still running 90 s after its turn's 4 s launch on ubuntu-26.04) never would.
+DEFAULT_DESCENDANT_GRACE = 5.0
 CLONE_NEWNS = 0x00020000
 CLONE_NEWPID = 0x20000000
 CLONE_NEWUSER = 0x10000000
@@ -318,20 +330,30 @@ def exit_code(status: int) -> int:
     return 128 - code if code < 0 else code
 
 
-def deadline_seconds() -> float:
-    text = os.environ.get("OH_E2E_NET_DEADLINE", "")
+def env_seconds(name: str, default: float) -> float:
+    """A finite, non-negative number of seconds from `name`, else `default`; a
+    bad value is a usage error naming the variable."""
+    text = os.environ.get(name, "")
     if not text:
-        return DEFAULT_DEADLINE
+        return default
     try:
         value = float(text)
     except ValueError:
         value = -1.0
     if not math.isfinite(value) or value < 0:
         sys.exit(
-            f"e2e-netmeasure: OH_E2E_NET_DEADLINE must be a finite, non-negative number of seconds, "
-            f"got {text!r}; unset it for the {DEFAULT_DEADLINE:.0f} s default, or 0 for none"
+            f"e2e-netmeasure: {name} must be a finite, non-negative number of seconds, "
+            f"got {text!r}; unset it for the {default:.0f} s default, or 0 for none"
         )
     return value
+
+
+def deadline_seconds() -> float:
+    return env_seconds("OH_E2E_NET_DEADLINE", DEFAULT_DEADLINE)
+
+
+def descendant_grace_seconds() -> float:
+    return env_seconds("OH_E2E_NET_DESCENDANT_GRACE", DEFAULT_DESCENDANT_GRACE)
 
 
 def observer_argv() -> Optional[list[str]]:
@@ -483,12 +505,15 @@ def become(identity: Identity, libc: ctypes.CDLL) -> None:
     Path("/proc/self/gid_map").write_text(f"{identity.gid} 0 1\n")
 
 
-def namespace_init(scratch: Path, deadline: float, identity: Identity, argv: list[str]) -> int:
+def namespace_init(
+    scratch: Path, deadline: float, grace: float, identity: Identity, argv: list[str]
+) -> int:
     """Inside pasta's user and network namespace: run the launch as PID 1's child.
 
     Writes `launched` just before the launch starts — once it runs as
     `identity` — and `result.json` once the whole tree has exited; the
-    supervisor asks for a stop by creating `stop`."""
+    supervisor asks for a stop by creating `stop`. Descendants still running
+    `grace` seconds after the launch's own exit are stopped (0: never)."""
     observer = None
     observing = observer_argv()
     if observing is not None:
@@ -556,6 +581,8 @@ def namespace_init(scratch: Path, deadline: float, identity: Identity, argv: lis
         )
     launch_exit: Optional[int] = None
     stop_at = t0 + deadline if deadline > 0 else None
+    # When the launch's descendants have outstayed it (set once it exits).
+    outstayed_at: Optional[float] = None
     kill_at: Optional[float] = None
     while True:
         try:
@@ -565,6 +592,8 @@ def namespace_init(scratch: Path, deadline: float, identity: Identity, argv: lis
         if pid == launch.pid:
             launch_exit = exit_code(status)
             launch.returncode = launch_exit
+            if grace > 0:
+                outstayed_at = time.monotonic() + grace
         if pid:
             continue
         now = time.monotonic()
@@ -572,6 +601,7 @@ def namespace_init(scratch: Path, deadline: float, identity: Identity, argv: lis
             stop_requested
             or (scratch / "stop").exists()
             or (stop_at is not None and now >= stop_at)
+            or (outstayed_at is not None and now >= outstayed_at)
         ):
             os.kill(-1, signal.SIGTERM)
             kill_at = now + KILL_GRACE
@@ -1135,7 +1165,9 @@ def main(argv: list[str]) -> int:
             identity = Identity.parse(args.identity)
         except ValueError as error:
             parser.error(f"--_as: {error}")
-        return namespace_init(Path(args.init), deadline_seconds(), identity, args.argv)
+        return namespace_init(
+            Path(args.init), deadline_seconds(), descendant_grace_seconds(), identity, args.argv
+        )
     if not args.line_file or not args.launch_id:
         parser.error("--line-file and --launch-id are required")
     if args.start_line is not None:
@@ -1152,6 +1184,7 @@ def main(argv: list[str]) -> int:
     defer_stops()
     # Refuse a bad value before anything runs, not inside the namespace.
     deadline_seconds()
+    descendant_grace_seconds()
     observer_argv()
     try:
         return measure(args)

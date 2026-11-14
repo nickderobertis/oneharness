@@ -401,6 +401,39 @@ class MeasuredLaunch(unittest.TestCase):
         self.assertEqual(line["method"], "netns-pasta")
         self.assertGreaterEqual(line["seconds"], deadline)
 
+    def test_a_descendant_outstaying_its_launch_is_stopped_after_the_grace(self) -> None:
+        # A resident service the launch leaves behind (cursor-agent's
+        # `worker-server`) never ends on its own; the launch's exit must not
+        # wait out the namespace's deadline for it.
+        need_recorder(self)
+        for grace, stubborn in ((1.0, False), (1.0, True)):
+            with self.subTest(stubborn=stubborn):
+                tmp = scratch(self)
+                heartbeat = tmp / "heartbeat"
+                flags = ["--detach", "--linger", "600", "--heartbeat", str(heartbeat)]
+                started = time.monotonic()
+                run = run_shim(
+                    tmp,
+                    transfer_argv(
+                        0, 0, 0, *flags, *(["--stubborn"] if stubborn else []), "--exit", "3"
+                    ),
+                    ["exec", "stay"],
+                    env={"OH_E2E_NET_DESCENDANT_GRACE": str(grace)},
+                )
+                took = time.monotonic() - started
+                self.assertEqual(run.returncode, 3, run.stderr)
+                # SIGTERM at the grace; a service ignoring it gets SIGKILL 5 s later.
+                kill = 5 if stubborn else 0
+                self.assertGreater(took, grace + kill - 0.5, "the service was not given its grace")
+                self.assertLess(took, grace + kill + 4, "the shim waited on the service")
+                size = heartbeat.stat().st_size
+                time.sleep(0.5)
+                self.assertEqual(heartbeat.stat().st_size, size, "the service is still alive")
+                records = lines(tmp / "codex.jsonl")
+                (start,) = starts(records)
+                (line,) = measurements(records, start["launch_id"])
+                self.assertEqual((line["method"], line["exit"]), ("netns-pasta", 3), line)
+
     def test_a_shim_its_caller_kills_with_its_process_group_still_records_once(self) -> None:
         # oneharness ends a launch it stops by SIGTERM to the process group
         # and SIGKILL 100 ms later; the line must survive the shim's death.

@@ -1401,6 +1401,21 @@ pub fn run_supervised(
             let mut env_remove = cfg
                 .variant_for(selected_id)
                 .map_or_else(Vec::new, |variant| variant.unset_env.clone());
+            if shared_model_catalog {
+                let choice = model_catalog::resolve(&model_catalog::CatalogLaunch {
+                    bin: &resolved.bin,
+                    cwd: args.cwd.as_deref(),
+                    env: &job_env,
+                    env_remove: &env_remove,
+                    refresh_seconds: cfg.model_catalog_refresh_seconds_for(selected_id),
+                });
+                if let Some(warning) = choice.warning {
+                    eprintln!("oneharness: warning: {selected_id}: {warning}");
+                }
+                harness_plan.model_catalog = choice.catalog;
+            }
+            // After the catalog: it is the real home's, shared with every
+            // ungranted launch, never the overlay's.
             if let Some(rules) = &codex_rules {
                 let mut overlaid = open_codex_overlay(
                     rules,
@@ -1427,19 +1442,6 @@ pub fn run_supervised(
                 );
                 overlay_env.insert(marker_name, marker_value);
                 unit_overlay = Some(overlaid);
-            }
-            if shared_model_catalog {
-                let choice = model_catalog::resolve(&model_catalog::CatalogLaunch {
-                    bin: &resolved.bin,
-                    cwd: args.cwd.as_deref(),
-                    env: &job_env,
-                    env_remove: &env_remove,
-                    refresh_seconds: cfg.model_catalog_refresh_seconds_for(selected_id),
-                });
-                if let Some(warning) = choice.warning {
-                    eprintln!("oneharness: warning: {selected_id}: {warning}");
-                }
-                harness_plan.model_catalog = choice.catalog;
             }
             let built = harness_plan.build(schema.as_ref(), None);
             if unit_control.is_some() {

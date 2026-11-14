@@ -70,6 +70,7 @@ impl World {
         for sub in [
             "project",
             "tmp",
+            "state",
             "home",
             "bin",
             "codex-home/sessions",
@@ -126,6 +127,7 @@ impl World {
             .env("TMP", self.path("tmp"))
             .env("TEMP", self.path("tmp"))
             .env("HOME", self.path("home"))
+            .env("XDG_STATE_HOME", self.path("state"))
             .env("CODEX_HOME", self.path("codex-home"));
         let mut argv: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
         if args.first() == Some(&"run") {
@@ -161,10 +163,17 @@ impl World {
         cmd.output().expect("run oneharness")
     }
 
-    /// Every run overlay still under the world's temp dir.
+    /// Where the binary makes its run overlays in this world.
+    fn overlay_root(&self) -> PathBuf {
+        self.path("state/oneharness/run-overlays")
+    }
+
+    /// Every run overlay still in the world, wherever one could be made.
     fn overlays(&self) -> Vec<String> {
-        std::fs::read_dir(self.path("tmp"))
-            .unwrap()
+        [self.path("tmp"), self.overlay_root()]
+            .iter()
+            .filter_map(|dir| std::fs::read_dir(dir).ok())
+            .flatten()
             .flatten()
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .filter(|name| name.contains("run-overlay"))
@@ -402,9 +411,12 @@ fn codex_runs_on_an_overlay_home_linking_the_real_one_with_one_rules_file_of_its
             "{phase}: {result}"
         );
     }
-    // The overlay home is the run's own: under the temp dir, outside the
-    // project and the real home.
-    assert!(home.starts_with(&world.s("tmp")), "{home}");
+    // The overlay home is the run's own: under oneharness's state dir,
+    // outside the project, the real home and the temp dir.
+    assert!(
+        home.starts_with(&world.overlay_root().display().to_string()),
+        "{home}"
+    );
     assert!(home.contains("run-overlay"), "{home}");
     assert!(env["ONEHARNESS_RUN_OVERLAY"]
         .as_str()
@@ -448,6 +460,10 @@ fn codex_runs_on_an_overlay_home_linking_the_real_one_with_one_rules_file_of_its
     // Nothing outlives the run, and nothing reached the project or the home.
     assert!(world.overlays().is_empty(), "{:?}", world.overlays());
     assert!(!Path::new(home).exists());
+    assert!(
+        !world.overlay_root().exists(),
+        "the emptied overlay root outlived the run"
+    );
     assert_eq!(tree(&world.path("codex-home")), real_before);
     assert_eq!(tree(&world.path("project")), project_before);
 }
@@ -941,6 +957,7 @@ fn print_command_shows_the_overlaid_spawn_and_creates_nothing() {
     let tool = world.tool();
     let config = world.config(&format!("allowed_tools = [\"Bash({tool})\"]\n"));
     let tmp_before = tree(&world.path("tmp"));
+    let state_before = tree(&world.path("state"));
     let home_before = tree(&world.path("codex-home"));
     let output = world.oh(
         &[
@@ -977,6 +994,11 @@ fn print_command_shows_the_overlaid_spawn_and_creates_nothing() {
         tmp_before,
         "a dry run wrote under the temp dir"
     );
+    assert_eq!(
+        tree(&world.path("state")),
+        state_before,
+        "a dry run made an overlay"
+    );
     assert_eq!(tree(&world.path("codex-home")), home_before);
 }
 
@@ -985,14 +1007,14 @@ fn print_command_shows_the_overlaid_spawn_and_creates_nothing() {
 fn an_orphaned_overlay_is_reclaimed_and_a_live_ones_is_left_alone() {
     use fs2::FileExt;
     let world = World::new("orphans");
-    let orphan = world.path("tmp/oneharness-run-overlay-0dead-1");
+    let orphan = world.overlay_root().join("oneharness-run-overlay-0dead-1");
     std::fs::create_dir_all(orphan.join("codex-home")).unwrap();
     std::fs::write(orphan.join("owner.lock"), "").unwrap();
     std::fs::write(orphan.join("real-codex-home"), world.s("codex-home")).unwrap();
     // What a killed run's Codex created at the overlay home's top level is
     // returned to the real home as the orphan is reclaimed.
     std::fs::write(orphan.join("codex-home/session_index.jsonl"), "{}\n").unwrap();
-    let live = world.path("tmp/oneharness-run-overlay-1live-1");
+    let live = world.overlay_root().join("oneharness-run-overlay-1live-1");
     std::fs::create_dir_all(&live).unwrap();
     let lock = std::fs::File::create(live.join("owner.lock")).unwrap();
     lock.lock_exclusive().unwrap();

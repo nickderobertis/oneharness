@@ -4,9 +4,12 @@
 //! directory: Codex honours an exec-policy rule only from `$CODEX_HOME/rules/`
 //! (`spike-command-grant`). Writing the run's rule there would grant every
 //! session of that user; writing it nowhere would grant nothing. So a granted
-//! run gets a directory of its own under the host temp dir — outside the
-//! project and every harness home — and the harness is pointed at a home built
-//! inside it whose entries link back to the real home's.
+//! run gets a directory of its own under oneharness's per-user state directory
+//! ([`overlay_root`]) — outside the project and every harness home — and the
+//! harness is pointed at a home built inside it whose entries link back to the
+//! real home's. Not under the temp dir: codex-cli 0.159.2 refuses to create its
+//! PATH helpers (`apply_patch`, its sandbox launcher) for a `CODEX_HOME` there,
+//! which an ungranted run of the same home has.
 //!
 //! What makes the overlay the run's alone:
 //!
@@ -100,12 +103,22 @@ impl RunOverlay {
     ///
     /// Creating the directory or its lock file failed.
     pub fn create() -> io::Result<RunOverlay> {
+        RunOverlay::create_in(&overlay_root())
+    }
+
+    /// [`RunOverlay::create`], under an explicit root.
+    ///
+    /// # Errors
+    ///
+    /// As [`RunOverlay::create`].
+    pub fn create_in(root: &Path) -> io::Result<RunOverlay> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.subsec_nanos());
         let tag = format!("{TAG}{}{nanos:x}", NEXT.fetch_add(1, Ordering::Relaxed));
-        let dir = ScratchDir::new(&tag)?;
+        create_private_dir(root)?;
+        let dir = ScratchDir::under(root, &tag)?;
         let lock = fs::File::create(dir.join(OWNER_LOCK))?;
         lock.lock_exclusive()?;
         Ok(RunOverlay {
@@ -235,14 +248,30 @@ impl RunOverlay {
     }
 
     /// Return what the harness recorded at the home's top level to the real
-    /// home, then remove the overlay. Dropping the overlay does the same.
-    pub fn finish(self) {}
+    /// home, then remove the overlay. Dropping the overlay does the same, but
+    /// leaves the shared root behind.
+    pub fn finish(self) {
+        self.retire();
+    }
 }
 
 impl Drop for RunOverlay {
     fn drop(&mut self) {
         if let Some(codex) = &self.codex {
             codex.sweep();
+        }
+    }
+}
+
+impl RunOverlay {
+    /// Remove the overlay now, and with it the shared root if no other run
+    /// holds one there. The `ScratchDir` field would remove the directory
+    /// anyway as it drops; the root can only follow once it has.
+    fn retire(self) {
+        let root = self.dir.path().parent().map(Path::to_path_buf);
+        drop(self);
+        if let Some(root) = root {
+            remove_root_if_empty(&root);
         }
     }
 }
@@ -369,11 +398,44 @@ pub fn is_thread_index(name: &str) -> bool {
     )
 }
 
-/// Reclaim every overlay under the host temp dir whose run is gone.
+/// Where every run's overlay directory is made: oneharness's per-user state
+/// directory (`$XDG_STATE_HOME`, else `~/.local/state`; `%LOCALAPPDATA%` on
+/// Windows) under `oneharness/run-overlays`, else the host temp dir when the
+/// platform names none.
+#[must_use]
+pub fn overlay_root() -> PathBuf {
+    crate::io::server_pool::state_dir().map_or_else(std::env::temp_dir, |dir| {
+        dir.join("oneharness").join("run-overlays")
+    })
+}
+
+fn create_private_dir(dir: &Path) -> io::Result<()> {
+    fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+/// Reclaim every overlay whose run is gone.
 ///
 /// Called as a run starts. Returns the overlays it removed.
 pub fn reclaim_orphans() -> Vec<PathBuf> {
-    reclaim_under(&std::env::temp_dir())
+    let root = overlay_root();
+    let reclaimed = reclaim_under(&root);
+    remove_root_if_empty(&root);
+    reclaimed
+}
+
+/// The shared root is the last thing a run's overlay leaves; once no run
+/// holds one it goes too. Best-effort: a sibling run that has just made its
+/// overlay keeps it (removing a non-empty directory fails).
+fn remove_root_if_empty(root: &Path) {
+    if root != std::env::temp_dir() {
+        let _ = fs::remove_dir(root);
+    }
 }
 
 fn reclaim_under(root: &Path) -> Vec<PathBuf> {
@@ -582,7 +644,8 @@ mod tests {
         fs::create_dir_all(real.join("rules")).unwrap();
         fs::write(real.join("rules").join("user.rules"), "# user\n").unwrap();
 
-        let mut overlay = RunOverlay::create().unwrap();
+        let root = ScratchDir::new("run-overlay-test-overlays").unwrap();
+        let mut overlay = RunOverlay::create_in(&root.join("run-overlays")).unwrap();
         let dir = overlay.path().to_path_buf();
         let home = overlay.codex_home(real.path(), "# run\n").unwrap();
         assert!(fs::symlink_metadata(home.join("auth.json"))
@@ -609,6 +672,7 @@ mod tests {
 
         overlay.finish();
         assert!(!dir.exists(), "the overlay is removed");
+        assert!(!root.join("run-overlays").exists(), "an emptied root goes with it");
         assert_eq!(
             fs::read_to_string(real.join("sessions").join("rollout.jsonl")).unwrap(),
             "r"

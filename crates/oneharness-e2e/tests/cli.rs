@@ -42453,6 +42453,7 @@ impl CatalogWorld {
     fn new(tag: &str, project_toml: &str, user_toml: &str) -> Self {
         let fx = ConfigFixture::new(tag, project_toml, user_toml);
         std::fs::create_dir_all(fx.dir.join("codex-home")).unwrap();
+        std::fs::write(fx.dir.join(WALL_CLOCK_STEP_FILE), "0").unwrap();
         Self {
             fx,
             #[cfg(unix)]
@@ -42462,6 +42463,52 @@ impl CatalogWorld {
 
     fn home(&self) -> PathBuf {
         self.fx.dir.join("codex-home")
+    }
+
+    /// The file the binary's model-catalog wall clock is stepped by
+    /// (`MOCK_MODEL_CATALOG_CLOCK_STEP_FILE`): a signed millisecond offset it
+    /// re-reads on every wall-clock read.
+    fn wall_clock_step_file(&self) -> PathBuf {
+        self.fx.dir.join(WALL_CLOCK_STEP_FILE)
+    }
+
+    fn wall_clock_step_ms(&self) -> i64 {
+        wall_clock_step_in(&self.wall_clock_step_file())
+    }
+
+    /// Step this world's wall clock by `by_ms` (negative: back), as a VM
+    /// guest's clock adjustment steps the whole host's: every launch already
+    /// running sees it at its next wall-clock read, and so does
+    /// [`Self::wall_now`]. Written by rename, so no read sees half a value.
+    fn step_wall_clock(&self, by_ms: i64) {
+        step_wall_clock_in(&self.wall_clock_step_file(), by_ms);
+    }
+
+    /// Now on this world's wall clock: the host's, as stepped so far.
+    fn wall_now(&self) -> std::time::SystemTime {
+        let step_ms = self.wall_clock_step_ms();
+        let step = std::time::Duration::from_millis(step_ms.unsigned_abs());
+        let now = std::time::SystemTime::now();
+        if step_ms < 0 {
+            now - step
+        } else {
+            now + step
+        }
+    }
+
+    /// [`Self::step_wall_clock`] by `by_ms` once `after` has passed, from
+    /// another thread, so a launch this thread is waiting on sees the clock
+    /// step mid-wait.
+    fn step_wall_clock_after(
+        &self,
+        after: std::time::Duration,
+        by_ms: i64,
+    ) -> std::thread::JoinHandle<()> {
+        let path = self.wall_clock_step_file();
+        std::thread::spawn(move || {
+            std::thread::sleep(after);
+            step_wall_clock_in(&path, by_ms);
+        })
     }
 
     fn catalog_dir(&self) -> PathBuf {
@@ -42570,6 +42617,7 @@ impl CatalogWorld {
             .env("CODEX_MOCK_VERSION", CATALOG_CODEX_VERSION)
             .env("MOCK_CODEX_CATALOG_LOG", self.log())
             .env("CODEX_MOCK_CATALOG_LOG", self.log())
+            .env(WALL_CLOCK_STEP_ENV, self.wall_clock_step_file())
             .env(APP_SERVER_LINGER_ENV, POOLED_LINGER_MS);
         let cwd = self.fx.cwd();
         let bin = bin_override("codex");
@@ -42682,17 +42730,23 @@ impl CatalogWorld {
     }
 
     /// Wait until the catalog file is older than `interval`, the configured
-    /// `model_catalog_refresh_seconds`: staleness by elapsed time, as a user
-    /// meets it.
+    /// `model_catalog_refresh_seconds`, by [`STALE_MARGIN`] on the wall clock:
+    /// staleness by elapsed time, as a user meets it. Its age is re-read
+    /// rather than slept off, so a step during the wait only moves when it
+    /// returns; once it does, the clock steps back by [`HOST_CLOCK_STEP_MS`],
+    /// as a VM guest's can at any moment, and the catalog must still read
+    /// stale.
     fn wait_until_stale(&self, interval: std::time::Duration) {
-        let written = std::fs::metadata(self.the_catalog())
-            .unwrap()
-            .modified()
-            .unwrap();
-        let stale_at = written + interval + std::time::Duration::from_millis(100);
-        if let Ok(left) = stale_at.duration_since(std::time::SystemTime::now()) {
-            std::thread::sleep(left);
+        let catalog = self.the_catalog();
+        loop {
+            let written = std::fs::metadata(&catalog).unwrap().modified().unwrap();
+            let age = self.wall_now().duration_since(written).unwrap_or_default();
+            if age >= interval + STALE_MARGIN {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
         }
+        self.step_wall_clock(-HOST_CLOCK_STEP_MS);
     }
 
     /// Start `count` launches at once and wait for all of them; each must
@@ -42735,6 +42789,42 @@ impl CatalogWorld {
             })
             .collect()
     }
+}
+
+/// Where a catalog world keeps its wall-clock step, under its directory.
+const WALL_CLOCK_STEP_FILE: &str = "wall-clock-step-ms";
+/// The engine's `mock-harness`-only seam that steps its model-catalog wall
+/// clock by the offset in the file it names.
+const WALL_CLOCK_STEP_ENV: &str = "MOCK_MODEL_CATALOG_CLOCK_STEP_FILE";
+/// How far a catalog journey steps the wall clock back mid-wait: the step a VM
+/// guest was seen to take every 10 s (about 130 ms), which the journeys must
+/// hold through (#1483).
+const HOST_CLOCK_STEP_MS: i64 = 130;
+/// How far past its interval a catalog's wall-clock age must be before a
+/// journey treats it as stale: well above [`HOST_CLOCK_STEP_MS`], so the step
+/// back that follows cannot make it read fresh again.
+const STALE_MARGIN: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// How far past the launch's own wall-clock span a record's stamp may fall:
+/// well above [`HOST_CLOCK_STEP_MS`], for a step back between the stamp and
+/// the test's next reading.
+const STAMP_SLACK_MS: u64 = 1_000;
+
+/// The step `path` holds, in milliseconds.
+fn wall_clock_step_in(path: &Path) -> i64 {
+    std::fs::read_to_string(path)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap()
+}
+
+/// Add `by_ms` to the step `path` holds, by rename so no reader sees half a
+/// value.
+fn step_wall_clock_in(path: &Path, by_ms: i64) {
+    let next = path.with_extension("next");
+    std::fs::write(&next, (wall_clock_step_in(path) + by_ms).to_string()).unwrap();
+    std::fs::rename(&next, path).unwrap();
 }
 
 /// The longest any catalog journey's launch may run before the journey fails:
@@ -43474,9 +43564,7 @@ fn end_the_backoff(world: &CatalogWorld) {
     assert_eq!(records.len(), 1, "{records:?}");
     let mut record: Value =
         serde_json::from_str(&std::fs::read_to_string(&records[0]).unwrap()).unwrap();
-    let past = std::time::SystemTime::now()
-        - MODEL_CATALOG_FAILURE_BACKOFF
-        - std::time::Duration::from_secs(1);
+    let past = world.wall_now() - MODEL_CATALOG_FAILURE_BACKOFF - std::time::Duration::from_secs(1);
     record["failed_at_ms"] = u64::try_from(
         past.duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -43823,9 +43911,14 @@ fn wait_out_the_lock_then_back_off_and_recover(stale: bool) {
     std::fs::create_dir_all(world.catalog_dir()).unwrap();
     let lock = std::fs::File::create(&lock_path).unwrap();
     lock.lock_exclusive().unwrap();
-    let launched_ms = epoch_ms(std::time::SystemTime::now());
+    // The host's clock steps back mid-wait: the wait is timed on a monotonic
+    // clock, so it neither ends early nor runs long, while every wall-clock
+    // reading after the step is that much earlier.
+    let step = world.step_wall_clock_after(MODEL_CATALOG_WAIT / 2, -HOST_CLOCK_STEP_MS);
+    let launched_ms = epoch_ms(world.wall_now());
     let run = world.launch(CodexLaunchPath::Exec, "codex", &[], &[]);
-    let returned_ms = epoch_ms(std::time::SystemTime::now());
+    let returned_ms = epoch_ms(world.wall_now());
+    step.join().unwrap();
     FileExt::unlock(&lock).unwrap();
     drop(lock);
     assert!(
@@ -43859,12 +43952,16 @@ fn wait_out_the_lock_then_back_off_and_recover(stale: bool) {
         1,
         "{tag}: the expired wait must be recorded so the backoff holds"
     );
+    // The wait's length is a monotonic fact (`run.elapsed` above); the
+    // record's stamp is a wall-clock one, so it is held to the wall-clock
+    // span of the launch, never to its start plus the monotonic wait, which a
+    // step back inside the wait puts after the stamp. The step below proves
+    // the stamp is the wait's end, not its start.
     let failed_at = failed_at_ms(&world);
-    let wait_expired_ms = launched_ms + u64::try_from(MODEL_CATALOG_WAIT.as_millis()).unwrap();
     assert!(
-        (wait_expired_ms..=returned_ms).contains(&failed_at),
-        "{tag}: the failure ends when the wait runs out ({wait_expired_ms}..={returned_ms}), \
-         not when it began: {failed_at}"
+        (launched_ms..=returned_ms + STAMP_SLACK_MS).contains(&failed_at),
+        "{tag}: the failure is stamped during the launch ({launched_ms}..={returned_ms}, \
+         +{STAMP_SLACK_MS} ms for a step back after the stamp): {failed_at}"
     );
 
     // The lock is free now, but the backoff holds — even with all but a few
@@ -43905,6 +44002,136 @@ fn wait_out_the_lock_then_back_off_and_recover(stale: bool) {
     );
     assert_every_launch_read(&world, &[world.launches().pop().unwrap()]);
     assert!(world.failure_records().is_empty(), "{tag}");
+}
+// llmlint: ignore-end[tests_mirror_real_usage]
+
+// llmlint: ignore-block[tests_mirror_real_usage] Through the CLI a launch's wait can only outlast MODEL_CATALOG_WAIT when another process holds the lock past the refresh deadline, which no launch this suite starts can be made to do on demand, and a host whose realtime clock steps mid-wait cannot be had on demand either; the test holds the lock as that process would and steps the binary's wall clock through its mock-harness-only seam, and the launch that waits goes through the real CLI.
+#[test]
+fn a_lock_wait_falls_back_at_model_catalog_wait_with_the_clock_stepped_back() {
+    fall_back_at_model_catalog_wait_with_the_wall_clock_stepped(-HOST_CLOCK_STEP_MS);
+}
+
+#[test]
+fn a_lock_wait_falls_back_at_model_catalog_wait_with_the_clock_stepped_forward() {
+    fall_back_at_model_catalog_wait_with_the_wall_clock_stepped(HOST_CLOCK_STEP_MS);
+}
+
+#[test]
+fn a_lock_wait_falls_back_at_model_catalog_wait_with_the_clock_stepped_seconds_back() {
+    fall_back_at_model_catalog_wait_with_the_wall_clock_stepped(-3_000);
+}
+
+#[test]
+fn a_lock_wait_falls_back_at_model_catalog_wait_with_the_clock_stepped_seconds_forward() {
+    fall_back_at_model_catalog_wait_with_the_wall_clock_stepped(3_000);
+}
+
+/// How close to MODEL_CATALOG_WAIT, on this test's monotonic clock, a launch
+/// must report its fallback: smaller than every step the journeys take, so a
+/// wait timed on the wall clock — longer or shorter by the step — fails it.
+const LOCK_WAIT_TOLERANCE: std::time::Duration = std::time::Duration::from_millis(110);
+
+/// With this test holding the catalog's lock for the whole wait, a launch
+/// whose wall clock steps by `step_ms` halfway through still reports the
+/// MODEL_CATALOG_WAIT fallback after exactly that wait on this test's
+/// monotonic clock — from just before its version probe answered to the
+/// warning arriving on its stderr — starts no refresh, records one failure,
+/// and the next launch backs off: the fallback does not depend on the wall
+/// clock holding still.
+fn fall_back_at_model_catalog_wait_with_the_wall_clock_stepped(step_ms: i64) {
+    use fs2::FileExt;
+    use std::io::BufRead;
+    assert!(
+        u128::from(step_ms.unsigned_abs()) > LOCK_WAIT_TOLERANCE.as_millis(),
+        "a step within the tolerance proves nothing"
+    );
+    let world = CatalogWorld::new(&format!("catalog-clock-step-{step_ms}"), "", "");
+    let (_, lock_path, _) = catalog_paths(&world);
+    std::fs::create_dir_all(world.catalog_dir()).unwrap();
+    let lock = std::fs::File::create(&lock_path).unwrap();
+    lock.lock_exclusive().unwrap();
+    // The mock writes its argv here as it answers `--version`, the last thing
+    // the launch does before it starts waiting on the lock.
+    let probed = world.fx.dir.join("probe-argv");
+    let probed_env = probed.display().to_string();
+    let mut cmd = world.command(
+        CodexLaunchPath::Exec,
+        "codex",
+        &[],
+        &[("MOCK_ARGV_FILE", &probed_env)],
+    );
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("start oneharness");
+    let stdout = child.stdout.take().unwrap();
+    let drained = std::thread::spawn(move || std::io::read_to_string(stdout).unwrap());
+    let stderr = child.stderr.take().unwrap();
+    let (warned, warning) = std::sync::mpsc::channel();
+    let lines = std::thread::spawn(move || {
+        let mut text = String::new();
+        for line in std::io::BufReader::new(stderr).lines() {
+            let line = line.unwrap();
+            if line.contains("oneharness: warning:") {
+                let _ = warned.send(std::time::Instant::now());
+            }
+            text.push_str(&line);
+            text.push('\n');
+        }
+        text
+    });
+    // Before each look, so the mark is never later than the answer itself.
+    let guard = std::time::Instant::now() + CATALOG_HANG_GUARD;
+    let probe_answered = loop {
+        let looked = std::time::Instant::now();
+        if probed.exists() {
+            break looked;
+        }
+        assert!(looked < guard, "the version probe never answered");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    };
+    std::thread::sleep(MODEL_CATALOG_WAIT / 2);
+    world.step_wall_clock(step_ms);
+    let warned_at = warning
+        .recv_timeout(CATALOG_HANG_GUARD)
+        .expect("the launch reported no fallback");
+    let waited = warned_at - probe_answered;
+    let status = child.wait().unwrap();
+    let stderr = lines.join().unwrap();
+    let stdout = drained.join().unwrap();
+    FileExt::unlock(&lock).unwrap();
+    drop(lock);
+    assert!(status.success(), "{status:?}\n{stdout}\n{stderr}");
+    assert!(
+        waited >= MODEL_CATALOG_WAIT,
+        "step {step_ms} ms: the fallback came before the wait ran out: {waited:?}"
+    );
+    assert!(
+        waited < MODEL_CATALOG_WAIT + LOCK_WAIT_TOLERANCE,
+        "step {step_ms} ms: the fallback came {waited:?} into the wait, past \
+         {MODEL_CATALOG_WAIT:?} + {LOCK_WAIT_TOLERANCE:?}"
+    );
+    assert_eq!(
+        stderr.matches("oneharness: warning:").count(),
+        1,
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("gave no fresh catalog within")
+            && stderr.contains("Codex's own catalog fetch"),
+        "{stderr}"
+    );
+    assert!(world.helpers().is_empty(), "{:?}", world.records());
+    assert_eq!(world.failure_records().len(), 1, "{:?}", world.records());
+    // The lock is free now; the backoff the record holds keeps the next
+    // launch from refreshing or waiting, on the same stepped clock.
+    let next = world.launch(CodexLaunchPath::Exec, "codex", &[], &[]);
+    assert!(
+        next.elapsed < MODEL_CATALOG_REFRESH_DEADLINE,
+        "step {step_ms} ms: {:?}",
+        next.elapsed
+    );
+    assert_one_catalog_warning_each(std::slice::from_ref(&next), "Codex's own catalog fetch");
+    assert!(world.helpers().is_empty(), "{:?}", world.records());
+    assert_eq!(world.failure_records().len(), 1);
 }
 // llmlint: ignore-end[tests_mirror_real_usage]
 

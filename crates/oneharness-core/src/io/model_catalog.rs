@@ -162,9 +162,7 @@ impl CatalogFiles {
         let written = fs::metadata(&self.catalog).ok()?.modified().ok()?;
         // A file stamped in the future (a clock stepped back) is as fresh as
         // one written now.
-        let age = SystemTime::now()
-            .duration_since(written)
-            .unwrap_or(Duration::ZERO);
+        let age = wall_now().duration_since(written).unwrap_or(Duration::ZERO);
         (is_fresh(age, interval) && self.usable()).then(|| self.catalog.clone())
     }
 
@@ -475,11 +473,53 @@ fn catalog_root() -> Option<PathBuf> {
 }
 
 fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| {
-            i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
-        })
+    wall_now().duration_since(UNIX_EPOCH).map_or(0, |since| {
+        i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
+    })
+}
+
+/// Now, on the wall clock every persisted stamp is read against: a record's
+/// `failed_at_ms`, a refresh's start, and a catalog file's age. Only those use
+/// it — they are shared across processes, and a file's mtime is the kernel's
+/// realtime clock anyway — while every wait is timed on [`Instant`], so a step
+/// of this clock cannot shorten or lengthen one.
+fn wall_now() -> SystemTime {
+    stepped(SystemTime::now())
+}
+
+/// A path whose file holds a signed millisecond step applied to every
+/// [`wall_now`], re-read on each call so a test can step this process's wall
+/// clock mid-wait, as a VM guest's clock adjustment does.
+///
+/// A host whose realtime clock steps cannot be had on demand, so this injects
+/// one. Compiled only into the `mock-harness` test build, like the probe fault
+/// injectors in `io::usage`, so it cannot exist in a shipped `oneharness`.
+#[cfg(feature = "mock-harness")]
+const CLOCK_STEP_ENV: &str = "MOCK_MODEL_CATALOG_CLOCK_STEP_FILE";
+
+#[cfg(feature = "mock-harness")]
+fn stepped(now: SystemTime) -> SystemTime {
+    let Some(path) = std::env::var_os(CLOCK_STEP_ENV) else {
+        return now;
+    };
+    let text = fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("{CLOCK_STEP_ENV}: cannot read {path:?}: {error}"));
+    let step_ms: i64 = text
+        .trim()
+        .parse()
+        .unwrap_or_else(|error| panic!("{CLOCK_STEP_ENV}: {text:?} is no step: {error}"));
+    let step = Duration::from_millis(step_ms.unsigned_abs());
+    let moved = if step_ms < 0 {
+        now.checked_sub(step)
+    } else {
+        now.checked_add(step)
+    };
+    moved.unwrap_or_else(|| panic!("{CLOCK_STEP_ENV}: {step_ms} ms steps off the clock"))
+}
+
+#[cfg(not(feature = "mock-harness"))]
+fn stepped(now: SystemTime) -> SystemTime {
+    now
 }
 
 #[cfg(test)]

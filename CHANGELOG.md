@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.28.7](https://github.com/nickderobertis/oneharness/compare/v0.28.6...v0.28.7) - 2026-11-14
+
+### Fixed
+
+- *(e2e)* make the Codex rendezvous step pass whether or not the pooled server has exited ([#1591](https://github.com/nickderobertis/oneharness/pull/1591))
+
 ## [0.28.6](https://github.com/nickderobertis/oneharness/compare/v0.28.5...v0.28.6) - 2026-11-13
 
 ### Added

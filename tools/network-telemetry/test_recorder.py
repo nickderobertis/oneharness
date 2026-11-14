@@ -434,6 +434,35 @@ class MeasuredLaunch(unittest.TestCase):
                 (line,) = measurements(records, start["launch_id"])
                 self.assertEqual((line["method"], line["exit"]), ("netns-pasta", 3), line)
 
+    def test_a_zero_grace_follows_the_descendants_until_the_deadline(self) -> None:
+        # The opt-out: OH_E2E_NET_DESCENDANT_GRACE=0 measures a resident
+        # service past the default grace, until the namespace's deadline.
+        need_recorder(self)
+        tmp = scratch(self)
+        heartbeat = tmp / "heartbeat"
+        deadline = 8
+        started = time.monotonic()
+        run = run_shim(
+            tmp,
+            transfer_argv(0, 0, 0, "--detach", "--linger", "600", "--heartbeat", str(heartbeat)),
+            ["exec", "stay"],
+            env={"OH_E2E_NET_DESCENDANT_GRACE": "0", "OH_E2E_NET_DEADLINE": str(deadline)},
+        )
+        took = time.monotonic() - started
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertGreater(took, deadline - 0.5, "the service was stopped before the deadline")
+        self.assertLess(took, deadline + 4, "the shim outlived the deadline")
+        beats = [float(b.split()[1]) for b in heartbeat.read_text().splitlines()]
+        self.assertGreater(beats[-1] - beats[0], 6, "the service did not outlive the default grace")
+        size = heartbeat.stat().st_size
+        time.sleep(0.5)
+        self.assertEqual(heartbeat.stat().st_size, size, "the service is still alive")
+        records = lines(tmp / "codex.jsonl")
+        (start,) = starts(records)
+        (line,) = measurements(records, start["launch_id"])
+        self.assertEqual(line["method"], "netns-pasta", line)
+        self.assertGreaterEqual(line["seconds"], deadline)
+
     def test_a_shim_its_caller_kills_with_its_process_group_still_records_once(self) -> None:
         # oneharness ends a launch it stops by SIGTERM to the process group
         # and SIGKILL 100 ms later; the line must survive the shim's death.

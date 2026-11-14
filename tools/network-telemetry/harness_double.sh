@@ -69,7 +69,7 @@ if [ "$tool" != codex ]; then
   if [ -n "${OH_TEST_RESIDENT:-}" ]; then
     case "${1:-}" in --version | -v | --help | -h) ;; *)
       python3 "$here/transfer.py" client 0 0 0 --detach --linger 600 --heartbeat "$OH_TEST_RESIDENT" ||
-        refuse "could not leave its resident service running (transfer.py's error is above)"
+        refuse "could not leave its resident service running (transfer.py's error is above); check that python3 runs tools/network-telemetry/transfer.py and that OH_TEST_RESIDENT=$OH_TEST_RESIDENT is a writable path in the test's scratch directory, then rerun the test"
       ;;
     esac
   fi

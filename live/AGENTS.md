@@ -21,6 +21,13 @@ each runs from its own `.github/workflows/e2e-*.yml` (and `just live-<id>`).
   (`netns-pasta`: pasta TAP counters over the whole process tree, detached
   descendants included) — payload plus per-frame headers, not host-NIC wire
   bytes. Say so wherever a figure is quoted.
+- **The measurer must never hold a launch longer than its CLI ran.**
+  Descendants get `OH_E2E_NET_DESCENDANT_GRACE` (5 s) after the launch's own
+  process exits, then the namespace is stopped: cursor-agent leaves a resident
+  `worker-server` (plus `typescript-language-server`) behind every turn, and
+  waiting for it timed every live cursor turn out on Ubuntu 26.04, where the
+  namespace first worked. A recorder change that changes how long the caller
+  waits is a suite regression, even when every figure stays the same.
 - **Linux only, and it needs pasta plus unprivileged user namespaces**, not
   root. Ubuntu 24.04 restricts unprivileged user namespaces by AppArmor, and
   installing `passt` alone does not admit the namespace of the pasta the

@@ -46,6 +46,10 @@ prompt="$*"
 if [[ " $* " == *" --input-format text "* ]]; then
   prompt="$(cat)" || refuse "could not read the turn from stdin; inspect the CLI input pipe and retry the recorder test"
 fi
+# oneharness pipes cursor's prompt to `cursor-agent -p` with no positional.
+if [ "$tool" = cursor-agent ] && [ "${1:-}" = -p ]; then
+  prompt="$(cat)" || refuse "could not read the turn from stdin; inspect the CLI input pipe and retry the recorder test"
+fi
 for arg in "$@"; do
   if [ "$arg" = - ]; then
     prompt="$(cat)" || refuse "could not read the turn from stdin; inspect the CLI input pipe and retry the recorder test"
@@ -60,6 +64,15 @@ if [ -n "$seconds" ]; then
 fi
 
 if [ "$tool" != codex ]; then
+  # OH_TEST_RESIDENT=FILE: a turn leaves a detached service running after it
+  # exits, heartbeating to FILE, as cursor-agent leaves its `worker-server`.
+  if [ -n "${OH_TEST_RESIDENT:-}" ]; then
+    case "${1:-}" in --version | -v | --help | -h) ;; *)
+      python3 "$here/transfer.py" client 0 0 0 --detach --linger 600 --heartbeat "$OH_TEST_RESIDENT" ||
+        refuse "could not leave its resident service running (transfer.py's error is above); check that python3 runs tools/network-telemetry/transfer.py and that OH_TEST_RESIDENT=$OH_TEST_RESIDENT is a writable path in the test's scratch directory, then rerun the test"
+      ;;
+    esac
+  fi
   printf '%s\n' "${marker:-$prompt}"
   exit 0
 fi

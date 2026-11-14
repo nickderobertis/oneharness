@@ -31,6 +31,7 @@ from support import (
     lines,
     measurements,
     need_builds,
+    need_recorder,
     recorder_unavailable,
     run_shim,
     run_suite,
@@ -142,6 +143,42 @@ class EverySuiteRecords(unittest.TestCase):
                 # is that every launch it made was recorded, once.
                 for launch in launched:
                     self.assertEqual(len(measurements(records, launch["launch_id"])), 1, launch)
+
+    def test_a_cursor_turn_that_leaves_its_worker_running_passes_the_echo_phase(self) -> None:
+        # cursor-agent 2026.11.x exits a few seconds into a turn but leaves its
+        # `worker-server` running for later invocations. The measuring
+        # namespace once waited for that service too, so the shim outlived the
+        # turn by the namespace's deadline and every live cursor run timed out
+        # with its answer already printed. The turn must end with the CLI.
+        need_builds(self)
+        need_recorder(self)
+        tmp = scratch(self)
+        resident = tmp / "resident"
+        timeout = 30
+        env = suite_env(
+            tmp,
+            *EXECUTABLES,
+            OH_E2E_PHASE_LIMIT="1",
+            OH_TEST_RESIDENT=str(resident),
+            OH_TIMEOUT=str(timeout),
+            **SUITES["cursor"].auth,
+        )
+        started = time.monotonic()
+        run = run_suite("cursor", env, timeout=timeout * 3)
+        took = time.monotonic() - started
+        self.assertEqual(run.returncode, 0, run.stderr[-3000:])
+        self.assertIn("ok: cursor ran and exited cleanly (status=ok, exit_code=0", run.stderr)
+        self.assertIn("confirmed: marker surfaced", run.stderr)
+        self.assertTrue(resident.exists(), "the double left no resident service running")
+        # The service got the measurer's grace after the CLI exited, and no more.
+        self.assertLess(took, timeout, "the turn waited on the service the CLI left running")
+        size = resident.stat().st_size
+        time.sleep(0.5)
+        self.assertEqual(resident.stat().st_size, size, "the resident service outlived the turn")
+        records = lines(tmp / "telemetry" / "cursor.jsonl")
+        (turn,) = [s for s in starts(records) if s["kind"] == "turn"]
+        (line,) = measurements(records, turn["launch_id"])
+        self.assertEqual((line["method"], line["exit"]), ("netns-pasta", 0), line)
 
     def test_each_suite_fails_when_its_harness_on_path_is_not_its_shim(self) -> None:
         need_builds(self)
@@ -602,11 +639,21 @@ class Settings(unittest.TestCase):
         self.assertIn("could not install the uv workspace's dev tools (onebudgetspec)", run.stderr)
         self.assertFalse(ran.exists(), "the budget checker ran without its tools")
 
-    def test_a_bad_deadline_or_observer_is_refused_before_the_launch(self) -> None:
+    def test_a_bad_deadline_grace_or_observer_is_refused_before_the_launch(self) -> None:
         for name, value, said in (
             ("OH_E2E_NET_DEADLINE", "-5", "must be a finite, non-negative number of seconds"),
             ("OH_E2E_NET_DEADLINE", "nan", "must be a finite, non-negative number of seconds"),
             ("OH_E2E_NET_DEADLINE", "soon", "must be a finite, non-negative number of seconds"),
+            (
+                "OH_E2E_NET_DESCENDANT_GRACE",
+                "-1",
+                "must be a finite, non-negative number of seconds",
+            ),
+            (
+                "OH_E2E_NET_DESCENDANT_GRACE",
+                "inf",
+                "must be a finite, non-negative number of seconds",
+            ),
             ("OH_E2E_NET_OBSERVER", '"python3"', "must be a JSON array of non-empty strings"),
             ("OH_E2E_NET_OBSERVER", '["python3", 2]', "must be a JSON array of non-empty strings"),
             ("OH_E2E_NET_OBSERVER", "not json", "must be a JSON array of non-empty strings"),

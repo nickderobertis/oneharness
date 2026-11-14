@@ -138,8 +138,11 @@ fn the_library_config_load_refuses_a_sync_policy_field_in_an_extends_parent() {
     let _env = hermetic();
     for (index, (toml, field, spelling)) in MISPLACED.iter().enumerate() {
         let dir = ScratchDir::new(&format!("library-refusal-parent-{index}")).unwrap();
-        let parent = dir.join("shared").join("base.toml");
-        std::fs::create_dir_all(parent.parent().unwrap()).unwrap();
+        // Named as the loader resolves `extends` (the declaring directory
+        // joined with the value as written), so the expected path keeps the
+        // value's `/` on Windows exactly as the refusal prints it.
+        let parent = dir.join("shared/base.toml");
+        std::fs::create_dir_all(dir.join("shared")).unwrap();
         std::fs::write(&parent, toml).unwrap();
         // The child itself is valid: its run-level field and its `[sync]`
         // section are both where they belong.

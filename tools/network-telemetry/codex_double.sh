@@ -37,20 +37,28 @@ for arg in "$@"; do
   [ "$previous" != --listen ] || listen="${arg#unix://}"
   previous="$arg"
 done
-# What this launch shows Codex, on stdout; refuses what it cannot read.
+# What this launch shows Codex, on stdout; refuses what it cannot read. Bash
+# builtins alone: a test hands it a PATH holding nothing but bash's directory,
+# which on macOS (Homebrew's) has no coreutils.
 record() {
-  local file name names
+  local file name names line
   printf 'exe %s\n' "${FAKE_EXE:-$0}"
   printf 'cwd %s\n' "$PWD"
   printf 'arg %s\n' "$@"
-  names="$(compgen -e | LC_ALL=C sort)" || refuse "cannot list its environment (the error above)"
+  # compgen lists the exported names in bash's own order, which the names
+  # alone fix, so the same environment always records the same.
+  names="$(compgen -e)" || refuse "cannot list its environment (the error above)"
   while IFS= read -r name; do
     printf 'env %s=%s\n' "$name" "${!name}"
   done <<<"$names"
   for file in "${CODEX_HOME:-$HOME/.codex}/config.toml" .codex/rules/oneharness.rules .codex/hooks.json; do
     printf 'file %s\n' "$file"
     if [ -f "$file" ]; then
-      sed 's/^/  /' "$file" || refuse "cannot read $file, which the launch under test left in its scratch directory"
+      {
+        while IFS= read -r line || [ -n "$line" ]; do
+          printf '  %s\n' "$line"
+        done <"$file"
+      } || refuse "cannot read $file, which the launch under test left in its scratch directory"
     else
       echo "  (absent)"
     fi

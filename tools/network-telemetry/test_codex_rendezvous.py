@@ -11,8 +11,10 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 import signal
 import subprocess
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -416,7 +418,11 @@ class Transparent(unittest.TestCase):
         `codex`, the rules journey's trusted project with its synced rules,
         and the mock journey's sandbox and ruleset."""
         need_builds(self)
-        self.tmp = scratch(self)
+        # Rooted under /tmp, not the platform temp dir: macOS's, under
+        # /var/folders, leaves the controlled turn's control socket past
+        # `sun_path`'s 104 bytes, which oneharness refuses before launching.
+        self.tmp = Path(tempfile.mkdtemp(prefix="oh-", dir="/tmp"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
         self.bin = self.tmp / "bin"
         self.bin.mkdir()
         self.record = self.tmp / "record"
@@ -580,7 +586,7 @@ class Transparent(unittest.TestCase):
         (evidence,) = [json.loads(line) for line in wrapped_printed[2:]]
         self.assertEqual(evidence["listen"], wrapped_listen)
         self.assertTrue(evidence["linked"], evidence)
-        self.assertEqual(evidence["bound"], str(self.real / "daemon"))
+        self.assertEqual(evidence["bound"], str((self.real / "daemon").resolve()))
         direct, *rest = bare.split("---\n")
         self.assertIn(f"cwd {self.proj}\n", direct)
         self.assertIn(

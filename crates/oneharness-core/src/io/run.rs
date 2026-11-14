@@ -2301,15 +2301,45 @@ fn setup_mock(
                 let paths: Vec<std::path::PathBuf> = planned.into_iter().map(|w| w.path).collect();
                 wiring.snapshot.extend(HookSnapshot::capture(&paths));
                 hooks_io::install(Scope::Project(project_dir), spec, &hook, false)?;
-                if !extra_args.is_empty() {
-                    wiring
-                        .extra_args
-                        .insert(spec.id, extra_args.iter().map(|a| a.to_string()).collect());
+                let mut argv: Vec<String> = extra_args.iter().map(|a| a.to_string()).collect();
+                argv.extend(mock::project_trust_args(
+                    spec,
+                    &project_trust_keys(project_dir),
+                ));
+                if !argv.is_empty() {
+                    wiring.extra_args.insert(spec.id, argv);
                 }
             }
         }
     }
     Ok(Some(wiring))
+}
+
+/// The spellings a harness may look the trust of `dir` up under: the absolute
+/// path as given, and its canonical form (symlinks resolved; on Windows the
+/// long name with backslashes, the `\\?\` verbatim prefix dropped as Codex's
+/// `dunce::canonicalize` drops it).
+fn project_trust_keys(dir: &std::path::Path) -> mock::ProjectTrustKeys {
+    let mut keys = mock::ProjectTrustKeys::default();
+    if let Ok(absolute) = std::path::absolute(dir) {
+        keys.push(absolute.display().to_string());
+    }
+    // A directory that cannot be resolved (missing) has no canonical form to
+    // name; its absolute spelling still stands.
+    if let Ok(canonical) = std::fs::canonicalize(dir) {
+        keys.push(without_verbatim_prefix(canonical.display().to_string()));
+    }
+    keys
+}
+
+/// `text` without the `\\?\` verbatim prefix Windows' canonicalize puts before
+/// a drive path (`\\?\C:\…` → `C:\…`), as `dunce` drops it; every other
+/// spelling — a verbatim UNC path included — unchanged.
+fn without_verbatim_prefix(text: String) -> String {
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => rest.to_string(),
+        _ => text,
+    }
 }
 
 /// Assemble the top-level [`RunReport`] from the finished results and the shared
@@ -6239,6 +6269,142 @@ mod tests {
             validate_fork(true, &[codex]),
             Err(OneharnessError::ForkUnsupported { .. })
         ));
+    }
+
+    /// Codex 0.169.0 loads no project `.codex/` layer of an untrusted cwd under
+    /// `exec`, so the hooks.json `--mock-rules` installs would sit unread: the
+    /// wiring trusts the project directory for the run alone — one
+    /// inline-table override naming each spelling Codex may look it up by,
+    /// after the hook-engine opt-in — while the hooks file lands in that
+    /// directory and comes out again. A dotted directory name stays whole.
+    #[test]
+    fn mock_wiring_trusts_codexs_project_directory_for_the_run() {
+        let dir = crate::io::scratch::ScratchDir::new("mock-trust.dotted").unwrap();
+        let rules = dir.join("rules.json");
+        std::fs::write(
+            &rules,
+            r#"{"rules":[{"match":{"event_contains":"MARK"},"action":{"deny":{"message":"m"}}}]}"#,
+        )
+        .unwrap();
+        let args = RunRequest {
+            mock_rules: Some(rules),
+            ..run_args()
+        };
+        let codex = harness::by_id("codex").unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let overrides = BinOverrides::parse(&[format!("codex={}", exe.display())]).unwrap();
+        let wiring = setup_mock(&args, &[codex], dir.path(), &overrides)
+            .unwrap()
+            .expect("--mock-rules wires the mock");
+        assert!(
+            dir.join(".codex/hooks.json").is_file(),
+            "the hook is installed"
+        );
+
+        let argv = wiring.extra_args_for("codex");
+        let at = argv
+            .iter()
+            .position(|a| a.starts_with("projects="))
+            .unwrap_or_else(|| panic!("no per-run project trust override in {argv:?}"));
+        assert_eq!(
+            argv[..at - 1],
+            [
+                "-c",
+                "features.hooks=true",
+                "--dangerously-bypass-hook-trust"
+            ],
+            "the trust follows the hook-engine opt-in: {argv:?}"
+        );
+        assert_eq!(argv[at - 1], "-c");
+        let value = argv[at].strip_prefix("projects=").unwrap();
+        let parsed: toml::Table = toml::from_str(&format!("projects = {value}")).unwrap();
+        let projects = parsed["projects"].as_table().unwrap();
+        let canonical = std::fs::canonicalize(dir.path())
+            .unwrap()
+            .display()
+            .to_string();
+        let canonical = canonical.strip_prefix(r"\\?\").unwrap_or(&canonical);
+        for key in [dir.path().display().to_string(), canonical.to_string()] {
+            assert_eq!(
+                projects.get(&key).and_then(|p| p["trust_level"].as_str()),
+                Some("trusted"),
+                "{key} must be trusted: {value}"
+            );
+        }
+
+        wiring.finish();
+        assert!(
+            !dir.join(".codex").exists(),
+            "the created .codex is removed"
+        );
+    }
+
+    /// A `--spy-file` run with no rules delivers its hook through the same
+    /// project hooks.json, so it carries the same per-run trust; without it
+    /// codex 0.169.0 never fires the hook and the spy log stays empty.
+    #[test]
+    fn a_spy_only_mock_trusts_codexs_project_directory_too() {
+        let dir = crate::io::scratch::ScratchDir::new("mock-trust-spy").unwrap();
+        let args = RunRequest {
+            spy_file: Some(dir.join("spy.jsonl")),
+            ..run_args()
+        };
+        let codex = harness::by_id("codex").unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let overrides = BinOverrides::parse(&[format!("codex={}", exe.display())]).unwrap();
+        let wiring = setup_mock(&args, &[codex], dir.path(), &overrides)
+            .unwrap()
+            .expect("--spy-file wires the mock");
+        assert!(dir.join(".codex/hooks.json").is_file());
+        let argv = wiring.extra_args_for("codex");
+        assert!(
+            argv.iter().any(|a| a.starts_with("projects={")
+                && a.contains(&toml::Value::from(dir.path().display().to_string()).to_string())),
+            "no per-run trust of {} in {argv:?}",
+            dir.path().display()
+        );
+        wiring.finish();
+    }
+
+    /// A drive path loses Windows' verbatim prefix, as Codex's canonical
+    /// spelling has none; nothing else is touched.
+    #[test]
+    fn the_verbatim_prefix_comes_off_a_drive_path_only() {
+        let strip = |text: &str| without_verbatim_prefix(text.to_string());
+        assert_eq!(strip(r"\\?\C:\Users\x\tmp.a"), r"C:\Users\x\tmp.a");
+        assert_eq!(strip(r"\\?\UNC\host\share"), r"\\?\UNC\host\share");
+        assert_eq!(strip("/tmp/tmp.a"), "/tmp/tmp.a");
+    }
+
+    /// A directory that does not resolve keeps its absolute spelling alone,
+    /// and a path with no absolute form gives no key at all.
+    #[test]
+    fn project_trust_keys_keep_what_resolves() {
+        let dir = crate::io::scratch::ScratchDir::new("trust-keys").unwrap();
+        let missing = dir.join("gone");
+        assert_eq!(
+            project_trust_keys(&missing).as_slice(),
+            [missing.display().to_string()]
+        );
+        assert!(project_trust_keys(std::path::Path::new("")).is_empty());
+    }
+
+    /// A project reached through a symlink, as every macOS temp dir is
+    /// (`/var/folders/…` resolving through `/private/var`), is trusted under
+    /// both spellings: Codex looks the cwd up by each.
+    #[cfg(unix)]
+    #[test]
+    fn project_trust_keys_name_a_linked_project_by_both_spellings() {
+        let dir = crate::io::scratch::ScratchDir::new("trust-linked").unwrap();
+        let real = dir.join("private-var");
+        std::fs::create_dir(&real).unwrap();
+        let link = dir.join("var");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let canonical = std::fs::canonicalize(&real).unwrap();
+        assert_eq!(
+            project_trust_keys(&link).as_slice(),
+            [link.display().to_string(), canonical.display().to_string()]
+        );
     }
 
     fn run_args() -> RunRequest {

@@ -311,6 +311,26 @@ _OH_SHIM_CMD=()
 _OH_PHASE_KEY=""
 _OH_PHASE_COUNT=0
 
+# File `$1` with every link followed, its own and its directories', as
+# realpath(3) resolves it; fails on a link loop or an unreadable directory.
+_oh_resolved_file() {
+  local path="$1" target dir hops=0
+  while [ -L "$path" ]; do
+    [ "$hops" -lt 40 ] || {
+      echo "$1: too many levels of symbolic links" >&2
+      return 1
+    }
+    target="$(readlink "$path")" || return 1
+    case "$target" in
+      /*) path="$target" ;;
+      *) path="$(dirname "$path")/$target" ;;
+    esac
+    hops=$((hops + 1))
+  done
+  dir="$(cd -P "$(dirname "$path")" && pwd -P)" || return 1
+  printf '%s/%s' "${dir%/}" "$(basename "$path")"
+}
+
 # The first `$1` on PATH that is not one of these shims (a directory holding
 # `.oh-network-shims` is skipped), so a suite started under another suite's
 # shims still wraps the real executable.
@@ -2353,6 +2373,31 @@ oh_enforce_file() { printf '%s-%s%s.txt' "$1" "${RANDOM}" "${RANDOM}"; }
 # live-codex pass, which the network budgets (live/AGENTS.md) count.
 _OH_CODEX_DEFAULTS=(-c features.plugins=false -c features.apps=false -c analytics.enabled=false)
 _OH_CODEX_OUT=""
+# Write to $2 the config.toml that trusts project $1 under every spelling
+# Codex may look it up by, each named once: as given, physical (macOS's /private/var), and on
+# Windows the backslashed long path Codex canonicalizes its cwd to. Codex folds
+# case there but not separators, so the forward-slash `cygpath -m` spelling
+# alone matches nothing; codex 0.168 hid that by trusting a writable-sandbox
+# `exec`'s cwd itself, which 0.169.0 (openai/codex#60041) no longer does.
+_oh_codex_trust_config() {
+  local proj="$1" out="$2" real path native spellings=() config
+  real="$(cd "$proj" && pwd -P)" || fail "codex: cannot resolve the scratch project $proj (cd's error above); check that the host temp dir is readable, then rerun \`just live-codex\`"
+  for path in "$proj" "$real"; do
+    native="$(oh_native_path "$path")" && [ -n "$native" ] ||
+      fail "codex: could not convert $path to a native path to trust; check cygpath on this host"
+    spellings+=("$path" "$native")
+    if command -v cygpath >/dev/null 2>&1; then
+      native="$(cygpath -wl "$path")" && [ -n "$native" ] ||
+        fail "codex: cygpath -wl could not convert $path to the backslashed path Windows codex trusts a project by; check cygpath on this host"
+      spellings+=("$native")
+    fi
+  done
+  config="$(printf '%s\n' "${spellings[@]}" | sort -u | jq -R -r '"[projects.\(tojson)]\ntrust_level = \"trusted\"\n"')" ||
+    fail "codex: could not render the trust config for $proj (the error above); check that \`jq --version\` runs"
+  printf '%s\n' "$config" >"$out" ||
+    fail "codex: cannot write the trust config $out (the error above); check that the host temp dir is writable"
+}
+
 _oh_codex_direct() {
   local proj="$1" home="$2" prompt="$3" native_home
   shift 3
@@ -2467,7 +2512,7 @@ _oh_codex_render_forced_delete() {
 # trusts only the scratch project — the user's own ~/.codex is never written.
 oh_codex_rules_enforce() {
   _oh_phase
-  local bin auth scratch home proj cfg real out rules dir file del
+  local bin auth scratch home proj cfg out rules dir file del
   bin="$(oh_bin)"
   [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
   command -v codex >/dev/null 2>&1 || skip "codex is not installed; nothing to verify"
@@ -2479,12 +2524,7 @@ oh_codex_rules_enforce() {
   proj="$scratch/project"
   mkdir -p "$home" "$proj"
   cp "$auth" "$home/auth.json"
-  real="$(cd "$proj" && pwd -P)"
-  # Trust every spelling Codex may resolve the project to (macOS's
-  # /private/var, Windows's native path), each named once.
-  printf '%s\n' "$proj" "$real" "$(oh_native_path "$proj")" "$(oh_native_path "$real")" |
-    sort -u |
-    jq -R -r '"[projects.\(tojson)]\ntrust_level = \"trusted\"\n"' >"$home/config.toml"
+  _oh_codex_trust_config "$proj" "$home/config.toml"
   dir="rules-deny-${RANDOM}${RANDOM}"
   file="$(oh_enforce_file rules-allow)"
   del="$(_oh_codex_render_forced_delete "$file")"
@@ -2553,6 +2593,46 @@ oh_codex_rules_enforce() {
   # llmlint: ignore[tool_output_is_signal] The phase's one verdict line: a skip also exits 0, so without it a lane transcript cannot show this phase ran and passed, and it quotes Codex's own refusal — the evidence that the synced rule, not something else, decided.
   note "  ok[codex-rules]: before sync mkdir ran and $del was refused; after it, mkdir was ${refused:-refused} and $del ran"
   rm -rf "$scratch"
+}
+
+_oh_codex_rendezvous_dir=""
+_oh_codex_rendezvous_cleanup() {
+  [ -z "$_oh_codex_rendezvous_dir" ] || rm -rf "$_oh_codex_rendezvous_dir" ||
+    note "  could not remove the scratch directory $_oh_codex_rendezvous_dir (rm's error above) — delete it by hand"
+}
+
+# Put scripts/e2e-codex-rendezvous.sh first on PATH as `codex`, before
+# oh_telemetry_setup resolves the codex its shim runs, so the wrapper runs
+# inside the recorder's namespace, where Codex does. It takes its directory off
+# PATH again before it runs Codex, so every launch sees the PATH it would
+# without it. Its scratch directory goes however the suite ends; the check of
+# what it records is scripts/e2e-codex.sh's oh_codex_rendezvous_check.
+#
+# A PATH lookup launches the wrapper by its PATH spelling, the server pool by
+# its resolved one (crates/oneharness-core/src/io/app_server.rs
+# resolve_executable), and the wrapper hands Codex on spelled the same way:
+# the real codex as found on PATH, or resolved. So that the two spellings
+# always differ, PATH's `codex` is a link to the wrapper itself.
+oh_codex_rendezvous_setup() {
+  local real resolved dir
+  real="$(_oh_unshimmed codex)" || return 0 # no codex: the first turn reports it
+  resolved="$(_oh_resolved_file "$real")" ||
+    fail "codex rendezvous: cannot resolve $real, the codex on PATH, through its links (the error above); check that \`ls -l $real\` and its directories are readable"
+  dir="$(mktemp -d "${TMPDIR:-/tmp}/oh-codex-rendezvous.XXXXXX")" ||
+    fail "codex rendezvous: could not create a scratch directory — check that the host temp dir is writable"
+  _oh_codex_rendezvous_dir="$dir"
+  trap _oh_codex_rendezvous_cleanup EXIT
+  # llmlint: ignore-block[changed_behavior_has_e2e] mktemp has just made this directory, private to this user, so writing the evidence file and the wrapper in it fails only on a full or read-only filesystem, which no unprivileged journey can stage between these lines; the directory's own failure is test_the_rendezvous_setup_names_a_temp_dir_it_cannot_use's.
+  local unwritable="codex rendezvous: cannot write the evidence file or the wrapper in $dir; check that the host temp dir is writable"
+  { : >"$dir/rendezvous.jsonl" && mkdir "$dir/resolved"; } || fail "$unwritable"
+  # shellcheck disable=SC2016 # $0, $real and $@ are the wrapper's own, expanded as it runs
+  printf '#!/usr/bin/env bash\nreal=%q\n[ "$0" = %q ] || real=%q\nexec bash %q --real "$real" --evidence %q --drop-path %q -- "$@"\n' \
+    "$real" "$dir/codex" "$resolved" "$OH_REPO_ROOT/scripts/e2e-codex-rendezvous.sh" \
+    "$dir/rendezvous.jsonl" "$dir" >"$dir/resolved/codex" || fail "$unwritable"
+  { chmod +x "$dir/resolved/codex" && ln -s resolved/codex "$dir/codex"; } || fail "$unwritable"
+  # llmlint: ignore-end[changed_behavior_has_e2e]
+  PATH="$dir:$PATH"
+  export PATH
 }
 
 # --- approval-mode enforcement ----------------------------------------------

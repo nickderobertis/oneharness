@@ -14,88 +14,54 @@ if [ ! -f "${CODEX_HOME:-$HOME/.codex}/auth.json" ]; then
   need_env "OpenAI auth" OPENAI_API_KEY
 fi
 
-# The effective uid the shared server's Codex runs as, in its own user
-# namespace: on Linux read from the `codex` process carrying the pool record's
-# server marker, through that process's uid_map (the network recorder runs the
-# launch in pasta's namespace, where this user is root); elsewhere this user's.
-#   $1 the record's server marker
-_oh_codex_server_euid() {
-  local marker="$1" env pid exe outer
-  if [ "$(uname -s)" != Linux ]; then
-    id -u
-    return
-  fi
-  for env in /proc/[0-9]*/environ; do
-    pid="${env#/proc/}" pid="${pid%/environ}"
-    exe="$(readlink "/proc/$pid/exe" 2>/dev/null)" || continue
-    [ "${exe##*/}" = codex ] || continue
-    tr '\0' '\n' 2>/dev/null <"$env" | grep -qxF "ONEHARNESS_APP_SERVER_MARKER=$marker" || continue
-    outer="$(awk '/^Uid:/ { print $3 }' "/proc/$pid/status" 2>/dev/null)" && [ -n "$outer" ] || continue
-    awk -v u="$outer" '$2 <= u && u < $2 + $3 { print $1 + u - $2; found = 1; exit } END { exit !found }' \
-      "/proc/$pid/uid_map" 2>/dev/null && return
-  done
-  return 1
-}
-
 # The drift gate for Codex's socket rendezvous, which the shared-server launch
 # tightens before Codex starts (stated once as `codex_daemon_dir` and
 # `CODEX_DAEMON_DIR_MODE` in crates/oneharness-core/src/domain/app_server.rs):
-# every pooled codex server still lingering after the controlled turn must have
-# left its --listen path linking into exactly that directory for the euid it
-# runs as, at the mode Codex accepts. Read from the server's own process, so it
-# holds under the recorder's namespace as well as outside it.
+# every shared codex server must link its --listen path into exactly that
+# directory for the euid it runs as, at the mode Codex accepts.
+#
+# It judges what scripts/e2e-codex-rendezvous.sh, in front of every codex
+# launch (oh_codex_rendezvous_setup in scripts/e2e-lib.sh), recorded as each
+# server bound — before any dispatch could reach the server, so before the
+# pool could stop it. A reading of the live server after
+# its turn raced its linger: one the pool had stopped, or was stopping, left
+# nothing to read.
 oh_codex_rendezvous_check() {
-  local state="${XDG_STATE_HOME:-$HOME/.local/state}" tmp record link fields pid marker euid target bound want mode checked=0
+  local evidence="$_oh_codex_rendezvous_dir/rendezvous.jsonl" tmp rows listen euid linked target bound want mode
   # The rendezvous as the Rust source states it, held there by core's
   # `the_live_rendezvous_check_expects_the_rendezvous_the_launch_prepares`.
   local rendezvous_prefix=codex-daemon- rendezvous_mode=700
   tmp="$(cd /tmp && pwd -P)" || fail "codex rendezvous: cannot resolve /tmp; check that it exists"
-  for record in "$state"/oneharness/servers/codex-app-server-*/server.json; do
-    link="$(dirname "$record")/sock/app-server.sock"
-    # A record without a bound link is a server that has stopped since.
-    [ -f "$record" ] && [ -L "$link" ] || continue
-    fields="$(jq -r '"\(.pid // "") \(.marker // "")"' "$record")" ||
-      fail "codex rendezvous: cannot read the pool record $record (jq's error above); a damaged record stops the pool too, so remove that entry's directory and rerun"
-    read -r pid marker <<<"$fields"
-    case "${pid:-}" in '' | 0 | *[!0-9]*)
-      fail "codex rendezvous: the pool record $record names pid '${pid:-}', not a process id; remove that entry's directory and rerun"
-      ;;
-    esac
-    # A killed server can leave its record and link behind; only a running
-    # one says where Codex binds now.
-    ps -p "$pid" >/dev/null 2>&1 || continue
-    [ -n "$marker" ] ||
-      fail "codex rendezvous: the pool record $record names no server marker, which every shared codex server is launched with; remove that entry's directory and rerun"
-    if ! target="$(readlink "$link")"; then
-      # Gone between the test and the read: that server has just stopped.
-      [ -L "$link" ] || continue
-      fail "codex rendezvous: cannot read the socket link $link (readlink's error above); check the entry's permissions with \`ls -la $(dirname "$link")\`"
-    fi
-    euid="$(_oh_codex_server_euid "$marker")" ||
-      fail "codex rendezvous: no running codex process carries the server marker in $record, so the euid its socket directory is named for is unknown; check \`ps -ef | grep app-server\` while a pooled server lingers"
+  rows="$(jq -r 'if (.listen | type) == "string" and (.euid | type) == "string" and (.euid | test("^[0-9]+$"))
+      and (.linked | type) == "boolean" and (.target | type) == "string" and (.bound | type) == "string"
+      and (.mode | type) == "string"
+    then [.listen, .euid, .linked, .target, .bound, .mode] | @tsv
+    else error("not a rendezvous record: \(tojson)") end' "$evidence")" ||
+    fail "codex rendezvous: cannot read the rendezvous evidence $evidence (jq's error above); each line is one scripts/e2e-codex-rendezvous.sh wrote, so a damaged one is that wrapper's to fix"
+  [ -n "$rows" ] ||
+    fail "codex rendezvous: no shared codex server started through scripts/e2e-codex-rendezvous.sh during the controlled turn, so nothing could be checked; a server started before this suite may have served it, so let it linger out (60 s) and rerun"
+  while IFS=$'\t' read -r listen euid linked target bound mode; do
+    [ "$linked" = true ] ||
+      fail "codex rendezvous: the shared server bound $target itself rather than linking that --listen path into its rendezvous directory, so where Codex binds cannot be checked; list $(dirname "$listen") to see how Codex now binds a long path"
     want="$tmp/$rendezvous_prefix$euid"
-    bound="$(cd "$(dirname "$target")" && pwd -P)" ||
-      fail "codex rendezvous: the socket link $link names $target, whose directory cannot be entered (cd's error above); a server that is still running holds its socket there, so check that directory's owner and mode with \`ls -ld $(dirname "$target")\`"
+    # The launch's own override of the directory it prepares, which a hermetic
+    # journey sets (with the mock's CODEX_MOCK_DAEMON_DIR) rather than touch
+    # the host's, shared by every Codex on it.
+    if [ -n "${ONEHARNESS_INTERNAL_CODEX_DAEMON_DIR:-}" ]; then
+      want="$(cd "$ONEHARNESS_INTERNAL_CODEX_DAEMON_DIR" && pwd -P)" ||
+        fail "codex rendezvous: ONEHARNESS_INTERNAL_CODEX_DAEMON_DIR=$ONEHARNESS_INTERNAL_CODEX_DAEMON_DIR is not a directory (cd's error above); unset it, or create it at mode 0700"
+    fi
     [ "$bound" = "$want" ] ||
       fail "codex rendezvous: the shared server runs as euid $euid and bound its socket under $bound, not $want; Codex has moved its rendezvous, so update codex_daemon_dir in crates/oneharness-core/src/domain/app_server.rs, the one source the launch and the mock both read, to it"
-    # Probe the stat dialect rather than the OS: GNU's (Linux, Git Bash) takes
-    # -c, BSD's (macOS) takes -f.
-    if stat -c %a / >/dev/null 2>&1; then
-      mode="$(stat -c %a "$bound")"
-    else
-      mode="$(stat -f %Lp "$bound")"
-    fi || fail "codex rendezvous: cannot read the mode of $bound (stat's error above); run \`ls -ld $bound\` to see it"
     [ "$mode" = "$rendezvous_mode" ] ||
       fail "codex rendezvous: $bound is mode $mode, not the 0$rendezvous_mode Codex demands of it; read Codex's refusal for what it now requires"
-    checked=$((checked + 1))
-  done
-  [ "$checked" -gt 0 ] ||
-    fail "codex rendezvous: no pooled codex server under $state/oneharness/servers was still bound after the controlled turn, so nothing could be checked; it lingers 60 s by default, so look for what stopped it early"
+  done <<<"$rows"
 }
 
 export OH_MODEL="${CODEX_E2E_MODEL:-}"
 # Every codex launch below is measured into target/e2e-telemetry/network/codex.jsonl,
 # which `just live-codex` then holds to live/pr-matrix/harness/codex/budgets.yaml.
+[ "${OS:-}" = "Windows_NT" ] || oh_codex_rendezvous_setup
 oh_telemetry_setup codex
 marker="$(oh_marker)"
 oh_run codex "$(oh_prompt "$marker")"

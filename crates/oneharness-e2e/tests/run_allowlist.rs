@@ -242,6 +242,20 @@ fn spawn(world: &World, harness: &str, mode: &str, toml: &str, extra: &[&str]) -
         output.status.code().is_some_and(|c| c == 0 || c == 1),
         "{harness} {mode}: {stderr}"
     );
+    if harness == "codex"
+        && toml.contains("allowed_tools")
+        && world.path("codex-home/state_5.sqlite").exists()
+    {
+        // The silent helper's warnings, not a failure.
+        assert!(
+            stderr.contains("could not build the run overlay's Codex thread index"),
+            "{stderr}"
+        );
+        assert!(
+            stderr.contains("could not record the granted run's Codex thread"),
+            "{stderr}"
+        );
+    }
     Spawn {
         report: json(&output),
         argv: argv_of(&argv_file),
@@ -1116,4 +1130,62 @@ fn list_says_which_harnesses_apply_a_run_level_allowlist() {
         let applied = id == "claude-code" || (id == "codex" && cfg!(unix));
         assert_eq!(h["supports_run_allowed_tools"], applied, "{id}");
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn codex_withholds_over_a_missing_home_or_a_keyring_store_named_in_its_args() {
+    let world = World::new("codex-withheld");
+    let tool = world.tool();
+    let rule = format!("allowed_tools = [\"Bash({tool})\"]\n");
+    // A keyring (or auto) store set by the identity's own args, not its file.
+    let toml =
+        format!("{rule}[harness.codex]\nargs = [\"-c\", \"cli_auth_credentials_store=auto\"]\n");
+    let run = spawn(&world, "codex", "read-only", &toml, &[]);
+    let message = run.report["results"][0]["diagnostics"][0]["message"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(message.contains("\"auto\""), "{message}");
+    assert_eq!(run.env["CODEX_HOME"], world.s("codex-home"));
+    // A home that does not exist has no login or sessions to link.
+    let gone = world.s("no-such-home");
+    let run = spawn(
+        &world,
+        "codex",
+        "read-only",
+        &rule,
+        &["--env", &format!("CODEX_HOME={gone}")],
+    );
+    let message = run.report["results"][0]["diagnostics"][0]["message"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(message.contains("does not exist"), "{message}");
+    assert!(world.overlays().is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_helper_app_server_that_never_answers_leaves_the_run_whole() {
+    // An indexed home makes the overlay seed its own index and, for the thread
+    // the run continues, repair the real one, both through a Codex app-server. Here the "app-server" is a harness
+    // double that answers no JSON-RPC: the run still completes, says why on
+    // stderr, and leaves nothing behind.
+    let world = World::new("helpers-silent");
+    std::fs::write(world.path("codex-home/state_5.sqlite"), "real index").unwrap();
+    let tool = world.tool();
+    let run = spawn(
+        &world,
+        "codex",
+        "read-only",
+        &format!("allowed_tools = [\"Bash({tool})\"]\n"),
+        &["--resume", "thread-continued"],
+    );
+    assert_eq!(run.report["results"][0]["status"], "ok", "{}", run.report);
+    assert!(world.overlays().is_empty(), "{:?}", world.overlays());
+    assert_eq!(
+        std::fs::read_to_string(world.path("codex-home/state_5.sqlite")).unwrap(),
+        "real index"
+    );
 }

@@ -669,6 +669,15 @@ mod tests {
         fs::write(home.join("config.toml"), "a = 2\n").unwrap();
         fs::write(home.join("session_index.jsonl"), "i").unwrap();
         fs::write(home.join("state_5.sqlite"), "overlay index").unwrap();
+        // A directory Codex created, and one it replaced a link with while
+        // the real home gained the same name: the first moves, the second
+        // merges into the real one.
+        fs::create_dir_all(home.join("created").join("deep")).unwrap();
+        fs::write(home.join("created").join("deep").join("f"), "c").unwrap();
+        fs::create_dir_all(real.join("both")).unwrap();
+        fs::write(real.join("both").join("kept"), "k").unwrap();
+        fs::create_dir_all(home.join("both")).unwrap();
+        fs::write(home.join("both").join("added"), "a").unwrap();
 
         overlay.finish();
         assert!(!dir.exists(), "the overlay is removed");
@@ -691,6 +700,9 @@ mod tests {
         );
         assert!(!real.join("rules").join(RUN_RULES_FILE).exists());
         assert_eq!(fs::read_to_string(real.join("auth.json")).unwrap(), "{}");
+        assert_eq!(fs::read_to_string(real.join("created/deep/f")).unwrap(), "c");
+        assert_eq!(fs::read_to_string(real.join("both/kept")).unwrap(), "k");
+        assert_eq!(fs::read_to_string(real.join("both/added")).unwrap(), "a");
     }
 
     #[cfg(unix)]
@@ -708,10 +720,19 @@ mod tests {
         fs::create_dir_all(&fresh).unwrap();
         let other = root.join(format!("{PREFIX}something-else"));
         fs::create_dir_all(&other).unwrap();
+        // A run killed between making its directory and locking it: no lock,
+        // and older than the grace a run takes to lock one.
+        let stale = root.join(format!("{PREFIX}{TAG}stale"));
+        fs::create_dir_all(&stale).unwrap();
+        fs::File::open(&stale)
+            .unwrap()
+            .set_modified(SystemTime::now() - UNLOCKED_GRACE - Duration::from_secs(5))
+            .unwrap();
 
-        let reclaimed = reclaim_under(root.path());
-        assert_eq!(reclaimed, [dead.clone()]);
-        assert!(!dead.exists());
+        let mut reclaimed = reclaim_under(root.path());
+        reclaimed.sort();
+        assert_eq!(reclaimed, [dead.clone(), stale.clone()]);
+        assert!(!dead.exists() && !stale.exists());
         assert!(live.exists() && fresh.exists() && other.exists());
         drop(held);
     }

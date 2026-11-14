@@ -366,10 +366,33 @@ fn run_per_dispatch(args: &[&str], envs: &[(&str, &str)]) -> Output {
     if args.first() != Some(&"run") {
         return run(args, envs);
     }
-    let dir = ScratchDir::new("per-dispatch").unwrap();
-    let config = dir.join("per-dispatch.toml");
-    std::fs::write(&config, codex_per_dispatch("")).unwrap();
-    let config = config.display().to_string();
+    let dir = per_dispatch_config();
+    run_with_per_dispatch_config(&dir, args, envs)
+}
+
+/// A scratch directory holding the [`codex_per_dispatch`] config file,
+/// `per-dispatch.toml`, that [`run_with_per_dispatch_config`] runs under.
+///
+/// A scratch directory is named by its tag and this process, and every journey
+/// in this binary shares the process: one fixed tag let a parallel caller
+/// retire (or drop) the directory while this run's `oneharness` had still to
+/// read its `--config`, which then exited 2 with "could not read config file".
+/// So each call takes its own tag.
+fn per_dispatch_config() -> ScratchDir {
+    static PER_DISPATCH_CONFIGS: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+    let dir = ScratchDir::new(&format!(
+        "per-dispatch{}",
+        PER_DISPATCH_CONFIGS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ))
+    .unwrap();
+    std::fs::write(dir.join("per-dispatch.toml"), codex_per_dispatch("")).unwrap();
+    dir
+}
+
+/// The `run` of [`run_per_dispatch`], under the config `dir` holds.
+fn run_with_per_dispatch_config(dir: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
+    let config = dir.join("per-dispatch.toml").display().to_string();
     let mut with_config = vec!["run", "--config", config.as_str()];
     with_config.extend_from_slice(&args[1..]);
     let json_args = with_format_json(&with_config);
@@ -6859,9 +6882,22 @@ fn events_flag_is_a_safe_noop_for_a_text_only_harness() {
 #[cfg(not(windows))]
 #[test]
 fn controlled_codex_reports_the_text_an_echoing_app_server_answered() {
-    let session_dir = control_store_dir("ep");
+    let config = per_dispatch_config();
+    assert_controlled_codex_reports_the_text_an_echoing_app_server_answered("ep", &config);
+}
+
+/// The echo journey's run under the [`per_dispatch_config`] in `config`,
+/// asserting the text its app-server answered. `tag` names its control store,
+/// so each caller keeps its own.
+#[cfg(not(windows))]
+fn assert_controlled_codex_reports_the_text_an_echoing_app_server_answered(
+    tag: &str,
+    config: &Path,
+) {
+    let session_dir = control_store_dir(tag);
     let app_server_log = session_dir.join("app-server.log");
-    let output = run_per_dispatch(
+    let output = run_with_per_dispatch_config(
+        config,
         &[
             "run",
             "--harness",
@@ -6894,6 +6930,19 @@ fn controlled_codex_reports_the_text_an_echoing_app_server_answered() {
     let result = &json_stdout(&output)["results"][0];
     assert_eq!(result["text_source"], "jsonrpc:codex-app-server");
     assert_eq!(result["text"], "confirm ONEHARNESS-LIVE-4242");
+}
+
+/// The echo journey's intermittent failure, with its ordering forced: every
+/// journey in this binary shares one process, and a parallel journey minting —
+/// then dropping — its own per-dispatch config before this run reads its
+/// `--config` once took this run's file with it ("could not read config
+/// file", exit 2).
+#[cfg(not(windows))]
+#[test]
+fn the_echo_journey_s_config_outlives_a_parallel_journey_s_own() {
+    let config = per_dispatch_config();
+    drop(per_dispatch_config());
+    assert_controlled_codex_reports_the_text_an_echoing_app_server_answered("epr", &config);
 }
 // llmlint: ignore-end[e2e_not_mocked]
 

@@ -384,7 +384,7 @@ pub struct CompactArgs {
     pub session: NonEmptyString,
 
     /// Directory the session store lives in; must match the run's.
-    /// Default: <platform state dir>/oneharness/sessions.
+    /// Default: `<platform state dir>/oneharness/sessions`.
     #[arg(long, value_name = "DIR")]
     pub session_dir: Option<PathBuf>,
 
@@ -447,7 +447,7 @@ pub struct InterruptArgs {
     pub input: Option<String>,
 
     /// Directory the `--session` store (and its `control/` sockets) lives in;
-    /// must match the run's. Default: <platform state dir>/oneharness/sessions.
+    /// must match the run's. Default: `<platform state dir>/oneharness/sessions`.
     #[arg(long, value_name = "DIR")]
     pub session_dir: Option<PathBuf>,
 
@@ -800,7 +800,7 @@ pub struct HistoryShowArgs {
     pub since: Option<oneharness_core::io::history::UtcDate>,
 
     /// Resolve across every dated index segment plus the legacy index an older
-    /// oneharness kept — which also finds a <history-id> the dated index does
+    /// oneharness kept — which also finds a `<history-id>` the dated index does
     /// not hold.
     #[arg(long)]
     pub all_time: bool,
@@ -945,14 +945,14 @@ pub struct RunArgs {
     #[arg(long, value_name = "PATH", conflicts_with = "system")]
     pub system_file: Option<String>,
 
-    /// Continue a prior session: send the prompt as the next turn of <SESSION>.
+    /// Continue a prior session: send the prompt as the next turn of `<SESSION>`.
     /// Single-harness only (a session belongs to one harness) and only for
     /// harnesses that support it (see `supports_resume` in `oneharness list`).
     #[arg(long, value_name = "SESSION", conflicts_with = "all")]
     pub resume: Option<String>,
 
     /// Fork the resumed session instead of appending to it: branch a new session
-    /// from <SESSION> so the original (and its cached prefix) is untouched and can
+    /// from `<SESSION>` so the original (and its cached prefix) is untouched and can
     /// seed independent follow-ups. Requires --resume, and only for harnesses that
     /// support it (see `supports_fork` in `oneharness list`); others are a usage
     /// error rather than a silent linear resume.
@@ -960,7 +960,7 @@ pub struct RunArgs {
     pub fork: bool,
 
     /// Continue (or start) a named conversation by a stable, caller-owned handle.
-    /// oneharness maps <NAME> to the harness's native session id in a small store,
+    /// oneharness maps `<NAME>` to the harness's native session id in a small store,
     /// so you thread ONE name across turns instead of extracting and re-passing
     /// the id yourself: the first `--session <name>` run starts fresh and captures
     /// the id; later runs with the same name resume it. In the default fallback
@@ -977,7 +977,7 @@ pub struct RunArgs {
     #[arg(long, value_name = "NAME", conflicts_with_all = ["resume", "fork", "all"])]
     pub session: Option<String>,
 
-    /// Directory the `--session` store lives in (default: <platform state dir>/
+    /// Directory the `--session` store lives in (default: `<platform state dir>`/
     /// oneharness/sessions). Like --resume/--fork, a per-invocation knob with no
     /// config/env layer; mainly for isolating the store in tests and scripts.
     #[arg(long, value_name = "DIR")]
@@ -994,7 +994,7 @@ pub struct RunArgs {
     /// control mechanism (see `control` in `oneharness list`) — an unsupported
     /// harness is a loud usage error, never a socket that reports success while
     /// the turn keeps running. The socket lives at
-    /// <session-dir>/control/<NAME>.sock, mode 0600, and is removed when the run
+    /// `<session-dir>/control/<NAME>.sock`, mode 0600, and is removed when the run
     /// exits. Unix only. Without this flag nothing changes: no socket, no extra
     /// process, and the same argv.
     #[arg(long)]
@@ -1083,8 +1083,8 @@ pub struct RunArgs {
     #[arg(long, value_name = "N")]
     pub server_overloaded_max_retries: Option<u32>,
 
-    /// Write each harness's raw stdout/stderr to <DIR>/<harness>.stdout and
-    /// <DIR>/<harness>.stderr (in addition to the JSON report on stdout).
+    /// Write each harness's raw stdout/stderr to `<DIR>/<harness>.stdout` and
+    /// `<DIR>/<harness>.stderr` (in addition to the JSON report on stdout).
     #[arg(long, value_name = "DIR")]
     pub output_dir: Option<PathBuf>,
 
@@ -1209,7 +1209,7 @@ pub struct RunArgs {
     pub print_command: bool,
 
     /// Override a harness binary: --bin ID=PATH (repeatable). Also via
-    /// ONEHARNESS_BIN_<ID> env vars.
+    /// `ONEHARNESS_BIN_<ID>` env vars.
     #[arg(long = "bin", value_name = "ID=PATH")]
     pub bin: Vec<String>,
 
@@ -1229,7 +1229,7 @@ pub struct RunArgs {
     #[arg(long)]
     pub no_history: bool,
 
-    /// Directory history is written to (default: <platform state dir>/oneharness/
+    /// Directory history is written to (default: `<platform state dir>`/oneharness/
     /// history; also `history_dir` in config or ONEHARNESS_HISTORY_DIR).
     #[arg(long, value_name = "DIR")]
     pub history_dir: Option<PathBuf>,

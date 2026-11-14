@@ -42,6 +42,11 @@ const MISPLACED: &[(&str, &str, &str)] = &[
         "`[[sync.hooks]]`",
     ),
     (
+        "[settings]\nmodel = \"x\"\n",
+        "`settings` at the top level",
+        "`[sync.harness.<id>.settings]`",
+    ),
+    (
         "[harness.claude-code]\ndenied_tools = [\"Bash(rm:*)\"]\n",
         "`denied_tools` in `[harness.claude-code]`",
         "`[sync.harness.claude-code] denied_tools`",

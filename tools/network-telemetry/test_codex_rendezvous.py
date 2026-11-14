@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shlex
 import signal
 import subprocess
@@ -36,11 +35,9 @@ class Evidence(TypedDict):
 WRAPPER = SCRIPTS / "e2e-codex-rendezvous.sh"
 FAKE = HERE / "codex_double.sh"
 LISTEN_BASE = "app-server.sock"
-# The server marker as oneharness makes it, a hyphenated UUIDv7, in a record.
-SERVER_MARKER = re.compile(
-    r"^env ONEHARNESS_APP_SERVER_MARKER=([0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12})$",
-    re.MULTILINE,
-)
+# The server marker the parity runs pin (ONEHARNESS_INTERNAL_APP_SERVER_MARKER),
+# shaped as oneharness's own, a hyphenated UUIDv7.
+PINNED_MARKER = "01a1d7b3-0000-7000-8000-00000000c0de"
 
 
 @unittest.skipIf(
@@ -430,6 +427,7 @@ class Transparent(unittest.TestCase):
             "FAKE_RECORD": self.record,
             "FAKE_ARGV": self.tmp / "argv",
             "FAKE_PID": self.tmp / "pid",
+            "FAKE_SERVER_PID": self.tmp / "server-pid",
             "FAKE_MOCK": MOCK,
         }
         (self.bin / "codex").write_text(
@@ -475,6 +473,9 @@ class Transparent(unittest.TestCase):
             # Each run's server stops with its turn, so the next run starts
             # its own rather than reuse it.
             "ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS": "0",
+            # Each run's shared server is started under this one marker
+            # rather than a fresh one, so both runs give Codex the same input.
+            "ONEHARNESS_INTERNAL_APP_SERVER_MARKER": PINNED_MARKER,
             "ONEHARNESS_INTERNAL_CODEX_DAEMON_DIR": str(self.base / "daemon"),
             "CODEX_MOCK_DAEMON_DIR": str(self.base / "daemon"),
         }
@@ -522,6 +523,17 @@ class Transparent(unittest.TestCase):
         self.record.write_text("")
         run = self.bash(LAUNCHES, "wrapped" if wrap else "bare")
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        # A stop reaches every process carrying the marker, so this run's
+        # server is gone before the next starts under the same one.
+        server = int((self.tmp / "server-pid").read_text())
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                os.kill(server, 0)
+            except ProcessLookupError:
+                break
+            self.assertLess(time.monotonic(), deadline, f"server {server} outlived its turn")
+            time.sleep(0.05)
         return self.record.read_text(), run.stdout.splitlines()
 
     def served(self, record: str, printed: list[str], name: str) -> tuple[str, str]:
@@ -529,9 +541,7 @@ class Transparent(unittest.TestCase):
         checked that the turn completed on the server it dialled there; and
         `record` with that path and the pool entry's name (keyed by the
         executable the pool resolved, the wrapper's own when it fronts codex)
-        written generically, and the server's marker, which oneharness makes
-        fresh for every server, wrapped or not, written as `<marker>` once
-        shown to be the one the pool recorded for the server it reached."""
+        written generically."""
         report = json.loads(printed[1])
         (result,) = report["results"]
         self.assertEqual((result["status"], result["text"]), ("ok", f"SERVED-{name}"), result)
@@ -539,14 +549,12 @@ class Transparent(unittest.TestCase):
         listen = command[command.index("--listen") + 1].removeprefix("unix://")
         key = str(report["control"]["app_server"]["pool_key"])
         self.assertIn(f"/{key}/", listen)
+        # The server reached the pool under the pinned marker, the one the
+        # pool recorded for it.
         (server,) = [launch for launch in record.split("---\n") if "\narg app-server\n" in launch]
-        (marker,) = re.findall(r"^pool-marker (.*)$", server, re.MULTILINE)
-        self.assertEqual(SERVER_MARKER.findall(record), [marker], server)
-        self.assertEqual(record.count(marker), 2, record)
-        generic = record.replace(f"={marker}\n", "=<marker>\n").replace(
-            f"pool-marker {marker}\n", "pool-marker <marker>\n"
-        )
-        return listen, generic.replace(listen, "<listen>").replace(key, "<pool-key>")
+        self.assertIn(f"\nenv ONEHARNESS_APP_SERVER_MARKER={PINNED_MARKER}\n", server)
+        self.assertIn(f"\npool-marker {PINNED_MARKER}\n", server)
+        return listen, record.replace(listen, "<listen>").replace(key, "<pool-key>")
 
     def test_each_launch_sees_what_it_would_without_the_wrapper(self) -> None:
         self.prepare()

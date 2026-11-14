@@ -61,6 +61,13 @@ pub const SWEEPER_ENV: &str = "ONEHARNESS_INTERNAL_APP_SERVER_SWEEPER";
 /// server stop without waiting a minute.
 pub const LINGER_ENV: &str = "ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS";
 
+/// A server marker replacing the fresh one each server this process starts is
+/// given. Internal: it exists so a hermetic journey can start the same server
+/// twice, under the same marker, and compare what each launch saw. A stop
+/// selects every process carrying a server's marker, so two servers started
+/// under one must never run at once.
+pub const MARKER_ENV: &str = "ONEHARNESS_INTERNAL_APP_SERVER_MARKER";
+
 /// A directory replacing Codex's own socket rendezvous directory
 /// (`/tmp/codex-daemon-<euid>`) as the one a launch prepares. Internal: it
 /// exists so a hermetic journey can prepare a directory of its own rather than
@@ -311,6 +318,25 @@ impl AppServerLease {
     }
 }
 
+/// The marker the next server this process starts is launched with.
+fn server_marker() -> ServerMarker {
+    marker_from(std::env::var(MARKER_ENV))
+}
+
+/// [`MARKER_ENV`]'s value, `raw`, as a server marker: fresh when it is unset,
+/// and, with a warning, when it is not one.
+fn marker_from(raw: Result<String, std::env::VarError>) -> ServerMarker {
+    let Ok(raw) = raw else {
+        return ServerMarker::fresh();
+    };
+    ServerMarker::new(raw.clone()).unwrap_or_else(|| {
+        eprintln!(
+            "oneharness: warning: ignoring {MARKER_ENV}={raw:?}: a server marker is non-empty text without control characters; the server gets a fresh one"
+        );
+        ServerMarker::fresh()
+    })
+}
+
 /// The linger this process's servers are started under.
 fn linger() -> Duration {
     let Ok(raw) = std::env::var(LINGER_ENV) else {
@@ -369,7 +395,7 @@ fn lease_server(
     let mut attempts = 2;
     loop {
         attempts -= 1;
-        let marker = ServerMarker::fresh();
+        let marker = server_marker();
         let plan = LaunchPlan::scrubbed(
             template.clone(),
             address.clone(),
@@ -1587,6 +1613,25 @@ impl PooledSession {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_marker_override_is_the_marker_its_servers_start_under() {
+        let pinned = "01a1d7b3-0000-7000-8000-000000000000";
+        assert_eq!(marker_from(Ok(pinned.to_string())).as_str(), pinned);
+    }
+
+    #[test]
+    fn an_unset_or_unusable_marker_override_gives_each_server_a_fresh_marker() {
+        for raw in [
+            Err(std::env::VarError::NotPresent),
+            Ok(String::new()),
+            Ok("line\nbreak".to_string()),
+        ] {
+            let (first, second) = (marker_from(raw.clone()), marker_from(raw));
+            assert_ne!(first, second);
+            assert!(!first.as_str().is_empty() && !first.as_str().contains('\n'));
+        }
+    }
+
     #[test]
     fn an_environment_no_process_can_hold_is_not_pooled() {
         let argv = vec!["codex".to_string(), "app-server".to_string()];

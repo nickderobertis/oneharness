@@ -12,7 +12,8 @@
 #                      turn completes on it, echoing its prompt; any other
 #                      launch exits 0 as record's does. An app-server launch's
 #                      record also names, as `pool-marker`, the server marker
-#                      its pool entry (the cwd the pool starts it in) holds
+#                      its pool entry (the cwd the pool starts it in) holds,
+#                      and its pid goes to FAKE_SERVER_PID
 #   exit:N             exit N before binding
 #   link               link the --listen path to FAKE_SOCKDIR/s, made private
 #   dangling           link it to FAKE_SOCKDIR/s, creating nothing there
@@ -70,6 +71,8 @@ case "${FAKE:?FAKE must say how this double behaves}" in
       marker="$(jq -er .marker server.json)" ||
         refuse "found no server marker in $PWD/server.json, the pool entry this app-server was started in"
       seen="${seen%---}pool-marker $marker"$'\n---'
+      echo "$$" >"${FAKE_SERVER_PID:?FAKE=serve needs FAKE_SERVER_PID}" ||
+        refuse "cannot write its pid to FAKE_SERVER_PID=$FAKE_SERVER_PID"
     fi
     printf '%s\n' "$seen" >>"${FAKE_RECORD:?FAKE=$FAKE needs FAKE_RECORD}" ||
       refuse "cannot append its record to FAKE_RECORD=$FAKE_RECORD"

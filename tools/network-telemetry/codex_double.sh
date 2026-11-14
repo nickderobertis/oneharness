@@ -10,7 +10,9 @@
 #   serve              record, then serve an app-server launch as the
 #                      repository's mock harness (FAKE_MOCK) does, so a pooled
 #                      turn completes on it, echoing its prompt; any other
-#                      launch exits 0 as record's does
+#                      launch exits 0 as record's does. An app-server launch's
+#                      record also names, as `pool-marker`, the server marker
+#                      its pool entry (the cwd the pool starts it in) holds
 #   exit:N             exit N before binding
 #   link               link the --listen path to FAKE_SOCKDIR/s, made private
 #   dangling           link it to FAKE_SOCKDIR/s, creating nothing there
@@ -58,6 +60,17 @@ case "${FAKE:?FAKE must say how this double behaves}" in
   args) exit 0 ;;
   record | serve)
     seen="$(record "$@")" || exit 2 # record said why
+    if [ "$FAKE" = serve ] && [ "${1:-}" = app-server ]; then
+      # The pool writes its entry's server.json once this server has spawned,
+      # before it dials it.
+      for _ in $(seq 500); do
+        [ ! -f server.json ] || break
+        sleep 0.02
+      done
+      marker="$(jq -er .marker server.json)" ||
+        refuse "found no server marker in $PWD/server.json, the pool entry this app-server was started in"
+      seen="${seen%---}pool-marker $marker"$'\n---'
+    fi
     printf '%s\n' "$seen" >>"${FAKE_RECORD:?FAKE=$FAKE needs FAKE_RECORD}" ||
       refuse "cannot append its record to FAKE_RECORD=$FAKE_RECORD"
     [ "$FAKE" = serve ] && [ "${1:-}" = app-server ] || exit 0

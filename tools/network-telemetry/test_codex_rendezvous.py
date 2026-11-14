@@ -36,6 +36,11 @@ class Evidence(TypedDict):
 WRAPPER = SCRIPTS / "e2e-codex-rendezvous.sh"
 FAKE = HERE / "codex_double.sh"
 LISTEN_BASE = "app-server.sock"
+# The server marker as oneharness makes it, a hyphenated UUIDv7, in a record.
+SERVER_MARKER = re.compile(
+    r"^env ONEHARNESS_APP_SERVER_MARKER=([0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12})$",
+    re.MULTILINE,
+)
 
 
 @unittest.skipIf(
@@ -433,15 +438,22 @@ class Transparent(unittest.TestCase):
             + f'FAKE_EXE="$0" exec bash {shlex.quote(str(FAKE))} "$@"\n'
         )
         (self.bin / "codex").chmod(0o755)
-        self.proj = self.tmp / "rules" / "project"
+        # Every journey's scratch is reached through a link, as macOS's temp
+        # dir under /var/folders resolves through /private: Codex looks a
+        # project up by the physical spelling, the suite passes the linked one.
+        self.real = self.tmp / "real"
+        self.real.mkdir()
+        self.base = self.tmp / "linked"
+        self.base.symlink_to(self.real)
+        self.proj = self.base / "rules" / "project"
         self.proj.mkdir(parents=True)
-        self.home = self.tmp / "rules" / "codex-home"
+        self.home = self.base / "rules" / "codex-home"
         self.home.mkdir()
-        self.sandbox = self.tmp / "mock"
+        self.sandbox = self.base / "mock"
         self.sandbox.mkdir()
-        self.serve_dir = self.tmp / "served"
+        self.serve_dir = self.base / "served"
         self.serve_dir.mkdir()
-        self.rules = self.tmp / "mock-rules.json"
+        self.rules = self.base / "mock-rules.json"
         self.rules.write_text(
             '{"rules":[{"match":{"input":{"command":{"regex":"OHMOCKORIG1"}}},'
             '"action":{"rewrite":{"input":{"command":"true"}}}}]}'
@@ -449,7 +461,7 @@ class Transparent(unittest.TestCase):
         self.env = {
             **os.environ,
             "PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}",
-            "TMPDIR": str(self.tmp),
+            "TMPDIR": str(self.base),
             "ONEHARNESS_NO_CONFIG": "1",
             "ONEHARNESS_BIN": str(ONEHARNESS),
             "LIB": str(LIB),
@@ -459,19 +471,19 @@ class Transparent(unittest.TestCase):
             "SANDBOX": str(self.sandbox),
             "RULES": str(self.rules),
             "SERVE": str(self.serve_dir),
-            "XDG_STATE_HOME": str(self.tmp / "state"),
+            "XDG_STATE_HOME": str(self.base / "state"),
             # Each run's server stops with its turn, so the next run starts
             # its own rather than reuse it.
             "ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS": "0",
-            "ONEHARNESS_INTERNAL_CODEX_DAEMON_DIR": str(self.tmp / "daemon"),
-            "CODEX_MOCK_DAEMON_DIR": str(self.tmp / "daemon"),
+            "ONEHARNESS_INTERNAL_CODEX_DAEMON_DIR": str(self.base / "daemon"),
+            "CODEX_MOCK_DAEMON_DIR": str(self.base / "daemon"),
         }
         # The journey's own setup: its trust config, and the rules `sync` writes.
         trust = self.bash(
             'source "$LIB"; _oh_codex_trust_config "$PROJ" "$CODEX_HOME_DIR/config.toml"'
         )
         self.assertEqual(trust.returncode, 0, trust.stderr)
-        policy = self.tmp / "oneharness.toml"
+        policy = self.base / "oneharness.toml"
         policy.write_text('[harness.codex]\ndenied_tools = ["Bash(mkdir rules-deny-1:*)"]\n')
         sync = subprocess.run(
             [
@@ -515,9 +527,11 @@ class Transparent(unittest.TestCase):
     def served(self, record: str, printed: list[str], name: str) -> tuple[str, str]:
         """The controlled turn's --listen path, from its report, having
         checked that the turn completed on the server it dialled there; and
-        `record` with that path, the pool entry's name (keyed by the executable the pool
-        resolved, the wrapper's own when it fronts codex) and the dispatch's
-        marker (fresh for every dispatch) written generically."""
+        `record` with that path and the pool entry's name (keyed by the
+        executable the pool resolved, the wrapper's own when it fronts codex)
+        written generically, and the server's marker, which oneharness makes
+        fresh for every server, wrapped or not, written as `<marker>` once
+        shown to be the one the pool recorded for the server it reached."""
         report = json.loads(printed[1])
         (result,) = report["results"]
         self.assertEqual((result["status"], result["text"]), ("ok", f"SERVED-{name}"), result)
@@ -525,7 +539,13 @@ class Transparent(unittest.TestCase):
         listen = command[command.index("--listen") + 1].removeprefix("unix://")
         key = str(report["control"]["app_server"]["pool_key"])
         self.assertIn(f"/{key}/", listen)
-        generic = re.sub(r"(ONEHARNESS_APP_SERVER_MARKER=).*", r"\1<marker>", record)
+        (server,) = [launch for launch in record.split("---\n") if "\narg app-server\n" in launch]
+        (marker,) = re.findall(r"^pool-marker (.*)$", server, re.MULTILINE)
+        self.assertEqual(SERVER_MARKER.findall(record), [marker], server)
+        self.assertEqual(record.count(marker), 2, record)
+        generic = record.replace(f"={marker}\n", "=<marker>\n").replace(
+            f"pool-marker {marker}\n", "pool-marker <marker>\n"
+        )
         return listen, generic.replace(listen, "<listen>").replace(key, "<pool-key>")
 
     def test_each_launch_sees_what_it_would_without_the_wrapper(self) -> None:
@@ -553,18 +573,20 @@ class Transparent(unittest.TestCase):
         (evidence,) = [json.loads(line) for line in wrapped_printed[2:]]
         self.assertEqual(evidence["listen"], wrapped_listen)
         self.assertTrue(evidence["linked"], evidence)
-        self.assertEqual(evidence["bound"], str((self.tmp / "daemon").resolve()))
+        self.assertEqual(evidence["bound"], str(self.real / "daemon"))
         direct, *rest = bare.split("---\n")
         self.assertIn(f"cwd {self.proj}\n", direct)
         self.assertIn(
             'prefix_rule(pattern=["mkdir", "rules-deny-1"], decision="forbidden")', direct
         )
-        self.assertIn(f'[projects."{self.proj}"]', direct)
+        # Trusted by the spelling the suite passes and the physical one.
+        for spelling in (self.proj, self.proj.resolve()):
+            self.assertIn(f'[projects."{spelling}"]', direct)
         mock = "".join(rest)
         self.assertIn("arg --dangerously-bypass-hook-trust\n", mock)
-        self.assertIn(
-            f'arg projects={{"{self.sandbox.resolve()}"={{trust_level="trusted"}}}}', mock
-        )
+        sandbox = (self.sandbox, self.sandbox.resolve())
+        trusted = ",".join(f'"{spelling}"={{trust_level="trusted"}}' for spelling in sandbox)
+        self.assertIn(f"arg projects={{{trusted}}}\n", mock)
         self.assertIn("mock codex --rules", mock)
         self.assertIn("arg app-server\n", mock)
 

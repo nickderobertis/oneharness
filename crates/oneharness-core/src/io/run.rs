@@ -6344,6 +6344,33 @@ mod tests {
         );
     }
 
+    /// A `--spy-file` run with no rules delivers its hook through the same
+    /// project hooks.json, so it carries the same per-run trust; without it
+    /// codex 0.169.0 never fires the hook and the spy log stays empty.
+    #[test]
+    fn a_spy_only_mock_trusts_codexs_project_directory_too() {
+        let dir = crate::io::scratch::ScratchDir::new("mock-trust-spy").unwrap();
+        let args = RunRequest {
+            spy_file: Some(dir.join("spy.jsonl")),
+            ..run_args()
+        };
+        let codex = harness::by_id("codex").unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let overrides = BinOverrides::parse(&[format!("codex={}", exe.display())]).unwrap();
+        let wiring = setup_mock(&args, &[codex], dir.path(), &overrides)
+            .unwrap()
+            .expect("--spy-file wires the mock");
+        assert!(dir.join(".codex/hooks.json").is_file());
+        let argv = wiring.extra_args_for("codex");
+        assert!(
+            argv.iter().any(|a| a.starts_with("projects={")
+                && a.contains(&toml::Value::from(dir.path().display().to_string()).to_string())),
+            "no per-run trust of {} in {argv:?}",
+            dir.path().display()
+        );
+        wiring.finish();
+    }
+
     /// A drive path loses Windows' verbatim prefix, as Codex's canonical
     /// spelling has none; nothing else is touched.
     #[test]
@@ -6365,6 +6392,24 @@ mod tests {
             [missing.display().to_string()]
         );
         assert!(project_trust_keys(std::path::Path::new("")).is_empty());
+    }
+
+    /// A project reached through a symlink, as every macOS temp dir is
+    /// (`/var/folders/…` resolving through `/private/var`), is trusted under
+    /// both spellings: Codex looks the cwd up by each.
+    #[cfg(unix)]
+    #[test]
+    fn project_trust_keys_name_a_linked_project_by_both_spellings() {
+        let dir = crate::io::scratch::ScratchDir::new("trust-linked").unwrap();
+        let real = dir.join("private-var");
+        std::fs::create_dir(&real).unwrap();
+        let link = dir.join("var");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let canonical = std::fs::canonicalize(&real).unwrap();
+        assert_eq!(
+            project_trust_keys(&link),
+            [link.display().to_string(), canonical.display().to_string()]
+        );
     }
 
     fn run_args() -> RunRequest {

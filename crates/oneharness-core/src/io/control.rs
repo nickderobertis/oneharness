@@ -77,30 +77,30 @@ fn trace_redirect_written() {
     }
 }
 
-/// A path. Once set, the run creates it the moment the controlled turn's stdin
-/// is parked and its prompt not yet written, and holds the opening there until
-/// an interrupt's abort is on its way — so a journey can land an interrupt
-/// inside the opening. Compiled only into the `mock-harness` test build, like
-/// the mock harness itself, so a shipped `oneharness` has no such seam.
-#[cfg(feature = "mock-harness")]
-const HOLD_OPENING_ENV: &str = "ONEHARNESS_INTERNAL_HOLD_OPENING";
+/// The points inside a run where a test holds one thread so that another's
+/// step lands first: the interleavings a loaded host produces by chance,
+/// forced so a regression of each fails every time rather than now and then.
+#[cfg(all(test, unix))]
+#[derive(Default)]
+struct TestHolds {
+    /// Hold the opening once the turn's stdin is parked and before its prompt
+    /// is written, until an interrupt's abort is on its way.
+    opening: std::sync::atomic::AtomicBool,
+    /// Set once the opening is being held, for the test to send its interrupt.
+    opening_held: std::sync::atomic::AtomicBool,
+    /// Hold an interrupt whose abort frames are written, before it hands its
+    /// redirection on, until this says.
+    abort: Mutex<Option<AbortHold>>,
+    /// Hold an interrupt that has written its replacement prompt, before its
+    /// delivery is settled, until the run is closing the turn or has answered
+    /// for the message itself.
+    written: std::sync::atomic::AtomicBool,
+    /// Set once the run starts closing the turn.
+    closing: std::sync::atomic::AtomicBool,
+}
 
-/// `turn-ended` or `released`. Once set, an interrupt whose abort frames are
-/// written holds there, before it hands its redirection on, until the aborted
-/// turn's end has reached the run (`turn-ended`) or the run has released its
-/// candidate (`released`). `mock-harness` builds only.
-#[cfg(feature = "mock-harness")]
-const HOLD_ABORT_ENV: &str = "ONEHARNESS_INTERNAL_HOLD_ABORT";
-
-/// Any value. Once set, an interrupt that has written its redirection's
-/// replacement prompt holds there, before the delivery is settled, until the
-/// run is closing the turn or has answered for the message itself.
-/// `mock-harness` builds only.
-#[cfg(feature = "mock-harness")]
-const HOLD_REDIRECT_WRITTEN_ENV: &str = "ONEHARNESS_INTERNAL_HOLD_REDIRECT_WRITTEN";
-
-/// What the [`HOLD_ABORT_ENV`] seam waits for.
-#[cfg(feature = "mock-harness")]
+/// What [`TestHolds::abort`] waits for.
+#[cfg(all(test, unix))]
 #[derive(Clone, Copy)]
 enum AbortHold {
     /// The aborted turn's end has reached the run (or the run released).
@@ -109,36 +109,15 @@ enum AbortHold {
     Released,
 }
 
-#[cfg(feature = "mock-harness")]
-impl AbortHold {
-    /// The hold `HOLD_ABORT_ENV` names, if any. A value it does not name is
-    /// warned about and holds nothing, so a mistyped journey fails on its own
-    /// assertions rather than on a hold it never asked for.
-    fn from_env() -> Option<Self> {
-        let raw = std::env::var(HOLD_ABORT_ENV).ok()?;
-        match raw.as_str() {
-            "turn-ended" => Some(Self::TurnEnded),
-            "released" => Some(Self::Released),
-            _ => {
-                eprintln!(
-                    "oneharness: warning: ignoring {HOLD_ABORT_ENV}={raw:?}: expected \
-                     `turn-ended` or `released`"
-                );
-                None
-            }
-        }
-    }
-}
-
-/// Poll `done` until it holds, for one of the seams above. Bounded, so a
-/// journey whose interleaving never comes gets its own failure back rather
-/// than a hung suite.
-#[cfg(feature = "mock-harness")]
+/// Poll `done` until it holds, for a [`TestHolds`] hold. Bounded, so a test
+/// whose interleaving never comes gets its own failure back rather than a
+/// hung suite.
+#[cfg(all(test, unix))]
 fn hold_until(what: &str, mut done: impl FnMut() -> bool) {
     let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while !done() {
         if std::time::Instant::now() >= until {
-            eprintln!("oneharness: warning: held for {what}, which never came");
+            eprintln!("held for {what}, which never came");
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(2));
@@ -565,14 +544,9 @@ pub struct ControlHandle {
     pooled: Mutex<PooledState>,
     /// The last shared app-server any candidate ran on, for the report.
     app_server: Mutex<Option<AppServerReport>>,
-    /// Run once a replacement prompt is written and before its delivery is
-    /// settled — the seam a test holds that gap open at.
+    /// Where a test holds this run's threads to force an interleaving.
     #[cfg(all(test, unix))]
-    on_redirect_written: Mutex<Option<Box<dyn FnOnce() + Send>>>,
-    /// Set once the run starts closing the turn, for the
-    /// [`HOLD_REDIRECT_WRITTEN_ENV`] seam to wait on.
-    #[cfg(feature = "mock-harness")]
-    closing: std::sync::atomic::AtomicBool,
+    holds: TestHolds,
 }
 
 /// Where a redirection is between being accepted and becoming the next turn.
@@ -630,9 +604,7 @@ impl ControlHandle {
             pooled: Mutex::new(PooledState::default()),
             app_server: Mutex::new(None),
             #[cfg(all(test, unix))]
-            on_redirect_written: Mutex::new(None),
-            #[cfg(feature = "mock-harness")]
-            closing: std::sync::atomic::AtomicBool::new(false),
+            holds: TestHolds::default(),
         }
     }
 
@@ -1017,40 +989,20 @@ impl ControlHandle {
         matches!(&*self.redirect(), Redirect::Deliverable(_))
     }
 
-    /// Whether an interrupt has started writing its abort frame, so a test can
-    /// hold a turn's opening until the abort is on its way.
-    #[cfg(all(test, unix))]
-    fn redirect_is_aborting(&self) -> bool {
-        matches!(&*self.redirect(), Redirect::Aborting(_))
-    }
-
-    /// Run the hook a test set for the gap between a replacement prompt's
-    /// write and its delivery being settled.
-    #[cfg(all(test, unix))]
-    fn redirect_written_hook(&self) {
-        let hook = self
-            .on_redirect_written
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take();
-        if let Some(hook) = hook {
-            hook();
-        }
-    }
-
-    /// The [`HOLD_OPENING_ENV`] seam: the turn's stdin is parked and its
+    /// The [`TestHolds::opening`] hold: the turn's stdin is parked and its
     /// prompt is not written yet. `under_turn_lock` says the caller holds the
     /// turn's lock, so an interrupt that has begun its abort is waiting on it.
     ///
     /// The redirection is read with `try_lock` only: this runs under the
     /// turn's lock, and blocking on the `redirect` lock there would nest it
-    /// inside `state` — the inverse of the type's order.
-    #[cfg(feature = "mock-harness")]
+    /// inside `state`, the inverse of the type's order.
+    #[cfg(all(test, unix))]
     fn hold_opening(&self, under_turn_lock: bool) {
-        let Some(marker) = std::env::var_os(HOLD_OPENING_ENV) else {
+        use std::sync::atomic::Ordering;
+        if !self.holds.opening.load(Ordering::SeqCst) {
             return;
-        };
-        let _ = std::fs::write(marker, b"");
+        }
+        self.holds.opening_held.store(true, Ordering::SeqCst);
         hold_until("an interrupt's abort", || {
             let Ok(slot) = self.redirect.try_lock() else {
                 return false;
@@ -1063,14 +1015,19 @@ impl ControlHandle {
         });
     }
 
-    #[cfg(not(feature = "mock-harness"))]
+    #[cfg(not(all(test, unix)))]
     fn hold_opening(&self, _under_turn_lock: bool) {}
 
-    /// The [`HOLD_ABORT_ENV`] seam: every abort frame is written and the
+    /// The [`TestHolds::abort`] hold: every abort frame is written and the
     /// redirection not yet handed on. Holds no lock while it waits.
-    #[cfg(feature = "mock-harness")]
+    #[cfg(all(test, unix))]
     fn hold_abort_written(&self) {
-        match AbortHold::from_env() {
+        let hold = *self
+            .holds
+            .abort
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match hold {
             None => {}
             Some(AbortHold::Released) => {
                 hold_until("the run's release", || self.mechanism().is_none());
@@ -1081,31 +1038,33 @@ impl ControlHandle {
         }
     }
 
-    #[cfg(not(feature = "mock-harness"))]
+    #[cfg(not(all(test, unix)))]
     fn hold_abort_written(&self) {}
 
-    /// The [`HOLD_REDIRECT_WRITTEN_ENV`] seam: the replacement prompt is
-    /// written and its delivery not yet settled. Under the turn's lock the run
-    /// cannot close the turn past this, so the hold ends once it has started
-    /// to; otherwise it ends once the run has answered for the message.
-    #[cfg(feature = "mock-harness")]
+    /// The [`TestHolds::written`] hold: the replacement prompt is written and
+    /// its delivery not yet settled. Under the turn's lock the run cannot close
+    /// the turn past this, so the hold ends once it has started to; otherwise
+    /// it ends once the run has answered for the message.
+    #[cfg(all(test, unix))]
     fn hold_redirect_written(&self, under_turn_lock: bool) {
-        if std::env::var_os(HOLD_REDIRECT_WRITTEN_ENV).is_none() {
+        use std::sync::atomic::Ordering;
+        if !self.holds.written.load(Ordering::SeqCst) {
             return;
         }
         hold_until("the run to close the replacement turn", || {
             self.delivery().is_none()
-                || (under_turn_lock && self.closing.load(std::sync::atomic::Ordering::SeqCst))
+                || (under_turn_lock && self.holds.closing.load(Ordering::SeqCst))
         });
     }
 
-    #[cfg(not(feature = "mock-harness"))]
+    #[cfg(not(all(test, unix)))]
     fn hold_redirect_written(&self, _under_turn_lock: bool) {}
 
-    /// Record that the run is closing the turn, for the seam above.
+    /// Record that the run is closing the turn, for the hold above.
     fn mark_closing(&self) {
-        #[cfg(feature = "mock-harness")]
-        self.closing
+        #[cfg(all(test, unix))]
+        self.holds
+            .closing
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
@@ -1271,8 +1230,6 @@ impl ControlHandle {
                 // never handed back, whatever the harness does next.
                 Ok(()) => {
                     trace_redirect_written();
-                    #[cfg(all(test, unix))]
-                    self.redirect_written_hook();
                     self.hold_redirect_written(true);
                     self.redirect_delivered();
                 }
@@ -1335,23 +1292,12 @@ impl ControlHandle {
         prompt: &str,
     ) -> io::Result<()> {
         let frames = self.open_frames(prompt);
-        self.open_turn_with(Box::new(stdin), &frames, || self.hold_opening(true))
-    }
-
-    /// [`Self::open_turn`] over any sink. `parked` runs once the turn's lock
-    /// is held and before its frames are written — the seam a test holds the
-    /// opening at.
-    fn open_turn_with(
-        &self,
-        mut sink: Box<dyn io::Write + Send>,
-        frames: &[String],
-        parked: impl FnOnce(),
-    ) -> io::Result<()> {
+        let mut sink: Box<dyn io::Write + Send> = Box::new(stdin);
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        parked();
+        self.hold_opening(true);
         let written = frames.iter().try_for_each(|frame| {
             sink.write_all(frame.as_bytes())?;
             sink.flush()
@@ -3000,310 +2946,207 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    #[test]
-    fn an_interrupt_that_arrives_while_the_turn_is_opening_is_written_after_its_prompt() {
-        use std::io::BufRead;
-        // The window a loaded host hits at the start of a run: the child's
-        // stdin is parked, so the turn is live to the control socket, but its
-        // prompt is not written yet. An abort written into that gap is the
-        // harness's first line — before any turn exists to abort — so a
-        // harness that requires a prompt first exits without ending a turn, and
-        // the redirection is refused `not_running` once the run is over.
-        //
-        // A scripted harness, strict as Claude Code's stream input and
-        // onejudge's double are: a first line that is not a prompt makes it
-        // say so and exit 2. Otherwise it answers the abort with its
-        // end-of-turn document and echoes what it is sent next.
-        const ANSWER: &str = r#"{"type":"result","subtype":"error_during_execution"}"#;
-        const NO_PROMPT: &str = r#"{"type":"system","subtype":"first_line_was_not_a_prompt"}"#;
-        let dir = temp_dir("redirect-opening");
+    // The three races below sit between two threads inside ONE run — the
+    // runner opening or closing the turn, the listener writing an interrupt's
+    // abort or its replacement prompt — and nothing a caller sends from outside
+    // the process decides which of them reaches the turn's lock first. The
+    // built `oneharness` under a harness can only hit them by chance, as
+    // onejudge's loaded stress runs did (two failures in a hundred), so the
+    // end-to-end proof is declined: a regression it misses passes CI by luck,
+    // which is the very failure being fixed. Each test is instead a
+    // deterministic structural assertion over the production path — the
+    // runner's own `run_job_streaming_controlled` (what `oneharness run
+    // --control` calls), a real scripted harness process on its stdin and
+    // stdout, the real control socket and client, and the run's own `release`
+    // once the runner returns — with a hold inside the run (`TestHolds`,
+    // compiled into tests alone) that forces the interleaving every time.
+
+    /// Run `script` as a stream-json harness through the production runner,
+    /// `handle` serving its control socket, and release the candidate once the
+    /// runner returns — the sequence `oneharness run --control` performs.
+    fn run_controlled_in_background(
+        handle: &Arc<ControlHandle>,
+        script: &str,
+    ) -> std::thread::JoinHandle<crate::domain::report::Capture> {
+        let handle = Arc::clone(handle);
+        let job = crate::io::runner::Job {
+            argv: vec!["sh".to_string(), "-c".to_string(), script.to_string()],
+            cwd: None,
+            env: Vec::new(),
+            env_remove: Vec::new(),
+            timeout: std::time::Duration::from_secs(60),
+            stdin: None,
+        };
+        std::thread::spawn(move || {
+            let input = crate::io::runner::ControlledInput {
+                handle: &handle,
+                prompt: "start the task".to_string(),
+                app_server: None,
+            };
+            let capture =
+                crate::io::runner::run_job_streaming_controlled(&job, Some(&input), |_| {
+                    crate::io::runner::StreamStep::Continue
+                });
+            handle.release();
+            capture
+        })
+    }
+
+    /// A stdin-bound handle on a fresh control socket, and its address.
+    fn stdin_control(tag: &str) -> (ScratchDir, PathBuf, ControlListener, Arc<ControlHandle>) {
+        let dir = temp_dir(tag);
         let path = socket_path(&dir, "live")
             .expect("a short fixture name fits every platform's socket-address budget");
         let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
         let handle = listener.handle();
         handle.bind(Binding::Stdin);
-        let mut child = std::process::Command::new("sh")
-            .args([
-                "-c",
-                &format!(
-                    "IFS= read -r first; case \"$first\" in *'\"type\":\"user\"'*) ;; \
-                     *) printf '%s\\n' '{NO_PROMPT}'; exit 2;; esac; \
-                     IFS= read -r abort; printf '%s\\n' '{ANSWER}'; exec cat"
-                ),
-            ])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
+        (dir, path, listener, handle)
+    }
 
-        // The run's own reading of the harness's output, as its stdout loop
-        // does it, and — once the harness has exited — the release the run
-        // performs after it.
-        let spoke = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let heard = Arc::clone(&spoke);
-        let stdout = child.stdout.take().unwrap();
-        let reading = Arc::clone(&handle);
-        let reader = std::thread::spawn(move || {
-            let mut seen = Vec::new();
-            for line in io::BufReader::new(stdout).lines() {
-                let line = line.unwrap();
-                let over = reading.advance(&line);
-                heard.store(true, std::sync::atomic::Ordering::SeqCst);
-                if over {
-                    reading.end_turn();
-                }
-                seen.push((line, over));
-            }
-            reading.release();
-            seen
+    /// Wait until the runner has opened the turn, so an interrupt has one to
+    /// abort.
+    fn wait_for_open_turn(handle: &ControlHandle) {
+        wait_for("the turn to open", || {
+            matches!(
+                &*handle
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                TurnState::Active(_)
+            )
+        });
+    }
+
+    #[test]
+    fn an_interrupt_landing_while_the_runner_opens_the_turn_is_written_after_its_prompt() {
+        // The runner has parked the harness's stdin — the run is live to the
+        // control socket — but not yet written the prompt, when an interrupt
+        // arrives. Its abort must follow the prompt: as the harness's first
+        // line it aims at a turn that does not exist yet, and a harness strict
+        // about that (as Claude Code's stream input and onejudge's double are)
+        // exits 2, refusing the redirection.
+        const HARNESS: &str = r#"
+            IFS= read -r first || exit 3
+            case "$first" in *'"type":"user"'*) ;; *)
+                echo '{"type":"system","subtype":"abort_before_prompt"}'; exit 2;; esac
+            IFS= read -r abort || exit 4
+            case "$abort" in *control_request*) ;; *) exit 5;; esac
+            echo '{"type":"result","subtype":"error_during_execution"}'
+            IFS= read -r next || exit 6
+            case "$next" in *'do X instead'*) ;; *) exit 7;; esac
+            echo '{"type":"result","subtype":"success"}'
+            exec cat >/dev/null
+        "#;
+        let (_dir, path, _listener, handle) = stdin_control("redirect-opening");
+        handle
+            .holds
+            .opening
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let run = run_controlled_in_background(&handle, HARNESS);
+        wait_for("the opening to be held", || {
+            handle
+                .holds
+                .opening_held
+                .load(std::sync::atomic::Ordering::SeqCst)
         });
 
-        // The opening is held once stdin is parked and before its prompt goes
-        // out, while the interrupt arrives and writes its abort — until the
-        // harness has answered whatever reached it first, or the abort is
-        // waiting on a stdin someone else holds (the opening itself, or the
-        // abort's own write, which then lands first anyway).
-        let mut pending = None;
-        let frames = handle.open_frames("start the task");
-        let opened = handle.open_turn_with(Box::new(child.stdin.take().unwrap()), &frames, || {
-            pending = Some(send_in_background(&path, "do X instead"));
-            wait_for("the interrupt to write its abort, or wait to", || {
-                spoke.load(std::sync::atomic::Ordering::SeqCst)
-                    || (handle.redirect_is_aborting() && handle.state.try_lock().is_err())
-            });
-        });
-
-        let response = pending.unwrap().join().unwrap();
+        let response = send_in_background(&path, "do X instead").join().unwrap();
+        let capture = run.join().unwrap();
         assert!(
             response.is_redirected(),
-            "an interrupt that arrived as the turn opened must redirect it: {response:?}"
+            "an interrupt that arrived as the turn opened must redirect it: \
+             {response:?}\n{capture:?}"
         );
-        assert!(opened.is_ok(), "{opened:?}");
-        handle.end_turn();
-        let seen = reader.join().unwrap();
-        child.wait().ok();
-        assert_eq!(seen.len(), 2, "{seen:?}");
-        assert_eq!(
-            seen[0],
-            (ANSWER.to_string(), false),
-            "the prompt came first, and the abort ended its turn"
-        );
-        let echoed: serde_json::Value = serde_json::from_str(&seen[1].0).unwrap();
-        assert_eq!(echoed["type"], "user");
-        assert_eq!(echoed["message"]["content"][0]["text"], "do X instead");
+        assert_eq!(capture.exit_code, Some(0), "{capture:?}");
         let events = handle.events();
         assert_eq!(events.len(), 1, "{events:?}");
         assert!(events[0].is_redirected(), "{events:?}");
     }
 
     #[test]
-    fn a_run_released_after_its_aborted_turn_ended_refuses_the_redirection_no_active_turn() {
-        // The turn's end arrives while the abort is being written, so the
-        // interrupt owes the replacement prompt; but the harness exits and the
-        // run releases its candidate before the interrupt's write has returned
-        // to deliver it. The aborted turn ended first, so the refusal is the
-        // `no_active_turn` a failed replacement write gives — not a
-        // `not_running` that depends on which thread got there first.
-        struct Gated {
-            entered: std::sync::mpsc::Sender<()>,
-            release: std::sync::mpsc::Receiver<()>,
-            written: Arc<Mutex<Vec<u8>>>,
-        }
-        impl io::Write for Gated {
-            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-                let _ = self.entered.send(());
-                let _ = self.release.recv();
-                self.written
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .extend_from_slice(bytes);
-                Ok(bytes.len())
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
-        let dir = temp_dir("redirect-released-answered");
-        let path = socket_path(&dir, "live")
-            .expect("a short fixture name fits every platform's socket-address budget");
-        let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
-        let handle = listener.handle();
-        let (entered, writing) = std::sync::mpsc::channel();
-        let (release, gate) = std::sync::mpsc::channel();
-        let written = Arc::new(Mutex::new(Vec::new()));
-        handle.bind(Binding::Stdin);
+    fn a_replacement_the_interrupt_wrote_is_delivered_however_fast_the_runner_closes_its_turn() {
+        // The stdin-closing race. The aborted turn ends while its abort is
+        // still being written, so the interrupt itself writes the replacement
+        // prompt once its write returns. The harness runs that turn at once and
+        // ends it; the runner closes the harness's stdin, the harness exits on
+        // EOF, and the run releases its candidate — all before the interrupt
+        // has recorded that its write landed. Settled after the turn's lock is
+        // let go, the release answered the message first: `not_running`, "the
+        // run's harness exited before the redirection could be written", for a
+        // message the harness had received and acted on.
+        const HARNESS: &str = r#"
+            IFS= read -r first || exit 3
+            IFS= read -r abort || exit 4
+            echo '{"type":"result","subtype":"error_during_execution"}'
+            IFS= read -r next || exit 6
+            case "$next" in *'do X instead'*) ;; *) exit 7;; esac
+            echo '{"type":"result","subtype":"success"}'
+            exec cat >/dev/null
+        "#;
+        let (_dir, path, _listener, handle) = stdin_control("redirect-closing");
         *handle
-            .state
+            .holds
+            .abort
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-            TurnState::Active(Box::new(Gated {
-                entered,
-                release: gate,
-                written: Arc::clone(&written),
-            }));
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(AbortHold::TurnEnded);
+        handle
+            .holds
+            .written
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let run = run_controlled_in_background(&handle, HARNESS);
+        wait_for_open_turn(&handle);
 
-        let pending = send_in_background(&path, "do X instead");
-        writing.recv().unwrap();
+        let response = send_in_background(&path, "do X instead").join().unwrap();
+        let capture = run.join().unwrap();
         assert!(
-            !handle.advance(r#"{"type":"result","subtype":"error_during_execution"}"#),
-            "a turn that may be the abort's answer is kept open for its redirection"
+            response.is_redirected(),
+            "a replacement that was written was delivered: {response:?}\n{capture:?}"
         );
-        // The run is over: its candidate is released while the abort's write
-        // is still in progress, and has taken the redirection before it.
-        let releasing = std::thread::spawn({
-            let handle = Arc::clone(&handle);
-            move || handle.release()
-        });
-        wait_for("the release to take the redirection", || {
-            matches!(&*handle.redirect(), Redirect::None)
-        });
-        release.send(()).unwrap();
-        releasing.join().unwrap();
+        assert_eq!(capture.exit_code, Some(0), "{capture:?}");
+        assert!(
+            capture.stdout.contains(r#""subtype":"success""#),
+            "the harness ran the replacement turn: {capture:?}"
+        );
+        let events = handle.events();
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert!(events[0].is_redirected(), "{events:?}");
+    }
 
-        let response = pending.join().unwrap();
+    #[test]
+    fn a_redirection_whose_aborted_turn_ended_before_the_runner_released_is_refused_no_active_turn()
+    {
+        // The aborted turn ends while its abort is still being written, and the
+        // harness — gone, its stdin closed — exits; the run releases its
+        // candidate before the interrupt is back to write the replacement. The
+        // turn is what ended first, so the refusal is the `no_active_turn` the
+        // failed write gives when the interrupt wins that race, never a
+        // `not_running` that depends on which thread got there first.
+        const HARNESS: &str = r#"
+            IFS= read -r first || exit 3
+            IFS= read -r abort || exit 4
+            exec 0<&-
+            echo '{"type":"result","subtype":"error_during_execution"}'
+        "#;
+        let (_dir, path, _listener, handle) = stdin_control("redirect-released");
+        *handle
+            .holds
+            .abort
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(AbortHold::Released);
+        let run = run_controlled_in_background(&handle, HARNESS);
+        wait_for_open_turn(&handle);
+
+        let response = send_in_background(&path, "do X instead").join().unwrap();
+        let capture = run.join().unwrap();
+        assert!(!response.is_redirected(), "{response:?}");
         assert_eq!(
             response.reason(),
             Some(ControlReason::NoActiveTurn),
-            "{response:?}"
+            "{response:?}\n{capture:?}"
         );
-        assert!(
-            response
-                .to_line()
-                .contains("the redirection was not delivered"),
-            "{response:?}"
-        );
-        let written = String::from_utf8(written.lock().unwrap().clone()).unwrap();
-        assert!(written.contains("control_request"), "{written}");
-        assert!(!written.contains("do X instead"), "{written}");
         let events = handle.events();
         assert_eq!(events.len(), 1, "{events:?}");
         assert_eq!(events[0].reason(), Some(ControlReason::NoActiveTurn));
-    }
-
-    #[test]
-    fn a_replacement_written_by_the_interrupt_is_delivered_though_the_run_ends_before_it_is_settled(
-    ) {
-        use std::io::BufRead;
-        // The turn's end arrives while the abort is being written, so the
-        // interrupt writes the replacement prompt itself once its write
-        // returns. The harness can then read that prompt, run the replacement
-        // turn to its end and exit, and the run release its candidate — all
-        // before the interrupt has recorded the write. The message WAS
-        // delivered, so the supervisor must be told so, not `not_running`.
-        //
-        // A scripted harness: it answers the abort with its end-of-turn
-        // document while the run is held inside the abort's write (so the
-        // interrupt owns the replacement), echoes the replacement prompt, ends
-        // that turn at once, and exits when the run closes its stdin.
-        const ANSWER: &str = r#"{"type":"result","subtype":"error_during_execution"}"#;
-        const DONE: &str = r#"{"type":"result","subtype":"success"}"#;
-        let dir = temp_dir("redirect-settled");
-        let path = socket_path(&dir, "live")
-            .expect("a short fixture name fits every platform's socket-address budget");
-        let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
-        let handle = listener.handle();
-        let mut child = std::process::Command::new("sh")
-            .args([
-                "-c",
-                &format!(
-                    "IFS= read -r abort; printf '%s\\n' '{ANSWER}'; \
-                     IFS= read -r next; printf '%s\\n' \"$next\" '{DONE}'; exec cat >/dev/null"
-                ),
-            ])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-
-        // The child's stdin, holding the run inside the abort's write until
-        // the run has handled the harness's answer to it.
-        struct HeldUntilAnswered {
-            stdin: std::process::ChildStdin,
-            handled: std::sync::mpsc::Receiver<()>,
-            held: bool,
-        }
-        impl io::Write for HeldUntilAnswered {
-            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-                self.stdin.write(bytes)
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                self.stdin.flush()?;
-                if !std::mem::replace(&mut self.held, true) {
-                    let _ = self.handled.recv_timeout(std::time::Duration::from_secs(5));
-                }
-                Ok(())
-            }
-        }
-        let (answered, handled) = std::sync::mpsc::channel();
-        handle.bind(Binding::Stdin);
-        *handle
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-            TurnState::Active(Box::new(HeldUntilAnswered {
-                stdin: child.stdin.take().unwrap(),
-                handled,
-                held: false,
-            }));
-
-        // The run's own reading of the harness's output, and the release it
-        // performs once its harness is gone.
-        let stdout = child.stdout.take().unwrap();
-        let reading = Arc::clone(&handle);
-        let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let reader = std::thread::spawn({
-            let released = Arc::clone(&released);
-            move || {
-                let mut seen = Vec::new();
-                for line in io::BufReader::new(stdout).lines() {
-                    let line = line.unwrap();
-                    let over = reading.advance(&line);
-                    if line == ANSWER {
-                        answered.send(()).unwrap();
-                    }
-                    if over {
-                        reading.end_turn();
-                    }
-                    seen.push((line, over));
-                }
-                reading.release();
-                released.store(true, std::sync::atomic::Ordering::SeqCst);
-                seen
-            }
-        });
-
-        // Once the replacement is written, the gap before it is recorded is
-        // held open until the run has released its candidate — or, if the
-        // turn's stdin is still held while it is recorded, until the record is
-        // made (the run cannot close stdin, and so cannot end, before then).
-        *handle
-            .on_redirect_written
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Box::new({
-            let handle = Arc::clone(&handle);
-            move || {
-                wait_for("the run to end, or to be unable to", || {
-                    released.load(std::sync::atomic::Ordering::SeqCst)
-                        || handle.state.try_lock().is_err()
-                });
-            }
-        }));
-
-        let response = send_in_background(&path, "do X instead").join().unwrap();
-        assert!(
-            response.is_redirected(),
-            "a replacement that was written was delivered: {response:?}"
-        );
-        let seen = reader.join().unwrap();
-        child.wait().ok();
-        assert_eq!(seen.len(), 3, "{seen:?}");
-        assert_eq!(seen[0], (ANSWER.to_string(), false), "{seen:?}");
-        let echoed: serde_json::Value = serde_json::from_str(&seen[1].0).unwrap();
-        assert_eq!(echoed["message"]["content"][0]["text"], "do X instead");
-        assert_eq!(seen[2], (DONE.to_string(), true), "{seen:?}");
-        let events = handle.events();
-        assert_eq!(events.len(), 1, "{events:?}");
-        assert!(events[0].is_redirected(), "{events:?}");
     }
 
     #[test]

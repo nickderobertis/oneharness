@@ -1668,7 +1668,6 @@ fn an_interrupt_reaches_only_its_own_dispatch_s_turn_over_its_own_connection() {
     }
 }
 
-// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run --control` and `oneharness interrupt` through the real pool; only codex is the repository's subprocess double, which can be made to leave an interrupt unanswered, report a thread gone, or answer an unparsable frame on demand — real Codex does none of these within the gate. Real Codex's pooled interrupt is held by scripts/e2e-control.sh's pooled-env phase.
 /// After its turn ended — the dispatch still alive, releasing its thread — an
 /// interrupt answers `no_active_turn` from oneharness's own record and sends
 /// nothing to a server that would never answer one; once the dispatch is gone
@@ -1827,7 +1826,6 @@ fn a_pooled_interrupt_answers_from_its_own_record_and_never_waits_unbounded() {
     sigkill(silent.id());
     let _ = silent.wait_with_output();
 }
-// llmlint: ignore-end[e2e_not_mocked]
 
 /// Spawn a dispatch of the fallback chain `config` names — its own
 /// candidates, so the default `--harness` is dropped — under `envs`.

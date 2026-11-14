@@ -9,7 +9,7 @@ use serde_json::Value;
 
 use crate::domain::harness::{self, HarnessSpec, SyncSpec};
 use crate::domain::sync as sync_domain;
-use crate::domain::sync::{deep_merge, RuleChange, RulesPlan, UnmappedRule};
+use crate::domain::sync::{deep_merge, RuleChange, RuleList, RulesPlan, UnmappedRule};
 use crate::errors::OneharnessError;
 
 /// What applying a fragment did (or, under `check`, would do) to one file.
@@ -219,6 +219,86 @@ fn apply_rules(
     }))
 }
 
+/// Refuse a sync that would take out of `spec`'s project file a rule that is
+/// the translation of one of `selected_id`'s run-level `allowed_tools`.
+///
+/// That entry is what an earlier release synced from the same config, back
+/// when a top-level `allowed_tools` was sync policy; erasing it now would
+/// silently destroy a permission the user once granted. So the check runs only
+/// on that evidence: a Codex rules file, which every non-global sync rewrites
+/// whole, losing a statement the rule renders to, or an `--exact` sync
+/// emptying the entry from a JSON allow list. A config whose run-level rules
+/// were never synced never meets it. A hand-edited entry in another spelling
+/// is not recognized.
+fn refuse_removing_run_level_rules(
+    request: &SyncRequest,
+    cfg: &crate::domain::config::FileConfig,
+    project_dir: &Path,
+    spec: &HarnessSpec,
+    selected_id: &str,
+    mode: SyncMode,
+) -> Result<(), OneharnessError> {
+    let run_level = cfg.allowed_tools_for(selected_id);
+    let Some(sync_spec) = &spec.sync else {
+        return Ok(());
+    };
+    if run_level.is_empty() {
+        return Ok(());
+    }
+    // (entry as the file holds it, the run-level rule it translates, file)
+    let mut lost: Option<(String, String, PathBuf)> = None;
+    if let Some(rules) = sync_domain::rules_plan_for(cfg, spec, selected_id) {
+        let target = project_dir.join(sync_spec.file);
+        if let Some(existing) = read_optional(&target)? {
+            let (_, removed) = sync_domain::rules_changes(&existing, &rules.text);
+            lost = run_level.iter().find_map(|rule| {
+                let statement = sync_domain::exec_policy_statement(RuleList::AllowedTools, rule)?;
+                removed
+                    .iter()
+                    .any(|change| change.rule == statement)
+                    .then(|| (statement, rule.clone(), target.clone()))
+            });
+        }
+    } else if mode == SyncMode::Exact && sync_spec.allow_path.is_some() {
+        let target = json_target(project_dir, sync_spec);
+        let existing =
+            read_optional(&target)?.and_then(|text| serde_json::from_str::<Value>(&text).ok());
+        if let Some(existing) = existing {
+            let plan = sync_domain::plan_for(cfg, spec, selected_id).map_err(|message| {
+                OneharnessError::HarnessConfigUnmergeable {
+                    path: format!("[sync.harness.{}]", spec.id),
+                    message,
+                }
+            })?;
+            let merged = sync_domain::merge_exact(&existing, plan.fragment.as_ref(), sync_spec);
+            lost = run_level.iter().find_map(|rule| {
+                merged
+                    .removed
+                    .iter()
+                    .any(|change| {
+                        change.list == Some(RuleList::AllowedTools) && &change.rule == rule
+                    })
+                    .then(|| (rule.clone(), rule.clone(), target.clone()))
+            });
+        }
+    }
+    let Some((entry, rule, file)) = lost else {
+        return Ok(());
+    };
+    // Only on refusal: read the layers again to name the file the rule is in.
+    let layers = crate::io::config::load_layers(&request.config, request.no_config, project_dir)?;
+    let source_file = crate::domain::config::allowed_tools_source(&layers, selected_id)
+        .unwrap_or("the loaded config")
+        .to_string();
+    Err(OneharnessError::SyncWouldRemoveRunLevelRule {
+        harness: selected_id.to_string(),
+        file: file.display().to_string(),
+        entry,
+        rule,
+        source_file,
+    })
+}
+
 /// Pretty-print and write via a temp file + rename, so a crash mid-write can
 /// never leave a harness with a truncated config file.
 pub(crate) fn write_atomically(target: &Path, value: &Value) -> Result<(), OneharnessError> {
@@ -354,11 +434,11 @@ pub struct SyncResult {
     // would fail to import it. `SyncStatus`'s own definition carries the
     // description, including what `skipped` means here.
     pub status: SyncStatus,
-    /// Normalized `[[hooks]]` files installed into this harness (a Goose hook
-    /// writes two). Empty when no `[[hooks]]` entry targets it.
+    /// Normalized `[[sync.hooks]]` files installed into this harness (a Goose hook
+    /// writes two). Empty when no `[[sync.hooks]]` entry targets it.
     pub hooks: Vec<HookFileResult>,
     /// Top-level settings that have no mapping for this harness (e.g. a
-    /// top-level `allowed_tools` while the harness has no allow-list concept)
+    /// `[sync] allowed_tools` while the harness has no allow-list concept)
     /// — visible here and warned on stderr, never silently dropped.
     pub unmapped: Vec<&'static str>,
     /// Individual configured rules this harness cannot express (a Codex
@@ -395,7 +475,7 @@ impl SyncResult {
     }
 }
 
-/// One installed `[[hooks]]` file.
+/// One installed `[[sync.hooks]]` file.
 #[derive(Debug, Clone, schemars::JsonSchema, serde::Serialize)]
 pub struct HookFileResult {
     pub file: String,
@@ -443,7 +523,7 @@ pub fn sync_with(request: &SyncRequest, mode: SyncMode) -> Result<SyncReport, On
     let selected_ids = crate::domain::select::dedupe_exact_ids(&selected_ids);
     for id in &selected_ids {
         if let Some((base, variant)) = id.split_once(':') {
-            if cfg.variant_for(id).is_none() {
+            if !cfg.declares_variant(id) {
                 return Err(OneharnessError::UnknownHarnessVariant {
                     id: id.clone(),
                     base: base.to_string(),
@@ -460,7 +540,7 @@ pub fn sync_with(request: &SyncRequest, mode: SyncMode) -> Result<SyncReport, On
         })?;
         let first = sync_domain::plan_for(cfg, spec, first_id).map_err(|message| {
             OneharnessError::HarnessConfigUnmergeable {
-                path: format!("[harness.{base}]"),
+                path: format!("[sync.harness.{base}]"),
                 message,
             }
         })?;
@@ -471,7 +551,7 @@ pub fn sync_with(request: &SyncRequest, mode: SyncMode) -> Result<SyncReport, On
             }
             let second = sync_domain::plan_for(cfg, spec, second_id).map_err(|message| {
                 OneharnessError::HarnessConfigUnmergeable {
-                    path: format!("[harness.{base}]"),
+                    path: format!("[sync.harness.{base}]"),
                     message,
                 }
             })?;
@@ -497,6 +577,15 @@ pub fn sync_with(request: &SyncRequest, mode: SyncMode) -> Result<SyncReport, On
         crate::domain::select::select_specs(false, &selected_ids, &[])?
     };
 
+    // Nothing is written until every harness has cleared the guard: a refusal
+    // leaves the whole project as it found it.
+    if !request.global {
+        for (index, spec) in specs.iter().enumerate() {
+            let selected_id = selected_ids.get(index).map_or(spec.id, String::as_str);
+            refuse_removing_run_level_rules(request, cfg, &project_dir, spec, selected_id, mode)?;
+        }
+    }
+
     let mut results = Vec::with_capacity(specs.len());
 
     // Resolved once: the user-global base dirs a `global` hook install anchors
@@ -507,7 +596,7 @@ pub fn sync_with(request: &SyncRequest, mode: SyncMode) -> Result<SyncReport, On
         let selected_id = selected_ids.get(index).map_or(spec.id, String::as_str);
         let plan = sync_domain::plan_for(cfg, spec, selected_id).map_err(|message| {
             OneharnessError::HarnessConfigUnmergeable {
-                path: format!("[harness.{}]", spec.id),
+                path: format!("[sync.harness.{}]", spec.id),
                 message,
             }
         })?;
@@ -576,10 +665,10 @@ pub fn sync_with(request: &SyncRequest, mode: SyncMode) -> Result<SyncReport, On
             None => (None, SyncStatus::Skipped, Vec::new(), Vec::new()),
         };
 
-        // Normalized `[[hooks]]` install into this harness's native shape,
+        // Normalized `[[sync.hooks]]` install into this harness's native shape,
         // independent of the permission/settings fragment above.
         let mut hooks = Vec::new();
-        for hook in cfg.hook_specs_for(spec.id) {
+        for hook in cfg.sync.hook_specs_for(spec.id) {
             let scope = if request.global {
                 crate::io::hooks::Scope::Global(&global_dirs)
             } else {
@@ -754,7 +843,7 @@ mod tests {
         let dir = temp_project("rules");
         let spec = harness::by_id("codex").unwrap().sync.as_ref().unwrap();
         let path = dir.join(".codex/rules/oneharness.rules");
-        let plan = codex_rules("allowed_tools = [\"Bash(ls:*)\"]");
+        let plan = codex_rules("[sync]\nallowed_tools = [\"Bash(ls:*)\"]");
         // Nothing configured and no file: nothing to write.
         assert!(apply_rules(&dir, spec, &codex_rules(""), false, false)
             .unwrap()
@@ -809,9 +898,10 @@ mod tests {
     }
 
     /// The prose that restates this module's contract — the README's matrix
-    /// row, translation table, `--exact` and live-proof sections, the engine's AGENTS.md,
-    /// and the parity note — is held to the code here, so a rename or a
-    /// changed translation cannot leave the documents describing the old one.
+    /// row, `[sync]` table, translation table, `--exact` and live-proof
+    /// sections, the engine's AGENTS.md, and the parity note — is held to the
+    /// code here, so a rename or a changed translation cannot leave the
+    /// documents describing the old one.
     #[test]
     fn the_documents_restating_the_sync_contract_match_the_code() {
         use crate::domain::sync::RuleList;
@@ -820,6 +910,56 @@ mod tests {
         let parity = include_str!("../../../../docs/sdk-parity.md");
         let e2e = include_str!("../../../../scripts/e2e-lib.sh");
         let lane = include_str!("../../../../scripts/e2e-codex.sh");
+
+        // The README's `[sync]` table names exactly what each table takes:
+        // every listed field parses there, a field it does not list is refused,
+        // and a sync-only field outside `[sync]` is refused.
+        let row = |table: &str| {
+            readme
+                .lines()
+                .find(|line| line.starts_with(&format!("| `{table}` |")))
+                .unwrap_or_else(|| panic!("README.md has the `{table}` row"))
+        };
+        let top = row("[sync]");
+        for field in ["`allowed_tools`", "`denied_tools`", "`[[sync.hooks]]`"] {
+            assert!(top.contains(field), "{top}: {field}");
+        }
+        let harness_row = row("[sync.harness.<id>]");
+        for field in ["`allowed_tools`", "`denied_tools`", "`hooks`", "`settings`"] {
+            assert!(harness_row.contains(field), "{harness_row}: {field}");
+        }
+        assert!(row("[sync.harness.<id>.variant.<name>]").contains("the same four"));
+        let four = "allowed_tools = []\ndenied_tools = []\nhooks = {}\nsettings = {}\n";
+        for text in [
+            "[sync]\nallowed_tools = []\ndenied_tools = []\n[[sync.hooks]]\ncommand = \"g\"\n"
+                .to_string(),
+            format!("[sync.harness.claude-code]\n{four}"),
+            format!("[sync.harness.claude-code.variant.work]\n{four}"),
+        ] {
+            crate::domain::config::parse(&text).unwrap_or_else(|e| panic!("{text}: {e}"));
+        }
+        for text in [
+            "[sync]\nsettings = {}",
+            "[sync]\nmodel = \"m\"",
+            "denied_tools = []",
+        ] {
+            assert!(crate::domain::config::parse(text).is_err(), "{text}");
+        }
+        // The engine's note names the symbols that implement it.
+        let _ = (
+            crate::domain::config::FileConfig::allowed_tools_for,
+            crate::domain::config::parse,
+            refuse_removing_run_level_rules,
+            crate::domain::config::SyncConfig::default,
+        );
+        for symbol in [
+            "`domain::config::SyncConfig`",
+            "`FileConfig::allowed_tools_for`",
+            "`domain::config::parse`",
+            "`io::sync::refuse_removing_run_level_rules`",
+        ] {
+            assert!(agents.contains(symbol), "AGENTS.md: {symbol}");
+        }
 
         // The matrix row names the registry's Codex target.
         let codex = harness::by_id("codex").unwrap().sync.as_ref().unwrap();
@@ -836,8 +976,8 @@ mod tests {
             (RuleList::DeniedTools, "Bash(rm -rf:*)"),
         ] {
             let text = match list {
-                RuleList::AllowedTools => format!("allowed_tools = [{rule:?}]"),
-                RuleList::DeniedTools => format!("denied_tools = [{rule:?}]"),
+                RuleList::AllowedTools => format!("[sync]\nallowed_tools = [{rule:?}]"),
+                RuleList::DeniedTools => format!("[sync]\ndenied_tools = [{rule:?}]"),
             };
             let rendered = codex_rules(&text).text;
             let statement = rendered.lines().last().unwrap();
@@ -897,7 +1037,7 @@ mod tests {
         // The live proof the README describes is the one the lane runs.
         assert!(lane.contains("\noh_codex_rules_enforce\n"));
         assert!(e2e.contains("\noh_codex_rules_enforce() {"));
-        assert!(e2e.contains(r#"allowed_tools = ["Bash(%s:*)"]"#));
+        assert!(e2e.contains(r#"[sync.harness.codex]\nallowed_tools = ["Bash(%s:*)"]"#));
         assert!(e2e.contains(r#"denied_tools = ["Bash(mkdir %s:*)"]"#));
         // The allow half's delete is spelled per shell: Windows Codex runs
         // PowerShell, whose `rm` alias rejects `-f`.

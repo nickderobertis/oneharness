@@ -81,14 +81,14 @@ oh_batch_fork_enforce claude-code
 # deny rule (and headless default-deny) keeps the other from running.
 ok="$(oh_enforce_file ok)"
 blocked="$(oh_enforce_file blocked)"
-policy="[harness.claude-code]
+policy="[sync.harness.claude-code]
 allowed_tools = [\"Bash(touch $ok)\"]
 denied_tools = [\"Bash(touch $blocked)\"]"
 oh_sync_enforce claude-code "$policy" "$ok" present allow
 oh_sync_enforce claude-code "$policy" "$blocked" absent deny
 note "PASS: claude-code sync enforcement"
 
-# Hook enforcement: a synced `[[hooks]]` gate (oneharness gate claude-code) must
+# Hook enforcement: a synced `[[sync.hooks]]` gate (oneharness gate claude-code) must
 # block a marked command and let an unmarked one through — the live proof the
 # installed hook file is honored by the real CLI.
 note "» hook enforcement: the synced gate must block a marked command"

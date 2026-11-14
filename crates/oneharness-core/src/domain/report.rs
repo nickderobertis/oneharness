@@ -60,6 +60,14 @@ use crate::domain::usage::UtcInstant;
 /// `supports_compact_now`, `supports_tool_set`, `supports_skills_off`,
 /// `supports_mcp_off`, `supports_images` and `supports_call_usage`.
 ///
+/// `0.14` moves the `config` report's sync policy into its own `sync` object
+/// (`allowed_tools`, `denied_tools`, `hooks` and per-harness `harness.<id>`
+/// with `variant.<name>`, mirroring a file's `[sync]` section), removing the
+/// top-level `denied_tools` / `hooks` and each harness's and variant's
+/// `denied_tools` / `hooks` / `settings`. The `allowed_tools` that stays beside
+/// the other run-level fields changes meaning: it is the run-level allowlist,
+/// which `sync` never writes. Not additive, hence the bump.
+///
 /// `0.12` adds [`FailureKind::AppServerLost`] and its `"app-server-lost"`
 /// fallback reason: a pooled Codex dispatch whose shared app-server went away
 /// under its live turn. A new enum value, so exhaustive consumers learn of it
@@ -95,7 +103,7 @@ use crate::domain::usage::UtcInstant;
 ///
 /// `0.4` added the `config` report's `stream` field (the layered `--stream`
 /// value, with its provenance).
-pub const SCHEMA_VERSION: &str = "0.13";
+pub const SCHEMA_VERSION: &str = "0.14";
 
 /// How a harness emits its result, which decides how `text` is extracted.
 ///

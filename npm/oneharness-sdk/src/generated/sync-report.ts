@@ -59,8 +59,8 @@ export interface SyncResult {
   file: string | null;
   harness: string;
   /**
-   * Normalized `[[hooks]]` files installed into this harness (a Goose hook
-   * writes two). Empty when no `[[hooks]]` entry targets it.
+   * Normalized `[[sync.hooks]]` files installed into this harness (a Goose hook
+   * writes two). Empty when no `[[sync.hooks]]` entry targets it.
    */
   hooks: HookFileResult[];
   /**
@@ -72,7 +72,7 @@ export interface SyncResult {
   status: SyncStatus;
   /**
    * Top-level settings that have no mapping for this harness (e.g. a
-   * top-level `allowed_tools` while the harness has no allow-list concept)
+   * `[sync] allowed_tools` while the harness has no allow-list concept)
    * — visible here and warned on stderr, never silently dropped.
    */
   unmapped: string[];
@@ -102,7 +102,7 @@ export interface RuleChange {
   [k: string]: unknown;
 }
 /**
- * One installed `[[hooks]]` file.
+ * One installed `[[sync.hooks]]` file.
  */
 export interface HookFileResult {
   file: string;

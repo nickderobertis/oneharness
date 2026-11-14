@@ -530,7 +530,7 @@ class Transparent(unittest.TestCase):
         )
         self.assertEqual(trust.returncode, 0, trust.stderr)
         policy = self.base / "oneharness.toml"
-        policy.write_text('[harness.codex]\ndenied_tools = ["Bash(mkdir rules-deny-1:*)"]\n')
+        policy.write_text('[sync.harness.codex]\ndenied_tools = ["Bash(mkdir rules-deny-1:*)"]\n')
         sync = subprocess.run(
             [
                 str(ONEHARNESS),

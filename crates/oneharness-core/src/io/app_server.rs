@@ -318,7 +318,8 @@ impl AppServerLease {
     }
 }
 
-/// The marker the next server this process starts is launched with.
+/// A test pins [`MARKER_ENV`] so two runs launch the same server; a run left
+/// to itself gets a marker no other server carries.
 fn server_marker() -> ServerMarker {
     marker_from(std::env::var(MARKER_ENV))
 }

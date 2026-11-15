@@ -6104,6 +6104,7 @@ fn the_control_suite_s_pooled_phases_pass_and_fail_for_the_right_reason() {
     }
 }
 
+// llmlint: ignore-block[e2e_not_mocked] The subject is scripts/e2e-control.sh's own pooled-kill verdict, run for real over the built oneharness and oneharness-core's pool; the `date` wrapper is fault injection, not a mock — it only injects a two-second stall into the heartbeat before exec'ing the real `date`, because a real CPU stall of a loaded host cannot be forced deterministically within the gate. Only codex is the repository's subprocess double, as in every ControlSuite journey.
 /// A heartbeat the pool never stops that stalls for two seconds soon after
 /// the kill — the way a command starved of the CPU on a loaded host stalls —
 /// still fails pooled-kill as one that kept beating: a heartbeat gone still
@@ -6141,6 +6142,7 @@ exec "$real" "$@""#,
         "expected `FAIL: pooled-kill: … kept beating` in: {said}"
     );
 }
+// llmlint: ignore-end[e2e_not_mocked]
 
 // llmlint: ignore-block[e2e_not_mocked] The control suite's pooled-env phase runs for real — scripts/e2e-control.sh, the built oneharness behind a wrapper that only starts dispatch B late or ends it before it runs, and a host mktemp on PATH that cannot create a file, and oneharness-core's pool; only codex is the repository's subprocess double, as in every ControlSuite journey, because the gate cannot run real Codex. The same phase against real Codex is scripts/e2e-control.sh's live run.
 /// The suite's pooled-env dispatches share one server however late the

@@ -584,9 +584,11 @@ pub fn links_supported() -> bool {
 }
 
 /// Copy every thread-index file at `template`'s top level into `home`. A copy
-/// that fails part-way removes what it had copied, so `home` holds the whole
-/// index or none of it; the unit test beside it proves that, since no journey
-/// can make one copy within the overlay fail and not the others.
+/// that fails part-way removes every destination it reached — the one whose
+/// copy failed included, which `fs::copy` may already have created or
+/// truncated — so `home` holds the whole index or none of it. The unit tests
+/// beside it prove that, since no journey can make one copy within the
+/// overlay fail and not the others.
 fn copy_thread_index(template: &Path, home: &Path) -> io::Result<()> {
     let mut copied = Vec::new();
     let result = (|| {
@@ -601,8 +603,9 @@ fn copy_thread_index(template: &Path, home: &Path) -> io::Result<()> {
         names.sort();
         for name in names {
             let to = home.join(&name);
+            // Registered before the copy, which can fail after creating it.
+            copied.push(to.clone());
             fs::copy(template.join(&name), &to)?;
-            copied.push(to);
         }
         Ok(())
     })();
@@ -752,6 +755,28 @@ mod tests {
         fs::create_dir_all(template.join("state_5.sqlite-wal")).unwrap();
         assert!(copy_thread_index(&template, &home).is_err());
         assert_eq!(fs::read_dir(&home).unwrap().count(), 0);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_thread_index_copy_that_fails_after_opening_its_destination_removes_it() {
+        // The `-wal` destination is a link to `/dev/full`: `fs::copy` opens it
+        // for writing, then its first write fails with ENOSPC — a copy that
+        // reached its destination and failed, as on a full disk.
+        let scratch = ScratchDir::new("seed-copy-enospc").unwrap();
+        let (template, home) = (scratch.join("template"), scratch.join("home"));
+        fs::create_dir_all(&template).unwrap();
+        fs::create_dir_all(&home).unwrap();
+        fs::write(template.join("state_5.sqlite"), "db").unwrap();
+        fs::write(template.join("state_5.sqlite-wal"), "wal").unwrap();
+        std::os::unix::fs::symlink("/dev/full", home.join("state_5.sqlite-wal")).unwrap();
+        let error = copy_thread_index(&template, &home).unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(28), "{error}"); // ENOSPC
+        let left: Vec<_> = fs::read_dir(&home)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
     }
 
     #[cfg(unix)]

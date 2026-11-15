@@ -44012,38 +44012,31 @@ fn wait_out_the_lock_then_back_off_and_recover(stale: bool) {
 
 // llmlint: ignore-block[tests_mirror_real_usage] Through the CLI a launch's wait can only outlast MODEL_CATALOG_WAIT when another process holds the lock past the refresh deadline, which no launch this suite starts can be made to do on demand, and a host whose realtime clock steps mid-wait cannot be had on demand either; the test holds the lock as that process would and steps the binary's wall clock through its mock-harness-only seam, and the launch that waits goes through the real CLI.
 #[test]
-fn a_lock_wait_falls_back_at_model_catalog_wait_with_the_clock_stepped_back() {
-    fall_back_at_model_catalog_wait_with_the_wall_clock_stepped(-HOST_CLOCK_STEP_MS);
+fn a_lock_wait_falls_back_at_model_catalog_wait_however_the_wall_clock_steps() {
+    fall_back_at_model_catalog_wait_with_the_wall_clock_stepped(&[
+        -HOST_CLOCK_STEP_MS,
+        HOST_CLOCK_STEP_MS,
+        -3_000,
+        3_000,
+    ]);
 }
 
-#[test]
-fn a_lock_wait_falls_back_at_model_catalog_wait_with_the_clock_stepped_forward() {
-    fall_back_at_model_catalog_wait_with_the_wall_clock_stepped(HOST_CLOCK_STEP_MS);
-}
+/// How close the fastest launch stepped by each step must come to the
+/// fastest unstepped control: half the smallest step, so a wait timed on the
+/// wall clock — longer or shorter by the step — misses it by as much again as
+/// the noise it allows. A tolerance just under the step left a wall-timed wait
+/// refused by 5 ms on ubuntu-latest, while unstepped launches on
+/// windows-latest differed by up to 64 ms.
+const LOCK_WAIT_TOLERANCE: std::time::Duration = std::time::Duration::from_millis(65);
 
-#[test]
-fn a_lock_wait_falls_back_at_model_catalog_wait_with_the_clock_stepped_seconds_back() {
-    fall_back_at_model_catalog_wait_with_the_wall_clock_stepped(-3_000);
-}
-
-#[test]
-fn a_lock_wait_falls_back_at_model_catalog_wait_with_the_clock_stepped_seconds_forward() {
-    fall_back_at_model_catalog_wait_with_the_wall_clock_stepped(3_000);
-}
-
-/// How close the fastest stepped launch's wait must come to the fastest
-/// unstepped control's: smaller than every step the journeys take, so a wait
-/// timed on the wall clock — longer or shorter by the step — fails it.
-const LOCK_WAIT_TOLERANCE: std::time::Duration = std::time::Duration::from_millis(120);
-
-/// How many stepped launches, and as many unstepped controls, each
-/// stepped-clock journey starts at once, each in its own world. A loaded
-/// host only ever lengthens a measured wait, so each side is read by its
-/// fastest; and a runner stall that lengthens every launch at once
-/// lengthens the controls alike. Against the bare constant instead, a
-/// windows-latest stall put all five launches of one journey at 12.42-12.74 s
+/// How many launches the journey starts at once for each step, and as many
+/// unstepped controls, each in its own world. A loaded host only ever
+/// lengthens a measured wait, so each group is read by its fastest; and a
+/// runner stall that lengthens every launch at once lengthens the controls
+/// alike. Against the bare constant instead, a windows-latest stall put all
+/// five launches of one journey at 12.42-12.74 s
 /// (https://github.com/nickderobertis/oneharness/actions/runs/43658620108).
-const STEPPED_LAUNCHES: usize = 4;
+const STEPPED_LAUNCHES: usize = 6;
 
 /// The ceiling no launch's wait may reach: a coarse guard against a wait
 /// that never ends, well past any stall.
@@ -44166,65 +44159,90 @@ impl LockWaitLaunch {
 }
 
 /// With this test holding each world's catalog lock for the whole wait,
-/// [`STEPPED_LAUNCHES`] launches whose wall clock steps by `step_ms` halfway
-/// through, and as many unstepped controls started at the same moment, each
-/// report the MODEL_CATALOG_WAIT fallback ([`LockWaitLaunch::finish`]). On
-/// this test's monotonic clock, from its own start, every launch waits at
-/// least MODEL_CATALOG_WAIT and under [`LOCK_WAIT_CEILING`] past it, and the
-/// fastest stepped launch reports within [`LOCK_WAIT_TOLERANCE`] of the
-/// fastest control: the fallback does not depend on the wall clock holding
-/// still.
-fn fall_back_at_model_catalog_wait_with_the_wall_clock_stepped(step_ms: i64) {
-    assert!(
-        u128::from(step_ms.unsigned_abs()) > LOCK_WAIT_TOLERANCE.as_millis(),
-        "a step within the tolerance proves nothing"
-    );
-    // Interleaved, so neither side is the one started first.
-    let mut stepped = Vec::new();
-    let mut controls = Vec::new();
+/// [`STEPPED_LAUNCHES`] launches for each of `steps` whose wall clock steps by
+/// it halfway through, and as many unstepped controls, all started at the
+/// same moment, each report the MODEL_CATALOG_WAIT fallback
+/// ([`LockWaitLaunch::finish`]). On this test's monotonic clock, from its own
+/// start, every launch waits at least MODEL_CATALOG_WAIT and under
+/// [`LOCK_WAIT_CEILING`] past it, and for each step the fastest stepped
+/// launch reports within [`LOCK_WAIT_TOLERANCE`] of the fastest control: the
+/// fallback does not depend on the wall clock holding still.
+fn fall_back_at_model_catalog_wait_with_the_wall_clock_stepped(steps: &[i64]) {
+    for step_ms in steps {
+        assert!(
+            u128::from(step_ms.unsigned_abs()) > LOCK_WAIT_TOLERANCE.as_millis(),
+            "a step within the tolerance proves nothing"
+        );
+    }
+    // `None` is the controls'. Started round-robin, so no group is the one
+    // started first.
+    let groups: Vec<Option<i64>> = steps.iter().copied().map(Some).chain([None]).collect();
+    let label = |group: Option<i64>| {
+        group.map_or_else(|| "control".to_string(), |ms| format!("step {ms} ms"))
+    };
+    let mut launches: Vec<Vec<LockWaitLaunch>> = groups.iter().map(|_| Vec::new()).collect();
     for n in 0..STEPPED_LAUNCHES {
-        let world = |side: &str| {
-            CatalogWorld::new(&format!("catalog-clock-step-{step_ms}-{side}{n}"), "", "")
-        };
-        stepped.push(LockWaitLaunch::start(world("s")));
-        controls.push(LockWaitLaunch::start(world("c")));
+        for (group, started) in groups.iter().zip(&mut launches) {
+            let tag = group.map_or_else(|| "c".to_string(), |ms| ms.to_string());
+            started.push(LockWaitLaunch::start(CatalogWorld::new(
+                &format!("catalog-clock-step-{tag}-{n}"),
+                "",
+                "",
+            )));
+        }
     }
     std::thread::sleep(MODEL_CATALOG_WAIT / 2);
-    for launch in &stepped {
-        launch.world.step_wall_clock(step_ms);
+    for (group, started) in groups.iter().zip(&launches) {
+        if let Some(step_ms) = group {
+            for launch in started {
+                launch.world.step_wall_clock(*step_ms);
+            }
+        }
     }
-    let stepped: Vec<std::time::Duration> = stepped
-        .into_iter()
-        .enumerate()
-        .map(|(n, launch)| launch.finish(&format!("step {step_ms} ms, launch {n}")))
+    let waits: Vec<Vec<std::time::Duration>> = groups
+        .iter()
+        .zip(launches)
+        .map(|(group, started)| {
+            started
+                .into_iter()
+                .enumerate()
+                .map(|(n, launch)| launch.finish(&format!("{}, launch {n}", label(*group))))
+                .collect()
+        })
         .collect();
-    let controls: Vec<std::time::Duration> = controls
-        .into_iter()
-        .enumerate()
-        .map(|(n, launch)| launch.finish(&format!("step {step_ms} ms, control {n}")))
-        .collect();
-    let fastest = |waits: &[std::time::Duration]| *waits.iter().min().unwrap();
-    let (fastest_stepped, fastest_control) = (fastest(&stepped), fastest(&controls));
-    println!(
-        "step {step_ms} ms: fastest stepped {fastest_stepped:?} of {stepped:?}; \
-         fastest control {fastest_control:?} of {controls:?}"
-    );
-    assert!(
-        fastest_stepped.abs_diff(fastest_control) < LOCK_WAIT_TOLERANCE,
-        "step {step_ms} ms: the fastest stepped launch fell back {fastest_stepped:?} into its \
-         wait and the fastest unstepped control {fastest_control:?}, more than \
-         {LOCK_WAIT_TOLERANCE:?} apart (stepped {stepped:?}, controls {controls:?})"
-    );
-    for waited in stepped.iter().chain(&controls) {
+    let fastest = |group: &[std::time::Duration]| *group.iter().min().unwrap();
+    let control = waits.last().unwrap();
+    let fastest_control = fastest(control);
+    let mut refused = Vec::new();
+    for (step_ms, stepped) in steps.iter().zip(&waits) {
+        let fastest_stepped = fastest(stepped);
+        println!(
+            "step {step_ms} ms: fastest stepped {fastest_stepped:?} of {stepped:?}; \
+             fastest control {fastest_control:?} of {control:?}"
+        );
+        if fastest_stepped.abs_diff(fastest_control) >= LOCK_WAIT_TOLERANCE {
+            refused.push(format!(
+                "step {step_ms} ms: the fastest stepped launch fell back {fastest_stepped:?} into \
+                 its wait and the fastest unstepped control {fastest_control:?}, more than \
+                 {LOCK_WAIT_TOLERANCE:?} apart (stepped {stepped:?}, controls {control:?})"
+            ));
+        }
+    }
+    assert!(refused.is_empty(), "{}", refused.join("\n"));
+    for (group, waited) in groups
+        .iter()
+        .zip(&waits)
+        .flat_map(|(group, waits)| waits.iter().map(move |waited| (group, waited)))
+    {
+        let label = label(*group);
         assert!(
             *waited >= MODEL_CATALOG_WAIT,
-            "step {step_ms} ms: a fallback came before the wait ran out: {waited:?} \
-             (stepped {stepped:?}, controls {controls:?})"
+            "{label}: a fallback came before the wait ran out: {waited:?} ({waits:?})"
         );
         assert!(
             *waited < MODEL_CATALOG_WAIT + LOCK_WAIT_CEILING,
-            "step {step_ms} ms: a wait ran past {LOCK_WAIT_CEILING:?} over the constant: \
-             {waited:?} (stepped {stepped:?}, controls {controls:?})"
+            "{label}: a wait ran past {LOCK_WAIT_CEILING:?} over the constant: {waited:?} \
+             ({waits:?})"
         );
     }
 }

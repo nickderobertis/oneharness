@@ -347,6 +347,15 @@ class WindowsFormDirectory(unittest.TestCase):
 
 
 @unittest.skipIf(WINDOWS, "the doubles are bash scripts")
+class GraceCase(NamedTuple):
+    """One launch the shared-server grace test runs under a suite's setup."""
+
+    suite: str  # the suite whose telemetry file records the launch
+    setup: str  # the oh_telemetry_setup line that suite sources
+    argv: list[str]  # the codex arguments the launch runs
+    keeps_leftovers: bool  # whether the measurer leaves its detached command running
+
+
 class Setup(unittest.TestCase):
     """oh_telemetry_setup itself, driven as a suite drives it."""
 
@@ -393,11 +402,12 @@ class Setup(unittest.TestCase):
         assert control is not None, "scripts/e2e-control.sh no longer sets up its recorder"
         grace, deadline = 1, 8
         server = ["app-server", "--listen", "unix:///nonexistent/app.sock"]
-        for suite, setup, args, followed in (
-            ("control", control.group(0), server, True),
-            ("control", control.group(0), ["exec", "stay"], False),
-            ("codex", "oh_telemetry_setup codex", server, False),
+        for case in (
+            GraceCase("control", control.group(0), server, keeps_leftovers=True),
+            GraceCase("control", control.group(0), ["exec", "stay"], keeps_leftovers=False),
+            GraceCase("codex", "oh_telemetry_setup codex", server, keeps_leftovers=False),
         ):
+            suite, setup, args = case.suite, case.setup, case.argv
             with self.subTest(suite=suite, launch=args[0]):
                 tmp = scratch(self)
                 heartbeat = tmp / "heartbeat"
@@ -424,7 +434,7 @@ class Setup(unittest.TestCase):
                 took = time.monotonic() - started
                 self.assertEqual(run.returncode, 0, run.stderr)
                 beats = [float(b.split()[1]) for b in heartbeat.read_text().splitlines()]
-                if followed:
+                if case.keeps_leftovers:
                     self.assertGreater(took, deadline - 0.5, "the server's command was reaped")
                     self.assertGreater(beats[-1] - beats[0], 6, "it did not outlive the grace")
                 else:

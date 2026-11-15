@@ -359,7 +359,7 @@ class StoppedSuite(NamedTuple):
 class Failure(NamedTuple):
     """The helper's failure, as a test reads it."""
 
-    said: str  # its message
+    said: str
     took: float  # seconds from the suite's start to the failure
 
 

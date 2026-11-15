@@ -79,6 +79,7 @@ SUITES = {
 }
 
 
+# llmlint: ignore-block[shared_internals_are_a_project_not_a_reach_in] scripts/e2e-netmeasure.py is this project's own code under test, not a sibling's internals: network-telemetry declares it as an input and formats, lints and type-checks it in its own targets, and its existing tests load it by path the same way (test_recorder's netmeasure_module). The hang guard must be derived from the bounds the recorder itself enforces, so it reads them from the recorder rather than restating them.
 def recorder_bounds() -> ModuleType:
     """The recorder's own module, loaded once from its script, for the bounds
     it enforces on itself."""
@@ -91,6 +92,9 @@ def recorder_bounds() -> ModuleType:
         sys.modules[name] = module
         spec.loader.exec_module(module)
     return sys.modules[name]
+
+
+# llmlint: ignore-end[shared_internals_are_a_project_not_a_reach_in]
 
 
 def recorder_lifetime() -> float:

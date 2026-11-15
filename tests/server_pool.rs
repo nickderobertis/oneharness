@@ -334,9 +334,8 @@ fn a_holder_that_exited_unreaped_is_not_running_and_does_not_retain_the_server()
 }
 
 /// The linger is a duration, so a wall clock stepped back after a server went
-/// idle — NTP, or a virtual machine's guest clock catching up with its host,
-/// which the Linux VM this suite was seen failing on does every half minute —
-/// must not keep the server past it. A step back of `X` after the stamp reads,
+/// idle — by NTP, or a virtual machine's guest clock catching up with its
+/// host — must not keep the server past it. A step back of `X` after the stamp reads,
 /// to a linger measured on the wall clock, exactly as an entry that went idle
 /// `X` later than it did, so the release's wall-clock stamp is moved that far
 /// on disk and the uptime instant the release recorded beside it is left as

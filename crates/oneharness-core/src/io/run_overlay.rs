@@ -398,38 +398,43 @@ fn sweep_dir(from: &Path, to: &Path, keep: &dyn Fn(&str) -> bool) {
 }
 
 /// Move `from` to `to`, replacing a file there and merging into a directory
-/// there, across filesystems when a rename cannot. A link is moved as the link
-/// it is and never followed — not to decide whether it is a directory, nor to
-/// copy it — so a link Codex left inside a directory it created can neither
-/// empty its target into the real home nor read outside the overlay.
+/// there, across filesystems when a rename cannot. No link is followed, at
+/// either end: one at `from` is moved as the link it is (to decide neither
+/// whether it is a directory nor what to copy), and one at `to` is replaced as
+/// Codex replaced that entry. So a link Codex left can neither empty its
+/// target into the real home nor read outside the overlay, and a link in the
+/// real home is never written through.
 fn move_into(from: &Path, to: &Path) -> io::Result<()> {
     let from_meta = fs::symlink_metadata(from)?;
     let from_dir = from_meta.is_dir();
-    let to_meta = fs::symlink_metadata(to).ok();
-    if from_dir {
-        if to_meta.as_ref().is_some_and(fs::Metadata::is_dir) {
-            for entry in fs::read_dir(from)? {
-                let entry = entry?;
-                move_into(&entry.path(), &to.join(entry.file_name()))?;
-            }
-            return fs::remove_dir_all(from);
-        }
-    } else if to_meta.as_ref().is_some_and(fs::Metadata::is_dir) {
-        return Err(io::Error::other("a directory is in the way"));
+    let mut to_meta = fs::symlink_metadata(to).ok();
+    if to_meta.as_ref().is_some_and(fs::Metadata::is_symlink) {
+        fs::remove_file(to)?;
+        to_meta = None;
     }
-    if fs::rename(from, to).is_ok() {
-        return Ok(());
-    }
-    if from_dir {
-        fs::create_dir_all(to)?;
+    let to_dir = to_meta.as_ref().is_some_and(fs::Metadata::is_dir);
+    if from_dir && to_dir {
         for entry in fs::read_dir(from)? {
             let entry = entry?;
             move_into(&entry.path(), &to.join(entry.file_name()))?;
         }
         return fs::remove_dir_all(from);
     }
-    // Replace what is at `to`, as the rename would have: a copy onto a link
-    // there would write through it.
+    if to_dir {
+        return Err(io::Error::other("a directory is in the way"));
+    }
+    if fs::rename(from, to).is_ok() {
+        return Ok(());
+    }
+    if from_dir {
+        fs::create_dir(to)?;
+        for entry in fs::read_dir(from)? {
+            let entry = entry?;
+            move_into(&entry.path(), &to.join(entry.file_name()))?;
+        }
+        return fs::remove_dir_all(from);
+    }
+    // Replace the file at `to`, as the rename would have.
     if to_meta.is_some() {
         fs::remove_file(to)?;
     }
@@ -979,6 +984,10 @@ mod tests {
             let real = root.join("real");
             fs::create_dir_all(real.join("made").join("dir-link")).unwrap();
             fs::write(real.join("made").join("dir-link").join("own"), "o").unwrap();
+            // A real-home entry that is itself a link, which Codex replaced
+            // with a directory of its own.
+            fs::create_dir_all(outside.join("linked")).unwrap();
+            symlink(&outside.join("linked"), &real.join("replaced")).unwrap();
 
             let overlays = ScratchDir::new("run-overlay-test-nested-overlays").unwrap();
             let mut overlay = RunOverlay::create_in(&overlays.join("run-overlays")).unwrap();
@@ -988,7 +997,30 @@ mod tests {
             fs::create_dir(home.join("made")).unwrap();
             symlink(&outside.join("dir"), &home.join("made").join("dir-link")).unwrap();
             symlink(&outside.join("file"), &home.join("made").join("file-link")).unwrap();
+            fs::remove_file(home.join("replaced")).unwrap();
+            fs::create_dir(home.join("replaced")).unwrap();
+            fs::write(home.join("replaced").join("new"), "n").unwrap();
             overlay.finish();
+
+            assert!(
+                fs::read_dir(outside.join("linked"))
+                    .unwrap()
+                    .next()
+                    .is_none(),
+                "a directory was moved through a real-home link into its target ({})",
+                root.display()
+            );
+            assert!(
+                fs::symlink_metadata(real.join("replaced"))
+                    .unwrap()
+                    .is_dir(),
+                "the real home's link was not replaced by Codex's directory ({})",
+                root.display()
+            );
+            assert_eq!(
+                fs::read_to_string(real.join("replaced").join("new")).unwrap(),
+                "n"
+            );
 
             assert_eq!(
                 fs::read_to_string(outside.join("dir").join("secret"))

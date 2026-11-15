@@ -1018,7 +1018,7 @@ def env_pair(text: str) -> tuple[str, str]:
     return key, value
 
 
-# llmlint: ignore-block[shared_internals_are_a_project_not_a_reach_in] Both are single-file scripts in scripts/ run by path under `python -I`, which gives them no import path; the network recorder is the one owner of how pasta starts a program on Ubuntu 26.04, and its file is reused unchanged rather than copied; network-breakdown lists scripts/e2e-netmeasure.py among its Nx inputs, so any recorder edit re-runs this suite; a shared project would move recorder code that must stay behaviourally unchanged (manager ruling a18).
+# llmlint: ignore-block[shared_internals_are_a_project_not_a_reach_in] Both are single-file scripts run by path under `python -I`, so neither has an import path; this reuses the recorder's launcher unchanged rather than copying it, and network-breakdown lists scripts/e2e-netmeasure.py in its Nx inputs so a recorder edit re-runs this suite.
 def recorder() -> ModuleType:
     """scripts/e2e-netmeasure.py, the network recorder beside this script, whose
     `through_bash` is how both start a program in pasta's namespace."""

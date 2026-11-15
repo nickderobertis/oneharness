@@ -1,0 +1,94 @@
+name: "DO NOT MERGE: network-breakdown on ubuntu-26.04 under pasta's AppArmor profile"
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  breakdown-2604:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: oven-sh/setup-bun@v2
+      - uses: astral-sh/setup-uv@v6
+      - name: Runner image
+        run: |
+          echo "ImageOS=${ImageOS:-?} ImageVersion=${ImageVersion:-?}"
+          grep -E '^(PRETTY_NAME|VERSION_ID)=' /etc/os-release
+          uname -r
+      - name: Install the packaged passt and enforce its usr.bin.pasta profile
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q passt apparmor-utils
+          echo "passt package: $(dpkg-query -W -f='${Version}' passt)"
+          ls -l /etc/apparmor.d/usr.bin.pasta
+          # As ci.yml's Linux leg does before measuring.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sudo apparmor_parser -r /etc/apparmor.d/usr.bin.pasta
+          sudo aa-enforce /etc/apparmor.d/usr.bin.pasta
+      - name: Prepare the workspace
+        run: |
+          bun install --frozen-lockfile
+          uv sync --project python --frozen --no-install-workspace --quiet
+      - name: Verify the confinement holds
+        run: |
+          set -euo pipefail
+          py=(uv run --project python --frozen --no-sync python -I)
+          found="$("${py[@]}" -c 'import importlib.util, sys
+          spec = importlib.util.spec_from_file_location("b", "scripts/codex-network-breakdown.py")
+          m = importlib.util.module_from_spec(spec); sys.modules["b"] = m; spec.loader.exec_module(m)
+          print(m.find_pasta())')"
+          echo "the suite's pasta: $found"
+          [ "$found" = /usr/bin/pasta ] || { echo "::error::the suite's pasta is $found, not /usr/bin/pasta"; exit 1; }
+          echo "python the script runs in: $("${py[@]}" -c 'import os, sys; print(sys.executable, "->", os.path.realpath(sys.executable))')"
+          echo "--- aa-status"
+          sudo aa-status | grep -n pasta
+          echo "--- /sys/kernel/security/apparmor/profiles"
+          sudo grep -E 'pasta' /sys/kernel/security/apparmor/profiles
+          sudo grep -qE '^pasta \(enforce\)$' /sys/kernel/security/apparmor/profiles \
+            || { echo "::error::the pasta profile is not enforced"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/defect/scripts"
+          git show 2f1ecf6200a47cfd3a5fd57173e7577af1fc4eca:scripts/codex-network-breakdown.py \
+            > "$RUNNER_TEMP/defect/scripts/codex-network-breakdown.py"
+          set +e
+          timeout 120 "${py[@]}" "$RUNNER_TEMP/defect/scripts/codex-network-breakdown.py" --label probe -- true \
+            > "$RUNNER_TEMP/defect.out" 2> "$RUNNER_TEMP/defect.err"
+          code=$?
+          set -e
+          echo "--- the script at 2f1ecf62, probed under the enforced profile: exit $code"
+          cat "$RUNNER_TEMP/defect.err"
+          [ "$code" -ne 0 ] && grep -q 'Failed to start command or shell' "$RUNNER_TEMP/defect.err" \
+            || { echo "::error::the script at 2f1ecf62 was not refused the namespace"; exit 1; }
+          echo "--- dmesg (AppArmor denials for pasta)"
+          sudo dmesg | grep -E 'apparmor="DENIED".*pasta' | tail -5 || true
+      - name: network-breakdown:test, 10 runs, measuring tests required
+        env:
+          OH_NET_NO_SKIP: "1"
+          CODEX_NETWORK_BREAKDOWN_REQUIRED: "1"
+        run: |
+          set -uo pipefail
+          failed=0
+          for run in $(seq 1 10); do
+            log="$RUNNER_TEMP/run-$run.log"
+            start=$(date +%s)
+            bunx nx run network-breakdown:test --skip-nx-cache --output-style=static > "$log" 2>&1
+            code=$?
+            took=$(( $(date +%s) - start ))
+            summary="$(grep -E '^(Ran [0-9]+ tests|OK|FAILED)' "$log" | tr '\n' ' ')"
+            skipped=no; grep -qE 'skipped=' "$log" && skipped=yes
+            echo "run $run: exit $code, ${took}s, skipped=$skipped, $summary"
+            if [ "$code" -ne 0 ] || [ "$skipped" = yes ]; then failed=$((failed + 1)); tail -60 "$log"; fi
+          done
+          echo "runs failed or skipping: $failed of 10"
+          [ "$failed" -eq 0 ]

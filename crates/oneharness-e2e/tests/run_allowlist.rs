@@ -472,17 +472,25 @@ fn codex_runs_on_an_overlay_home_linking_the_real_one_with_one_rules_file_of_its
         .is_some_and(|m| home.contains(m)));
     let snap = overlay_snapshot(&snapshot);
     let entries = &snap["entries"];
+    // A link names the real home's entry by its canonical path, so compare
+    // canonical paths: the scratch root may itself sit behind a symlink.
+    let canon = |rel: &str| {
+        std::fs::canonicalize(world.path(rel))
+            .unwrap()
+            .display()
+            .to_string()
+    };
     for name in ["auth.json", "config.toml", "sessions"] {
         assert_eq!(
             entries[name]["link"],
-            world.s(&format!("codex-home/{name}")),
+            canon(&format!("codex-home/{name}")),
             "{name}: {entries}"
         );
     }
     let rules = &entries["rules"]["dir"];
     assert_eq!(
         rules["user.rules"]["link"],
-        world.s("codex-home/rules/user.rules")
+        canon("codex-home/rules/user.rules")
     );
     let run_rules = rules["oneharness-run.rules"]["file"].as_str().unwrap();
     assert!(
@@ -1703,7 +1711,10 @@ fn a_helper_that_refuses_answers_badly_or_never_answers_leaves_the_turn_whole() 
         ("no-result", "answered with no result object"),
         ("silent", "no reply to `thread/list`"),
     ] {
-        let world = World::new(&format!("helper-{reply}"));
+        // Short names: the control socket lives under the session dir, and
+        // the platform caps a unix-socket path at 108 bytes, which a long
+        // scratch root (the suite's symlinked tmp) already spends most of.
+        let world = World::new(&format!("h-{reply}"));
         index_the_home(&world);
         let tool = world.tool();
         let config = world.config(&format!("allowed_tools = [\"Bash({tool})\"]\n"));
@@ -1721,7 +1732,7 @@ fn a_helper_that_refuses_answers_badly_or_never_answers_leaves_the_turn_whole() 
                 "--session",
                 "granted",
                 "--session-dir",
-                &world.s("sessions"),
+                &world.s("s"),
             ],
             &config,
             &[

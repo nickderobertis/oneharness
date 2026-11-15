@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # The live tier's network recorder: one harness launch, measured.
 #
-#   e2e-netshim.sh --suite S --harness H --real PATH --self SHIM --file FILE -- ARGS...
+#   e2e-netshim.sh --suite S --harness H --real PATH --self SHIM --file FILE
+#     [--shared-server-grace SECONDS] -- ARGS...
 #
 # scripts/e2e-lib.sh's oh_telemetry_setup writes a two-line shim per harness
 # executable a suite launches (`codex`, `claude`, ...) that execs this with the
@@ -23,6 +24,13 @@
 # a bare Linux host) this shim records the launch itself. Either way stdin,
 # stdout and stderr are the launch's own and the exit status is the launch's.
 #
+# `--shared-server-grace` (oh_telemetry_setup's option of the same name) is
+# the measurer's OH_E2E_NET_DESCENDANT_GRACE for a `shared-app-server` launch
+# alone; every other launch keeps the measurer's own. A suite whose phases
+# prove that the pool stops a pooled server's commands passes 0: there, a
+# command the server's stop left running is the defect under test, which the
+# measurer reaping it after its grace would hide.
+#
 # OH_E2E_OS (default: `uname -s`) selects the platform, so a test can drive the
 # fallback a macOS or Windows leg takes. A recorder that cannot record exits
 # 126 (refused before the launch) or 125 (the launch ran but its line could not
@@ -36,17 +44,17 @@ die() {
   exit 126
 }
 
-suite="" harness="" real="" self="" file=""
+suite="" harness="" real="" self="" file="" server_grace=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --)
       shift
       break
       ;;
-    --suite | --harness | --real | --self | --file)
+    --suite | --harness | --real | --self | --file | --shared-server-grace)
       [ "$#" -ge 2 ] || die "option '$1' needs a value; regenerate the shim with oh_telemetry_setup"
       ;;
-    *) die "unknown option '$1'; the shim oh_telemetry_setup writes passes --suite --harness --real --self --file --" ;;
+    *) die "unknown option '$1'; the shim oh_telemetry_setup writes passes --suite --harness --real --self --file [--shared-server-grace] --" ;;
   esac
   case "$1" in
     --suite) suite="$2" ;;
@@ -54,6 +62,7 @@ while [ "$#" -gt 0 ]; do
     --real) real="$2" ;;
     --self) self="$2" ;;
     --file) file="$2" ;;
+    --shared-server-grace) server_grace="$2" ;;
   esac
   shift 2
 done
@@ -168,6 +177,10 @@ pending="$(dirname "$file")/.pending/$launch_id"
 # writes the server's line only after the server's whole tree has exited — so
 # the marker is taken off this process and given to the launch alone.
 launch=("$real")
+# The measurer validates the value, refusing a bad one before the launch.
+if [ -n "$server_grace" ] && [ "$kind" = shared-app-server ]; then
+  export OH_E2E_NET_DESCENDANT_GRACE="$server_grace"
+fi
 if [ -n "${ONEHARNESS_APP_SERVER_MARKER:-}" ]; then
   launch=(env "ONEHARNESS_APP_SERVER_MARKER=$ONEHARNESS_APP_SERVER_MARKER" "$real")
   unset ONEHARNESS_APP_SERVER_MARKER

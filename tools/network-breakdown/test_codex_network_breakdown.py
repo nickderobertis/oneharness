@@ -523,11 +523,18 @@ def real_pasta() -> str:
 
 
 def gone(pid: int) -> bool:
-    """Whether no process `pid` is left (a zombie still counts as left)."""
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return True
+    """Whether process `pid` has ended within five seconds: an orphan the
+    script killed is reaped by whichever process adopts it, so it may stay a
+    zombie, which has ended, for a moment."""
+    stat = Path(f"/proc/{pid}/stat")
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            if stat.read_text().rsplit(")", 1)[1].split()[0] == "Z":
+                return True
+        except FileNotFoundError:
+            return True
+        time.sleep(0.05)
     return False
 
 
@@ -1045,9 +1052,12 @@ class APastaThatMisbehaves(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as scratch:
             pid_file = Path(scratch) / "pasta.pid"
+            child_file = Path(scratch) / "child.pid"
+            # A child left in pasta's process group must be ended with it.
             stand_in = executable(
                 Path(scratch) / "pasta",
                 f"#!/bin/sh\necho 'pasta: stuck before the namespace' >&2\n"
+                f"sleep 600 > /dev/null & echo $! > {shlex.quote(str(child_file))}\n"
                 f"echo $$ > {shlex.quote(str(pid_file))}\nexec sleep 600\n",
             )
             env = dict(
@@ -1059,8 +1069,10 @@ class APastaThatMisbehaves(unittest.TestCase):
             run = run_script("--", "true", env=env)
             took = time.monotonic() - started
             pid = int(pid_file.read_text())
+            child = int(child_file.read_text())
         self.assertEqual(run.returncode, 3, run)
         self.assertEqual(run.stdout, "")
+        self.assertTrue(gone(child), "the stuck pasta's child outlived the script")
         self.assertIn(f"pasta ({stand_in}) started no namespace within 2 s", run.stderr)
         self.assertIn("(its stderr: pasta: stuck before the namespace)", run.stderr)
         self.assertLess(took, 30, run)

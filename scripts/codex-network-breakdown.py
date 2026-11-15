@@ -1135,7 +1135,9 @@ def await_pasta(
             print(
                 f"codex-network-breakdown: warning: pasta ({pasta}) had not exited "
                 f"{PASTA_EXIT_GRACE_SECONDS:g} s after its launch "
-                f"{'was measured' if exit_by is not None else 'ran out of time'}, and was ended",
+                f"{'was measured' if exit_by is not None else 'ran out of time'}, and was ended; "
+                f"if it recurs, run `{pasta} --config-net --quiet -4 -- true` by hand: a pasta "
+                "that does not return there is the one to replace (`apt install passt`)",
                 file=sys.stderr,
             )
             return

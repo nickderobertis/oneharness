@@ -346,7 +346,6 @@ class WindowsFormDirectory(unittest.TestCase):
         )
 
 
-@unittest.skipIf(WINDOWS, "the doubles are bash scripts")
 class GraceCase(NamedTuple):
     """One launch the shared-server grace test runs under a suite's setup."""
 
@@ -356,6 +355,7 @@ class GraceCase(NamedTuple):
     keeps_leftovers: bool  # whether the measurer leaves its detached command running
 
 
+@unittest.skipIf(WINDOWS, "the doubles are bash scripts")
 class Setup(unittest.TestCase):
     """oh_telemetry_setup itself, driven as a suite drives it."""
 

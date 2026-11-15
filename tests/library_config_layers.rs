@@ -292,11 +292,11 @@ fn a_usage_request_layers_its_config_files() {
 #[test]
 fn a_sync_request_layers_its_config_files() {
     let _env = hermetic();
-    // `denied_tools` is set only in the earlier file; `allowed_tools` in both.
+    // `[sync] denied_tools` is set only in the earlier file; `allowed_tools` in both.
     let (dir, d, j) = two_configs(
         "sync",
-        "allowed_tools = [\"Bash(ls)\"]\ndenied_tools = [\"Bash(rm:*)\"]\n",
-        "allowed_tools = [\"Bash(echo layered)\"]\n",
+        "[sync]\nallowed_tools = [\"Bash(ls)\"]\ndenied_tools = [\"Bash(rm:*)\"]\n",
+        "[sync]\nallowed_tools = [\"Bash(echo layered)\"]\n",
     );
     sync::sync(&SyncRequest {
         config: vec![d, j],

@@ -329,7 +329,7 @@ fn a_consumer_reads_the_layered_configuration_with_each_value_attributed() {
 fn a_consumer_syncs_a_policy_into_a_harness_config_and_re_syncs_idempotently() {
     // The happy path and the property that makes `sync` safe to run repeatedly:
     // the second call reports `unchanged` and rewrites nothing.
-    let dir = project("sync-apply", "allowed_tools = [\"Bash(echo *)\"]\n");
+    let dir = project("sync-apply", "[sync]\nallowed_tools = [\"Bash(echo *)\"]\n");
     let request = SyncRequest {
         cwd: Some(dir.to_path_buf()),
         harness: vec!["claude-code".to_string()],
@@ -362,7 +362,7 @@ fn a_consumer_syncs_a_policy_into_a_harness_config_and_re_syncs_idempotently() {
 fn a_check_only_sync_writes_nothing_and_says_a_change_is_pending() {
     // The CI mode a consumer wires into its own gate: it must be able to learn
     // "out of sync" without the call having fixed it.
-    let dir = project("sync-check", "allowed_tools = [\"Bash(echo *)\"]\n");
+    let dir = project("sync-check", "[sync]\nallowed_tools = [\"Bash(echo *)\"]\n");
     let report = sync::sync(&SyncRequest {
         cwd: Some(dir.to_path_buf()),
         harness: vec!["claude-code".to_string()],
@@ -388,7 +388,7 @@ fn an_exact_sync_holds_the_lists_to_the_source_and_writes_codex_rules() {
     // its own rules file with the rule it cannot express reported, not written.
     let dir = project(
         "sync-exact",
-        "allowed_tools = [\"Bash(git log:*)\", \"Bash(git status*)\"]\n",
+        "[sync]\nallowed_tools = [\"Bash(git log:*)\", \"Bash(git status*)\"]\n",
     );
     let settings = dir.join(".claude").join("settings.json");
     std::fs::create_dir_all(settings.parent().unwrap()).unwrap();

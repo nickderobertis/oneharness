@@ -50,7 +50,6 @@ export interface ConfigReport {
    * The files consulted, in layering order (user first, project last).
    */
   config_files: string[];
-  denied_tools: Field2;
   /**
    * Per-key provenance for the top-level `[env]`.
    */
@@ -74,7 +73,6 @@ export interface ConfigReport {
     [k: string]: Field3;
   };
   history_pointer_file: Field3;
-  hooks: Field11;
   load_mcp: Field;
   load_skills: Field;
   max_parallel: Field9;
@@ -90,6 +88,7 @@ export interface ConfigReport {
   schema_version: string;
   server_overloaded_max_retries: Field8;
   stream: Field1;
+  sync: SyncPolicyReport;
   system: Field3;
   timeout: Field5;
   tool_set: Field6;
@@ -156,12 +155,8 @@ export interface HarnessReport {
   apps?: Field | null | undefined;
   args: Field2;
   bin: Field3;
-  denied_tools: Field2;
   env: {
     [k: string]: Field3;
-  };
-  hooks: {
-    [k: string]: unknown;
   };
   model: Field3;
   /**
@@ -175,9 +170,6 @@ export interface HarnessReport {
    */
   plugins?: Field | null | undefined;
   reasoning: Field3;
-  settings: {
-    [k: string]: unknown;
-  };
   /**
    * The resolved `shared_model_catalog` (`true` by default), present only
    * for `codex`.
@@ -217,16 +209,12 @@ export interface VariantReport {
   apps?: Field | null | undefined;
   args: Field2;
   bin: Field3;
-  denied_tools: Field2;
   env: {
     [k: string]: Field3;
   };
   env_file: Field3;
   env_from: {
     [k: string]: Field3;
-  };
-  hooks: {
-    [k: string]: unknown;
   };
   model: Field3;
   /**
@@ -242,9 +230,6 @@ export interface VariantReport {
    */
   plugins?: Field | null | undefined;
   reasoning: Field3;
-  settings: {
-    [k: string]: unknown;
-  };
   /**
    * The `shared_model_catalog` a launch of this variant resolves to: the
    * variant's own, else its harness's, else `true`. Present only for `codex`.
@@ -252,49 +237,6 @@ export interface VariantReport {
   shared_model_catalog?: Field | null | undefined;
   unset_env: Field2;
   [k: string]: unknown;
-}
-/**
- * One resolved field in the `oneharness config` report: the effective value
- * plus where it came from (a config file path, or [`DEFAULT_SOURCE`]). Both
- * are `null` when the field is unset everywhere and has no built-in default.
- */
-export interface Field11 {
-  source: string | null;
-  value: HookEntry[] | null;
-  [k: string]: unknown;
-}
-/**
- * One `[[hooks]]` entry: a pre-tool gate installed into each targeted harness.
- * The `command` may contain `{harness}`, replaced with the harness id when the
- * hook is built (so one entry can route `mygate hook {harness}` to every CLI).
- */
-export interface HookEntry {
-  /**
-   * The command the harness runs before a tool call. `{harness}` is
-   * substituted with the harness id. Required and non-empty.
-   */
-  command: string;
-  /**
-   * Restrict this entry to these harness ids; absent means every harness
-   * being synced.
-   */
-  harnesses: string[] | null;
-  /**
-   * Tool-name matcher in the harness's dialect (most read it as a regex);
-   * applied to every targeted harness as written. Absent means match-all.
-   */
-  matcher: string | null;
-  /**
-   * Identity for plugin-delivered harnesses (Goose, OpenCode) and Copilot's
-   * per-owner file, so two tools' hooks never collide. Defaults to
-   * `oneharness`.
-   */
-  plugin_name: string | null;
-  /**
-   * Timeout in seconds, for the harnesses whose hook schema carries one
-   * (Goose, Crush); ignored by the others.
-   */
-  timeout: number | null;
 }
 /**
  * One resolved field in the `oneharness config` report: the effective value
@@ -374,6 +316,97 @@ export interface Field1 {
   source: string | null;
   value: boolean | null;
   [k: string]: unknown;
+}
+/**
+ * The `[sync]` section, mirroring the file's shape, each value with its
+ * provenance: what `oneharness sync` writes into each harness's files.
+ */
+export interface SyncPolicyReport {
+  allowed_tools: Field2;
+  denied_tools: Field2;
+  /**
+   * Per-harness sync policy (`[sync.harness.<id>]`), with provenance,
+   * keyed by the registry's id.
+   */
+  harness: {
+    [k: string]: SyncHarnessPolicyReport;
+  };
+  hooks: Field11;
+  [k: string]: unknown;
+}
+/**
+ * One harness's `[sync.harness.<id>]` policy, with provenance.
+ */
+export interface SyncHarnessPolicyReport {
+  allowed_tools: Field2;
+  denied_tools: Field2;
+  hooks: {
+    [k: string]: unknown;
+  };
+  settings: {
+    [k: string]: unknown;
+  };
+  variant: {
+    [k: string]: SyncVariantPolicyReport;
+  };
+  [k: string]: unknown;
+}
+/**
+ * One variant's `[sync.harness.<id>.variant.<name>]` policy, with provenance.
+ */
+export interface SyncVariantPolicyReport {
+  allowed_tools: Field2;
+  denied_tools: Field2;
+  hooks: {
+    [k: string]: unknown;
+  };
+  settings: {
+    [k: string]: unknown;
+  };
+  [k: string]: unknown;
+}
+/**
+ * One resolved field in the `oneharness config` report: the effective value
+ * plus where it came from (a config file path, or [`DEFAULT_SOURCE`]). Both
+ * are `null` when the field is unset everywhere and has no built-in default.
+ */
+export interface Field11 {
+  source: string | null;
+  value: HookEntry[] | null;
+  [k: string]: unknown;
+}
+/**
+ * One `[[sync.hooks]]` entry: a pre-tool gate installed into each targeted harness.
+ * The `command` may contain `{harness}`, replaced with the harness id when the
+ * hook is built (so one entry can route `mygate hook {harness}` to every CLI).
+ */
+export interface HookEntry {
+  /**
+   * The command the harness runs before a tool call. `{harness}` is
+   * substituted with the harness id. Required and non-empty.
+   */
+  command: string;
+  /**
+   * Restrict this entry to these harness ids; absent means every harness
+   * being synced.
+   */
+  harnesses: string[] | null;
+  /**
+   * Tool-name matcher in the harness's dialect (most read it as a regex);
+   * applied to every targeted harness as written. Absent means match-all.
+   */
+  matcher: string | null;
+  /**
+   * Identity for plugin-delivered harnesses (Goose, OpenCode) and Copilot's
+   * per-owner file, so two tools' hooks never collide. Defaults to
+   * `oneharness`.
+   */
+  plugin_name: string | null;
+  /**
+   * Timeout in seconds, for the harnesses whose hook schema carries one
+   * (Goose, Crush); ignored by the others.
+   */
+  timeout: number | null;
 }
 /**
  * One resolved field in the `oneharness config` report: the effective value

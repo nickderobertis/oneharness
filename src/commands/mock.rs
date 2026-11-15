@@ -1,6 +1,6 @@
 //! `oneharness mock <id>` — the runtime mock/spy responder for a harness.
 //!
-//! An installed `[[hooks]]` hook (see `oneharness sync`) invokes this exactly
+//! An installed `[[sync.hooks]]` hook (see `oneharness sync`) invokes this exactly
 //! like `oneharness gate <id>`: the harness pipes its pre-tool event JSON to
 //! stdin. This appends the event to the spy log (when one is configured),
 //! matches it against the `--rules` ruleset, and — on a match — writes the

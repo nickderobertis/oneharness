@@ -1194,6 +1194,86 @@ fn codex_withholds_over_a_missing_home_or_a_keyring_store_named_in_its_args() {
     assert!(world.overlays().is_empty());
 }
 
+/// Where a Codex login is stored is decided by the last word on it: the
+/// identity's own args override the home's config, the caller's passthrough
+/// (riding last) overrides those, and within one argv the later spelling wins.
+/// A grant is applied exactly when that last word is the file store.
+#[test]
+fn the_last_credential_store_override_decides_whether_codex_withholds() {
+    let world = World::new("codex-store-precedence");
+    let tool = world.tool();
+    let rule = format!("allowed_tools = [\"Bash({tool})\"]\n");
+    std::fs::write(
+        world.path("codex-home/config.toml"),
+        "model = \"m\"\ncli_auth_credentials_store = \"keyring\"\n",
+    )
+    .unwrap();
+    let identity = |args: &str| format!("{rule}[harness.codex]\nargs = [{args}]\n");
+    let withheld_by = |report: &Value| -> Vec<String> {
+        report["results"][0]["diagnostics"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|d| d["setting"] == "allowed_tools")
+            .map(|d| d["message"].as_str().unwrap_or_default().to_string())
+            .collect()
+    };
+    let applied = |report: &Value| {
+        withheld_by(report).is_empty()
+            && report["results"][0]["overlay_env"]["CODEX_HOME"].is_string()
+    };
+
+    // The home's keyring, put back on the file store by the identity: applied.
+    let file = identity(r#""-c", "cli_auth_credentials_store=file""#);
+    let run = spawn(&world, "codex", "read-only", &file, &[]);
+    assert!(applied(&run.report), "{}", run.report);
+
+    // Within one argv the later spelling wins, either way round.
+    let later_file = identity(
+        r#""-c", "cli_auth_credentials_store=keyring", "--config=cli_auth_credentials_store=file""#,
+    );
+    let run = spawn(&world, "codex", "read-only", &later_file, &[]);
+    assert!(applied(&run.report), "{}", run.report);
+    let later_keyring = identity(
+        r#""--config", "cli_auth_credentials_store=file", "-ccli_auth_credentials_store=keyring""#,
+    );
+    let run = spawn(&world, "codex", "read-only", &later_keyring, &[]);
+    let messages = withheld_by(&run.report);
+    assert!(
+        messages.len() == 1 && messages[0].contains("\"keyring\""),
+        "{messages:?}"
+    );
+
+    // The caller's passthrough rides after the identity's args and overrides them.
+    let config = world.config(&file);
+    let profiles = ProfileScratch::new();
+    let output = world
+        .command(
+            &[
+                "run",
+                "--harness",
+                "codex",
+                "--mode",
+                "read-only",
+                "--prompt",
+                "judge it",
+            ],
+            &config,
+            &[],
+            &profiles,
+        )
+        .args(["--", "-c", "cli_auth_credentials_store=keyring"])
+        .output()
+        .expect("run oneharness");
+    let report = json(&output);
+    let messages = withheld_by(&report);
+    assert!(
+        messages.len() == 1 && messages[0].contains("\"keyring\""),
+        "{messages:?}"
+    );
+    assert!(world.overlays().is_empty());
+}
+
 /// With no per-user state directory (neither `XDG_STATE_HOME` nor `HOME`)
 /// there is nowhere of oneharness's own to make an overlay: Codex withholds
 /// the grant by name rather than making one in the host temp dir, whose mode

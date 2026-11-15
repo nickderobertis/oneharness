@@ -166,17 +166,27 @@ impl RunOverlay {
         let rules = home.join("rules");
         fs::create_dir_all(&rules)?;
         // A home with no `rules/` has no user rule to carry. Any other failure
-        // to read it stops the overlay: building one without the user's rules
-        // would drop their `forbidden` rules while adding the run's allows.
+        // to read it, or a user file under the run's own rules file name,
+        // stops the overlay: building one without every user rule file would
+        // drop their `forbidden` rules while adding the run's allows.
         match fs::read_dir(real.join("rules")) {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
             Ok(entries) => {
                 for entry in entries {
                     let name = entry?.file_name();
-                    if name != RUN_RULES_FILE {
-                        symlink(&real.join("rules").join(&name), &rules.join(&name))?;
+                    let user = real.join("rules").join(&name);
+                    if name == RUN_RULES_FILE {
+                        return Err(io::Error::new(
+                            io::ErrorKind::AlreadyExists,
+                            format!(
+                                "the Codex home's own `{}` has the name of the run's rules \
+                                 file, so the overlay cannot carry it beside the run's rules",
+                                user.display()
+                            ),
+                        ));
                     }
+                    symlink(&user, &rules.join(&name))?;
                 }
             }
         }
@@ -581,8 +591,6 @@ pub fn links_supported() -> bool {
     cfg!(unix)
 }
 
-/// Start a Codex app-server on `home`, initialize it, send `requests` in turn
-/// and wait for each reply, then close its stdin and wait for it to exit.
 /// Remove every thread-index file at `home`'s top level, so a seed that
 /// failed part-way leaves no partial index for Codex to open. Best-effort: an
 /// entry that cannot be removed is one Codex opens and repairs as its own.
@@ -594,6 +602,8 @@ fn remove_thread_index(home: &Path) {
     }
 }
 
+/// Start a Codex app-server on `home`, initialize it, send `requests` in turn
+/// and wait for each reply, then close its stdin and wait for it to exit.
 fn exchange(
     launch: &HelperLaunch<'_>,
     home: &Path,

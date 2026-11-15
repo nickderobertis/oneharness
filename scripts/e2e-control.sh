@@ -339,12 +339,21 @@ oh_run_overlay() {
       return 0
       ;;
   esac
+  # The real codex first on PATH, past the suite's measuring shim: the shim
+  # runs each launch in its own network namespace, whose loopback is not the
+  # scripted endpoint's, so codex never reached it ("Reconnecting... waiting
+  # for network"). This phase's traffic is loopback alone, not the internet
+  # spend the network budgets measure (as in oh_resume_stall_enforce).
+  local codex path
+  codex="$(_oh_unshimmed codex)" || codex="$(command -v codex)" ||
+    fail "run-overlay: codex is not on PATH; install it (npm install -g @openai/codex)"
+  path="$(dirname "$codex"):$PATH"
   # llmlint: ignore[e2e_not_mocked] The model is the one thing replaced: each CLI's permission check, sandbox and execution are the real installed codex, which is what this phase proves, and its acceptance bar names a scripted model endpoint in place of the paid provider (the spike-command-grant method), so a refusal settles by the decision Codex records rather than by a model's choice.
-  ONEHARNESS_BIN="$BIN" uv run --no-project --python ">=3.10" python "$OH_REPO_ROOT/live/control/run_allowlist_live.py" \
+  PATH="$path" ONEHARNESS_BIN="$BIN" uv run --no-project --python ">=3.10" python "$OH_REPO_ROOT/live/control/run_allowlist_live.py" \
     --harness codex --codex-path control ||
     fail "run-overlay: a granted controlled Codex turn broke a guarantee; each failed check is above"
   # llmlint: ignore[e2e_not_mocked] The budget's stated workload is a scripted model endpoint answering each turn with one call of the granted command: what it times is what a grant adds around a turn, which a real model's own seconds, orders of magnitude longer and varying, would bury.
-  ONEHARNESS_BIN="$BIN" uv run --no-project --python ">=3.10" python "$OH_REPO_ROOT/live/control/run_allowlist_live.py" \
+  PATH="$path" ONEHARNESS_BIN="$BIN" uv run --no-project --python ">=3.10" python "$OH_REPO_ROOT/live/control/run_allowlist_live.py" \
     --budget-telemetry "$OH_REPO_ROOT/target/e2e-telemetry/run-overlay/codex-turn.json" ||
     fail "run-overlay: the budget workload failed; its error is above"
   # llmlint: ignore[work_goes_through_command_surface] The same frozen sync pooled-reuse runs before its onebudgetspec check, for the same reason: the live-control CI leg reaches this phase without `just bootstrap`.

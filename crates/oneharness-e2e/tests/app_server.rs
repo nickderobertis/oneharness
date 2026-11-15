@@ -6029,13 +6029,19 @@ fn the_reuse_workload_refuses_a_loaded_list_still_paging_at_its_deadline() {
 
 // llmlint: ignore-block[e2e_not_mocked] The control suite's run-overlay phase runs for real — scripts/e2e-control.sh's selection, Linux guard, argument wiring and failure handling; only `uv`, the launcher of its live workload and budget check, is a recording stand-in (and `uname` one that reports macOS), because that workload drives the real codex CLI against a scripted model endpoint, which the gate cannot run. The workload itself against real Codex is scripts/e2e-control.sh's live run.
 /// The control suite selected to its run-overlay phase, with `uv` a stand-in
-/// that records each launch to `uv.log` and fails the one whose arguments
-/// contain `OH_UV_FAIL_ON`.
-fn run_overlay_suite(tag: &str, envs: &[(&str, &str)]) -> (Output, Vec<String>) {
+/// that records each launch to `uv.log`, and the `codex` its PATH resolves
+/// to `uv.log.codex`, and fails the one whose arguments contain
+/// `OH_UV_FAIL_ON`. Returns the suite's output, the launches, and those
+/// resolutions beside the suite's real `codex` (the mock).
+fn run_overlay_suite(
+    tag: &str,
+    envs: &[(&str, &str)],
+) -> (Output, Vec<String>, Vec<String>, String) {
     let suite = ControlSuite::new(tag);
     suite.tool(
         "uv",
         r#"printf '%s\n' "$*" >> "$OH_UV_LOG"
+printf '%s\n' "$(command -v codex)" >> "$OH_UV_LOG.codex"
 if [ -n "${OH_UV_FAIL_ON:-}" ]; then case "$*" in *"$OH_UV_FAIL_ON"*) exit 7 ;; esac; fi
 exit 0"#,
     );
@@ -6051,12 +6057,16 @@ exit 0"#,
         );
     }
     let out = suite.run(&all);
-    let launches = std::fs::read_to_string(&log)
-        .unwrap_or_default()
-        .lines()
-        .map(str::to_string)
-        .collect();
-    (out, launches)
+    let lines = |path: &std::path::Path| -> Vec<String> {
+        std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    };
+    let resolved = lines(&suite.pool.path("uv.log.codex"));
+    let real = suite.pool.path("bin/codex").display().to_string();
+    (out, lines(&log), resolved, real)
 }
 
 /// Selected alone on Linux, the run-overlay phase runs the controlled-path
@@ -6067,7 +6077,7 @@ fn the_control_suite_s_run_overlay_phase_runs_its_proof_workload_and_budget_chec
     if !cfg!(target_os = "linux") {
         return;
     }
-    let (out, launches) = run_overlay_suite("overlay-suite", &[]);
+    let (out, launches, resolved, real) = run_overlay_suite("overlay-suite", &[]);
     let said = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "{said}");
     assert!(
@@ -6096,6 +6106,14 @@ fn the_control_suite_s_run_overlay_phase_runs_its_proof_workload_and_budget_chec
             .ends_with("onebudgetspec check budgets.yaml --id codex-run-overlay-added-seconds"),
         "{launches:#?}"
     );
+    // The two launches that drive codex at the loopback endpoint find the
+    // real codex, not the suite's measuring shim, whose network namespace
+    // cannot reach host loopback; the onebudgetspec steps keep the shim.
+    assert_eq!(resolved.len(), 4, "{resolved:#?}");
+    assert_eq!(resolved[..2], [real.clone(), real.clone()], "{resolved:#?}");
+    for shimmed in &resolved[2..] {
+        assert!(shimmed.contains("/.shims/control/"), "{resolved:#?}");
+    }
 }
 
 /// Each step's failure fails the suite naming that step, and nothing after
@@ -6128,7 +6146,7 @@ fn the_control_suite_s_run_overlay_phase_fails_naming_the_step_that_failed() {
             4,
         ),
     ] {
-        let (out, launches) =
+        let (out, launches, ..) =
             run_overlay_suite("overlay-suite-fail", &[("OH_UV_FAIL_ON", fail_on)]);
         let said = String::from_utf8_lossy(&out.stderr);
         assert!(!out.status.success(), "{fail_on}: the suite passed: {said}");
@@ -6141,7 +6159,8 @@ fn the_control_suite_s_run_overlay_phase_fails_naming_the_step_that_failed() {
 /// skipped and launches nothing.
 #[test]
 fn the_control_suite_s_run_overlay_phase_skips_off_linux_and_launches_nothing() {
-    let (out, launches) = run_overlay_suite("overlay-suite-mac", &[("OH_FAKE_UNAME", "Darwin")]);
+    let (out, launches, ..) =
+        run_overlay_suite("overlay-suite-mac", &[("OH_FAKE_UNAME", "Darwin")]);
     let said = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "{said}");
     assert!(

@@ -168,6 +168,7 @@ impl World {
                 "copilot",
                 "cursor",
             ] {
+                // llmlint: ignore[e2e_not_mocked] The same `--bin` seam as the block above `mock()`: only each harness's subprocess is the repository's mock harness, the real built `oneharness` runs, and live/control/run_allowlist_live.py holds these configs to the real Claude Code and Codex.
                 argv.extend(["--bin".into(), bin(id)]);
             }
         } else if args.first() != Some(&"list") {

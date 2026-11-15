@@ -77,7 +77,6 @@
         "{workspaceRoot}/docs/harness-usage.md",
         "{workspaceRoot}/docs/sdk-parity.md",
         "{workspaceRoot}/justfile",
-      "{workspaceRoot}/live/control/run_allowlist_live.py",
         "{workspaceRoot}/scripts/e2e-codex.sh",
         "{workspaceRoot}/scripts/e2e-lib.sh",
         "{workspaceRoot}/src/cli.rs"

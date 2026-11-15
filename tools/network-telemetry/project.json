@@ -43,6 +43,8 @@
       "{workspaceRoot}/live/control/app_server_rss_budget.py",
       "{workspaceRoot}/live/control/run_overlay_budget.py",
       "{workspaceRoot}/live/control/run_allowlist_live.py",
+      "{workspaceRoot}/crates/oneharness-core/src/io/run_overlay.rs",
+      "{workspaceRoot}/crates/oneharness-core/src/io/scratch.rs",
       "{workspaceRoot}/python/oneharness-sdk/src/oneharness_sdk/_generated/schemas.json",
       "{workspaceRoot}/live/control/fixtures/**/*",
       "{workspaceRoot}/.github/workflows/ci.yml",

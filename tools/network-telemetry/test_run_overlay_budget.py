@@ -15,6 +15,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import re
 import subprocess
 import unittest
 from pathlib import Path
@@ -239,6 +240,40 @@ class RunOverlayTelemetryContract(unittest.TestCase):
                     ReportResult.from_report(report),
                     ReportResult(None, None, "", [], {}, None, None),
                 )
+
+    def test_the_live_suite_s_overlay_detector_restates_the_engine_s_layout(self) -> None:
+        # live/control/run_allowlist_live.py finds overlays (and their
+        # processes) by restating io::run_overlay's marker, directory prefix
+        # and root path; it runs only in the paid live tier, so this is what
+        # catches the two drifting. Both are read as text: the suite's
+        # interpreter floor (3.10) is above this one's.
+        engine = (ROOT / "crates" / "oneharness-core" / "src" / "io").joinpath
+        overlay = engine("run_overlay.rs").read_text(encoding="utf-8")
+        scratch = engine("scratch.rs").read_text(encoding="utf-8")
+
+        def constant(source: str, name: str) -> str:
+            found = re.search(rf'^(?:pub )?const {name}: &str = "([^"]*)";$', source, re.M)
+            if found is None:
+                self.fail(f"io::run_overlay no longer declares `{name}` as a string")
+            return str(found.group(1))
+
+        components = re.search(
+            r"^const ROOT_COMPONENTS: \[&str; \d+\] = \[([^\]]*)\];$", overlay, re.M
+        )
+        if components is None:
+            self.fail("io::run_overlay no longer declares ROOT_COMPONENTS")
+        root = ", ".join(part.strip() for part in components.group(1).split(","))
+        suite = (CONTROL / "run_allowlist_live.py").read_text(encoding="utf-8").splitlines()
+        for line in (
+            f'OVERLAY_MARKER = "{constant(overlay, "MARKER_ENV")}"',
+            f'OVERLAY_PREFIX = "{constant(scratch, "PREFIX")}{constant(overlay, "TAG")}"',
+            f"OVERLAY_ROOT = ({root})",
+        ):
+            self.assertTrue(
+                line in suite,
+                f"live/control/run_allowlist_live.py no longer has `{line}`: "
+                "update its overlay detector to the engine's layout",
+            )
 
     def test_a_number_too_large_for_a_float_is_no_figure(self) -> None:
         self.assertIsNone(number(10**400))

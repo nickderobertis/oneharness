@@ -180,9 +180,15 @@ def wait_until_recorded(telemetry: Path, suite: str) -> None:
             and (pending / launch).exists()
         }
         if lost:
+            # Each lost launch's start line, so the failure says which launch
+            # (phase, kind, argv) went unrecorded, not only its id.
+            launched = [
+                s for s in starts(lines(telemetry / f"{suite}.jsonl")) if s["launch_id"] in lost
+            ]
             raise AssertionError(
                 f"{suite}: launch(es) {', '.join(lost)} never recorded: every recorder process "
-                f"their pending markers name ({lost}) has exited with the marker still there"
+                f"their pending markers name ({lost}) has exited with the marker still there; "
+                f"their start lines: {launched}"
             )
         if time.monotonic() >= deadline:
             raise AssertionError(
@@ -428,6 +434,8 @@ class StoppedSuiteRecording(unittest.TestCase):
         records = lines(stopped.telemetry / "control.jsonl")
         for launch_id in named:
             self.assertEqual(measurements(records, launch_id), [], launch_id)
+            # Its start line is quoted, so the failure says which launch it was.
+            self.assertIn(f"'launch_id': '{launch_id}'", said)
             pids = owners(stopped.telemetry / ".pending" / launch_id)
             self.assertTrue(pids, launch_id)
             assert pids is not None

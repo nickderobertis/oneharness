@@ -44026,121 +44026,192 @@ fn a_lock_wait_falls_back_at_model_catalog_wait_with_the_clock_stepped_seconds_f
     fall_back_at_model_catalog_wait_with_the_wall_clock_stepped(3_000);
 }
 
-/// How close to MODEL_CATALOG_WAIT, on this test's monotonic clock, a launch
-/// must report its fallback: smaller than every step the journeys take, so a
-/// wait timed on the wall clock — longer or shorter by the step — fails it.
-const LOCK_WAIT_TOLERANCE: std::time::Duration = std::time::Duration::from_millis(110);
+/// How close to MODEL_CATALOG_WAIT, on this test's monotonic clock, the
+/// fastest of a journey's launches must report its fallback: smaller than
+/// every step the journeys take, so a wait timed on the wall clock — longer or
+/// shorter by the step — fails it.
+const LOCK_WAIT_TOLERANCE: std::time::Duration = std::time::Duration::from_millis(120);
 
-/// With this test holding the catalog's lock for the whole wait, a launch
-/// whose wall clock steps by `step_ms` halfway through still reports the
-/// MODEL_CATALOG_WAIT fallback after exactly that wait on this test's
-/// monotonic clock — from just before its version probe answered to the
-/// warning arriving on its stderr — starts no refresh, records one failure,
-/// and the next launch backs off: the fallback does not depend on the wall
-/// clock holding still.
+/// How many launches each stepped-clock journey runs at once, each in its own
+/// world and each stepped alike. A loaded host only ever lengthens a measured
+/// wait, so the fastest is the one held to [`LOCK_WAIT_TOLERANCE`]; a wait
+/// timed on the wall clock would put every one of them past it.
+const STEPPED_LAUNCHES: usize = 3;
+
+/// One launch waiting on a catalog lock this test holds, its stderr read as
+/// it arrives so the fallback's warning is timed when it is printed.
+struct LockWaitLaunch {
+    world: CatalogWorld,
+    lock: std::fs::File,
+    child: std::process::Child,
+    /// Where the mock writes its argv as it answers `--version`, the last
+    /// thing the launch does before it starts waiting on the lock.
+    probed: PathBuf,
+    warned: std::sync::mpsc::Receiver<std::time::Instant>,
+    stderr: std::thread::JoinHandle<String>,
+    stdout: std::thread::JoinHandle<String>,
+}
+
+impl LockWaitLaunch {
+    fn start(world: CatalogWorld) -> Self {
+        use fs2::FileExt;
+        use std::io::BufRead;
+        let (_, lock_path, _) = catalog_paths(&world);
+        std::fs::create_dir_all(world.catalog_dir()).unwrap();
+        let lock = std::fs::File::create(&lock_path).unwrap();
+        lock.lock_exclusive().unwrap();
+        let probed = world.fx.dir.join("probe-argv");
+        let probed_env = probed.display().to_string();
+        let mut cmd = world.command(
+            CodexLaunchPath::Exec,
+            "codex",
+            &[],
+            &[("MOCK_ARGV_FILE", &probed_env)],
+        );
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = cmd.spawn().expect("start oneharness");
+        let out = child.stdout.take().unwrap();
+        let stdout = std::thread::spawn(move || std::io::read_to_string(out).unwrap());
+        let err = child.stderr.take().unwrap();
+        let (warn, warned) = std::sync::mpsc::channel();
+        let stderr = std::thread::spawn(move || {
+            let mut text = String::new();
+            for line in std::io::BufReader::new(err).lines() {
+                let line = line.unwrap();
+                if line.contains("oneharness: warning:") {
+                    let _ = warn.send(std::time::Instant::now());
+                }
+                text.push_str(&line);
+                text.push('\n');
+            }
+            text
+        });
+        Self {
+            world,
+            lock,
+            child,
+            probed,
+            warned,
+            stderr,
+            stdout,
+        }
+    }
+}
+
+/// With this test holding each world's catalog lock for the whole wait,
+/// [`STEPPED_LAUNCHES`] launches whose wall clock steps by `step_ms` halfway
+/// through each report the MODEL_CATALOG_WAIT fallback no earlier than that
+/// wait on this test's monotonic clock — from just before its version probe
+/// answered to the warning arriving on its stderr — and the fastest within
+/// [`LOCK_WAIT_TOLERANCE`] of it; each starts no refresh, records one failure
+/// stamped on the stepped clock, and its next launch backs off: the fallback
+/// does not depend on the wall clock holding still.
 fn fall_back_at_model_catalog_wait_with_the_wall_clock_stepped(step_ms: i64) {
     use fs2::FileExt;
-    use std::io::BufRead;
     assert!(
         u128::from(step_ms.unsigned_abs()) > LOCK_WAIT_TOLERANCE.as_millis(),
         "a step within the tolerance proves nothing"
     );
-    let world = CatalogWorld::new(&format!("catalog-clock-step-{step_ms}"), "", "");
-    let (_, lock_path, _) = catalog_paths(&world);
-    std::fs::create_dir_all(world.catalog_dir()).unwrap();
-    let lock = std::fs::File::create(&lock_path).unwrap();
-    lock.lock_exclusive().unwrap();
-    // The mock writes its argv here as it answers `--version`, the last thing
-    // the launch does before it starts waiting on the lock.
-    let probed = world.fx.dir.join("probe-argv");
-    let probed_env = probed.display().to_string();
-    let mut cmd = world.command(
-        CodexLaunchPath::Exec,
-        "codex",
-        &[],
-        &[("MOCK_ARGV_FILE", &probed_env)],
-    );
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = cmd.spawn().expect("start oneharness");
-    let stdout = child.stdout.take().unwrap();
-    let drained = std::thread::spawn(move || std::io::read_to_string(stdout).unwrap());
-    let stderr = child.stderr.take().unwrap();
-    let (warned, warning) = std::sync::mpsc::channel();
-    let lines = std::thread::spawn(move || {
-        let mut text = String::new();
-        for line in std::io::BufReader::new(stderr).lines() {
-            let line = line.unwrap();
-            if line.contains("oneharness: warning:") {
-                let _ = warned.send(std::time::Instant::now());
-            }
-            text.push_str(&line);
-            text.push('\n');
-        }
-        text
-    });
-    // Before each look, so the mark is never later than the answer itself.
+    let mut launches: Vec<LockWaitLaunch> = (0..STEPPED_LAUNCHES)
+        .map(|n| {
+            LockWaitLaunch::start(CatalogWorld::new(
+                &format!("catalog-clock-step-{step_ms}-{n}"),
+                "",
+                "",
+            ))
+        })
+        .collect();
+    // Each launch's mark is the last look that still found no probe answer,
+    // so it is never later than the answer itself.
     let guard = std::time::Instant::now() + CATALOG_HANG_GUARD;
-    let probe_answered = loop {
-        let looked = std::time::Instant::now();
-        if probed.exists() {
-            break looked;
+    let mut absent = vec![std::time::Instant::now(); launches.len()];
+    let mut answered: Vec<Option<std::time::Instant>> = vec![None; launches.len()];
+    while answered.iter().any(Option::is_none) {
+        assert!(
+            std::time::Instant::now() < guard,
+            "a version probe never answered"
+        );
+        for (n, launch) in launches.iter().enumerate() {
+            if answered[n].is_some() {
+                continue;
+            }
+            let looked = std::time::Instant::now();
+            if launch.probed.exists() {
+                answered[n] = Some(absent[n]);
+            } else {
+                absent[n] = looked;
+            }
         }
-        assert!(looked < guard, "the version probe never answered");
-        std::thread::sleep(std::time::Duration::from_millis(2));
-    };
+        // Not a sleep: a timer tick (about 16 ms on Windows) would push each
+        // mark that much before its answer. The probes answer within moments.
+        std::thread::yield_now();
+    }
     std::thread::sleep(MODEL_CATALOG_WAIT / 2);
-    world.step_wall_clock(step_ms);
-    let warned_at = warning
-        .recv_timeout(CATALOG_HANG_GUARD)
-        .expect("the launch reported no fallback");
-    let waited = warned_at - probe_answered;
-    let warned_wall_ms = epoch_ms(world.wall_now());
-    let status = child.wait().unwrap();
-    let stderr = lines.join().unwrap();
-    let stdout = drained.join().unwrap();
-    FileExt::unlock(&lock).unwrap();
-    drop(lock);
-    assert!(status.success(), "{status:?}\n{stdout}\n{stderr}");
+    for launch in &launches {
+        launch.world.step_wall_clock(step_ms);
+    }
+    let mut waits = Vec::new();
+    for (launch, answered) in launches.iter_mut().zip(answered) {
+        let warned_at = launch
+            .warned
+            .recv_timeout(CATALOG_HANG_GUARD)
+            .expect("the launch reported no fallback");
+        let warned_wall_ms = epoch_ms(launch.world.wall_now());
+        let waited = warned_at - answered.unwrap();
+        let status = launch.child.wait().unwrap();
+        waits.push((waited, warned_wall_ms, status));
+    }
+    let fastest = waits.iter().map(|(waited, _, _)| *waited).min().unwrap();
+    println!("step {step_ms} ms: fastest {fastest:?} of {waits:?}");
     assert!(
-        waited >= MODEL_CATALOG_WAIT,
-        "step {step_ms} ms: the fallback came before the wait ran out: {waited:?}"
+        fastest < MODEL_CATALOG_WAIT + LOCK_WAIT_TOLERANCE,
+        "step {step_ms} ms: the fastest fallback came {fastest:?} into the wait, past \
+         {MODEL_CATALOG_WAIT:?} + {LOCK_WAIT_TOLERANCE:?}: {waits:?}"
     );
-    assert!(
-        waited < MODEL_CATALOG_WAIT + LOCK_WAIT_TOLERANCE,
-        "step {step_ms} ms: the fallback came {waited:?} into the wait, past \
-         {MODEL_CATALOG_WAIT:?} + {LOCK_WAIT_TOLERANCE:?}"
-    );
-    assert_eq!(
-        stderr.matches("oneharness: warning:").count(),
-        1,
-        "{stderr}"
-    );
-    assert!(
-        stderr.contains("gave no fresh catalog within")
-            && stderr.contains("Codex's own catalog fetch"),
-        "{stderr}"
-    );
-    assert!(world.helpers().is_empty(), "{:?}", world.records());
-    assert_eq!(world.failure_records().len(), 1, "{:?}", world.records());
-    // The record is stamped on the stepped clock, so the binary read the step
-    // this journey took: one that ignored it would be off by the whole step.
-    let failed_at = failed_at_ms(&world);
-    assert!(
-        u128::from(warned_wall_ms.abs_diff(failed_at)) < LOCK_WAIT_TOLERANCE.as_millis(),
-        "step {step_ms} ms: the failure was stamped {failed_at}, not on the stepped clock \
-         ({warned_wall_ms} as the fallback arrived)"
-    );
-    // The lock is free now; the backoff the record holds keeps the next
-    // launch from refreshing or waiting, on the same stepped clock.
-    let next = world.launch(CodexLaunchPath::Exec, "codex", &[], &[]);
-    assert!(
-        next.elapsed < MODEL_CATALOG_REFRESH_DEADLINE,
-        "step {step_ms} ms: {:?}",
-        next.elapsed
-    );
-    assert_one_catalog_warning_each(std::slice::from_ref(&next), "Codex's own catalog fetch");
-    assert!(world.helpers().is_empty(), "{:?}", world.records());
-    assert_eq!(world.failure_records().len(), 1);
+    for (launch, (waited, warned_wall_ms, status)) in launches.into_iter().zip(waits) {
+        let stderr = launch.stderr.join().unwrap();
+        let stdout = launch.stdout.join().unwrap();
+        FileExt::unlock(&launch.lock).unwrap();
+        drop(launch.lock);
+        let world = launch.world;
+        assert!(status.success(), "{status:?}\n{stdout}\n{stderr}");
+        assert!(
+            waited >= MODEL_CATALOG_WAIT,
+            "step {step_ms} ms: the fallback came before the wait ran out: {waited:?}"
+        );
+        assert_eq!(
+            stderr.matches("oneharness: warning:").count(),
+            1,
+            "{stderr}"
+        );
+        assert!(
+            stderr.contains("gave no fresh catalog within")
+                && stderr.contains("Codex's own catalog fetch"),
+            "{stderr}"
+        );
+        assert!(world.helpers().is_empty(), "{:?}", world.records());
+        assert_eq!(world.failure_records().len(), 1, "{:?}", world.records());
+        // The record is stamped on the stepped clock, so the binary read the
+        // step this journey took: one that ignored a step of seconds would be
+        // off by all of it.
+        let failed_at = failed_at_ms(&world);
+        assert!(
+            warned_wall_ms.abs_diff(failed_at) < STAMP_SLACK_MS,
+            "step {step_ms} ms: the failure was stamped {failed_at}, not on the stepped \
+             clock ({warned_wall_ms} as the fallback arrived)"
+        );
+        // The lock is free now; the backoff the record holds keeps the next
+        // launch from refreshing or waiting, on the same stepped clock.
+        let next = world.launch(CodexLaunchPath::Exec, "codex", &[], &[]);
+        assert!(
+            next.elapsed < MODEL_CATALOG_REFRESH_DEADLINE,
+            "step {step_ms} ms: {:?}",
+            next.elapsed
+        );
+        assert_one_catalog_warning_each(std::slice::from_ref(&next), "Codex's own catalog fetch");
+        assert!(world.helpers().is_empty(), "{:?}", world.records());
+        assert_eq!(world.failure_records().len(), 1);
+    }
 }
 // llmlint: ignore-end[tests_mirror_real_usage]
 

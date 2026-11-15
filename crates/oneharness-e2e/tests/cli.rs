@@ -14594,8 +14594,9 @@ fn a_run_level_allowed_tools_is_reported_never_synced_and_applied_by_run() {
     // Top level (through `extends`), per harness and per variant: `config`
     // reports each where `allowed_tools` has always been reported, with its
     // file; `sync` writes nothing for any of them; `run` applies each to the
-    // run alone (here Claude Code's `--allowedTools`; every harness's
-    // mechanism is pinned in `tests/run_allowlist.rs`).
+    // run alone on Linux (here Claude Code's `--allowedTools`; every
+    // harness's mechanism is pinned in `tests/run_allowlist.rs`) and withholds
+    // it, saying so, everywhere else (`tests/run_allowlist_platform.rs`).
     let fx = ConfigFixture::new("run-level-allowlist", "", "");
     let parent = fx.dir.join("parent.toml");
     std::fs::write(&parent, "allowed_tools = [\"Bash(git log:*)\"]\n").unwrap();
@@ -14654,11 +14655,35 @@ fn a_run_level_allowed_tools_is_reported_never_synced_and_applied_by_run() {
         assert!(output.status.success(), "{id}: {output:?}");
         let argv = std::fs::read_to_string(&argv_file).unwrap();
         let argv: Vec<&str> = argv.lines().collect();
-        let at = argv
-            .iter()
-            .position(|a| *a == "--allowedTools")
-            .unwrap_or_else(|| panic!("{id}: no --allowedTools in {argv:?}"));
-        assert_eq!(&argv[at + 1..at + 1 + rules.len()], rules, "{id}: {argv:?}");
+        let diagnostics: Vec<Value> = json_stdout(&output)["results"][0]["diagnostics"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|d| d["setting"] == "allowed_tools")
+            .cloned()
+            .collect();
+        if cfg!(target_os = "linux") {
+            // The one platform a real-CLI test proves the grant on: applied.
+            let at = argv
+                .iter()
+                .position(|a| *a == "--allowedTools")
+                .unwrap_or_else(|| panic!("{id}: no --allowedTools in {argv:?}"));
+            assert_eq!(&argv[at + 1..at + 1 + rules.len()], rules, "{id}: {argv:?}");
+            assert!(diagnostics.is_empty(), "{id}: {diagnostics:?}");
+        } else {
+            // Elsewhere it is withheld: no grant reaches the argv, and the
+            // report names each withheld rule.
+            assert!(!argv.contains(&"--allowedTools"), "{id}: {argv:?}");
+            assert_eq!(diagnostics.len(), 1, "{id}: {diagnostics:?}");
+            let message = diagnostics[0]["message"].as_str().unwrap();
+            assert!(
+                message.contains("withheld on `claude-code`"),
+                "{id}: {message}"
+            );
+            for rule in rules {
+                assert!(message.contains(&format!("`{rule}`")), "{id}: {message}");
+            }
+        }
         let _ = std::fs::remove_file(&argv_file);
     }
     assert_eq!(tree_bytes(&fx.dir), before);

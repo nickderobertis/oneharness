@@ -226,8 +226,8 @@ grep -qF "no longer accepts" "$tmp/requests-missing.log" &&
 # A catalog grep cannot read keeps grep's own cause. Where a mode cannot deny
 # its owner a read (root, Git Bash) there is no such file to make.
 probe="$tmp/unreadable-probe"
-: >"$probe"
-chmod 000 "$probe"
+: >"$probe" || fail "could not create the permission probe $probe; check that the scratch dir $tmp is writable"
+chmod 000 "$probe" || fail "could not chmod the permission probe $probe to 000"
 if ! cat "$probe" 2>/dev/null; then
   status="$(run_gate "$(write_fake_codex requests-unreadable)" "$tmp/requests-unreadable.log")"
   [ "$status" = "1" ] || fail "an unreadable request catalog must fail the gate, got exit $status"
@@ -238,7 +238,7 @@ if ! cat "$probe" 2>/dev/null; then
   grep -qF "no longer accepts" "$tmp/requests-unreadable.log" &&
     fail "an unreadable request catalog must not be reported as a dropped method"
 fi
-chmod 600 "$probe"
+chmod 600 "$probe" || fail "could not restore the permission probe $probe to 600, so the scratch dir may not clean up"
 
 # The diff must survive the way `just lint-workflows` invokes the gate — stdout
 # suppressed. A drift report whose diff went to /dev/null tells a reader the

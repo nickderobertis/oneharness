@@ -5924,6 +5924,33 @@ fn plan_unit_grant(
     })
 }
 
+/// Every `-c` / `--config` override in a Codex argv, in order, as `(key,
+/// value)`: the separate (`-c k=v`, `--config k=v`) and attached (`-ck=v`,
+/// `--config=k=v`) spellings Codex accepts, with whitespace around `=`
+/// trimmed and a quoted TOML string value unquoted.
+fn codex_config_overrides(args: &[String]) -> Vec<(String, String)> {
+    let mut overrides = Vec::new();
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        let assignment = match arg.as_str() {
+            "-c" | "--config" => args.next().map(String::as_str),
+            other => other
+                .strip_prefix("--config=")
+                .or_else(|| other.strip_prefix("-c").filter(|rest| !rest.is_empty())),
+        };
+        if let Some((key, value)) = assignment.and_then(|a| a.split_once('=')) {
+            let value = value.trim();
+            let value = value
+                .strip_prefix('"')
+                .and_then(|v| v.strip_suffix('"'))
+                .or_else(|| value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')))
+                .unwrap_or(value);
+            overrides.push((key.trim().to_string(), value.to_string()));
+        }
+    }
+    overrides
+}
+
 /// The real home this Codex run's grant can be applied through an overlay
 /// of, or why it cannot.
 fn codex_overlay_home<'a>(
@@ -5980,10 +6007,10 @@ fn codex_overlay_home<'a>(
             },
         },
     };
-    let overridden = args.iter().rev().find_map(|arg| {
-        arg.strip_prefix("cli_auth_credentials_store=")
-            .map(|value| value.trim_matches(['"', '\'']).to_string())
-    });
+    let overridden = codex_config_overrides(args)
+        .into_iter()
+        .rev()
+        .find_map(|(key, value)| (key == "cli_auth_credentials_store").then_some(value));
     // Only the file store (Codex's default) keeps the login where the
     // overlay's link reaches; `keyring` and `auto` may keep it in the OS
     // keyring, keyed by the home's path, and a store this release does not

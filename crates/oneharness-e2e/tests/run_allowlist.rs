@@ -1794,3 +1794,29 @@ fn an_overlay_that_cannot_be_made_stops_the_run_before_anything_spawns() {
     );
     assert!(world.overlays().is_empty());
 }
+
+#[cfg(unix)]
+#[test]
+fn every_spelling_of_a_codex_store_override_withholds_the_grant() {
+    let world = World::new("codex-store-spellings");
+    let tool = world.tool();
+    for args in [
+        r#"["--config=cli_auth_credentials_store=auto"]"#,
+        r#"["-ccli_auth_credentials_store=keyring"]"#,
+        r#"["--config", "cli_auth_credentials_store = \"keyring\""]"#,
+        r#"["-c", "cli_auth_credentials_store='auto'"]"#,
+    ] {
+        let toml = format!("allowed_tools = [\"Bash({tool})\"]\n[harness.codex]\nargs = {args}\n");
+        let run = spawn(&world, "codex", "read-only", &toml, &[]);
+        let message = run.report["results"][0]["diagnostics"][0]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        assert!(message.contains("OS keyring"), "{args}: {message}");
+        assert!(
+            run.report["results"][0].get("overlay_env").is_none(),
+            "{args}"
+        );
+    }
+    assert!(world.overlays().is_empty());
+}

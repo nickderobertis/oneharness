@@ -146,6 +146,7 @@ class RunOverlayTelemetryContract(unittest.TestCase):
         found = []
 
         def walk(node: object) -> None:
+            # llmlint: ignore[structural_pattern_matching] This test shares the Python SDK's 3.9 floor (tools/network-telemetry/ruff.toml extends it), where `match` is a syntax error; the isinstance/elif pair is the 3.9 spelling of the two shapes.
             if isinstance(node, dict):
                 timings = node.get("OverlayTimings")
                 if isinstance(timings, dict) and "properties" in timings:

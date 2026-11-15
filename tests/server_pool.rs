@@ -332,3 +332,50 @@ fn a_holder_that_exited_unreaped_is_not_running_and_does_not_retain_the_server()
     assert!(!server_pool::pid_alive(server));
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// The linger is a duration, so a wall clock stepped back after a server went
+/// idle — NTP, or a virtual machine's guest clock catching up with its host,
+/// which the Linux VM this suite was seen failing on does every half minute —
+/// must not keep the server past it. A step back of `X` after the stamp reads,
+/// to a linger measured on the wall clock, exactly as an entry that went idle
+/// `X` later than it did, so the release's wall-clock stamp is moved that far
+/// on disk and the uptime instant the release recorded beside it is left as
+/// the release wrote it.
+#[test]
+fn a_wall_clock_stepped_back_after_a_release_does_not_extend_the_linger() {
+    let root = pool_root("clock-step");
+    let key = oneharness_core::domain::control::pool_key("clock-step", &[], &[]);
+    let linger = Duration::from_millis(300);
+    let lease = server_pool::acquire(&root, &key, &plan(), linger).unwrap();
+    let server = lease.record().pid;
+    drop(lease);
+
+    let path = root.join(key.as_str()).join("server.json");
+    let mut stored: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let stepped = stored["idle_since_ms"]
+        .as_u64()
+        .expect("the release stamped the entry idle")
+        + 10_000;
+    stored["idle_since_ms"] = stepped.into();
+    stored["idle_since"] = (stepped / 1000).into();
+    std::fs::write(&path, stored.to_string()).unwrap();
+    std::thread::sleep(linger + Duration::from_millis(200));
+
+    assert_eq!(
+        server_pool::sweep(&root, linger).unwrap(),
+        1,
+        "a server idle past its linger was kept because the wall clock stepped back: {}",
+        std::fs::read_to_string(&path).unwrap_or_default()
+    );
+    for _ in 0..100 {
+        if !server_pool::pid_alive(server) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        !server_pool::pid_alive(server),
+        "the swept server still runs"
+    );
+}

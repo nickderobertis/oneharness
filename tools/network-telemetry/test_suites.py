@@ -34,6 +34,7 @@ from support import (
     measurements,
     need_builds,
     need_recorder,
+    path_without,
     recorder_unavailable,
     run_shim,
     run_suite,
@@ -370,6 +371,38 @@ class HangGuard(unittest.TestCase):
         floor = len(bounds.INBOUND_TCP) * bounds.TRIAL_TIMEOUT + bounds.KILL_GRACE
         self.assertGreater(HANG_GUARD, floor + bounds.REAP_WAIT + bounds.SETTLE)
         self.assertGreater(HANG_GUARD, HOLD)
+
+
+@unittest.skipIf(WINDOWS, "the launch reads its parents with ps, and the recorder forks")
+class PendingMarkerOwners(unittest.TestCase):
+    """A launch's pending marker names the processes that can still record it,
+    as the launch itself sees them while it runs, through the real shim."""
+
+    def marker_and_parents(self, env: dict[str, str]) -> tuple[list[int] | None, int, int]:
+        tmp = scratch(self)
+        real = tmp / "real-codex"
+        real.write_text(
+            "#!/usr/bin/env bash\n"
+            f"cp {shlex.quote(str(tmp))}/.pending/* {shlex.quote(str(tmp / 'marker'))}\n"
+            f'echo "$PPID" > {shlex.quote(str(tmp / "parent"))}\n'
+            f'ps -o ppid= -p "$PPID" | tr -d " " > {shlex.quote(str(tmp / "grandparent"))}\n'
+        )
+        real.chmod(0o755)
+        run = run_shim(tmp, [str(real)], ["exec", "x"], env=env)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertFalse(list((tmp / ".pending").glob("*")), "the marker outlived the line")
+        parent = int((tmp / "parent").read_text())
+        return owners(tmp / "marker"), parent, int((tmp / "grandparent").read_text())
+
+    def test_the_recorder_s_marker_names_its_supervisor_then_its_measurer(self) -> None:
+        # Unmeasured, so the launch is the supervisor's own child on any host.
+        named, supervisor, measurer = self.marker_and_parents({"OH_E2E_OS": "Darwin"})
+        self.assertEqual(named, [supervisor, measurer])
+
+    def test_the_shim_s_fallback_marker_names_the_shell_that_records_the_launch(self) -> None:
+        tmp = scratch(self)
+        named, shim, _ = self.marker_and_parents({"PATH": path_without(tmp, "python3")})
+        self.assertEqual(named, [shim])
 
 
 def setup_and(

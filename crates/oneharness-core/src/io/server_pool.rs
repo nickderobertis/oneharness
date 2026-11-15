@@ -1442,6 +1442,7 @@ fn uptime_millis() -> Option<u64> {
     }
     #[cfg(windows)]
     {
+        // llmlint: ignore[changed_behavior_has_e2e] The pool's integration suite (`tests/server_pool.rs`) is Unix-only as a whole — its stand-in server is `sleep` and it stages holders through libc — so no journey can drive a Windows sweep. `GetTickCount64` cannot fail, and the unit test `the_linger_is_measured_on_the_uptime_clock_when_it_has_both_readings`, which runs on every platform CI builds, proves this reading advances with real time; the linger arithmetic over it is the same code the Unix journeys prove.
         // SAFETY: `GetTickCount64` takes nothing and only reads a counter.
         Some(unsafe { windows_sys::Win32::System::SystemInformation::GetTickCount64() })
     }
@@ -1508,10 +1509,12 @@ mod tests {
         assert_eq!(idle_for_ms(stepped, Some((1_000, 1_500))), 500);
         assert_eq!(idle_for_ms(stepped, None), 0);
         assert_eq!(idle_for_ms((10_000, 10_500), Some((9_000, 1_500))), 500);
-        assert!(
-            uptime_millis().is_some(),
-            "this platform's uptime clock is unreadable"
-        );
+        // A real clock on every platform, the Windows one included: it reads,
+        // and it advances with the time that passes.
+        let before = uptime_millis().expect("this platform's uptime clock is unreadable");
+        std::thread::sleep(Duration::from_millis(60));
+        let after = uptime_millis().expect("this platform's uptime clock is unreadable");
+        assert!(after >= before + 40, "{before} -> {after}");
     }
 
     /// A long-lived supervisor reaps servers without end, so only the newest

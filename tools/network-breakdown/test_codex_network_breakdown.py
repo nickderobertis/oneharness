@@ -74,7 +74,6 @@ def breakdown(*args: str) -> dict[str, Any]:
 
 
 def breakdown_with(env: dict[str, str] | None, *args: str) -> dict[str, Any]:
-    """`breakdown`, run in `env`."""
     run = run_script(*args, env=env)
     if run.returncode != 0:
         raise AssertionError(f"exit {run.returncode}\n{run.stdout}\n{run.stderr}")
@@ -1181,10 +1180,12 @@ class APastaThatMisbehaves(unittest.TestCase):
         with tempfile.TemporaryDirectory() as scratch:
             out = Path(scratch) / "seen"
             # As 26.04's `usr.bin.pasta` AppArmor profile does: the program
-            # after `--` must resolve to a file under /usr/bin or /bin.
+            # after `--` must resolve to a file under /usr/bin or /bin, and it
+            # starts as a secure exec, whose loader drops LD_LIBRARY_PATH.
             stand_in = executable(
                 Path(scratch) / "pasta",
                 "#!/bin/bash\n"
+                "unset LD_LIBRARY_PATH\n"
                 'for ((i = 1; i <= $#; i++)); do [ "${!i}" = -- ] && break; done\n'
                 "i=$((i + 1))\n"
                 'program="$(realpath -- "$(command -v -- "${!i}")")"\n'
@@ -1195,12 +1196,26 @@ class APastaThatMisbehaves(unittest.TestCase):
                 "exit 1\n",
             )
             env = dict(os.environ, CODEX_NETWORK_BREAKDOWN_PASTA=str(stand_in))
-            launch = 'printf "%s %s" "$(readlink /proc/self/ns/net)" "$HTTPS_PROXY" > "$1"'
-            report = breakdown_with(env, "--", "sh", "-c", launch, "sh", str(out))
-            seen_net, proxy = out.read_text().split(" ")
+            launch = (
+                'printf "%s %s %s" "$(readlink /proc/self/ns/net)" "$HTTPS_PROXY" '
+                '"$LD_LIBRARY_PATH" > "$1"'
+            )
+            report = breakdown_with(
+                env,
+                "--env",
+                "LD_LIBRARY_PATH=/oneharness-breakdown-probe",
+                "--",
+                "sh",
+                "-c",
+                launch,
+                "sh",
+                str(out),
+            )
+            seen_net, proxy, library_path = out.read_text().split(" ")
         self.assertEqual(report["launch_exit"], 0, report)
         self.assertNotEqual(seen_net, os.readlink("/proc/self/ns/net"), "ran outside the namespace")
         self.assertRegex(proxy, r"^http://127\.0\.0\.1:\d+$")
+        self.assertEqual(library_path, "/oneharness-breakdown-probe", "an --env value was lost")
 
 
 class RequiredMeasuring(unittest.TestCase):

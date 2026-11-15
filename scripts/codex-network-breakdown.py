@@ -1077,8 +1077,9 @@ class StderrRelay:
         return self.tail.decode(errors="replace").strip().replace("\n", " | ")[-500:]
 
 
-def end_session(run: subprocess.Popen[bytes]) -> None:
-    """Kill pasta and everything in its session, and reap it."""
+def end_group(run: subprocess.Popen[bytes]) -> None:
+    """Kill pasta and every process in its process group (it leads one, being
+    started in a new session), and reap it."""
     with contextlib.suppress(ProcessLookupError):
         if sys.platform == "win32":
             run.kill()
@@ -1096,15 +1097,17 @@ def await_pasta(
     start_within: float,
     launch_timeout: float,
 ) -> None:
-    """Wait for pasta, never without a bound: a namespace not started within
-    `start_seconds` is refused; once it has recorded its measurement, or its
-    launch's --timeout and the init's kill grace have run out, a pasta still
-    running PASTA_EXIT_GRACE_SECONDS later is ended with its session."""
+    """Wait for pasta, bounded by its own deadlines and by the launch: a
+    namespace not started within `start_within` seconds is refused; once it
+    has recorded its measurement, or the launch's --timeout and the init's
+    kill grace have run out, a pasta still running PASTA_EXIT_GRACE_SECONDS
+    later is ended with its process group. Without a --timeout, a launch that
+    has not ended is waited for, as it was asked to run."""
     started, result = scratch / "started", scratch / "measurement.json"
     start_by = time.monotonic() + start_within
     while run.poll() is None and not started.exists():
         if time.monotonic() >= start_by:
-            end_session(run)
+            end_group(run)
             raise Unusable(
                 f"pasta ({pasta}) started no namespace within {start_within:g} s and was ended "
                 f"(its stderr: {stderr.said() or 'no message'}). Rerun it by hand to see why: "
@@ -1124,7 +1127,7 @@ def await_pasta(
         if (exit_by is not None and now >= exit_by) or (
             exit_by is None and launch_by is not None and now >= launch_by
         ):
-            end_session(run)
+            end_group(run)
             print(
                 f"codex-network-breakdown: warning: pasta ({pasta}) had not exited "
                 f"{PASTA_EXIT_GRACE_SECONDS:g} s after its launch "
@@ -1136,9 +1139,6 @@ def await_pasta(
 
 
 def measure(args: argparse.Namespace) -> int:
-    # Set in this script's own environment, which pasta inherits, so that
-    # `through_bash` restores them too where pasta's secure exec drops them.
-    os.environ.update(args.env)
     allowed = start_seconds()
     through_bash = recorder().through_bash
     pasta = find_pasta() or fetch_pasta()
@@ -1148,6 +1148,10 @@ def measure(args: argparse.Namespace) -> int:
         raise Unusable(
             f"cannot create a scratch directory: {error}; point TMPDIR at a writable directory"
         ) from None
+    # Set in this script's own environment only now that pasta is found and the
+    # scratch made, so the launch's --env values reach pasta alone, and
+    # `through_bash` restores them too where pasta's secure exec drops them.
+    os.environ.update(args.env)
     try:
         result = os.path.join(scratch, "measurement.json")
         trace_file = args.trace_out or os.path.join(scratch, "trace.log")

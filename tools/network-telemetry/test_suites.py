@@ -118,15 +118,21 @@ def recorder_lifetime() -> float:
 HANG_GUARD = 2 * recorder_lifetime()
 
 
+# A pid as a marker spells it: ASCII decimal, positive — 0 would name a
+# process group, not a recorder — and within pid_t.
+PID = re.compile(r"[1-9][0-9]{0,9}")
+PID_MAX = 2**31 - 1
+
+
 def owners(marker: Path) -> list[int] | None:
     """The pids a pending marker names as able to still record its launch, or
-    None while that is not known (the marker is still being written, or is no
-    longer there to read)."""
+    None while that is not known: the marker is still being written, is no
+    longer there to read, or names anything but pids."""
     try:
         words = marker.read_text().split()
     except OSError:
         return None
-    pids = [int(word) for word in words if word.isdigit()]
+    pids = [int(word) for word in words if PID.fullmatch(word) and int(word) <= PID_MAX]
     return pids if pids and len(pids) == len(words) else None
 
 
@@ -298,6 +304,13 @@ HOLD = 35
 @unittest.skipIf(
     WINDOWS, "the suites' doubles are bash scripts; Windows runs the recorder's fallback tests"
 )
+class StoppedSuite(NamedTuple):
+    """The control suite set up to run behind the stand-in pasta."""
+
+    telemetry: Path  # its OH_E2E_TELEMETRY_DIR
+    env: dict[str, str]
+
+
 class StoppedSuiteRecording(unittest.TestCase):
     """The control suite stopped while its recorder still owes launches their
     lines, through the real shim, recorder and pasta: a stand-in pasta in front
@@ -305,7 +318,7 @@ class StoppedSuiteRecording(unittest.TestCase):
     every one after it — among them the pooled `--version` probe started
     beside the first, still in flight when the suite is stopped."""
 
-    def stopped_with(self, later: str) -> tuple[Path, dict[str, str]]:
+    def stopped_with(self, later: str) -> StoppedSuite:
         need_builds(self)
         need_recorder(self)
         real = shutil.which("pasta")
@@ -325,14 +338,14 @@ class StoppedSuiteRecording(unittest.TestCase):
         (stand_in / "pasta").chmod(0o755)
         env = suite_env(tmp, *EXECUTABLES, OH_E2E_PHASE_LIMIT="1", **SUITES["control"].auth)
         env["PATH"] = f"{stand_in}{os.pathsep}{env['PATH']}"
-        return tmp / "telemetry", env
+        return StoppedSuite(tmp / "telemetry", env)
 
     def test_a_launch_recorded_long_after_the_stop_is_waited_for(self) -> None:
-        telemetry, env = self.stopped_with(f'"$real" "$@"; code=$?; sleep {HOLD}; exit "$code"')
+        stopped = self.stopped_with(f'"$real" "$@"; code=$?; sleep {HOLD}; exit "$code"')
         began = time.monotonic()
-        run_until_recorded("control", env, "codex")
+        run_until_recorded("control", stopped.env, "codex")
         took = time.monotonic() - began
-        records = lines(telemetry / "control.jsonl")
+        records = lines(stopped.telemetry / "control.jsonl")
         launched = starts(records)
         self.assertGreater(len(launched), 1, records)
         for launch in launched:
@@ -343,15 +356,15 @@ class StoppedSuiteRecording(unittest.TestCase):
     def test_a_launch_whose_recorder_exits_without_its_line_fails_naming_it(self) -> None:
         # Its measurer and supervisor are SIGKILLed before the namespace
         # starts, so nothing is left that can write its line or clear its marker.
-        telemetry, env = self.stopped_with(
+        stopped = self.stopped_with(
             'kill -KILL "$(ps -o ppid= -p "$PPID" | tr -d " ")" "$PPID"; exit 1'
         )
         began = time.monotonic()
         with self.assertRaises(AssertionError) as caught:
-            run_until_recorded("control", env, "codex")
+            run_until_recorded("control", stopped.env, "codex")
         took = time.monotonic() - began
         said = str(caught.exception)
-        records = lines(telemetry / "control.jsonl")
+        records = lines(stopped.telemetry / "control.jsonl")
         unrecorded = [
             s["launch_id"] for s in starts(records) if not measurements(records, s["launch_id"])
         ]
@@ -359,7 +372,7 @@ class StoppedSuiteRecording(unittest.TestCase):
         self.assertIn("never recorded", said)
         for launch_id in unrecorded:
             self.assertIn(launch_id, said)
-        for marker in (telemetry / ".pending").glob("*"):
+        for marker in (stopped.telemetry / ".pending").glob("*"):
             pids = owners(marker)
             self.assertTrue(pids, marker)
             assert pids is not None
@@ -377,12 +390,20 @@ class HangGuard(unittest.TestCase):
         self.assertGreater(HANG_GUARD, HOLD)
 
 
+class MarkerSeen(NamedTuple):
+    """A pending marker's owners as its launch read them, beside its parents."""
+
+    owners: list[int] | None
+    parent: int  # the process that started the launch
+    grandparent: int  # that process's parent
+
+
 @unittest.skipIf(WINDOWS, "the launch reads its parents with ps, and the recorder forks")
 class PendingMarkerOwners(unittest.TestCase):
     """A launch's pending marker names the processes that can still record it,
     as the launch itself sees them while it runs, through the real shim."""
 
-    def marker_and_parents(self, env: dict[str, str]) -> tuple[list[int] | None, int, int]:
+    def marker_and_parents(self, env: dict[str, str]) -> MarkerSeen:
         tmp = scratch(self)
         real = tmp / "real-codex"
         real.write_text(
@@ -395,18 +416,22 @@ class PendingMarkerOwners(unittest.TestCase):
         run = run_shim(tmp, [str(real)], ["exec", "x"], env=env)
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertFalse(list((tmp / ".pending").glob("*")), "the marker outlived the line")
-        parent = int((tmp / "parent").read_text())
-        return owners(tmp / "marker"), parent, int((tmp / "grandparent").read_text())
+        return MarkerSeen(
+            owners(tmp / "marker"),
+            int((tmp / "parent").read_text()),
+            int((tmp / "grandparent").read_text()),
+        )
 
     def test_the_recorder_s_marker_names_its_supervisor_then_its_measurer(self) -> None:
         # Unmeasured, so the launch is the supervisor's own child on any host.
-        named, supervisor, measurer = self.marker_and_parents({"OH_E2E_OS": "Darwin"})
-        self.assertEqual(named, [supervisor, measurer])
+        seen = self.marker_and_parents({"OH_E2E_OS": "Darwin"})
+        # The supervisor started the launch; the measurer forked the supervisor.
+        self.assertEqual(seen.owners, [seen.parent, seen.grandparent])
 
     def test_the_shim_s_fallback_marker_names_the_shell_that_records_the_launch(self) -> None:
         tmp = scratch(self)
-        named, shim, _ = self.marker_and_parents({"PATH": path_without(tmp, "python3")})
-        self.assertEqual(named, [shim])
+        seen = self.marker_and_parents({"PATH": path_without(tmp, "python3")})
+        self.assertEqual(seen.owners, [seen.parent])
 
 
 def setup_and(

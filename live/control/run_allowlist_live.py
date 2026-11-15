@@ -1391,22 +1391,55 @@ def group_withheld(world: World, fails: Failures) -> None:
 
 def budget_turns(world: World, size: int, grant: bool) -> list[TurnTiming]:
     """`size` controlled turns started at once, each timed from its oneharness
-    process's start to its own exit."""
+    process's start to its own exit. A turn is timed only once it is shown to
+    be the turn the budget describes; anything else raises `BudgetTurnError`."""
     world.write_config(grant=grant)
-    scripts, argvs = [], []
+    scripts, argvs, rulings = [], [], []
     for _ in range(size):
         probe = probe_id("budget")
-        command = f"{world.grant} --ruling 'budget'"
+        # Each turn's own one-line argument, so its stand-in record is its own.
+        ruling = f"budget-{probe}"
+        command = f"{world.grant} --ruling '{ruling}'"
         scripts.append(world.endpoint.script(probe, [Call(CallKind.SHELL, text=command)]))
         argvs.append(world.argv(f"[probe:{probe}] Use your shell tool to run exactly: {command}"))
+        rulings.append(ruling)
+    before = len(records(world))
+    finished = run_concurrently(argvs, world.env(), timeout=900)
+    ran = records(world)[before:]
     turns = []
-    for script, done in zip(scripts, run_concurrently(argvs, world.env(), timeout=900)):
+    for script, ruling, done in zip(scripts, rulings, finished):
         result = Result.of(report_of(done.stdout))
-        if result.status != "ok":
-            raise RuntimeError(f"a budget turn ended {result.status}: {done.stderr[-400:]}")
+        fault = budget_turn_fault(grant, done.returncode, result, script.decision(),
+                                  ran.count(["--ruling", ruling]))  # fmt: skip
+        if fault is not None:
+            side = "a granted" if grant else "an ungranted"
+            raise BudgetTurnError(f"{side} budget turn {fault}: {done.stderr[-400:]}")
         first = script.requests[0].at if script.requests else None
         turns.append(TurnTiming(done.ended - done.started, done.started, done.ended, first, result.overlay))
     return turns
+
+
+class BudgetTurnError(RuntimeError):
+    """A budget turn that is not the one the budget times."""
+
+
+def budget_turn_fault(grant: bool, returncode: int, result: Result, decision: str | None,
+                      executions: int) -> str | None:  # fmt: skip
+    """Why a finished budget turn is not the one the budget describes, else
+    None: it must exit 0 reporting `ok`, record Codex's decision on its one
+    call, and, granted, run the granted command exactly once on an overlay;
+    ungranted, run it never and use none."""
+    if returncode != 0:
+        return f"exited {returncode}"
+    if result.status != "ok":
+        return f"ended {result.status}"
+    if decision is None:
+        return "recorded no decision on its call of the granted command"
+    if grant and (result.overlay is None or executions != 1):
+        return f"ran the granted command {executions} time(s), on {'an' if result.overlay else 'no'} overlay"
+    if not grant and (result.overlaid or executions != 0):
+        return f"ran the granted command {executions} time(s) without the grant"
+    return None
 
 
 def budget_workload(world: World, path: Path) -> None:
@@ -1485,7 +1518,11 @@ def main(argv: list[str]) -> int:
         if args.budget_telemetry is not None:
             world = World("codex", base / "budget", endpoint, control=True).make()
             worlds.append(world)
-            budget_workload(world, args.budget_telemetry)
+            try:
+                budget_workload(world, args.budget_telemetry)
+            except BudgetTurnError as error:
+                print(f"run_allowlist_live: the budget workload stopped: {error}", file=sys.stderr)
+                return 1
             return 0
         for harness in harnesses:
             paths = {"exec": [False], "control": [True], "both": [False, True]}[args.codex_path]

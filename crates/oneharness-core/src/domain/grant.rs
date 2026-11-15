@@ -520,6 +520,11 @@ pub fn withheld_reason(id: &str) -> Option<&'static str> {
     })
 }
 
+/// The one platform where the run-level allowlist is proven, as the docs and
+/// every withheld diagnostic name it; `platform_withheld_reason`'s
+/// `target_os = "linux"` gate is this, spelled for `cfg`.
+pub const PROVEN_PLATFORM: &str = "Linux";
+
 /// The platform this build targets, as a withheld diagnostic names it.
 #[cfg(target_os = "macos")]
 const PLATFORM: &str = "macOS";
@@ -539,7 +544,8 @@ const PLATFORM: &str = std::env::consts::OS;
 pub fn platform_withheld_reason() -> Option<String> {
     Some(format!(
         "the per-run allowlist is withheld on {PLATFORM}, where no test against a harness's real \
-         CLI proves it applies to this run alone and nothing wider; it is proven on Linux only"
+         CLI proves it applies to this run alone and nothing wider; it is proven on \
+         {PROVEN_PLATFORM} only"
     ))
 }
 
@@ -912,6 +918,44 @@ mod tests {
         ] {
             assert!(ExecutablePath::new(&host(word)).is_none(), "{word:?}");
         }
+    }
+
+    /// The README's platform statements are this module's: the grant is
+    /// proven on `PROVEN_PLATFORM` alone, which is exactly where
+    /// `platform_withheld_reason` gives none, and the harnesses the
+    /// approval-modes section names as enforcing it are those `withheld_reason`
+    /// does not withhold.
+    #[test]
+    fn the_readme_states_the_platform_and_harnesses_the_grant_applies_on() {
+        assert_eq!(
+            platform_withheld_reason().is_none(),
+            std::env::consts::OS == PROVEN_PLATFORM.to_lowercase()
+        );
+        let readme = include_str!("../../../../README.md").replace("\r\n", "\n");
+        let flat = readme.split_whitespace().collect::<Vec<_>>().join(" ");
+        let p = PROVEN_PLATFORM;
+        for stated in [
+            format!("**It applies on {p} only; on macOS, Windows and every other platform every harness withholds it.**"),
+            format!("| Harness | run-level `allowed_tools` ({p}; every harness withholds it elsewhere) |"),
+            format!("`--tools` gains `Bash` ({p}; withheld elsewhere) |"),
+            format!("adds one `prefix_rule` per rule ({p}; withheld elsewhere) |"),
+            format!("The table below is the {p} behaviour."),
+        ] {
+            assert!(flat.contains(&stated), "README no longer states: {stated}");
+        }
+        // The README's short names, as its translation matrix spells them.
+        let readme_name = |id: &str| match id {
+            CLAUDE => "Claude Code",
+            CODEX => "Codex",
+            other => panic!("{other} applies the grant but the README names no such harness"),
+        };
+        let enforcing: Vec<&str> = crate::domain::harness::all()
+            .iter()
+            .filter(|spec| withheld_reason(spec.id).is_none())
+            .map(|spec| readme_name(spec.id))
+            .collect();
+        let named = format!("that enforce it ({}, on {p});", enforcing.join(" and "));
+        assert!(flat.contains(&named), "README no longer states: {named}");
     }
 
     #[test]

@@ -362,9 +362,22 @@ _oh_write_whole() {
   return 1
 }
 
-# Set up this suite's recorder. $1 is the suite (`codex` for e2e-codex.sh).
+# Set up this suite's recorder. $1 is the suite (`codex` for e2e-codex.sh);
+# `--shared-server-grace SECONDS` after it is the measurer's descendant grace
+# for this suite's shared Codex app-server launches alone (scripts/e2e-netshim.sh
+# says when a suite wants it).
 oh_telemetry_setup() {
-  local suite="$1" dir pair exe harness real shim text cmd
+  local suite="$1" dir pair exe harness real shim text cmd server_grace=()
+  shift
+  case "$*" in
+    "") ;;
+    --shared-server-grace\ *)
+      [ "$#" -eq 2 ] && [[ "$2" =~ ^[0-9]+(\.[0-9]+)?$ ]] ||
+        fail "oh_telemetry_setup $suite: --shared-server-grace takes one non-negative number of seconds, got '${*:2}'"
+      server_grace=(--shared-server-grace "$2")
+      ;;
+    *) fail "oh_telemetry_setup $suite: unknown arguments '$*'; it takes only --shared-server-grace SECONDS" ;;
+  esac
   need jq
   dir="${OH_E2E_TELEMETRY_DIR:-$OH_REPO_ROOT/target/e2e-telemetry/network}"
   case "$dir" in /* | [A-Za-z]:*) ;; *) dir="$PWD/$dir" ;; esac
@@ -394,8 +407,10 @@ oh_telemetry_setup() {
     shim="$_OH_SHIM_DIR/$exe"
     text="$(
       printf '#!/usr/bin/env bash\n# %s suite=%s\n' "$OH_NETWORK_SHIM_MARKER" "$suite"
-      printf 'exec bash %q --suite %q --harness %q --real %q --self %q --file %q -- "$@"' \
+      printf 'exec bash %q --suite %q --harness %q --real %q --self %q --file %q' \
         "$OH_REPO_ROOT/scripts/e2e-netshim.sh" "$suite" "$harness" "$real" "$shim" "$OH_E2E_TELEMETRY_FILE"
+      [ "${#server_grace[@]}" -eq 0 ] || printf ' %q %q' "${server_grace[@]}"
+      printf ' -- "$@"'
     )"
     # A write that fails leaves whatever stood there, which _oh_shims_first
     # below refuses: it holds each shim to exactly this text.

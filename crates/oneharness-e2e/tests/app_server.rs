@@ -14,11 +14,13 @@
 //! Windows, so no Windows dispatch reaches the shared server.
 #![cfg(unix)]
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use oneharness_core::io::marked_processes::{find_marked, ProcessMarker};
@@ -523,6 +525,96 @@ impl Pool {
     fn conn_of(&self, pid: u32, thread: &str) -> u64 {
         self.turn_of(pid, thread)["conn"].as_u64().unwrap()
     }
+
+    /// The pool root every dispatch in this world leases from.
+    fn servers(&self) -> PathBuf {
+        self.path("state").join("oneharness").join("servers")
+    }
+
+    /// Every lease the pool holds right now, as `<entry>/<lease file>` and the
+    /// file's own record — the records another oneharness process reads to
+    /// tell a leased server from an idle one.
+    fn leases(&self) -> BTreeMap<String, Value> {
+        lease_records(&self.servers())
+    }
+
+    /// Record every change in the pool's set of leases until the returned
+    /// watch is ended, so a journey can say which leases existed at every
+    /// moment of a run — the backoff between two attempts among them.
+    fn watch_leases(&self) -> LeaseWatch {
+        let servers = self.servers();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopped = Arc::clone(&stop);
+        let thread = std::thread::spawn(move || {
+            let mut seen: Vec<BTreeSet<String>> = vec![BTreeSet::new()];
+            loop {
+                let done = stopped.load(Ordering::SeqCst);
+                let now: BTreeSet<String> = lease_records(&servers).into_keys().collect();
+                if seen.last() != Some(&now) {
+                    seen.push(now);
+                }
+                if done {
+                    return seen;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        });
+        LeaseWatch { stop, thread }
+    }
+}
+
+/// The lease files under the pool root `servers`, keyed `<entry>/<file>`.
+fn lease_records(servers: &Path) -> BTreeMap<String, Value> {
+    let mut out = BTreeMap::new();
+    for entry in std::fs::read_dir(servers).into_iter().flatten().flatten() {
+        let key = entry.file_name().to_string_lossy().into_owned();
+        for lease in std::fs::read_dir(entry.path().join("leases"))
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let name = lease.file_name().to_string_lossy().into_owned();
+            // `*.lease.tmp` is a rewrite in flight, renamed over its lease.
+            if !name.ends_with(".lease") {
+                continue;
+            }
+            // A lease released between listing and reading is simply gone.
+            if let Some(record) = std::fs::read_to_string(lease.path())
+                .ok()
+                .and_then(|text| serde_json::from_str(&text).ok())
+            {
+                out.insert(format!("{key}/{name}"), record);
+            }
+        }
+    }
+    out
+}
+
+/// A running [`Pool::watch_leases`].
+struct LeaseWatch {
+    stop: Arc<AtomicBool>,
+    thread: std::thread::JoinHandle<Vec<BTreeSet<String>>>,
+}
+
+impl LeaseWatch {
+    /// End the watch: every distinct set of leases the pool held, in order,
+    /// starting from none.
+    fn end(self) -> Vec<BTreeSet<String>> {
+        self.stop.store(true, Ordering::SeqCst);
+        self.thread.join().expect("the lease watch ran to its end")
+    }
+}
+
+/// Assert `seen` is one lease taken and released once: none, then `lease`
+/// alone, then none — no second lease, and no moment between taking and
+/// releasing it when the server was idle.
+fn held_once(seen: &[BTreeSet<String>], lease: &str) {
+    let alone = BTreeSet::from([lease.to_string()]);
+    assert_eq!(
+        seen,
+        [BTreeSet::new(), alone, BTreeSet::new()],
+        "the pool's leases over the run: one lease, held until the run released it once"
+    );
 }
 
 /// The shared server a run's report says its turn ran on.
@@ -2237,13 +2329,25 @@ fn pooled_redirect_journey(pool: Pool, after_each_server_stops: bool) {
 }
 // llmlint: ignore-end[e2e_not_mocked]
 
+// llmlint: ignore-block[e2e_not_mocked] These drive the real built `oneharness run --control` through the real pool, its real lease records and its real linger; only codex is the repository's subprocess double, because the gate cannot run real Codex, and real Codex cannot be made to answer a turn as overloaded, hold a thread's opening, or exit between a turn and its retry on demand.
+/// A linger shorter than any retry's backoff: the server a released lease
+/// leaves idle is stopped before the retry could lease it again, as on a host
+/// slow enough to outlast the real one. An overload journey runs under it so
+/// its retry reaches the shared server only by still holding its lease.
+const OUTLASTED_LINGER_MS: &str = "1";
+
 /// A zero-work overload on a pooled turn repeats the turn on the shared
-/// server — a fresh lease, the same server — and recovers within
+/// server — under the lease the first attempt took, so a linger shorter than
+/// the backoff cannot move it — and recovers within
 /// `server_overloaded_max_retries`; past it the run is `server_overloaded`,
-/// and a chain falls through to its next candidate.
+/// its one lease released once, and a chain falls through to its next
+/// candidate.
 #[test]
 fn a_pooled_overload_retries_on_the_shared_server_and_falls_through_once_exhausted() {
-    let pool = Pool::new("pool-overload");
+    let pool = Pool::new("pool-overload").with_env(
+        "ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS",
+        OUTLASTED_LINGER_MS,
+    );
     let recovered_count = pool.file("recovered-attempts");
     let (output, report) = pool.run(pool.command_with_config(
         "recovered",
@@ -2281,6 +2385,7 @@ fn a_pooled_overload_retries_on_the_shared_server_and_falls_through_once_exhaust
          app_server = \"per-dispatch\"\n\
          env = {{ MOCK_CODEX_APP_SERVER_LOG = \"{alt_log}\", MOCK_CODEX_COMPLETE_TURN = \"1\" }}\n"
     );
+    let watch = pool.watch_leases();
     let (_, report) = Pool::finish(chain_dispatch(
         &pool,
         "exhausted",
@@ -2291,12 +2396,235 @@ fn a_pooled_overload_retries_on_the_shared_server_and_falls_through_once_exhaust
             ("MOCK_ATTEMPT_FILE", &exhausted_count),
         ],
     ));
+    let seen = watch.end();
     let results = report["results"].as_array().unwrap();
     assert_eq!(results[0]["harness_id"], "codex", "{report}");
     assert_eq!(results[0]["failure_kind"], "server_overloaded", "{report}");
     assert_eq!(report["fallback"]["ran"], "codex:alt", "{report}");
     assert_eq!(results.last().unwrap()["status"], "ok", "{report}");
+    // Both overloaded attempts under one lease, released once as the
+    // candidate gave up — before the next candidate ran, never again after.
+    let lease = seen
+        .iter()
+        .flatten()
+        .next()
+        .unwrap_or_else(|| panic!("the exhausted candidate took no lease: {seen:?}"))
+        .clone();
+    held_once(&seen, &lease);
+    assert!(pool.leases().is_empty(), "{:?}", pool.leases());
 }
+
+/// An overloaded pooled turn's retry runs under the very lease its first
+/// attempt took, read off the pool's own lease records — the ones every
+/// other oneharness process reads — while each attempt is live and at every
+/// moment between them: the server stays leased by this run across the
+/// backoff, never idle, so neither a linger that ends inside the backoff nor
+/// another process's pool operation can stop it under the retry.
+#[test]
+fn a_pooled_overload_retry_runs_under_the_lease_its_first_attempt_took() {
+    let pool = Pool::new("pool-overload-held").with_env(
+        "ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS",
+        OUTLASTED_LINGER_MS,
+    );
+    let count = pool.file("attempts");
+    // Attempt 1 is held as it opens its thread, attempt 2 as its turn runs:
+    // the overload ends attempt 1's turn before any hold of a turn applies.
+    let opened = pool.path("opened");
+    let done = pool.path("done");
+    let watch = pool.watch_leases();
+    let child = pool.spawn(pool.command_with_config(
+        "held",
+        "server_overloaded_max_retries = 1\n",
+        &[],
+        &[
+            ("MOCK_CODEX_OVERLOAD_ATTEMPTS", "1"),
+            ("MOCK_ATTEMPT_FILE", &count),
+            ("MOCK_CODEX_HOLD_OPEN_UNTIL", &opened.display().to_string()),
+            ("MOCK_CODEX_HOLD_UNTIL", &done.display().to_string()),
+        ],
+    ));
+    let marker = |record: &Value| record["note"]["marker"].as_str().map(str::to_string);
+
+    wait_for("the first attempt's lease", Duration::from_secs(30), || {
+        pool.leases()
+            .values()
+            .any(|record| marker(record).is_some())
+    });
+    let first = pool.leases();
+    assert_eq!(first.len(), 1, "one lease for the first attempt: {first:?}");
+    let (lease, record) = first.into_iter().next().unwrap();
+    let first_marker = marker(&record).unwrap();
+    std::fs::write(&opened, "").unwrap();
+
+    // The retry is live once the lease names a dispatch other than the first
+    // attempt's, and the thread that dispatch opened.
+    let mut retry = BTreeMap::new();
+    wait_for("the retry's turn", Duration::from_secs(30), || {
+        retry = pool.leases();
+        retry.values().any(|record| {
+            marker(record).is_some_and(|m| m != first_marker)
+                && record["note"]["thread"].is_object()
+        })
+    });
+    assert_eq!(
+        retry.keys().collect::<Vec<_>>(),
+        [&lease],
+        "the retry runs under the lease the first attempt took"
+    );
+    // Another process's pool operation, reclaiming whatever is idle at once,
+    // finds this server leased and keeps it.
+    let server = pool.the_server();
+    assert_eq!(
+        oneharness_core::io::server_pool::sweep(&pool.servers(), Duration::ZERO).unwrap(),
+        0,
+        "the server the retry runs on is leased, not idle"
+    );
+    assert!(alive(server));
+    std::fs::write(&done, "").unwrap();
+
+    let (output, report) = Pool::finish_within(child, Duration::from_secs(60));
+    let seen = watch.end();
+    succeeded(&output, &report);
+    assert_eq!(std::fs::read_to_string(&count).unwrap(), "2");
+    assert_eq!(reported_server(&report), server);
+    let statuses: Vec<Value> = pool.state(server)["turns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["status"].clone())
+        .collect();
+    assert_eq!(statuses, vec![json!("failed"), json!("completed")]);
+    // No release between the attempts: across the whole run, the backoff
+    // included, the pool held this one lease and nothing else.
+    held_once(&seen, &lease);
+}
+
+/// A held server that is gone by the retry is let go: its lease is released,
+/// and the retry leases a server afresh and recovers on it, rather than
+/// failing on a server that no longer answers.
+#[test]
+fn a_pooled_overload_retry_whose_held_server_is_gone_leases_afresh() {
+    let pool = Pool::new("pool-overload-gone").with_env(
+        "ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS",
+        OUTLASTED_LINGER_MS,
+    );
+    let count = pool.file("attempts");
+    let watch = pool.watch_leases();
+    let (output, report) = pool.run(pool.command_with_config(
+        "gone",
+        "server_overloaded_max_retries = 1\n",
+        &[],
+        &[
+            ("MOCK_CODEX_OVERLOAD_ATTEMPTS", "1"),
+            ("MOCK_ATTEMPT_FILE", &count),
+            ("MOCK_CODEX_EXIT_AFTER_OVERLOAD", "1"),
+        ],
+    ));
+    let seen = watch.end();
+    succeeded(&output, &report);
+    assert_eq!(result(&report)["text"], "work for gone", "{report}");
+    assert_eq!(std::fs::read_to_string(&count).unwrap(), "2");
+    let servers = pool.server_pids();
+    assert_eq!(
+        servers.len(),
+        2,
+        "a second server for the retry: {servers:?}"
+    );
+    let statuses = |pid: u32| -> Vec<Value> {
+        pool.state(pid)["turns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["status"].clone())
+            .collect()
+    };
+    let retried_on = reported_server(&report);
+    let first = *servers.iter().find(|pid| **pid != retried_on).unwrap();
+    assert_eq!(statuses(first), vec![json!("failed")]);
+    assert_eq!(statuses(retried_on), vec![json!("completed")]);
+    // The gone server's lease released once, before the retry took its own,
+    // and that one released once as the run ended.
+    let taken: Vec<&String> = seen.iter().flatten().collect();
+    assert_eq!(taken.len(), 2, "{seen:?}");
+    assert_ne!(taken[0], taken[1], "{seen:?}");
+    let alone = |lease: &String| BTreeSet::from([lease.clone()]);
+    assert_eq!(
+        seen,
+        [
+            BTreeSet::new(),
+            alone(taken[0]),
+            BTreeSet::new(),
+            alone(taken[1]),
+            BTreeSet::new()
+        ],
+        "each lease held alone and released once"
+    );
+}
+
+/// A held server still running but no longer accepting connections is let go
+/// the same way: the retry's reconnection is refused, the lease the first
+/// attempt took is released, and the retry recovers on a server leased afresh.
+/// The double keeps running until that lease is released, so the refusal is
+/// what lets it go rather than its exit.
+#[test]
+fn a_pooled_overload_retry_whose_held_server_refuses_reconnection_leases_afresh() {
+    let pool = Pool::new("pool-overload-refused").with_env(
+        "ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS",
+        OUTLASTED_LINGER_MS,
+    );
+    let count = pool.file("attempts");
+    let watch = pool.watch_leases();
+    let (output, report) = pool.run(pool.command_with_config(
+        "refused",
+        "server_overloaded_max_retries = 1\n",
+        &[],
+        &[
+            ("MOCK_CODEX_OVERLOAD_ATTEMPTS", "1"),
+            ("MOCK_ATTEMPT_FILE", &count),
+            ("MOCK_CODEX_UNLISTEN_AFTER_OVERLOAD", "1"),
+        ],
+    ));
+    let seen = watch.end();
+    succeeded(&output, &report);
+    assert_eq!(result(&report)["text"], "work for refused", "{report}");
+    assert_eq!(std::fs::read_to_string(&count).unwrap(), "2");
+    let servers = pool.server_pids();
+    assert_eq!(
+        servers.len(),
+        2,
+        "a second server for the retry: {servers:?}"
+    );
+    let statuses = |pid: u32| -> Vec<Value> {
+        pool.state(pid)["turns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["status"].clone())
+            .collect()
+    };
+    let retried_on = reported_server(&report);
+    let first = *servers.iter().find(|pid| **pid != retried_on).unwrap();
+    assert_eq!(statuses(first), vec![json!("failed")]);
+    assert_eq!(statuses(retried_on), vec![json!("completed")]);
+    // Every lease was held alone and released once, the first attempt's
+    // before any other was taken: none, then each lease alone, then none. A
+    // re-lease of the refusing server before it exits may add one between.
+    assert_eq!(seen.first(), Some(&BTreeSet::new()), "{seen:?}");
+    assert_eq!(seen.last(), Some(&BTreeSet::new()), "{seen:?}");
+    let taken: Vec<&String> = seen.iter().flatten().collect();
+    assert!((2..=3).contains(&taken.len()), "{seen:?}");
+    let distinct: BTreeSet<&String> = taken.iter().copied().collect();
+    assert_eq!(distinct.len(), taken.len(), "a lease taken twice: {seen:?}");
+    for (at, held) in seen.iter().enumerate() {
+        let expected = if at % 2 == 0 { 0 } else { 1 };
+        assert_eq!(
+            held.len(),
+            expected,
+            "each lease alone, then none: {seen:?}"
+        );
+    }
+}
+// llmlint: ignore-end[e2e_not_mocked]
 
 // llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run --control` through the real pool and the dispatch's own child; only codex is the repository's subprocess double, replaying a captured real app-server tool turn, because the gate cannot run real Codex and needs the same tool on both servers.
 /// A pooled turn's frames are observed as they arrive, as a dispatch's own
@@ -4131,12 +4459,17 @@ fn the_sweeper_refuses_a_path_that_is_no_pool_entry() {
     assert!(stranger.join("keep").exists());
 }
 
+// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run --control` under the parallel opt-in through the real pool and its real linger; only codex is the repository's subprocess double, because the gate cannot run real Codex and real Codex cannot be made to answer a turn as overloaded on demand.
 /// Under the parallel opt-in, a zero-work overload on a pooled turn repeats it
-/// on the shared server too — the one controlled candidate drives itself — and
-/// recovers within `server_overloaded_max_retries`.
+/// on the shared server too — the one controlled candidate drives itself, under
+/// the lease its first attempt took — and recovers within
+/// `server_overloaded_max_retries`.
 #[test]
 fn a_pooled_overload_retries_on_the_shared_server_under_the_parallel_opt_in() {
-    let pool = Pool::new("pool-overload-parallel");
+    let pool = Pool::new("pool-overload-parallel").with_env(
+        "ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS",
+        OUTLASTED_LINGER_MS,
+    );
     let count = pool.file("attempts");
     let (output, report) = pool.run(pool.command_with_config(
         "parallel",
@@ -4160,6 +4493,7 @@ fn a_pooled_overload_retries_on_the_shared_server_under_the_parallel_opt_in() {
         .collect();
     assert_eq!(statuses, vec![json!("failed"), json!("completed")]);
 }
+// llmlint: ignore-end[e2e_not_mocked]
 
 /// Frames whose thread field is no thread id — a number, a null — belong to no
 /// dispatch: none of them reaches the run's output or its answer.

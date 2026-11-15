@@ -76,7 +76,9 @@ const OWNER_LOCK: &str = "owner.lock";
 /// back when an orphan is reclaimed.
 const REAL_HOME_FILE: &str = "real-codex-home";
 
-/// The overlay home's directory name inside the overlay.
+/// Where a granted Codex's `CODEX_HOME` sits inside its overlay. A run builds
+/// it here and reclaiming an orphan sweeps it from here, possibly in a later
+/// oneharness, so both must name the same place.
 const CODEX_HOME_DIR: &str = "codex-home";
 
 /// How long an overlay with no owner lock yet may exist before it counts as

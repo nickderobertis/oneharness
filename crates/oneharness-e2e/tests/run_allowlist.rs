@@ -17,11 +17,9 @@
 //! scripted model endpoint and asserts what each CLI's own permission check,
 //! sandbox and execution did.
 //!
-//! Unix only. The Codex overlay is built of links and withheld on Windows (the
-//! README's table), and every journey here quotes the granted executable's host
-//! path into TOML and a `Bash(<path>)` rule, which a Windows `C:\…` path cannot
-//! be as written. Nothing here has run on Windows; proving Claude Code's grant
-//! there is a journey of its own, still to be written.
+//! Unix only: these are the journeys of a grant that applies, and on Windows
+//! every harness withholds it (`grant::platform_withheld_reason`), which
+//! `run_allowlist_platform.rs` proves on every leg, windows-latest included.
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};

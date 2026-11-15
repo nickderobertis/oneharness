@@ -12,8 +12,10 @@ checks the budget against real telemetry; the live-control leg does.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 
@@ -21,6 +23,15 @@ from support import ROOT, scratch
 
 CONTROL = ROOT / "live" / "control"
 FIXTURES = CONTROL / "fixtures"
+sys.path.insert(0, str(CONTROL))
+
+from run_overlay_telemetry import (  # noqa: E402 — importable only once CONTROL is on the path.
+    BATCHES,
+    OverlayTimings,
+    Telemetry,
+    TurnTiming,
+    run_concurrently,
+)
 
 
 def check(telemetry: Path) -> subprocess.CompletedProcess[str]:
@@ -94,6 +105,45 @@ class RunOverlayAddedSecondsBudget(unittest.TestCase):
                 self.assertNotEqual(run.returncode, 0, run.stdout)
                 self.assertIn("error", run.stdout)
                 self.assertIn(named, run.stdout + run.stderr)
+
+
+class RunOverlayTelemetryContract(unittest.TestCase):
+    """The writer's record is what the reader reads: one shape, held by both
+    sides through `run_overlay_telemetry`."""
+
+    def test_the_collector_times_each_process_to_its_own_exit(self) -> None:
+        # A 1 s process collected first must not lengthen a 0.1 s one beside it.
+        slow, fast = run_concurrently(
+            [["sleep", "1"], ["sleep", "0.1"]], dict(os.environ), timeout=30
+        )
+        self.assertGreaterEqual(slow.ended - slow.started, 0.9)
+        self.assertLess(fast.ended - fast.started, 0.6)
+        self.assertEqual((slow.returncode, fast.returncode), (0, 0))
+
+    def test_a_record_the_writer_builds_is_one_the_budget_reads(self) -> None:
+        timed = run_concurrently([["sleep", "0.05"]], dict(os.environ), timeout=30)[0]
+
+        def turn(extra: float, overlay: bool) -> TurnTiming:
+            return TurnTiming(
+                timed.ended - timed.started + extra,
+                timed.started,
+                timed.ended + extra,
+                timed.started + 0.01,
+                OverlayTimings(120, 90) if overlay else None,
+            )
+
+        telemetry = Telemetry(
+            "codex-cli 0.159.2",
+            "linux",
+            (1.0, 1.0, 1.0),
+            {size: [turn(0.0, False) for _ in range(size)] for size in BATCHES},
+            {size: [turn(0.25, True) for _ in range(size)] for size in BATCHES},
+        )
+        path = scratch(self) / "codex-turn.json"
+        path.write_text(json.dumps(telemetry.to_json()), encoding="utf-8")
+        run = check(path)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIn("actual 0.25 seconds", run.stdout)
 
 
 if __name__ == "__main__":

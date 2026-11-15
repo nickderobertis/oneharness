@@ -115,7 +115,7 @@ have_env() {
 #                 check of live/control/budgets.yaml's memory budget;
 #   run-overlay   a controlled turn under a run-level allowlist: the granted
 #                 executable runs, every refusal holds, its overlay home is
-#                 the run's alone (live/run-allowlist/run_allowlist_live.py
+#                 the run's alone (live/control/run_allowlist_live.py
 #                 --codex-path control, against a scripted model endpoint, so
 #                 it needs no Codex login), then (Linux) the budget workload
 #                 and onebudgetspec's check of codex-run-overlay-added-seconds.
@@ -327,7 +327,7 @@ oh_pooled_reuse() {
 
 oh_run_overlay() {
   _oh_phase run-overlay
-  ONEHARNESS_BIN="$BIN" uv run --no-project python "$OH_REPO_ROOT/live/run-allowlist/run_allowlist_live.py" \
+  ONEHARNESS_BIN="$BIN" uv run --no-project --python ">=3.10" python "$OH_REPO_ROOT/live/control/run_allowlist_live.py" \
     --harness codex --codex-path control ||
     fail "run-overlay: a granted controlled Codex turn broke a guarantee; each failed check is above"
   case "$(uname -s)" in
@@ -337,7 +337,7 @@ oh_run_overlay() {
       return 0
       ;;
   esac
-  ONEHARNESS_BIN="$BIN" uv run --no-project python "$OH_REPO_ROOT/live/run-allowlist/run_allowlist_live.py" \
+  ONEHARNESS_BIN="$BIN" uv run --no-project --python ">=3.10" python "$OH_REPO_ROOT/live/control/run_allowlist_live.py" \
     --budget-telemetry "$OH_REPO_ROOT/target/e2e-telemetry/run-overlay/codex-turn.json" ||
     fail "run-overlay: the budget workload failed; its error is above"
   # llmlint: ignore[work_goes_through_command_surface] The same frozen sync pooled-reuse runs before its onebudgetspec check, for the same reason: the live-control CI leg reaches this phase without `just bootstrap`.

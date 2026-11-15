@@ -489,7 +489,7 @@ const CLAUDE_TABLE: [Translation; 8] = [
                   each `Bash(<abs>:*)`; nothing is written",
         residual: None,
         source: "spike-command-grant (Claude Code 2.1.323, 167 scripted-model probes) and \
-                 scripts/e2e-run-allowlist.sh's live journeys against the installed CLI",
+                 live/control/run_allowlist_live.py's journeys against the installed CLI",
     },
 ];
 
@@ -621,7 +621,7 @@ const CODEX_TABLE: [Translation; 8] = [
                   privilege (Windows)",
         residual: None,
         source: "spike-command-grant (codex-cli 0.159.2, 236 scripted-model probes: only \
-                 `$CODEX_HOME/rules/` is honoured) and scripts/e2e-run-allowlist.sh's live \
+                 `$CODEX_HOME/rules/` is honoured) and live/control/run_allowlist_live.py's \
                  journeys against the installed CLI",
     },
 ];

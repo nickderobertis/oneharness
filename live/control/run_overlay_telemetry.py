@@ -1,0 +1,216 @@
+"""The run-overlay budget's telemetry: one source for the record its writer
+(`run_allowlist_live.py --budget-telemetry`) emits and its reader
+(`run_overlay_budget.py`) decodes, and the collector that times each turn.
+
+    {"codex_version", "platform", "load_average": [1m, 5m, 15m],
+     "ungranted": {"1": [turn], "2": [turn, turn], "20": [20 turns]},
+     "granted":   {"1": [...], "2": [...], "20": [...]}}
+    turn: {"seconds", "started", "ended", "first_model_request",
+           "overlay_timings": {"build_ms", "teardown_ms"} | null}
+
+Kept to the Python 3.9 floor its reader shares (tools/network-telemetry).
+"""
+
+from __future__ import annotations
+
+import math
+import subprocess
+import threading
+import time
+from dataclasses import dataclass
+from typing import Optional
+
+BATCHES = (1, 2, 20)
+"""The batch sizes of the workload: 1 turn alone, 2 at once, 20 at once."""
+
+SIDES = ("ungranted", "granted")
+
+
+@dataclass(frozen=True)
+class OverlayTimings:
+    """What one granted turn's overlay cost, as oneharness reported it."""
+
+    build_ms: int
+    teardown_ms: int
+
+
+@dataclass(frozen=True)
+class TurnTiming:
+    """One `oneharness run --control` Codex turn, timed from outside."""
+
+    seconds: float
+    started: float
+    ended: float
+    first_model_request: Optional[float]
+    overlay: Optional[OverlayTimings]
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "seconds": self.seconds,
+            "started": self.started,
+            "ended": self.ended,
+            "first_model_request": self.first_model_request,
+            "overlay_timings": None
+            if self.overlay is None
+            else {"build_ms": self.overlay.build_ms, "teardown_ms": self.overlay.teardown_ms},
+        }
+
+
+@dataclass(frozen=True)
+class Telemetry:
+    """The workload's whole record."""
+
+    codex_version: str
+    platform: str
+    load_average: tuple[float, ...]
+    ungranted: dict[int, list[TurnTiming]]
+    granted: dict[int, list[TurnTiming]]
+
+    def to_json(self) -> dict[str, object]:
+        def side(batches: dict[int, list[TurnTiming]]) -> dict[str, object]:
+            return {
+                str(size): [turn.to_json() for turn in turns] for size, turns in batches.items()
+            }
+
+        return {
+            "codex_version": self.codex_version,
+            "platform": self.platform,
+            "load_average": list(self.load_average),
+            "ungranted": side(self.ungranted),
+            "granted": side(self.granted),
+        }
+
+
+class Incomplete(Exception):
+    """The record cannot yield a figure; the message names every fault."""
+
+
+def number(value: object) -> Optional[float]:
+    """`value` as a finite number, or None (a bool is no number)."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+        return float(value)
+    return None
+
+
+def count(value: object) -> Optional[int]:
+    """`value` as a non-negative integer, or None."""
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None
+
+
+def decode_turn(
+    entry: object, where: str, granted: bool, faults: list[str]
+) -> Optional[TurnTiming]:
+    if not isinstance(entry, dict):
+        faults.append(f"{where} is {entry!r}, not a turn record")
+        return None
+    seconds = number(entry.get("seconds"))
+    started = number(entry.get("started"))
+    ended = number(entry.get("ended"))
+    if seconds is None or seconds <= 0:
+        faults.append(f"{where}'s seconds are {entry.get('seconds')!r}, not a positive duration")
+        return None
+    if started is None or ended is None or ended < started:
+        faults.append(f"{where} names no start and end it ran between")
+        return None
+    timings = entry.get("overlay_timings")
+    overlay = None
+    if granted:
+        if not isinstance(timings, dict):
+            faults.append(f"{where} carries no overlay_timings, so it ran on no overlay")
+            return None
+        build, teardown = count(timings.get("build_ms")), count(timings.get("teardown_ms"))
+        if build is None or teardown is None:
+            faults.append(f"{where}'s overlay_timings {timings!r} are not two millisecond counts")
+            return None
+        overlay = OverlayTimings(build, teardown)
+    return TurnTiming(seconds, started, ended, number(entry.get("first_model_request")), overlay)
+
+
+def decode_side(
+    record: dict[str, object], side: str, faults: list[str]
+) -> dict[int, list[TurnTiming]]:
+    raw = record.get(side)
+    if not isinstance(raw, dict):
+        faults.append(f"the {side} batches are {raw!r}, not an object")
+        return {}
+    batches: dict[int, list[TurnTiming]] = {}
+    for size in BATCHES:
+        entries = raw.get(str(size))
+        if not isinstance(entries, list) or len(entries) != size:
+            got = len(entries) if isinstance(entries, list) else entries
+            faults.append(f"the {side} batch of {size} holds {got!r} turns")
+            continue
+        turns = [
+            decode_turn(entry, f"{side} batch {size} turn {index}", side == "granted", faults)
+            for index, entry in enumerate(entries, start=1)
+        ]
+        decoded = [turn for turn in turns if turn is not None]
+        if len(decoded) == size:
+            batches[size] = decoded
+    return batches
+
+
+def decode(record: object) -> Telemetry:
+    """The record as Telemetry, or Incomplete naming every fault."""
+    if not isinstance(record, dict):
+        raise Incomplete("the telemetry holds no JSON object")
+    faults: list[str] = []
+    platform = record.get("platform")
+    if platform != "linux":
+        faults.append(f"the workload ran on {platform!r}; the budget is measured on linux")
+    version = record.get("codex_version")
+    if not isinstance(version, str) or version == "":
+        faults.append(f"the record names no codex version: {version!r}")
+    ungranted = decode_side(record, "ungranted", faults)
+    granted = decode_side(record, "granted", faults)
+    if faults or not isinstance(version, str):
+        raise Incomplete("; ".join(faults))
+    raw_load = record.get("load_average")
+    load = tuple(number(value) or 0.0 for value in raw_load) if isinstance(raw_load, list) else ()
+    return Telemetry(version, "linux", load, ungranted, granted)
+
+
+@dataclass(frozen=True)
+class Finished:
+    """One process the collector ran: its own start and exit, and its output."""
+
+    started: float
+    ended: float
+    returncode: int
+    stdout: str
+    stderr: str
+
+
+def run_concurrently(argvs: list[list[str]], env: dict[str, str], timeout: float) -> list[Finished]:
+    """Start every argv at once and time each from its own start to its own
+    exit: one waiter thread per process, so a slow process collected first
+    never lengthens a fast one's figure."""
+    finished: list[Optional[Finished]] = [None] * len(argvs)
+
+    def wait(index: int, started: float, process: subprocess.Popen[str]) -> None:
+        try:
+            out, err = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            out, err = process.communicate()
+        finished[index] = Finished(started, time.time(), process.returncode, out, err)
+
+    waiters = []
+    for index, argv in enumerate(argvs):
+        started = time.time()
+        process = subprocess.Popen(  # noqa: S603 — each argv is the workload's own launch.
+            argv,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        waiter = threading.Thread(target=wait, args=(index, started, process))
+        waiter.start()
+        waiters.append(waiter)
+    for waiter in waiters:
+        waiter.join()
+    return [done for done in finished if done is not None]

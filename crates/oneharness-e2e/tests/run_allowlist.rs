@@ -12,7 +12,7 @@
 //! `e2e_not_mocked` suppression below: the deterministic gate cannot run the
 //! paid, authenticated CLIs, so only that process is replaced, at the existing
 //! `--bin` seam. What holds the mechanism to the real harnesses is
-//! `scripts/e2e-run-allowlist.sh` (`just live-run-allowlist`), which drives
+//! `live/control/run_allowlist_live.py` (`just live-run-allowlist`), which drives
 //! the same configs through the installed Claude Code and Codex against a
 //! scripted model endpoint and asserts what each CLI's own permission check,
 //! sandbox and execution did.
@@ -42,7 +42,7 @@ fn workspace_bin(name: &str) -> PathBuf {
     path
 }
 
-// llmlint: ignore-block[e2e_not_mocked] These journeys must drive the real built `oneharness` against the repository's mock harness standing in for each harness's process: that is this change's stated acceptance bar, since the paid, authenticated CLIs cannot run in the deterministic gate. Only the harness subprocess is replaced, at the existing `--bin` seam; scripts/e2e-run-allowlist.sh holds the same configs to the real Claude Code and Codex.
+// llmlint: ignore-block[e2e_not_mocked] These journeys must drive the real built `oneharness` against the repository's mock harness standing in for each harness's process: that is this change's stated acceptance bar, since the paid, authenticated CLIs cannot run in the deterministic gate. Only the harness subprocess is replaced, at the existing `--bin` seam; live/control/run_allowlist_live.py holds the same configs to the real Claude Code and Codex.
 fn mock() -> String {
     workspace_bin("oneharness-mock-harness")
         .display()

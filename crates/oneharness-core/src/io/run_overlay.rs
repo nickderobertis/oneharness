@@ -239,12 +239,7 @@ impl RunOverlay {
         home: &Path,
     ) -> Result<(), String> {
         fs::create_dir_all(template).map_err(|error| error.to_string())?;
-        exchange(
-            launch,
-            template,
-            self.marker(),
-            &[("thread/list", json!({}))],
-        )?;
+        exchange(launch, template, self.marker(), &[seed_request()])?;
         copy_thread_index(template, home).map_err(|error| error.to_string())
     }
 
@@ -261,7 +256,7 @@ impl RunOverlay {
         }
         let requests: Vec<(&str, Value)> = threads
             .iter()
-            .map(|thread| ("thread/read", json!({ "threadId": thread })))
+            .map(|thread| repair_request(thread))
             .collect();
         if let Err(error) = exchange(launch, &codex.real, self.marker(), &requests) {
             eprintln!(
@@ -354,6 +349,21 @@ impl CodexHome {
     }
 }
 
+/// The request that has Codex build its thread index over a home: Codex's
+/// `thread/list` with no filter. Its params are held to the checked-in
+/// `ThreadListParams` snapshot, which scripts/check-codex-usage-schema.sh
+/// holds to the installed Codex.
+fn seed_request() -> (&'static str, Value) {
+    ("thread/list", json!({}))
+}
+
+/// The request that has Codex record `thread` in a home's thread index:
+/// Codex's `thread/read`, held to the `ThreadReadParams` snapshot as
+/// [`seed_request`] is to its own.
+fn repair_request(thread: &str) -> (&'static str, Value) {
+    ("thread/read", json!({ "threadId": thread }))
+}
+
 fn sweep_dir(from: &Path, to: &Path, keep: &dyn Fn(&str) -> bool) {
     let Ok(entries) = fs::read_dir(from) else {
         return;
@@ -382,10 +392,15 @@ fn sweep_dir(from: &Path, to: &Path, keep: &dyn Fn(&str) -> bool) {
 }
 
 /// Move `from` to `to`, replacing a file there and merging into a directory
-/// there, across filesystems when a rename cannot.
+/// there, across filesystems when a rename cannot. A link is moved as the link
+/// it is and never followed — not to decide whether it is a directory, nor to
+/// copy it — so a link Codex left inside a directory it created can neither
+/// empty its target into the real home nor read outside the overlay.
 fn move_into(from: &Path, to: &Path) -> io::Result<()> {
+    let from_meta = fs::symlink_metadata(from)?;
+    let from_dir = from_meta.is_dir();
     let to_meta = fs::symlink_metadata(to).ok();
-    if from.is_dir() {
+    if from_dir {
         if to_meta.as_ref().is_some_and(fs::Metadata::is_dir) {
             for entry in fs::read_dir(from)? {
                 let entry = entry?;
@@ -399,17 +414,25 @@ fn move_into(from: &Path, to: &Path) -> io::Result<()> {
     if fs::rename(from, to).is_ok() {
         return Ok(());
     }
-    if from.is_dir() {
+    if from_dir {
         fs::create_dir_all(to)?;
         for entry in fs::read_dir(from)? {
             let entry = entry?;
             move_into(&entry.path(), &to.join(entry.file_name()))?;
         }
-        fs::remove_dir_all(from)
+        return fs::remove_dir_all(from);
+    }
+    // Replace what is at `to`, as the rename would have: a copy onto a link
+    // there would write through it.
+    if to_meta.is_some() {
+        fs::remove_file(to)?;
+    }
+    if from_meta.is_symlink() {
+        symlink(&fs::read_link(from)?, to)?;
     } else {
         fs::copy(from, to)?;
-        fs::remove_file(from)
     }
+    fs::remove_file(from)
 }
 
 /// Whether `name` is part of Codex's thread index (`state_<n>.sqlite` and its
@@ -863,6 +886,126 @@ mod tests {
         );
         assert_eq!(fs::read_to_string(real.join("both/kept")).unwrap(), "k");
         assert_eq!(fs::read_to_string(real.join("both/added")).unwrap(), "a");
+    }
+
+    /// Each request an overlay sends is one Codex's own schema accepts: every
+    /// param it sends is declared, in its declared type, and every required
+    /// param is sent. The snapshots are what scripts/check-codex-usage-schema.sh
+    /// regenerates from the installed Codex.
+    #[test]
+    fn the_requests_an_overlay_sends_hold_codex_s_schema() {
+        let snapshot = |text: &str| serde_json::from_str::<Value>(text).unwrap();
+        for ((method, params), schema, title) in [
+            (
+                seed_request(),
+                snapshot(include_str!(
+                    "../../../../tests/fixtures/codex-thread-list-params.schema.json"
+                )),
+                "ThreadListParams",
+            ),
+            (
+                repair_request("th-1"),
+                snapshot(include_str!(
+                    "../../../../tests/fixtures/codex-thread-read-params.schema.json"
+                )),
+                "ThreadReadParams",
+            ),
+        ] {
+            assert_eq!(schema["title"], title, "{method} is sent with {title}");
+            let declared = schema["properties"].as_object().unwrap();
+            let sent = params.as_object().unwrap();
+            for (name, value) in sent {
+                let property = declared.get(name).unwrap_or_else(|| {
+                    panic!("{method} sends `{name}`, which {title} does not declare")
+                });
+                let types: Vec<&str> = match &property["type"] {
+                    Value::String(one) => vec![one.as_str()],
+                    Value::Array(many) => many.iter().filter_map(Value::as_str).collect(),
+                    _ => continue,
+                };
+                let actual = match value {
+                    Value::Null => "null",
+                    Value::Bool(_) => "boolean",
+                    Value::Number(_) => "number",
+                    Value::String(_) => "string",
+                    Value::Array(_) => "array",
+                    Value::Object(_) => "object",
+                };
+                assert!(
+                    types.contains(&actual),
+                    "{method} sends `{name}` as {actual}; {title} declares {types:?}"
+                );
+            }
+            for required in schema["required"].as_array().into_iter().flatten() {
+                let required = required.as_str().unwrap();
+                assert!(
+                    sent.contains_key(required),
+                    "{method} omits `{required}`, which {title} requires"
+                );
+            }
+        }
+    }
+
+    /// A link Codex left inside a directory it created is returned as the
+    /// link it is: never followed, so neither a merge into the real home nor
+    /// a copy across filesystems moves or reads what it points at.
+    #[test]
+    fn a_nested_link_is_returned_as_a_link_and_its_target_is_left_alone() {
+        let shm = Path::new("/dev/shm");
+        // Same filesystem (rename) and, where a tmpfs is mounted, another
+        // one (copy), each merging into a directory the real home has.
+        let roots: Vec<ScratchDir> = std::iter::once(ScratchDir::new("run-overlay-test-nested"))
+            .chain(
+                shm.is_dir()
+                    .then(|| ScratchDir::under(shm, "run-overlay-test-nested")),
+            )
+            .map(Result::unwrap)
+            .collect();
+        for root in &roots {
+            let outside = ScratchDir::new("run-overlay-test-outside").unwrap();
+            fs::create_dir_all(outside.join("dir")).unwrap();
+            fs::write(outside.join("dir").join("secret"), "s").unwrap();
+            fs::write(outside.join("file"), "f").unwrap();
+            let real = root.join("real");
+            fs::create_dir_all(real.join("made").join("dir-link")).unwrap();
+            fs::write(real.join("made").join("dir-link").join("own"), "o").unwrap();
+
+            let overlays = ScratchDir::new("run-overlay-test-nested-overlays").unwrap();
+            let mut overlay = RunOverlay::create_in(&overlays.join("run-overlays")).unwrap();
+            let home = overlay.codex_home(&real, "# run\n").unwrap();
+            // Codex replaced the overlay's link with a directory of its own.
+            fs::remove_file(home.join("made")).unwrap();
+            fs::create_dir(home.join("made")).unwrap();
+            symlink(&outside.join("dir"), &home.join("made").join("dir-link")).unwrap();
+            symlink(&outside.join("file"), &home.join("made").join("file-link")).unwrap();
+            overlay.finish();
+
+            assert_eq!(
+                fs::read_to_string(outside.join("dir").join("secret"))
+                    .ok()
+                    .as_deref(),
+                Some("s"),
+                "a merge followed the link and moved its target's contents ({})",
+                root.display()
+            );
+            assert!(
+                !real.join("made").join("dir-link").join("secret").exists(),
+                "the link's target was merged into the real home ({})",
+                root.display()
+            );
+            assert_eq!(
+                fs::read_to_string(real.join("made").join("dir-link").join("own")).unwrap(),
+                "o"
+            );
+            let returned = real.join("made").join("file-link");
+            assert!(
+                fs::symlink_metadata(&returned).unwrap().is_symlink(),
+                "a link was returned as a copy of its target ({})",
+                root.display()
+            );
+            assert_eq!(fs::read_link(&returned).unwrap(), outside.join("file"));
+            assert_eq!(fs::read_to_string(outside.join("file")).unwrap(), "f");
+        }
     }
 
     #[test]

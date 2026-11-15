@@ -14,6 +14,8 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 gate="$root/scripts/check-codex-usage-schema.sh"
 snapshot="$root/tests/fixtures/codex-rate-limits.schema.json"
 token_snapshot="$root/tests/fixtures/codex-thread-token-usage.schema.json"
+list_snapshot="$root/tests/fixtures/codex-thread-list-params.schema.json"
+read_snapshot="$root/tests/fixtures/codex-thread-read-params.schema.json"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -51,11 +53,33 @@ staging_failed() {
     echo "fake codex: could not stage \$1 under \$out" >&2
     exit 3
 }
+# The overlay's two requests, as codex declares them: \$1 the methods
+# ClientRequest.json names.
+stage_requests() {
+    cp "$list_snapshot" "\$out/v2/ThreadListParams.json" || staging_failed ThreadListParams.json
+    cp "$read_snapshot" "\$out/v2/ThreadReadParams.json" || staging_failed ThreadReadParams.json
+    printf '{"oneOf": [%s]}\\n' "\$1" >"\$out/ClientRequest.json" || staging_failed ClientRequest.json
+}
 case "$mode" in
     match)
         mkdir -p "\$out/v2" || staging_failed "\$out/v2"
         cp "$snapshot" "\$out/v2/GetAccountRateLimitsResponse.json" || staging_failed GetAccountRateLimitsResponse.json
         cp "$token_snapshot" "\$out/v2/ThreadTokenUsageUpdatedNotification.json" || staging_failed ThreadTokenUsageUpdatedNotification.json
+        stage_requests '{"enum": ["thread/list"]}, {"enum": ["thread/read"]}'
+        ;;
+    request-drift)
+        mkdir -p "\$out/v2" || staging_failed "\$out/v2"
+        cp "$snapshot" "\$out/v2/GetAccountRateLimitsResponse.json" || staging_failed GetAccountRateLimitsResponse.json
+        cp "$token_snapshot" "\$out/v2/ThreadTokenUsageUpdatedNotification.json" || staging_failed ThreadTokenUsageUpdatedNotification.json
+        stage_requests '{"enum": ["thread/list"]}, {"enum": ["thread/read"]}'
+        sed 's/threadId/thread_id/g' "$read_snapshot" \\
+            >"\$out/v2/ThreadReadParams.json" || staging_failed ThreadReadParams.json
+        ;;
+    method-missing)
+        mkdir -p "\$out/v2" || staging_failed "\$out/v2"
+        cp "$snapshot" "\$out/v2/GetAccountRateLimitsResponse.json" || staging_failed GetAccountRateLimitsResponse.json
+        cp "$token_snapshot" "\$out/v2/ThreadTokenUsageUpdatedNotification.json" || staging_failed ThreadTokenUsageUpdatedNotification.json
+        stage_requests '{"enum": ["thread/list"]}, {"enum": ["thread/fetch"]}'
         ;;
     drift)
         mkdir -p "\$out/v2" || staging_failed "\$out/v2"
@@ -163,6 +187,20 @@ status="$(run_gate "$(write_fake_codex token-missing)" "$tmp/token-missing.log")
 [ "$status" = "1" ] || fail "a missing token-usage schema must fail the gate, got exit $status"
 assert_contains "$tmp/token-missing.log" "no longer emits v2/ThreadTokenUsageUpdatedNotification.json" \
   "a moved notification must be reported as moved, not as a diff"
+
+status="$(run_gate "$(write_fake_codex request-drift)" "$tmp/request-drift.log")"
+[ "$status" = "1" ] || fail "a drifted thread/read request schema must fail the gate, got exit $status"
+assert_contains "$tmp/request-drift.log" "thread_id" \
+  "the request diff must show what actually changed"
+assert_contains "$tmp/request-drift.log" "the codex thread/read request contract drifted" \
+  "request drift must be named as its own contract's drift"
+assert_contains "$tmp/request-drift.log" "RunOverlay::repair_threads" \
+  "the failure must point at the overlay code that sends the request"
+
+status="$(run_gate "$(write_fake_codex method-missing)" "$tmp/method-missing.log")"
+[ "$status" = "1" ] || fail "a request method codex no longer accepts must fail the gate, got exit $status"
+assert_contains "$tmp/method-missing.log" "no longer accepts the \`thread/read\` request" \
+  "a removed method must be named, not reported as a pass"
 
 # The diff must survive the way `just lint-workflows` invokes the gate — stdout
 # suppressed. A drift report whose diff went to /dev/null tells a reader the

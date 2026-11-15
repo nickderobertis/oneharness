@@ -17,10 +17,12 @@ namespace can be built is probed once per run.
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import importlib.util
 import json
 import os
+import shlex
 import shutil
 import signal
 import socket
@@ -1047,7 +1049,7 @@ class APastaThatMisbehaves(unittest.TestCase):
             stand_in = executable(
                 Path(scratch) / "pasta",
                 f"#!/bin/sh\necho 'pasta: stuck before the namespace' >&2\n"
-                f"echo $$ > {pid_file}\nexec sleep 600\n",
+                f"echo $$ > {shlex.quote(str(pid_file))}\nexec sleep 600\n",
             )
             env = dict(
                 os.environ,
@@ -1064,6 +1066,72 @@ class APastaThatMisbehaves(unittest.TestCase):
         self.assertIn("(its stderr: pasta: stuck before the namespace)", run.stderr)
         self.assertLess(took, 30, run)
         self.assertTrue(gone(pid), "the stuck pasta outlived the script")
+
+    def test_a_namespace_that_starts_but_never_records_is_ended_after_the_launchs_timeout(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            pid_file = Path(scratch) / "pasta.pid"
+            # Marks the namespace started as the init does, then neither
+            # records a measurement nor exits.
+            stand_in = executable(
+                Path(scratch) / "pasta",
+                "#!/bin/bash\n"
+                'while [ "$#" -gt 0 ] && [ "$1" != --_init ]; do shift; done\n'
+                ': > "${2%/*}/started"\n'
+                f"echo $$ > {shlex.quote(str(pid_file))}\nexec sleep 600\n",
+            )
+            env = dict(os.environ, CODEX_NETWORK_BREAKDOWN_PASTA=str(stand_in))
+            run = run_script("--timeout", "1", "--", "true", env=env)
+            pid = int(pid_file.read_text())
+        self.assertEqual(run.returncode, 3, run)
+        self.assertEqual(run.stdout, "")
+        self.assertIn(
+            f"pasta ({stand_in}) had not exited 5 s after its launch ran out of time, and was ended",
+            run.stderr,
+        )
+        self.assertIn("no measurement: pasta exited -9", run.stderr)
+        self.assertTrue(gone(pid), "the stuck pasta outlived the script")
+
+    def test_a_process_pasta_leaves_holding_its_stderr_does_not_hold_the_script(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            pid_file = Path(scratch) / "holder.pid"
+            stand_in = executable(
+                Path(scratch) / "pasta",
+                "#!/bin/sh\necho 'pasta: refused' >&2\n"
+                f"sleep 30 > /dev/null & echo $! > {shlex.quote(str(pid_file))}\nexit 1\n",
+            )
+            env = dict(os.environ, CODEX_NETWORK_BREAKDOWN_PASTA=str(stand_in))
+            started = time.monotonic()
+            try:
+                run = run_script("--", "true", env=env)
+                took = time.monotonic() - started
+            finally:
+                # The holder is this test's own, by the PID its shell recorded.
+                with contextlib.suppress(ProcessLookupError, ValueError, OSError):
+                    os.kill(int(pid_file.read_text()), signal.SIGKILL)
+        self.assertEqual(run.returncode, 3, run)
+        self.assertIn("pasta: refused", run.stderr)
+        self.assertIn("no measurement: pasta exited 1", run.stderr)
+        self.assertLess(took, 20, run)
+
+    def test_a_script_without_the_recorder_beside_it_says_how_to_restore_it(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            alone = Path(scratch) / "codex-network-breakdown.py"
+            shutil.copy(SCRIPT, alone)
+            run = subprocess.run(
+                [sys.executable, "-I", str(alone), "--", "true"],
+                capture_output=True,
+                text=True,
+                timeout=HANG_GUARD_SECONDS,
+                check=False,
+            )
+        self.assertEqual(run.returncode, 3, run)
+        self.assertIn(
+            f"cannot load {Path(scratch).resolve() / 'e2e-netmeasure.py'}, which starts the "
+            "namespace's init; restore it beside this script",
+            run.stderr,
+        )
 
     def test_a_bad_start_deadline_is_refused(self) -> None:
         for value in ("0", "-1", "nan", "soon"):
@@ -1089,7 +1157,8 @@ class APastaThatMisbehaves(unittest.TestCase):
             pid_file = Path(scratch) / "pasta.pid"
             stand_in = executable(
                 Path(scratch) / "pasta",
-                f'#!/bin/sh\n{real_pasta()} "$@"\necho $$ > {pid_file}\nexec sleep 600\n',
+                f'#!/bin/sh\n{shlex.quote(real_pasta())} "$@"\n'
+                f"echo $$ > {shlex.quote(str(pid_file))}\nexec sleep 600\n",
             )
             env = dict(os.environ, CODEX_NETWORK_BREAKDOWN_PASTA=str(stand_in))
             run = run_script("--label", "lingering", "--", "sh", "-c", "exit 4", env=env)
@@ -1120,7 +1189,7 @@ class APastaThatMisbehaves(unittest.TestCase):
                 "i=$((i + 1))\n"
                 'program="$(realpath -- "$(command -v -- "${!i}")")"\n'
                 'case "$program" in\n'
-                f'  /usr/bin/* | /bin/*) exec {real_pasta()} "$@" ;;\n'
+                f'  /usr/bin/* | /bin/*) exec {shlex.quote(real_pasta())} "$@" ;;\n'
                 "esac\n"
                 "echo 'Failed to start command or shell: Permission denied' >&2\n"
                 "exit 1\n",

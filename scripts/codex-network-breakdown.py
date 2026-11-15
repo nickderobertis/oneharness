@@ -799,14 +799,7 @@ def init(args: argparse.Namespace) -> int:
     if sys.platform == "win32":
         raise Unusable("the measuring namespace is Linux-only; run this inside pasta on Linux")
     # The script outside waits for this to know pasta started the namespace.
-    started = Path(args.result).with_name("started")
-    try:
-        started.touch()
-    except OSError as error:
-        raise Unusable(
-            f"cannot mark the namespace started ({started}): {error}; free space under TMPDIR "
-            "(or point it at a writable directory) and rerun"
-        ) from None
+    write_text(Path(args.result).with_name("started"), "")
     libc = ctypes.CDLL(None, use_errno=True)
     if libc.unshare(CLONE_NEWNS | CLONE_NEWPID) != 0:
         raise Unusable(
@@ -1097,30 +1090,30 @@ def end_session(run: subprocess.Popen[bytes]) -> None:
 def await_pasta(
     run: subprocess.Popen[bytes],
     scratch: Path,
-    timeouts: tuple[float, float],
     stderr: StderrRelay,
     pasta: str,
+    *,
+    start_within: float,
+    launch_timeout: float,
 ) -> None:
     """Wait for pasta, never without a bound: a namespace not started within
     `start_seconds` is refused; once it has recorded its measurement, or its
     launch's --timeout and the init's kill grace have run out, a pasta still
-    running PASTA_EXIT_GRACE_SECONDS later is ended with its session.
-    `timeouts` is (`start_seconds`, the launch's --timeout)."""
+    running PASTA_EXIT_GRACE_SECONDS later is ended with its session."""
     started, result = scratch / "started", scratch / "measurement.json"
-    allowed, timeout = timeouts
-    start_by = time.monotonic() + allowed
+    start_by = time.monotonic() + start_within
     while run.poll() is None and not started.exists():
         if time.monotonic() >= start_by:
             end_session(run)
             raise Unusable(
-                f"pasta ({pasta}) started no namespace within {allowed:g} s and was ended "
+                f"pasta ({pasta}) started no namespace within {start_within:g} s and was ended "
                 f"(its stderr: {stderr.said() or 'no message'}). Rerun it by hand to see why: "
                 f"{pasta} --config-net --quiet -4 -- true; or {NAMESPACE_ADVICE}"
             )
         time.sleep(0.05)
     launch_by = (
-        time.monotonic() + timeout + KILL_GRACE_SECONDS + PASTA_EXIT_GRACE_SECONDS
-        if timeout > 0
+        time.monotonic() + launch_timeout + KILL_GRACE_SECONDS + PASTA_EXIT_GRACE_SECONDS
+        if launch_timeout > 0
         else None
     )
     exit_by: float | None = None
@@ -1220,7 +1213,14 @@ def measure(args: argparse.Namespace) -> int:
             ends = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
         for signum in ends:
             signal.signal(signum, forward)
-        await_pasta(run, Path(scratch), (allowed, float(args.timeout)), stderr, pasta)
+        await_pasta(
+            run,
+            Path(scratch),
+            stderr,
+            pasta,
+            start_within=allowed,
+            launch_timeout=float(args.timeout),
+        )
         stderr.said()
         # A forwarded signal ends pasta at once, while the namespace's init is
         # still ending the launch's tree and recording what it measured.

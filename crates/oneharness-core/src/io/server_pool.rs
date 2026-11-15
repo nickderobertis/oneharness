@@ -1376,7 +1376,6 @@ fn read_stored(entry: &Path) -> Option<StoredRecord> {
     serde_json::from_str(&text).ok()
 }
 
-/// Write `record`, with the uptime instant it went idle when it is idle.
 fn write_record(
     entry: &Path,
     record: &ServerRecord,

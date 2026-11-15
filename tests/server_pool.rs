@@ -351,15 +351,14 @@ fn a_wall_clock_stepped_back_after_a_release_does_not_extend_the_linger() {
     drop(lease);
 
     let path = root.join(key.as_str()).join("server.json");
-    let mut stored: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    let stepped = stored["idle_since_ms"]
-        .as_u64()
-        .expect("the release stamped the entry idle")
-        + 10_000;
-    stored["idle_since_ms"] = stepped.into();
-    stored["idle_since"] = (stepped / 1000).into();
-    std::fs::write(&path, stored.to_string()).unwrap();
+    rewrite_record(&path, |stored| {
+        let stepped = stored["idle_since_ms"]
+            .as_u64()
+            .expect("the release stamped the entry idle")
+            + 10_000;
+        stored["idle_since_ms"] = stepped.into();
+        stored["idle_since"] = (stepped / 1000).into();
+    });
     std::thread::sleep(linger + Duration::from_millis(200));
 
     assert_eq!(
@@ -368,14 +367,86 @@ fn a_wall_clock_stepped_back_after_a_release_does_not_extend_the_linger() {
         "a server idle past its linger was kept because the wall clock stepped back: {}",
         std::fs::read_to_string(&path).unwrap_or_default()
     );
+    assert_stops(server);
+}
+
+/// Rewrite the `server.json` at `path` in place through `edit`.
+fn rewrite_record(path: &std::path::Path, edit: impl FnOnce(&mut serde_json::Value)) {
+    let mut stored: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    edit(&mut stored);
+    std::fs::write(path, stored.to_string()).unwrap();
+}
+
+/// Wait for a reclaimed server to go: the sweep's stop does not wait for it.
+fn assert_stops(server: Pid) {
     for _ in 0..100 {
         if !server_pool::pid_alive(server) {
-            break;
+            return;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert!(
-        !server_pool::pid_alive(server),
-        "the swept server still runs"
+    panic!("the swept server still runs");
+}
+
+/// An uptime stamp is a measure of the idleness its record says is under way,
+/// and of nothing else. A record with no idle stamp beside one — rewritten by
+/// hand, or by a future writer that clears one stamp and not the other —
+/// starts its linger now, rather than reading a stamp from some earlier
+/// idleness as the start of this one and reclaiming a server that just went
+/// idle.
+#[test]
+fn an_uptime_stamp_without_an_idle_stamp_starts_the_linger_afresh() {
+    let root = pool_root("uptime-orphan");
+    let key = oneharness_core::domain::control::pool_key("uptime-orphan", &[], &[]);
+    let linger = Duration::from_millis(300);
+    let lease = server_pool::acquire(&root, &key, &plan(), linger).unwrap();
+    let server = lease.record().pid;
+    drop(lease);
+    let path = root.join(key.as_str()).join("server.json");
+    rewrite_record(&path, |stored| {
+        let record = stored.as_object_mut().unwrap();
+        record.remove("idle_since");
+        record.remove("idle_since_ms");
+        assert!(
+            record.contains_key("idle_since_uptime_ms"),
+            "the release recorded no uptime stamp: {record:?}"
+        );
+        record.insert("idle_since_uptime_ms".into(), 0.into());
+    });
+
+    assert_eq!(
+        server_pool::sweep(&root, linger).unwrap(),
+        0,
+        "a stamp from no idleness under way reclaimed the server"
     );
+    assert!(server_pool::pid_alive(server));
+    std::thread::sleep(linger + Duration::from_millis(200));
+    assert_eq!(server_pool::sweep(&root, linger).unwrap(), 1);
+    assert_stops(server);
+}
+
+/// An uptime stamp later than the uptime clock reads now was taken before a
+/// reboot, so it measures nothing about this boot: the linger is then measured
+/// on the wall clock, and still ends.
+#[test]
+fn an_uptime_stamp_from_before_a_reboot_falls_back_to_the_wall_clock() {
+    let root = pool_root("uptime-reboot");
+    let key = oneharness_core::domain::control::pool_key("uptime-reboot", &[], &[]);
+    let linger = Duration::from_millis(300);
+    let lease = server_pool::acquire(&root, &key, &plan(), linger).unwrap();
+    let server = lease.record().pid;
+    drop(lease);
+    let path = root.join(key.as_str()).join("server.json");
+    rewrite_record(&path, |stored| {
+        stored["idle_since_uptime_ms"] = u64::MAX.into();
+    });
+    std::thread::sleep(linger + Duration::from_millis(200));
+
+    assert_eq!(
+        server_pool::sweep(&root, linger).unwrap(),
+        1,
+        "a stamp from an earlier boot kept the server past its linger"
+    );
+    assert_stops(server);
 }

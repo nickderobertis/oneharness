@@ -3020,7 +3020,6 @@ fn reclaim_lingering_servers() {
     );
 }
 
-/// The entry directories under the pool root `root`.
 fn pool_entries(root: &Path) -> Vec<PathBuf> {
     std::fs::read_dir(root)
         .map(|entries| {

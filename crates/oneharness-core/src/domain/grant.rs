@@ -19,7 +19,9 @@
 
 use crate::domain::lean::{Diagnostic, Setting};
 use crate::domain::mode::PermissionMode;
-use crate::domain::sync::{exec_policy_pattern, exec_policy_statement_for, RuleList};
+use crate::domain::sync::{
+    exec_policy_pattern, exec_policy_statement_for, ExecPolicyPattern, RuleList,
+};
 
 const CLAUDE: &str = "claude-code";
 const CODEX: &str = "codex";
@@ -609,7 +611,7 @@ pub fn plan(id: &str, resolved: &ResolvedRules, withhold: Option<&str>) -> Grant
     let mut granted: Vec<&ExecutablePath> = Vec::new();
     for rule in rules {
         let tokens = match (rule.kind(), read_only) {
-            (RuleKind::Executable { path, .. }, true) => Ok(vec![path.as_str().to_string()]),
+            (RuleKind::Executable { path, .. }, true) => Ok(ExecPolicyPattern::executable(path)),
             _ => exec_policy_pattern(&rule.resolved()),
         };
         match tokens {

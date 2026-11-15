@@ -7,6 +7,7 @@
 use serde_json::{Map, Value};
 
 use crate::domain::config::FileConfig;
+use crate::domain::grant::ExecutablePath;
 use crate::domain::harness::{HarnessSpec, SyncFormat, SyncSpec};
 
 /// Which unified rule list an entry belongs to.
@@ -455,7 +456,7 @@ fn shell_words(text: &str) -> Result<Vec<Word>, &'static str> {
 /// # Errors
 ///
 /// The reason the rule has no Codex translation.
-pub fn exec_policy_pattern(rule: &str) -> Result<Vec<String>, &'static str> {
+pub fn exec_policy_pattern(rule: &str) -> Result<ExecPolicyPattern, &'static str> {
     if rule.trim() == "Bash" {
         return Err(reason::WHOLE_TOOL);
     }
@@ -489,7 +490,32 @@ pub fn exec_policy_pattern(rule: &str) -> Result<Vec<String>, &'static str> {
     if !prefix {
         return Err(reason::EXACT);
     }
-    Ok(words.into_iter().map(|word| word.text).collect())
+    Ok(ExecPolicyPattern(
+        words.into_iter().map(|word| word.text).collect(),
+    ))
+}
+
+/// The literal tokens of one Codex `prefix_rule` pattern: never empty, and no
+/// token holds a control character. Only [`exec_policy_pattern`] (from a
+/// translatable rule) and [`ExecPolicyPattern::executable`] (from a validated
+/// executable path) build one, so a statement can never render from tokens
+/// that bypassed those checks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecPolicyPattern(Vec<String>);
+
+impl ExecPolicyPattern {
+    /// The pattern matching `path`, the one executable a run-level rule
+    /// grants, with any arguments.
+    #[must_use]
+    pub fn executable(path: &ExecutablePath) -> ExecPolicyPattern {
+        ExecPolicyPattern(vec![path.as_str().to_string()])
+    }
+
+    /// The pattern's tokens, in order.
+    #[must_use]
+    pub fn tokens(&self) -> &[String] {
+        &self.0
+    }
 }
 
 /// The comment every rules file oneharness writes opens with.
@@ -558,19 +584,20 @@ pub fn exec_policy_statement(list: RuleList, rule: &str) -> Option<String> {
         .map(|tokens| prefix_rule(&tokens, list.exec_policy_decision()))
 }
 
-/// The `prefix_rule(...)` statement `list`'s decision renders `tokens` to —
+/// The `prefix_rule(...)` statement `list`'s decision renders `pattern` to —
 /// the shape [`rules_plan_for`] writes, for a caller (the run-level
-/// allowlist's per-run rules file) that resolved its own tokens.
+/// allowlist's per-run rules file) that built its own pattern.
 #[must_use]
-pub fn exec_policy_statement_for(tokens: &[String], list: RuleList) -> String {
-    prefix_rule(tokens, list.exec_policy_decision())
+pub fn exec_policy_statement_for(pattern: &ExecPolicyPattern, list: RuleList) -> String {
+    prefix_rule(pattern, list.exec_policy_decision())
 }
 
 /// One `prefix_rule(...)` statement. A token never holds a control character
-/// (`shell_words` refuses them), so a JSON string literal is also a valid
-/// Starlark one: the only escapes it can contain are `\"` and `\\`.
-fn prefix_rule(tokens: &[String], decision: &str) -> String {
-    let pattern = tokens
+/// ([`ExecPolicyPattern`]'s invariant), so a JSON string literal is also a
+/// valid Starlark one: the only escapes it can contain are `\"` and `\\`.
+fn prefix_rule(pattern: &ExecPolicyPattern, decision: &str) -> String {
+    let pattern = pattern
+        .tokens()
         .iter()
         .map(|token| Value::String(token.clone()).to_string())
         .collect::<Vec<_>>()
@@ -836,7 +863,7 @@ mod tests {
 
     #[test]
     fn tokens_split_like_a_posix_shell() {
-        let ok = |rule: &str| exec_policy_pattern(rule).unwrap();
+        let ok = |rule: &str| exec_policy_pattern(rule).unwrap().tokens().to_vec();
         assert_eq!(ok("Bash(git   log:*)"), ["git", "log"]);
         assert_eq!(
             ok("Bash(git commit -m 'a b':*)"),

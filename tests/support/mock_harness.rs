@@ -223,6 +223,11 @@
 //!                              keeps its output, writes its own pid, the
 //!                              descendant's and its working directory to the
 //!                              path, and waits forever.
+//!   MOCK_CODEX_VERSION_GATE    `mock-harness` test builds only: a loopback
+//!                              `host:port`. `--version` connects to it and
+//!                              answers only once one byte arrives, so a test
+//!                              can release many launches' version probes at
+//!                              one instant; unreleased within 60 s, it fails.
 //!   MOCK_CODEX_VERSION_EXIT    the exit code `--version` answers with (the
 //!                              launch itself keeps MOCK_EXIT).
 //!   MOCK_CODEX_CACHE_CORRUPT   with MOCK_CODEX_CATALOG_LOG, a fetch writes a
@@ -563,6 +568,32 @@ fn refuse(message: &str) -> ! {
     std::process::exit(101);
 }
 
+/// MOCK_CODEX_VERSION_GATE: hold `--version` until the test listening there
+/// sends one byte. Blocked in a read rather than polling, so every probe a
+/// test releases together resumes at once. Compiled only into the
+/// `mock-harness` test build, like the engine's fault injectors, since this
+/// responder also ships in the CLI.
+#[cfg(feature = "mock-harness")]
+fn wait_at_version_gate() {
+    use std::io::Read;
+    let Ok(gate) = std::env::var("MOCK_CODEX_VERSION_GATE") else {
+        return;
+    };
+    let mut stream = std::net::TcpStream::connect(&gate)
+        .unwrap_or_else(|error| refuse(&format!("MOCK_CODEX_VERSION_GATE {gate}: {error}")));
+    let released = stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(60)))
+        .and_then(|()| stream.read_exact(&mut [0u8; 1]));
+    if let Err(error) = released {
+        refuse(&format!(
+            "MOCK_CODEX_VERSION_GATE {gate}: never released: {error}"
+        ));
+    }
+}
+
+#[cfg(not(feature = "mock-harness"))]
+fn wait_at_version_gate() {}
+
 /// `--version`, answered with no other effect: `codex-cli <MOCK_CODEX_VERSION>`
 /// when that is set, else MOCK_STDOUT (else the default document).
 fn answer_version(argv: &[String]) -> ! {
@@ -572,6 +603,7 @@ fn answer_version(argv: &[String]) -> ! {
     if let Some(ms) = millis_knob("MOCK_CODEX_VERSION_DELAY_MS") {
         std::thread::sleep(std::time::Duration::from_millis(ms));
     }
+    wait_at_version_gate();
     if let Ok(path) = std::env::var("MOCK_ARGV_FILE") {
         let _ = std::fs::write(path, argv.join("\n"));
     }

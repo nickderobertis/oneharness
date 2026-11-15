@@ -596,6 +596,8 @@ class World:
             # tree and thread index exist before the first granted turn.
             warm = self.endpoint.script(ProbeId("warm"), [])
             try:
+                # Unformatted so the argv reads as the command line it is, flag
+                # beside value, as every other harness command in this file.
                 subprocess.run(
                     ["codex", "exec", "--sandbox", "read-only", "--json", "--skip-git-repo-check",
                      "-C", str(self.wt), "[probe:warm] reply done"],

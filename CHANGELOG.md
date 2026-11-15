@@ -32,8 +32,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `$XDG_STATE_HOME/oneharness/run-overlays/` whose `rules/` adds one
   `prefix_rule` per rule, removed when the run ends and reclaimed by the next
   run after a kill. Every other harness withholds it and reports a diagnostic,
-  and on Windows every harness does. The turn's system instructions name each
-  granted path.
+  and off Linux (macOS, Windows), where no real-CLI test has proven it, every
+  harness does. The turn's system instructions name each granted path.
 - **Breaking:** report schema `0.15`: the `allowed_tools` diagnostic `setting`,
   each result's `overlay_env` and `overlay_timings`, and `list`'s
   `supports_run_allowed_tools`. `oneharness-core`'s `BuildCtx` gains

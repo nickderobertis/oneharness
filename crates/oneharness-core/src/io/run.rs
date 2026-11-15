@@ -5889,7 +5889,7 @@ fn plan_unit_grant(
         return Ok(UnitGrant::Plan(grant::plan(
             spec.id,
             &resolved,
-            Some(reason),
+            Some(&reason),
         )));
     }
     if spec.id != "codex" {

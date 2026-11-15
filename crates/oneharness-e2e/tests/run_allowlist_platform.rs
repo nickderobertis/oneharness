@@ -1,14 +1,15 @@
 //! The run-level allowlist where it is withheld, on every platform: each
-//! harness that withholds it on this host — every harness on Windows, where no
-//! test against a real CLI proves the grant; the six with no proven mechanism
-//! elsewhere — runs exactly as it does with no run-level allowlist, writes
-//! nothing, and says so in its report; `oneharness list` reports the same.
+//! harness that withholds it on this host — every harness off Linux (macOS,
+//! Windows), where no test against a real CLI proves the grant; the six with no
+//! proven mechanism on Linux — runs exactly as it does with no run-level
+//! allowlist, writes nothing, and says so in its report; `oneharness list`
+//! reports the same.
 //!
-//! Not unix-gated, unlike `run_allowlist.rs`: this is the journey windows-latest
-//! runs, so Windows CI exercises what a run does there. It drives the real
-//! built `oneharness` with the mock harness standing in for each harness's
-//! process, at the existing `--bin` seam, because the deterministic gate
-//! cannot run the paid, authenticated CLIs.
+//! Not platform-gated, unlike `run_allowlist.rs`: this is the journey the
+//! macOS and windows-latest legs run, so their CI exercises what a run does
+//! there. It drives the real built `oneharness` with the mock harness standing
+//! in for each harness's process, at the existing `--bin` seam, because the
+//! deterministic gate cannot run the paid, authenticated CLIs.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -46,8 +47,22 @@ const HARNESSES: [&str; 8] = [
 fn withholding() -> Vec<&'static str> {
     HARNESSES
         .into_iter()
-        .filter(|id| cfg!(windows) || !matches!(*id, "claude-code" | "codex"))
+        .filter(|id| !cfg!(target_os = "linux") || !matches!(*id, "claude-code" | "codex"))
         .collect()
+}
+
+/// The platform a diagnostic names where every harness withholds, or `None`
+/// on Linux, the one platform where the grant is proven.
+fn withheld_platform() -> Option<&'static str> {
+    if cfg!(target_os = "linux") {
+        None
+    } else if cfg!(target_os = "macos") {
+        Some("macOS")
+    } else if cfg!(windows) {
+        Some("Windows")
+    } else {
+        Some(std::env::consts::OS)
+    }
 }
 
 /// An absolute executable on the host's convention, one plain word: a rule
@@ -256,8 +271,9 @@ fn a_withheld_run_level_allowlist_changes_nothing_a_run_spawns_or_writes_and_say
             message.contains(&format!("`Bash({})`", granted())),
             "{message}"
         );
-        if cfg!(windows) {
-            assert!(message.contains("on Windows"), "{message}");
+        if let Some(platform) = withheld_platform() {
+            assert!(message.contains(&format!("on {platform}")), "{message}");
+            assert!(message.contains("proven on Linux only"), "{message}");
         }
     }
 }
@@ -284,12 +300,12 @@ fn list_reports_the_run_level_allowlist_as_this_platform_applies_it() {
             .unwrap_or_else(|| panic!("{id} missing from list"));
         let withheld = withholding().contains(&id);
         // Codex also withholds where its overlay's links cannot be made,
-        // which a unix host always can.
+        // which a Linux host always can.
         assert_eq!(h["supports_run_allowed_tools"], !withheld, "{id}");
     }
 }
 
-/// Withholding never relaxes validation: on every platform, Windows included,
+/// Withholding never relaxes validation: on every platform, macOS and Windows included,
 /// a rule that cannot be one is refused before anything spawns, as it is where
 /// the grant applies.
 #[test]

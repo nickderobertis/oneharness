@@ -17,10 +17,11 @@
 //! scripted model endpoint and asserts what each CLI's own permission check,
 //! sandbox and execution did.
 //!
-//! Unix only: these are the journeys of a grant that applies, and on Windows
-//! every harness withholds it (`grant::platform_withheld_reason`), which
-//! `run_allowlist_platform.rs` proves on every leg, windows-latest included.
-#![cfg(unix)]
+//! Linux only: these are the journeys of a grant that applies, and on every
+//! other platform every harness withholds it (`grant::platform_withheld_reason`),
+//! which `run_allowlist_platform.rs` proves on every leg, macOS and
+//! windows-latest included.
+#![cfg(target_os = "linux")]
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};

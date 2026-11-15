@@ -117,7 +117,8 @@ have_env() {
 #                 executable runs, every refusal holds, its overlay home is
 #                 the run's alone (live/control/run_allowlist_live.py
 #                 --codex-path control, against a scripted model endpoint, so
-#                 it needs no Codex login), then (Linux) the budget workload
+#                 it needs no Codex login; Linux only, where the grant
+#                 applies), then the budget workload
 #                 and onebudgetspec's check of codex-run-overlay-added-seconds.
 # OH_CONTROL_ONLY=run-overlay runs the run-overlay phase alone: it needs no
 # Codex login, only the installed codex.
@@ -329,17 +330,19 @@ oh_pooled_reuse() {
 
 oh_run_overlay() {
   _oh_phase run-overlay
+  case "$(uname -s)" in
+    Linux*) ;;
+    *)
+      # Off Linux every harness withholds the run-level allowlist
+      # (grant::platform_withheld_reason); run_allowlist_platform.rs proves that.
+      note "  SKIP run-overlay: the run-level allowlist is withheld off Linux; not run on $(uname -s)"
+      return 0
+      ;;
+  esac
   # llmlint: ignore[e2e_not_mocked] The model is the one thing replaced: each CLI's permission check, sandbox and execution are the real installed codex, which is what this phase proves, and its acceptance bar names a scripted model endpoint in place of the paid provider (the spike-command-grant method), so a refusal settles by the decision Codex records rather than by a model's choice.
   ONEHARNESS_BIN="$BIN" uv run --no-project --python ">=3.10" python "$OH_REPO_ROOT/live/control/run_allowlist_live.py" \
     --harness codex --codex-path control ||
     fail "run-overlay: a granted controlled Codex turn broke a guarantee; each failed check is above"
-  case "$(uname -s)" in
-    Linux*) ;;
-    *)
-      note "  SKIP run-overlay budget: measured on Linux only; not run on $(uname -s)"
-      return 0
-      ;;
-  esac
   # llmlint: ignore[e2e_not_mocked] The budget's stated workload is a scripted model endpoint answering each turn with one call of the granted command: what it times is what a grant adds around a turn, which a real model's own seconds, orders of magnitude longer and varying, would bury.
   ONEHARNESS_BIN="$BIN" uv run --no-project --python ">=3.10" python "$OH_REPO_ROOT/live/control/run_allowlist_live.py" \
     --budget-telemetry "$OH_REPO_ROOT/target/e2e-telemetry/run-overlay/codex-turn.json" ||

@@ -29,6 +29,7 @@ from support import (
     BASH,
     ROOT,
     WINDOWS,
+    LaunchId,
     check_step,
     lines,
     measurements,
@@ -157,10 +158,10 @@ def running(pid: int) -> bool:
 
 def wait_until_recorded(telemetry: Path, suite: str) -> None:
     """Return once every launch the stopped suite started is recorded — its
-    pending marker gone — however long the recorder takes. Fail, naming them,
-    on the launches whose markers outlived every recorder process they name,
-    which can no longer record them, once no other launch is still being
-    recorded; and at HANG_GUARD on a recorder that has not exited."""
+    pending marker gone — however long the recorder takes. Fail at once, naming
+    them, on the launches whose markers outlived every recorder process they
+    name, which can no longer record them, whatever other launches are still
+    being recorded; and at HANG_GUARD on a recorder that has not exited."""
     pending = telemetry / ".pending"
     deadline = time.monotonic() + HANG_GUARD
     while True:
@@ -168,12 +169,16 @@ def wait_until_recorded(telemetry: Path, suite: str) -> None:
         if not markers:
             return
         named = {marker.name: owners(marker) for marker in markers}
+        # Looked for again once its owners are seen gone: a recorder removes
+        # the marker before it exits, so one still there now is lost.
         lost = {
             launch: pids
             for launch, pids in named.items()
-            if pids is not None and not any(running(pid) for pid in pids)
+            if pids is not None
+            and not any(running(pid) for pid in pids)
+            and (pending / launch).exists()
         }
-        if lost and len(lost) == len(named):
+        if lost:
             raise AssertionError(
                 f"{suite}: launch(es) {', '.join(lost)} never recorded: every recorder process "
                 f"their pending markers name ({lost}) has exited with the marker still there"
@@ -301,9 +306,6 @@ class EverySuiteRecords(unittest.TestCase):
 HOLD = 35
 
 
-@unittest.skipIf(
-    WINDOWS, "the suites' doubles are bash scripts; Windows runs the recorder's fallback tests"
-)
 class StoppedSuite(NamedTuple):
     """The control suite set up to run behind the stand-in pasta."""
 
@@ -311,14 +313,31 @@ class StoppedSuite(NamedTuple):
     env: dict[str, str]
 
 
+class Failure(NamedTuple):
+    """The helper's failure, as a test reads it."""
+
+    said: str  # its message
+    took: float  # seconds from the suite's start to the failure
+
+
+# What the stand-in pasta does with a namespace: start it as pasta itself
+# would, or SIGKILL its measurer and supervisor before it starts, so nothing
+# is left that can write its line or clear its marker.
+THROUGH = 'exec "$real" "$@"'
+LOSE = 'kill -KILL "$(ps -o ppid= -p "$PPID" | tr -d " ")" "$PPID"; exit 1'
+
+
+@unittest.skipIf(
+    WINDOWS, "the suites' doubles are bash scripts; Windows runs the recorder's fallback tests"
+)
 class StoppedSuiteRecording(unittest.TestCase):
     """The control suite stopped while its recorder still owes launches their
     lines, through the real shim, recorder and pasta: a stand-in pasta in front
-    of the real one lets the first namespace through and does `later` with
+    of the real one does `first` with the first namespace and `later` with
     every one after it — among them the pooled `--version` probe started
     beside the first, still in flight when the suite is stopped."""
 
-    def stopped_with(self, later: str) -> StoppedSuite:
+    def stopped_with(self, later: str, first: str = THROUGH) -> StoppedSuite:
         need_builds(self)
         need_recorder(self)
         real = shutil.which("pasta")
@@ -326,13 +345,13 @@ class StoppedSuiteRecording(unittest.TestCase):
         tmp = scratch(self)
         stand_in = tmp / "pasta-bin"
         stand_in.mkdir()
-        first = shlex.quote(str(tmp / "first-namespace"))
+        claimed = shlex.quote(str(tmp / "first-namespace"))
         (stand_in / "pasta").write_text(
             "#!/usr/bin/env bash\n"
             f"real={shlex.quote(real)}\n"
-            "# The recorder's inbound-TCP trials run `:`; they and the first\n"
-            "# namespace are pasta's own.\n"
-            f'if [ "${{*: -1}}" = : ] || mkdir {first} 2>/dev/null; then exec "$real" "$@"; fi\n'
+            "# The recorder's inbound-TCP trials run `:`; they are pasta's own.\n"
+            f'if [ "${{*: -1}}" = : ]; then {THROUGH}; fi\n'
+            f"if mkdir {claimed} 2>/dev/null; then {first}; fi\n"
             f"{later}\n"
         )
         (stand_in / "pasta").chmod(0o755)
@@ -353,32 +372,70 @@ class StoppedSuiteRecording(unittest.TestCase):
         # A namespace was held past both fixed waits, and still recorded.
         self.assertGreater(took, HOLD, "no namespace was held: the stand-in tested nothing")
 
-    def test_a_launch_whose_recorder_exits_without_its_line_fails_naming_it(self) -> None:
-        # Its measurer and supervisor are SIGKILLed before the namespace
-        # starts, so nothing is left that can write its line or clear its marker.
-        stopped = self.stopped_with(
-            'kill -KILL "$(ps -o ppid= -p "$PPID" | tr -d " ")" "$PPID"; exit 1'
-        )
+    def failure(self, stopped: StoppedSuite) -> Failure:
+        """The helper's failure on `stopped`, and how long it took to come."""
         began = time.monotonic()
         with self.assertRaises(AssertionError) as caught:
             run_until_recorded("control", stopped.env, "codex")
-        took = time.monotonic() - began
-        said = str(caught.exception)
-        records = lines(stopped.telemetry / "control.jsonl")
-        unrecorded = [
-            s["launch_id"] for s in starts(records) if not measurements(records, s["launch_id"])
-        ]
-        self.assertTrue(unrecorded, records)
+        return Failure(str(caught.exception), time.monotonic() - began)
+
+    def assert_names_only_lost_launches(self, stopped: StoppedSuite, said: str) -> list[LaunchId]:
+        """The launch ids `said` names as never recorded, each one unrecorded
+        with every recorder process its marker names gone."""
         self.assertIn("never recorded", said)
-        for launch_id in unrecorded:
-            self.assertIn(launch_id, said)
-        for marker in (stopped.telemetry / ".pending").glob("*"):
-            pids = owners(marker)
-            self.assertTrue(pids, marker)
+        named = [
+            LaunchId(str(found))
+            for found in sorted(set(re.findall(r"control-[0-9]+-[0-9a-f]{12}", said)))
+        ]
+        self.assertTrue(named, said)
+        records = lines(stopped.telemetry / "control.jsonl")
+        for launch_id in named:
+            self.assertEqual(measurements(records, launch_id), [], launch_id)
+            pids = owners(stopped.telemetry / ".pending" / launch_id)
+            self.assertTrue(pids, launch_id)
             assert pids is not None
-            self.assertFalse(any(running(pid) for pid in pids), (marker.name, pids))
+            self.assertFalse(any(running(pid) for pid in pids), (launch_id, pids))
+        return named
+
+    def test_a_launch_whose_recorder_exits_without_its_line_fails_naming_it(self) -> None:
+        stopped = self.stopped_with(LOSE)
+        failed = self.failure(stopped)
+        self.assert_names_only_lost_launches(stopped, failed.said)
         # Failed on its recorder's exit, not on the hang guard.
-        self.assertLess(took, HANG_GUARD, said)
+        self.assertLess(failed.took, HANG_GUARD, failed.said)
+
+    def test_a_lost_launch_fails_while_another_is_still_being_recorded(self) -> None:
+        # The two pooled probes start together: the first held open, its
+        # supervisor recorded, until the test releases it; the other lost.
+        tmp = scratch(self)
+        held, release = tmp / "held-supervisor", tmp / "release"
+        stopped = self.stopped_with(
+            LOSE,
+            first=(
+                f'echo "$PPID" > {shlex.quote(str(held))}; "$real" "$@"; code=$?; '
+                f"for _ in $(seq {HOLD * 10}); do [ -e {shlex.quote(str(release))} ] && break; "
+                'sleep 0.1; done; exit "$code"'
+            ),
+        )
+        self.addCleanup(release.touch)
+        failed = self.failure(stopped)
+        supervisor = int(held.read_text())
+        # The failure came while the held launch's recorder was still at work.
+        self.assertTrue(running(supervisor), failed.said)
+        self.assertLess(failed.took, HOLD, failed.said)
+        named = self.assert_names_only_lost_launches(stopped, failed.said)
+        markers = (stopped.telemetry / ".pending").glob("*")
+        recording = [LaunchId(m.name) for m in markers if supervisor in (owners(m) or [])]
+        self.assertEqual(len(recording), 1, recording)
+        self.assertNotIn(recording[0], named)
+        # Released, it is still recorded: its marker goes with its line.
+        release.touch()
+        deadline = time.monotonic() + HANG_GUARD
+        while running(supervisor) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        self.assertFalse(running(supervisor), "the held recorder never finished")
+        records = lines(stopped.telemetry / "control.jsonl")
+        self.assertEqual(len(measurements(records, recording[0])), 1, records)
 
 
 class HangGuard(unittest.TestCase):

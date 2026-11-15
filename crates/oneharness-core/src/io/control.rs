@@ -289,15 +289,47 @@ type WriteOutcome = Result<(), (io::ErrorKind, String)>;
 /// waiting on it is woken.
 type AfterWrite = Box<dyn FnOnce(&io::Result<()>) + Send>;
 
+/// What a queued frame is to its turn, which decides what the writer does
+/// when the turn has ended before it or when its write fails.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FramePolicy {
+    /// The turn's opening (or a raw line written into it): always written,
+    /// and a failed write leaves the turn as it is — the harness's own exit
+    /// and output then report a prompt that never arrived.
+    Opening,
+    /// An interrupt's abort: not written at all if the turn has ended before
+    /// the writer reaches it, since there is nothing left to abort.
+    Abort,
+    /// A dialogue reply or a redirection's replacement turn — the frame the
+    /// turn was being kept open for. A failed write ends the turn, because
+    /// nothing will write that frame now.
+    Continuation,
+}
+
+impl FramePolicy {
+    fn closes_on_failure(self) -> bool {
+        matches!(self, Self::Continuation)
+    }
+
+    fn skips_if_closed(self) -> bool {
+        matches!(self, Self::Abort)
+    }
+}
+
+/// How long a waiter waits on a queued frame's outcome.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WaitPolicy {
+    /// Until the write returns, however long the turn lasts.
+    UntilWritten,
+    /// Until the write returns, or until the frame's turn has ended and
+    /// [`ENDED_TURN_WRITE_GRACE`] has passed without it returning.
+    UntilTurnEnds,
+}
+
 /// One frame queued for the turn's writer thread.
 struct WriteJob {
     line: String,
-    /// End the turn if this write fails: the frame was what the turn was being
-    /// kept open for, and nothing will write it now.
-    close_on_failure: bool,
-    /// Not written at all if the turn has ended before the writer reaches it:
-    /// an abort for a turn that is already over.
-    skip_if_closed: bool,
+    policy: FramePolicy,
     then: Option<AfterWrite>,
     done: Arc<Mutex<Option<WriteOutcome>>>,
 }
@@ -409,10 +441,10 @@ fn run_writer(
         if std::mem::take(&mut first) {
             holds.hold_opening();
         }
-        if job.skip_if_closed {
+        if job.policy.skips_if_closed() {
             holds.hold_skippable(|| !slot.is_live(turn));
         }
-        let written = if job.skip_if_closed && !slot.is_live(turn) {
+        let written = if job.policy.skips_if_closed() && !slot.is_live(turn) {
             Err(io::Error::new(
                 io::ErrorKind::NotConnected,
                 "the turn ended before the frame was written",
@@ -421,7 +453,7 @@ fn run_writer(
             sink.write_all(job.line.as_bytes())
                 .and_then(|()| sink.flush())
         };
-        if written.is_err() && job.close_on_failure && slot.close(turn) {
+        if written.is_err() && job.policy.closes_on_failure() && slot.close(turn) {
             holds.mark_closing();
         }
         if let Some(then) = job.then {
@@ -1112,7 +1144,7 @@ impl ControlHandle {
                     }
                     (Ok(()), _) => {}
                 });
-                if let Err(err) = self.send(frame.clone(), true, false, Some(then)) {
+                if let Err(err) = self.send(frame.clone(), FramePolicy::Continuation, Some(then)) {
                     eprintln!("oneharness: warning: could not write a control frame: {err}");
                     if let Some(delivery) = &delivery {
                         delivery.settle(turn_ended_undelivered(Some(&err)));
@@ -1520,7 +1552,7 @@ impl ControlHandle {
                 settled.settle(turn_ended_undelivered(Some(err)));
             }
         });
-        match self.send(frame, true, false, Some(then)) {
+        match self.send(frame, FramePolicy::Continuation, Some(then)) {
             Ok(_) => true,
             Err(err) => {
                 eprintln!(
@@ -1601,14 +1633,13 @@ impl ControlHandle {
     /// Queue `line` for the live turn's writer. Never waits on the write: the
     /// returned ticket is where its outcome appears.
     ///
-    /// `close_on_failure` ends the turn if the write fails; `skip_if_closed`
-    /// leaves the frame unwritten if the turn has ended before the writer
-    /// reaches it; `then` runs on the writer once the write returns.
+    /// `policy` decides whether a failed write ends the turn and whether the
+    /// frame is skipped when the turn has ended before the writer reaches it;
+    /// `then` runs on the writer once the write returns.
     fn send(
         &self,
         line: String,
-        close_on_failure: bool,
-        skip_if_closed: bool,
+        policy: FramePolicy,
         then: Option<AfterWrite>,
     ) -> io::Result<WriteTicket> {
         let state = self.turn.lock();
@@ -1621,8 +1652,7 @@ impl ControlHandle {
         let done = Arc::new(Mutex::new(None));
         let job = WriteJob {
             line,
-            close_on_failure,
-            skip_if_closed,
+            policy,
             then,
             done: Arc::clone(&done),
         };
@@ -1642,12 +1672,12 @@ impl ControlHandle {
 
     /// Wait for a queued frame's outcome, holding no lock while waiting.
     ///
-    /// With `until_turn_ends`, a frame whose turn ends first is answered as
+    /// With [`WaitPolicy::UntilTurnEnds`], a frame whose turn ends first is answered as
     /// `NotConnected` — the turn it was aimed at is over — once
     /// [`ENDED_TURN_WRITE_GRACE`] has passed without its write returning:
     /// a write that has not returned by then is one the harness is not
     /// draining, and the run's own end is what will fail it.
-    fn wait_written(&self, ticket: &WriteTicket, until_turn_ends: bool) -> io::Result<()> {
+    fn wait_written(&self, ticket: &WriteTicket, wait: WaitPolicy) -> io::Result<()> {
         let mut state = self.turn.lock();
         let mut grace: Option<std::time::Instant> = None;
         loop {
@@ -1660,7 +1690,7 @@ impl ControlHandle {
                 return outcome.map_err(|(kind, why)| io::Error::new(kind, why));
             }
             let live = matches!(&*state, TurnState::Active(writer) if writer.turn == ticket.turn);
-            if until_turn_ends && !live {
+            if wait == WaitPolicy::UntilTurnEnds && !live {
                 let until = *grace
                     .get_or_insert_with(|| std::time::Instant::now() + ENDED_TURN_WRITE_GRACE);
                 let now = std::time::Instant::now();
@@ -1704,8 +1734,7 @@ impl ControlHandle {
             .enumerate()
             .map(|(index, line)| WriteJob {
                 line,
-                close_on_failure: false,
-                skip_if_closed: false,
+                policy: FramePolicy::Opening,
                 then: (index + 1 == last).then(|| -> AfterWrite {
                     Box::new(|written: &io::Result<()>| {
                         if let Err(err) = written {
@@ -1833,8 +1862,8 @@ impl ControlHandle {
     /// closed its end. The wait holds no lock: the line is written by the
     /// turn's writer thread, behind whatever was queued before it.
     pub fn write_line(&self, line: &str) -> io::Result<()> {
-        let ticket = self.send(line.to_string(), false, false, None)?;
-        self.wait_written(&ticket, false)
+        let ticket = self.send(line.to_string(), FramePolicy::Opening, None)?;
+        self.wait_written(&ticket, WaitPolicy::UntilWritten)
     }
 
     /// Serve one request, recording it for the report either way.
@@ -2029,13 +2058,13 @@ impl ControlHandle {
         self.begin_abort_write();
         let mut queued = Vec::with_capacity(frames.len());
         for frame in frames {
-            match self.send(frame, false, true, None) {
+            match self.send(frame, FramePolicy::Abort, None) {
                 Ok(ticket) => queued.push(ticket),
                 Err(err) => return undelivered(err),
             }
         }
         for ticket in &queued {
-            if let Err(err) = self.wait_written(ticket, true) {
+            if let Err(err) = self.wait_written(ticket, WaitPolicy::UntilTurnEnds) {
                 return undelivered(err);
             }
         }
@@ -3867,7 +3896,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn stalled_mid_turn(
         tag: &str,
-        redirect: bool,
+        request: ControlRequest,
         end: RunEnd,
     ) -> (
         crate::domain::report::Capture,
@@ -3909,14 +3938,6 @@ mod tests {
             cancel.clone(),
         );
         wait_for("the harness to fill its stdin", || full.exists());
-        let request = if redirect {
-            ControlRequest::redirect(
-                crate::domain::control::RedirectInput::new("do X instead")
-                    .expect("a fixture message"),
-            )
-        } else {
-            ControlRequest::interrupt()
-        };
         let (answered, response) = std::sync::mpsc::channel();
         let asked = path.clone();
         std::thread::spawn(move || {
@@ -3987,8 +4008,11 @@ mod tests {
         // pipe blocked it, and the runner, closing the turn on its end-of-turn
         // record, waited on that lock instead of its deadline: the run hung
         // for as long as the harness lived.
-        let (capture, response, ended, returned) =
-            stalled_mid_turn("stall-timeout", false, RunEnd::Timeout);
+        let (capture, response, ended, returned) = stalled_mid_turn(
+            "stall-timeout",
+            ControlRequest::interrupt(),
+            RunEnd::Timeout,
+        );
         assert_eq!(
             capture.status,
             crate::domain::report::Status::Timeout,
@@ -4017,7 +4041,7 @@ mod tests {
         // interrupt gives its write — so the cancellation, killing the
         // harness, is what fails that write and answers the interrupt.
         let (capture, response, ended, returned) =
-            stalled_mid_turn("stall-cancel", false, RunEnd::Cancel);
+            stalled_mid_turn("stall-cancel", ControlRequest::interrupt(), RunEnd::Cancel);
         assert_eq!(
             capture.status,
             crate::domain::report::Status::Cancelled,
@@ -4041,8 +4065,14 @@ mod tests {
         // The turn's end may be the abort's answer, so the run keeps the turn
         // open for the redirection; the abort is never written, and the run's
         // deadline is what ends it. The supervisor keeps the message.
-        let (capture, response, ended, returned) =
-            stalled_mid_turn("stall-redirect", true, RunEnd::Timeout);
+        let (capture, response, ended, returned) = stalled_mid_turn(
+            "stall-redirect",
+            ControlRequest::redirect(
+                crate::domain::control::RedirectInput::new("do X instead")
+                    .expect("a fixture message"),
+            ),
+            RunEnd::Timeout,
+        );
         assert_eq!(
             capture.status,
             crate::domain::report::Status::Timeout,

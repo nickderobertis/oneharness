@@ -246,16 +246,33 @@ oh_pooled_env() {
 # The pool entry directory holding a live lease of the dispatch whose pid is
 # $1 — `<state>/oneharness/servers/<key>`, where each lease names its
 # holder's pid (crates/oneharness-core/src/io/server_pool.rs) — or nothing.
+# A lease released between the listing and its read is no holder; one that
+# is still there and cannot be read fails the phase with jq's diagnostic.
 _oh_pooled_entry_of() {
-  local lease
+  local lease holder
   for lease in "${XDG_STATE_HOME:-$HOME/.local/state}"/oneharness/servers/*/leases/*; do
     [ -f "$lease" ] || continue
     case "$lease" in *.tmp) continue ;; esac
-    if [ "$(jq -r '.pid // empty' "$lease" 2>/dev/null)" = "$1" ]; then
+    if ! holder="$(jq -r '.pid // empty' "$lease" 2>&1)"; then
+      [ -e "$lease" ] || continue
+      fail "pooled-kill: cannot read the pool lease $lease: $holder"
+    fi
+    if [ "$holder" = "$1" ]; then
       printf '%s\n' "${lease%/leases/*}"
       return 0
     fi
   done
+}
+
+# The pid of the server a pool entry directory $1 names in its server.json,
+# or nothing when $1 is empty (no entry was found). A record that cannot be
+# read fails the phase with jq's diagnostic.
+_oh_pooled_server_of() {
+  local record
+  [ -n "$1" ] || return 0
+  record="$(jq -r '.pid // empty' "$1/server.json" 2>&1)" ||
+    fail "pooled-kill: cannot read the pool's server record $1/server.json: $record"
+  printf '%s\n' "$record"
 }
 
 oh_pooled_kill() {
@@ -319,10 +336,22 @@ oh_pooled_kill() {
   # pool's own records while both run: the entry holding each dispatch's
   # lease, and the server that entry names.
   local entry_hold entry_kill server_hold server_kill
-  entry_hold="$(_oh_pooled_entry_of "$hold")"
-  entry_kill="$(_oh_pooled_entry_of "$pid")"
-  server_hold="$([ -z "$entry_hold" ] || jq -r '.pid // empty' "$entry_hold/server.json" 2>/dev/null)"
-  server_kill="$([ -z "$entry_kill" ] || jq -r '.pid // empty' "$entry_kill/server.json" 2>/dev/null)"
+  entry_hold="$(_oh_pooled_entry_of "$hold")" || {
+    kill -9 "$pid" 2>/dev/null || true
+    fail "pooled-kill: cannot read the holding dispatch's pool lease (see the diagnostic above)"
+  }
+  entry_kill="$(_oh_pooled_entry_of "$pid")" || {
+    kill -9 "$pid" 2>/dev/null || true
+    fail "pooled-kill: cannot read the killed dispatch's pool lease (see the diagnostic above)"
+  }
+  server_hold="$(_oh_pooled_server_of "$entry_hold")" || {
+    kill -9 "$pid" 2>/dev/null || true
+    fail "pooled-kill: cannot read the holding dispatch's server record (see the diagnostic above)"
+  }
+  server_kill="$(_oh_pooled_server_of "$entry_kill")" || {
+    kill -9 "$pid" 2>/dev/null || true
+    fail "pooled-kill: cannot read the killed dispatch's server record (see the diagnostic above)"
+  }
   if [ -z "$entry_hold" ] || [ -z "$entry_kill" ] || [ "$entry_hold" != "$entry_kill" ] ||
     [ -z "$server_kill" ] || [ "$server_hold" != "$server_kill" ]; then
     kill -9 "$pid" 2>/dev/null || true

@@ -114,7 +114,8 @@ have_env() {
 #   pooled-kill   a pooled dispatch killed while its turn runs a heartbeat: the
 #                 heartbeat stops within DEAD_LEASE_SWEEP_INTERVAL (2 s) plus
 #                 DEAD_LEASE_STOP_DEADLINE (5 s), while a second dispatch holds
-#                 the same server's lease so only the pool's stop can end it;
+#                 the same server's lease so only the pool's stop can end it
+#                 (the pool's lease records must show both on one server);
 #   pooled-reuse  (Linux) the sustained-reuse workload, then onebudgetspec's
 #                 check over live/control/budgets.yaml.
 # OH_CONTROL_ONLY=pooled runs these alone (the gate's journeys drive them with
@@ -242,6 +243,21 @@ oh_pooled_env() {
   note "  ok: each pooled dispatch saw only its own variable, both on server $pid_a, none in a rollout"
 }
 
+# The pool entry directory holding a live lease of the dispatch whose pid is
+# $1 — `<state>/oneharness/servers/<key>`, where each lease names its
+# holder's pid (crates/oneharness-core/src/io/server_pool.rs) — or nothing.
+_oh_pooled_entry_of() {
+  local lease
+  for lease in "${XDG_STATE_HOME:-$HOME/.local/state}"/oneharness/servers/*/leases/*; do
+    [ -f "$lease" ] || continue
+    case "$lease" in *.tmp) continue ;; esac
+    if [ "$(jq -r '.pid // empty' "$lease" 2>/dev/null)" = "$1" ]; then
+      printf '%s\n' "${lease%/leases/*}"
+      return 0
+    fi
+  done
+}
+
 oh_pooled_kill() {
   _oh_phase pooled-kill
   # The bound is DEAD_LEASE_SWEEP_INTERVAL + DEAD_LEASE_STOP_DEADLINE, in
@@ -297,6 +313,21 @@ oh_pooled_kill() {
     }
     kill -0 "$pid" 2>/dev/null || fail "pooled-kill: the dispatch ended before its heartbeat started: $(cat "$POOLED_DIR/kill.json.err")"
   done
+  # The hold proves nothing unless both dispatches lease ONE server: on two,
+  # the killed one's server lingers out during the watch, and whatever ends
+  # its tree could end the heartbeat in the pool's place. Read from the
+  # pool's own records while both run: the entry holding each dispatch's
+  # lease, and the server that entry names.
+  local entry_hold entry_kill server_hold server_kill
+  entry_hold="$(_oh_pooled_entry_of "$hold")"
+  entry_kill="$(_oh_pooled_entry_of "$pid")"
+  server_hold="$([ -z "$entry_hold" ] || jq -r '.pid // empty' "$entry_hold/server.json" 2>/dev/null)"
+  server_kill="$([ -z "$entry_kill" ] || jq -r '.pid // empty' "$entry_kill/server.json" 2>/dev/null)"
+  if [ -z "$entry_hold" ] || [ -z "$entry_kill" ] || [ "$entry_hold" != "$entry_kill" ] ||
+    [ -z "$server_kill" ] || [ "$server_hold" != "$server_kill" ]; then
+    kill -9 "$pid" 2>/dev/null || true
+    fail "pooled-kill: the holding dispatch (pid $hold, pool entry ${entry_hold:-none}, server ${server_hold:-none}) and the killed one (pid $pid, pool entry ${entry_kill:-none}, server ${server_kill:-none}) do not lease one server, so the watch could credit that server's end with the pool's stop"
+  fi
   if ! kill -9 "$pid" 2>/dev/null; then
     kill -0 "$pid" 2>/dev/null &&
       fail "pooled-kill: cannot SIGKILL the dispatch (pid $pid), which is still running; check that this shell owns it"

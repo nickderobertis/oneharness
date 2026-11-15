@@ -6530,6 +6530,46 @@ exit "$status""#,
 }
 // llmlint: ignore-end[e2e_not_mocked]
 
+// llmlint: ignore-block[e2e_not_mocked] The subject is scripts/e2e-control.sh's own pooled-kill verdict, run for real over the built oneharness and oneharness-core's pool; the `oneharness` wrapper only adds one CODEX_ variable to the killed dispatch's environment before exec'ing the real binary, which moves that dispatch's pool key exactly as a dispatch configured differently from the holder's would. Only codex is the repository's subprocess double, as in every ControlSuite journey, because the gate cannot run real Codex.
+/// pooled-kill's hold proves only the pool stopped the heartbeat when the
+/// holding and killed dispatches lease ONE server; on two, the killed one's
+/// server lingers out during the watch and whatever ends its tree could stop
+/// the heartbeat in the pool's place. A killed dispatch whose environment puts
+/// it on a server of its own fails the phase naming both dispatches' pool
+/// entries — even though the pool does stop its heartbeat — rather than
+/// passing a watch the hold no longer guards.
+#[test]
+fn the_control_suite_s_pooled_kill_fails_when_the_hold_and_the_killed_dispatch_lease_two_servers() {
+    let suite = ControlSuite::new("pool-suite-split");
+    let envs = suite.staged(
+        r#"case " $* " in *" --session pooled-kill "*) export CODEX_OH_POOLED_SPLIT=killed ;; esac"#,
+    );
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let out = suite.run(&envs);
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "the suite passed: {said}");
+    assert!(
+        said.contains("FAIL: pooled-kill: the holding dispatch (pid ")
+            && said.contains("do not lease one server"),
+        "expected `FAIL: pooled-kill: … do not lease one server` in: {said}"
+    );
+    let entries: Vec<&str> = said
+        .split("pool entry ")
+        .skip(1)
+        .filter_map(|rest| rest.split(',').next())
+        .collect();
+    assert_eq!(
+        entries.len(),
+        2,
+        "both dispatches' pool entries named: {said}"
+    );
+    assert!(
+        entries.iter().all(|entry| *entry != "none") && entries[0] != entries[1],
+        "each dispatch found on a server of its own: {said}"
+    );
+}
+// llmlint: ignore-end[e2e_not_mocked]
+
 // llmlint: ignore-block[e2e_not_mocked] The control suite's pooled-env phase runs for real — scripts/e2e-control.sh, the built oneharness behind a wrapper that only starts dispatch B late or ends it before it runs, and a host mktemp on PATH that cannot create a file, and oneharness-core's pool; only codex is the repository's subprocess double, as in every ControlSuite journey, because the gate cannot run real Codex. The same phase against real Codex is scripts/e2e-control.sh's live run.
 /// The suite's pooled-env dispatches share one server however late the
 /// second of them starts — here only once the first's command is already

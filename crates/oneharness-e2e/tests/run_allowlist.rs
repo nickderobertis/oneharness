@@ -206,7 +206,7 @@ fn overlay_snapshot(path: &Path) -> Value {
                 .as_str()
                 .is_some_and(|home| home.contains("run-overlay") && home.ends_with("codex-home"))
         })
-        .last()
+        .next_back()
         .unwrap_or_else(|| panic!("{} holds no overlay home's snapshot", path.display()))
 }
 
@@ -1425,7 +1425,8 @@ fn assert_teardown_returns_what_codex_wrote(world: &World, state: &Path) {
             ("XDG_STATE_HOME", state.as_str()),
             (
                 "MOCK_HOME_WRITE",
-                "made/deep/f=c;config.toml=model = \"n\"\n;blocked=file",
+                "made/deep/f=c;config.toml=model = \"n\"\n;blocked=file;\
+                 rules/default.rules=prefix_rule(pattern=[\"ls\"], decision=\"allow\")\n",
             ),
         ],
     );
@@ -1453,6 +1454,13 @@ fn assert_teardown_returns_what_codex_wrote(world: &World, state: &Path) {
         std::fs::read_to_string(world.path("codex-home/blocked/kept")).unwrap(),
         "k"
     );
+    // A rules file Codex wrote (an approval it saved) is the user's now; the
+    // run's own rules file never leaves the overlay.
+    assert_eq!(
+        std::fs::read_to_string(world.path("codex-home/rules/default.rules")).unwrap(),
+        "prefix_rule(pattern=[\"ls\"], decision=\"allow\")\n"
+    );
+    assert!(!world.path("codex-home/rules/oneharness-run.rules").exists());
     let root = Path::new(&state).join("oneharness/run-overlays");
     assert!(
         !root.exists(),

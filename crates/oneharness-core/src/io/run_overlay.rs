@@ -457,6 +457,11 @@ fn reclaim_under(root: &Path) -> Vec<PathBuf> {
             .open(dir.join(OWNER_LOCK))
         {
             Ok(lock) => lock,
+            // No lock file: a run killed between making its directory and
+            // locking it. Proven by `only_an_overlay_whose_owner_is_gone_is_
+            // reclaimed` rather than end to end, because that window is the
+            // few instructions inside `RunOverlay::create`, which no signal a
+            // journey sends through the CLI can be aimed at.
             Err(_) => {
                 let young = entry
                     .metadata()

@@ -614,7 +614,8 @@ const CODEX_TABLE: [Translation; 8] = [
         version: CODEX_VERSION,
         setting: Setting::AllowedTools,
         knobs: &[knob(Knob::Env("CODEX_HOME"), Unit::FilePath)],
-        mapping: "a per-run overlay home under the temp dir linking every entry of the identity's \
+        mapping:
+            "a per-run overlay home (`io::run_overlay`) linking every entry of the identity's \
                   own, whose `rules/` adds one `prefix_rule(pattern=[\"<abs>\"], \
                   decision=\"allow\")` per rule and whose thread index is its own; removed when \
                   the run ends. Withheld for a login in the OS keyring and where links need \

@@ -594,13 +594,18 @@ class World:
         if self.harness == "codex":
             # A home Codex has already used, as a real one is: its sessions/
             # tree and thread index exist before the first granted turn.
-            self.endpoint.script(ProbeId("warm"), [])
-            subprocess.run(
-                ["codex", "exec", "--sandbox", "read-only", "--json", "--skip-git-repo-check",
-                 "-C", str(self.wt), "[probe:warm] reply done"],
-                env=self.env(), capture_output=True, text=True, timeout=300, check=True,
-                stdin=subprocess.DEVNULL,
-            )  # fmt: skip
+            warm = self.endpoint.script(ProbeId("warm"), [])
+            try:
+                subprocess.run(
+                    ["codex", "exec", "--sandbox", "read-only", "--json", "--skip-git-repo-check",
+                     "-C", str(self.wt), "[probe:warm] reply done"],
+                    env=self.env(), capture_output=True, text=True, timeout=300, check=True,
+                    stdin=subprocess.DEVNULL,
+                )  # fmt: skip
+            except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as err:
+                # Codex's own output is the only account of where it stopped:
+                # before reaching the scripted endpoint, or after its answer.
+                raise SystemExit(warm_up_failure(err, len(warm.requests))) from err
         return self
 
     def write_config(self, grant: bool) -> None:
@@ -660,6 +665,25 @@ class World:
     def overlays(self) -> list[str]:
         roots = (self.tmp, self.state / "oneharness" / "run-overlays")
         return [p.name for r in roots if r.is_dir() for p in r.iterdir() if p.name.startswith(OVERLAY_PREFIX)]
+
+
+def warm_up_failure(err: subprocess.TimeoutExpired | subprocess.CalledProcessError, reached: int) -> str:
+    """Why the Codex world's warm-up turn failed, with the tail of what Codex printed."""
+
+    def tail(out: str | bytes | None) -> str:
+        text = out.decode(errors="replace") if isinstance(out, bytes) else out or ""
+        return text[-2000:].strip() or "(nothing)"
+
+    how = (
+        f"timed out after {err.timeout:g} s"
+        if isinstance(err, subprocess.TimeoutExpired)
+        else f"exited {err.returncode}"
+    )
+    return (
+        f"the Codex world's warm-up `codex exec` {how}; the scripted endpoint saw "
+        f"{reached} model request(s) for it\n"
+        f"codex stderr (tail):\n{tail(err.stderr)}\ncodex stdout (tail):\n{tail(err.stdout)}"
+    )
 
 
 def write_codex_home(home: Path, port: int, provider: str | None = None) -> None:

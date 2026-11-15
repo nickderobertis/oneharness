@@ -20,8 +20,11 @@ import unittest
 from pathlib import Path
 
 from run_overlay_telemetry import (
+    ALLOWED_TOOLS_SETTING,
     BATCHES,
+    RESULT_FIELDS,
     OverlayTimings,
+    ReportResult,
     Telemetry,
     TurnTiming,
     number,
@@ -168,6 +171,74 @@ class RunOverlayTelemetryContract(unittest.TestCase):
         for timings in found:
             self.assertEqual(set(timings["properties"]), fields)
             self.assertEqual(set(timings.get("required", [])), fields)
+
+    def test_the_report_fields_the_suites_read_are_the_report_schema_s(self) -> None:
+        # The drift gate between `RunResult` (generated from the Rust report
+        # type) and RESULT_FIELDS, the one table the live suites read a
+        # result through: every field it names is one the schema declares,
+        # kept in exactly the JSON types the schema gives it.
+        defs = json.loads(
+            (
+                ROOT
+                / "python"
+                / "oneharness-sdk"
+                / "src"
+                / "oneharness_sdk"
+                / "_generated"
+                / "schemas.json"
+            ).read_text(encoding="utf-8")
+        )["run_report"]["$defs"]
+
+        def types(node: dict[str, object]) -> set[object]:
+            ref = node.get("$ref")
+            if isinstance(ref, str):
+                return types(defs[ref.rsplit("/", 1)[-1]])
+            alternatives = node.get("anyOf", node.get("oneOf"))
+            if isinstance(alternatives, list):
+                return set().union(*(types(alt) for alt in alternatives))
+            declared = node.get("type")
+            return set(declared) if isinstance(declared, list) else {declared}
+
+        result = defs["RunResult"]["properties"]
+        self.assertEqual(
+            {field.name for field in dataclasses.fields(ReportResult)}, set(RESULT_FIELDS)
+        )
+        for name, kept in RESULT_FIELDS.items():
+            with self.subTest(field=name):
+                self.assertIn(name, result, f"the report schema's RunResult declares no `{name}`")
+                self.assertEqual(types(result[name]), set(kept))
+        settings = {alt.get("const") for alt in defs["Setting"]["oneOf"]}
+        self.assertIn(ALLOWED_TOOLS_SETTING, settings)
+
+    def test_a_report_result_keeps_each_field_only_in_its_declared_type(self) -> None:
+        read = ReportResult.from_report(
+            {
+                "results": [
+                    {
+                        "status": "ok",
+                        "session_id": None,
+                        "stderr": 7,
+                        "diagnostics": [{"setting": ALLOWED_TOOLS_SETTING}, "not one"],
+                        "overlay_env": {"CODEX_HOME": "/o/codex-home", "odd": 1},
+                        "overlay_timings": {"build_ms": 3, "teardown_ms": 4},
+                        "usage": [],
+                    }
+                ]
+            }
+        )
+        self.assertEqual(read.status, "ok")
+        self.assertIsNone(read.session_id)
+        self.assertEqual(read.stderr, "")
+        self.assertEqual(read.diagnostics, [{"setting": ALLOWED_TOOLS_SETTING}])
+        self.assertEqual(read.overlay_env, {"CODEX_HOME": "/o/codex-home"})
+        self.assertEqual(read.overlay_timings, OverlayTimings(3, 4))
+        self.assertIsNone(read.usage)
+        for report in ({}, {"results": []}, {"results": ["x"]}, []):
+            with self.subTest(report=report):
+                self.assertEqual(
+                    ReportResult.from_report(report),
+                    ReportResult(None, None, "", [], {}, None, None),
+                )
 
     def test_a_number_too_large_for_a_float_is_no_figure(self) -> None:
         self.assertIsNone(number(10**400))

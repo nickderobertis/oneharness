@@ -18,7 +18,7 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional, TypeVar
 
 BATCHES = (1, 2, 20)
 """The batch sizes of the workload: 1 turn alone, 2 at once, 20 at once."""
@@ -48,6 +48,81 @@ class OverlayTimings:
             return None
         build, teardown = count(value.get("build_ms")), count(value.get("teardown_ms"))
         return None if build is None or teardown is None else OverlayTimings(build, teardown)
+
+
+# Each field of one `oneharness run` report result (`RunResult` in the
+# generated report schema) the live suites read, under the report's own name,
+# with the JSON types it is kept in: a value of any other type reads as absent.
+# test_run_overlay_budget.py holds this table equal to that schema, so it is
+# the one place the suites restate the report's shape.
+RESULT_FIELDS: dict[str, tuple[str, ...]] = {
+    "status": ("string",),
+    "session_id": ("string", "null"),
+    "stderr": ("string",),
+    "diagnostics": ("array",),
+    "overlay_env": ("object",),
+    "overlay_timings": ("object", "null"),
+    "usage": ("object",),
+}
+
+# The diagnostic `setting` a withheld or partly applied run-level allowlist
+# carries (`Setting::AllowedTools`), held to the schema's `Setting` beside it.
+ALLOWED_TOOLS_SETTING = "allowed_tools"
+
+
+def json_type(value: object) -> str:
+    """The JSON Schema type name of a decoded JSON `value`."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    return "array" if isinstance(value, list) else "object"
+
+
+R = TypeVar("R", bound="ReportResult")
+
+
+@dataclass(frozen=True)
+class ReportResult:
+    """What the live suites read of a `oneharness run` report's first result:
+    each field of RESULT_FIELDS, under the report's own name, kept only in its
+    declared type (absent otherwise)."""
+
+    status: Optional[str]
+    session_id: Optional[str]
+    stderr: str
+    diagnostics: list[dict[str, Any]]
+    overlay_env: dict[str, str]
+    overlay_timings: Optional[OverlayTimings]
+    usage: Optional[dict[str, Any]]
+
+    @classmethod
+    def from_report(cls: type[R], report: object) -> R:
+        results = report.get("results") if isinstance(report, dict) else None
+        first = results[0] if isinstance(results, list) and results else None
+        raw: dict[str, Any] = first if isinstance(first, dict) else {}
+
+        def kept(key: str) -> Any:
+            value = raw.get(key)
+            return value if json_type(value) in RESULT_FIELDS[key] else None
+
+        return cls(
+            status=kept("status"),
+            session_id=kept("session_id"),
+            stderr=kept("stderr") or "",
+            diagnostics=[d for d in kept("diagnostics") or [] if isinstance(d, dict)],
+            overlay_env={
+                k: v for k, v in (kept("overlay_env") or {}).items() if isinstance(v, str)
+            },
+            overlay_timings=OverlayTimings.from_json(kept("overlay_timings")),
+            usage=kept("usage"),
+        )
 
 
 @dataclass(frozen=True)

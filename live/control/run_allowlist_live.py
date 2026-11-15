@@ -61,7 +61,7 @@ ROOT = Path(__file__).resolve().parents[2]
 # network-telemetry project this suite depends on (live/control/project.json).
 sys.path.insert(0, str(ROOT / "tools" / "network-telemetry"))
 
-from run_overlay_telemetry import BATCHES, OverlayTimings, Telemetry, TurnTiming, run_concurrently  # noqa: E402
+from run_overlay_telemetry import ALLOWED_TOOLS_SETTING, BATCHES, ReportResult, Telemetry, TurnTiming, run_concurrently  # noqa: E402
 GRANT_VAR = "OH_LIVE_GRANT"
 MARK = re.compile(r"\[probe:([A-Za-z0-9_.-]+)\]")
 PAYLOAD = "line one\nit's line two"
@@ -754,16 +754,10 @@ def records(world: World) -> list[list[str]]:
 
 
 @dataclasses.dataclass(frozen=True)
-class Result:
-    """What the suite reads of one result of a `oneharness run` report."""
-
-    status: str | None
-    session_id: str | None
-    stderr: str
-    diagnostics: list[Json]
-    overlay_env: dict[str, str]
-    overlay: OverlayTimings | None
-    usage: Json | None
+class Result(ReportResult):
+    """What the suite reads of one result of a `oneharness run` report: the
+    fields run_overlay_telemetry.RESULT_FIELDS declares, held to the generated
+    report schema there."""
 
     @property
     def overlaid(self) -> bool:
@@ -773,24 +767,10 @@ class Result:
     def of(report: Json) -> Result:
         """The report's first result, each field kept only in its documented
         type: a field of another shape reads as absent."""
-        results = report.get("results")
-        raw = results[0] if isinstance(results, list) and results and isinstance(results[0], dict) else {}
-
-        def text(key: str) -> str | None:
-            value = raw.get(key)
-            return value if isinstance(value, str) else None
-
-        overlay = OverlayTimings.from_json(raw.get("overlay_timings"))
-        diagnostics = raw.get("diagnostics")
-        diagnostics = [d for d in diagnostics if isinstance(d, dict)] if isinstance(diagnostics, list) else []
-        usage = raw.get("usage")
-        env = raw.get("overlay_env")
-        overlay_env = {k: v for k, v in env.items() if isinstance(v, str)} if isinstance(env, dict) else {}
-        return Result(text("status"), text("session_id"), text("stderr") or "", diagnostics,
-                      overlay_env, overlay, usage if isinstance(usage, dict) else None)  # fmt: skip
+        return Result.from_report(report)
 
     def grant_diagnostics(self) -> list[Json]:
-        return [d for d in self.diagnostics if d.get("setting") == "allowed_tools"]
+        return [d for d in self.diagnostics if d.get("setting") == ALLOWED_TOOLS_SETTING]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1415,7 +1395,7 @@ def budget_turns(world: World, size: int, grant: bool) -> list[TurnTiming]:
             side = "a granted" if grant else "an ungranted"
             raise BudgetTurnError(f"{side} budget turn {fault}: {done.stderr[-400:]}")
         first = script.requests[0].at if script.requests else None
-        turns.append(TurnTiming(done.ended - done.started, done.started, done.ended, first, result.overlay))
+        turns.append(TurnTiming(done.ended - done.started, done.started, done.ended, first, result.overlay_timings))
     return turns
 
 
@@ -1435,8 +1415,8 @@ def budget_turn_fault(grant: bool, returncode: int, result: Result, decision: st
         return f"ended {result.status}"
     if decision is None:
         return "recorded no decision on its call of the granted command"
-    if grant and (result.overlay is None or executions != 1):
-        return f"ran the granted command {executions} time(s), on {'an' if result.overlay else 'no'} overlay"
+    if grant and (result.overlay_timings is None or executions != 1):
+        return f"ran the granted command {executions} time(s), on {'an' if result.overlay_timings else 'no'} overlay"
     if not grant and (result.overlaid or executions != 0):
         return f"ran the granted command {executions} time(s) without the grant"
     return None

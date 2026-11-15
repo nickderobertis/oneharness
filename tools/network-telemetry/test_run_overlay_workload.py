@@ -18,9 +18,10 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import unittest
 
-from run_overlay_telemetry import BATCHES, decode
+from run_overlay_telemetry import BATCHES, Incomplete, decode
 from support import HERE, ROOT, WINDOWS, scratch
 
 WRITER = ROOT / "live" / "control" / "run_allowlist_live.py"
@@ -68,6 +69,17 @@ class RunOverlayWorkloadWriter(unittest.TestCase):
     def test_a_workload_of_complete_turns_is_recorded(self) -> None:
         done, record = self.workload("")
         self.assertEqual(done.returncode, 0, done.stderr)
+        if sys.platform != "linux":
+            # The writer stamps the host it ran on; the budget is measured on
+            # the live-control leg's Linux only, so off it the record is
+            # refused by name rather than read as a figure.
+            self.assertIsInstance(record, dict)
+            self.assertEqual(record["platform"], sys.platform)
+            with self.assertRaisesRegex(
+                Incomplete, f"the workload ran on '{sys.platform}'; the budget is measured on linux"
+            ):
+                decode(record)
+            return
         telemetry = decode(record)
         for size in BATCHES:
             self.assertEqual(len(telemetry.granted[size]), size)

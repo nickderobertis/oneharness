@@ -370,7 +370,6 @@ fn a_wall_clock_stepped_back_after_a_release_does_not_extend_the_linger() {
     assert_stops(server);
 }
 
-/// Rewrite the `server.json` at `path` in place through `edit`.
 fn rewrite_record(path: &std::path::Path, edit: impl FnOnce(&mut serde_json::Value)) {
     let mut stored: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
@@ -447,6 +446,68 @@ fn an_uptime_stamp_from_before_a_reboot_falls_back_to_the_wall_clock() {
         server_pool::sweep(&root, linger).unwrap(),
         1,
         "a stamp from an earlier boot kept the server past its linger"
+    );
+    assert_stops(server);
+}
+
+/// A wall clock stepped forward after a release is no idleness either: the
+/// linger is measured on the uptime clock, so the server stays warm until the
+/// linger has really passed.
+#[test]
+fn a_wall_clock_stepped_forward_after_a_release_does_not_cut_the_linger_short() {
+    let root = pool_root("clock-forward");
+    let key = oneharness_core::domain::control::pool_key("clock-forward", &[], &[]);
+    let linger = Duration::from_millis(500);
+    let lease = server_pool::acquire(&root, &key, &plan(), linger).unwrap();
+    let server = lease.record().pid;
+    drop(lease);
+    let path = root.join(key.as_str()).join("server.json");
+    rewrite_record(&path, |stored| {
+        let stepped = stored["idle_since_ms"].as_u64().unwrap() - 10_000;
+        stored["idle_since_ms"] = stepped.into();
+        stored["idle_since"] = (stepped / 1000).into();
+    });
+
+    assert_eq!(
+        server_pool::sweep(&root, linger).unwrap(),
+        0,
+        "a forward step of the wall clock reclaimed a server inside its linger"
+    );
+    assert!(server_pool::pid_alive(server));
+    std::thread::sleep(linger + Duration::from_millis(200));
+    assert_eq!(server_pool::sweep(&root, linger).unwrap(), 1);
+    assert_stops(server);
+}
+
+/// A record an older release stamped idle carries no uptime stamp, and its
+/// linger still ends: it is measured on the wall-clock stamp that release wrote.
+#[test]
+fn an_idle_record_without_an_uptime_stamp_lingers_on_the_wall_clock() {
+    let root = pool_root("uptime-legacy");
+    let key = oneharness_core::domain::control::pool_key("uptime-legacy", &[], &[]);
+    let linger = Duration::from_millis(300);
+    let lease = server_pool::acquire(&root, &key, &plan(), linger).unwrap();
+    let server = lease.record().pid;
+    drop(lease);
+    let path = root.join(key.as_str()).join("server.json");
+    rewrite_record(&path, |stored| {
+        let record = stored.as_object_mut().unwrap();
+        assert!(
+            record.remove("idle_since_uptime_ms").is_some(),
+            "{record:?}"
+        );
+    });
+
+    assert_eq!(
+        server_pool::sweep(&root, linger).unwrap(),
+        0,
+        "a legacy record was reclaimed inside its linger"
+    );
+    std::thread::sleep(linger + Duration::from_millis(200));
+    assert_eq!(
+        server_pool::sweep(&root, linger).unwrap(),
+        1,
+        "a legacy record was kept past its linger"
     );
     assert_stops(server);
 }

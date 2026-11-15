@@ -32,7 +32,7 @@ import subprocess
 import sys
 import urllib.request
 from pathlib import Path
-from typing import NoReturn
+from typing import NoReturn, Optional
 
 
 def fail(message: str) -> NoReturn:
@@ -85,6 +85,16 @@ def respond(items: list[dict[str, object]]) -> list[dict[str, object]]:
 # llmlint: ignore-end[async_typed_clients_at_boundaries]
 
 
+def command_of(arguments: object) -> Optional[str]:
+    """The `cmd` of an exec_command call's JSON arguments, else None."""
+    try:
+        decoded = json.loads(arguments) if isinstance(arguments, str) else None
+    except ValueError:
+        return None
+    command = decoded.get("cmd") if isinstance(decoded, dict) else None
+    return command if isinstance(command, str) else None
+
+
 def turn(prompt: str, grant: bool, fault: str) -> None:
     items: list[dict[str, object]] = [
         {"type": "message", "role": "user", "content": [{"type": "input_text", "text": prompt}]}
@@ -93,9 +103,13 @@ def turn(prompt: str, grant: bool, fault: str) -> None:
     if not calls:
         return
     call = calls[0]
+    call_id, command = call.get("call_id"), command_of(call.get("arguments"))
+    if not isinstance(call_id, str) or command is None:
+        fail(
+            f"the endpoint's call is not an exec_command call with a call_id and a string cmd: {call}"
+        )
     output = "sandbox: denied"
     if (grant and fault != "not-run") or (not grant and fault == "ungranted-ran"):
-        command = json.loads(str(call["arguments"]))["cmd"]
         bash = shutil.which("bash") or fail("bash is not on PATH")
         done = subprocess.run([bash, "-c", command], capture_output=True, text=True, check=False)  # noqa: S603 — the scripted model's own call.
         output = done.stdout + done.stderr
@@ -105,7 +119,7 @@ def turn(prompt: str, grant: bool, fault: str) -> None:
         [
             *items,
             call,
-            {"type": "function_call_output", "call_id": call["call_id"], "output": output},
+            {"type": "function_call_output", "call_id": call_id, "output": output},
         ]
     )
 

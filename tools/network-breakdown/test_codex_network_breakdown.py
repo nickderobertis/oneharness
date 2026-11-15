@@ -308,6 +308,33 @@ class RefusalsWithoutANamespace(unittest.TestCase):
         self.assertIn("no measurement: pasta exited 2", run.stderr)
         self.assertIn("apparmor_restrict_unprivileged_userns", run.stderr)
 
+    def test_on_windows_a_refusal_never_reaches_the_recorders_bash_launcher(self) -> None:
+        # Windows has no os.environb, which the recorder's through_bash reads,
+        # so a refusal there must name the init directly. This runs the real
+        # script as Windows presents itself: sys.platform "win32" and no
+        # os.environb, the stdlib it uses imported first so only the script
+        # and the recorder it loads see the difference.
+        windows = (
+            "import argparse, contextlib, ctypes, importlib.util, ipaddress, json, math, os, re,"
+            " runpy, select, shutil, signal, socket, subprocess, sys, tempfile, threading, time,"
+            " traceback, dataclasses, datetime, enum, pathlib, types, typing\n"
+            "sys.platform = 'win32'\n"
+            "del os.environb\n"
+            "sys.argv = [sys.argv[1], '--', 'true']\n"
+            "runpy.run_path(sys.argv[0], run_name='__main__')\n"
+        )
+        run = subprocess.run(
+            [sys.executable, "-I", "-c", windows, str(SCRIPT)],
+            env=dict(os.environ, CODEX_NETWORK_BREAKDOWN_PASTA=sys.executable),
+            capture_output=True,
+            text=True,
+            timeout=HANG_GUARD_SECONDS,
+        )
+        self.assertNotIn("environb", run.stderr)
+        self.assertEqual(run.returncode, 3, run)
+        self.assertEqual(run.stdout, "")
+        self.assertIn("no measurement: pasta exited 2", run.stderr)
+
     def test_with_fetching_forbidden_a_missing_pasta_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as scratch:
             env = without_pasta_env(Path(scratch), CODEX_NETWORK_BREAKDOWN_NO_FETCH="1")

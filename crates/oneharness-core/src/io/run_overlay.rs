@@ -503,6 +503,11 @@ fn reclaim(dir: &Path, name: &str) {
 /// write into: an absolute path to a directory that every link of the
 /// orphan's home points into. Anything else — a corrupt or foreign record —
 /// returns nothing to anywhere, and the orphan is only removed.
+///
+/// Proven by the unit test beside it rather than end to end: a corrupt record
+/// arises only when something outside oneharness rewrites a file inside its
+/// private state directory, which no interface of oneharness can produce, so a
+/// journey would have to forge the same file this test writes.
 fn recorded_real_home(dir: &Path) -> Option<PathBuf> {
     let recorded = PathBuf::from(fs::read_to_string(dir.join(REAL_HOME_FILE)).ok()?);
     if !recorded.is_absolute() {

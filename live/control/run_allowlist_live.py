@@ -1081,14 +1081,17 @@ def group_session(world: World, fails: Failures) -> None:
         fails.check(turn.result.status == "ok" and records(world)[before:] == [["--ruling", f"t{turn_no}"]],
                     f"{label}: turn {turn_no} ended {turn.result.status} with {records(world)[before:]}")  # fmt: skip
         if turn_no == 2:
-            session = turn.report.get("session") or {}
-            fails.check(session.get("phase") == "continue", f"{label}: the second turn did not continue: {session}")
+            session = turn.report.get("session")
+            phase = session.get("phase") if isinstance(session, dict) else None
+            fails.check(phase == "continue", f"{label}: the second turn did not continue: {session}")
     world.write_config(grant=False)
     run_turn(world, probe_id("plain"), [Call(CallKind.READ, path=str(world.sentinel / "notes.txt"))],
              "Read the notes.", extra=hist)  # fmt: skip
     world.write_config(grant=True)
     rows = [json.loads(line) for f in sorted((world.root / "history").rglob("*.jsonl"))
             for line in f.read_text().splitlines() if line.strip()]  # fmt: skip
+    fails.check(all(isinstance(row, dict) for row in rows), f"{label}: a history line is no record object")
+    rows = [row for row in rows if isinstance(row, dict)]
     runs = [r for r in rows if r.get("type") == "run" or "permission_mode" in r]
     if fails.check(len(runs) >= 3, f"{label}: the history store holds {len(runs)} turn records, wanted 3"):
         *granted, plain = runs[-3:]
@@ -1201,10 +1204,12 @@ def group_login(world: World, fails: Failures) -> None:
         turn, _ = run_turn(world, probe_id("login"), [Call(CallKind.SHELL, text=command)],
                            f"Use your shell tool to run exactly: {command}")  # fmt: skip
         stored = json.loads((world.home / "auth.json").read_text())
+        stored = stored if isinstance(stored, dict) else {}
         fails.check(len(world.endpoint.refreshed_with) >= 1, f"{label}: the granted run never refreshed "
                                                              f"({turn.stderr[-300:]})")  # fmt: skip
         fails.check(not (world.home / "auth.json").is_symlink(), f"{label}: the real auth.json became a link")
-        tokens = stored.get("tokens", {})
+        tokens = stored.get("tokens")
+        tokens = tokens if isinstance(tokens, dict) else {}
         fails.check(tokens.get("access_token") == issued.access_token and tokens.get("refresh_token") == "rt-new",
                     f"{label}: the real home's auth.json does not hold the issued tokens")  # fmt: skip
         refreshes = len(world.endpoint.refreshed_with)

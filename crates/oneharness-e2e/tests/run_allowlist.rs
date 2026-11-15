@@ -194,6 +194,22 @@ impl World {
     }
 }
 
+/// The `MOCK_HOME_SNAPSHOT` line a harness took of its run overlay's home (a
+/// run's helper app-servers snapshot their own homes beside it).
+fn overlay_snapshot(path: &Path) -> Value {
+    std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("{} was not recorded: {e}", path.display()))
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .filter(|snap| {
+            snap["home"]
+                .as_str()
+                .is_some_and(|home| home.contains("run-overlay") && home.ends_with("codex-home"))
+        })
+        .last()
+        .unwrap_or_else(|| panic!("{} holds no overlay home's snapshot", path.display()))
+}
+
 fn json(output: &Output) -> Value {
     serde_json::from_slice(&output.stdout).unwrap_or_else(|err| {
         panic!(
@@ -448,7 +464,7 @@ fn codex_runs_on_an_overlay_home_linking_the_real_one_with_one_rules_file_of_its
     assert!(env["ONEHARNESS_RUN_OVERLAY"]
         .as_str()
         .is_some_and(|m| home.contains(m)));
-    let snap: Value = serde_json::from_str(&std::fs::read_to_string(&snapshot).unwrap()).unwrap();
+    let snap = overlay_snapshot(&snapshot);
     let entries = &snap["entries"];
     for name in ["auth.json", "config.toml", "sessions"] {
         assert_eq!(
@@ -523,8 +539,7 @@ fn outside_read_only_codex_takes_its_rules_through_the_same_overlay() {
             assert_eq!(output.status.code(), Some(2), "{mode}: {report}");
             continue;
         }
-        let snap: Value =
-            serde_json::from_str(&std::fs::read_to_string(&snapshot).unwrap()).unwrap();
+        let snap = overlay_snapshot(&snapshot);
         let run_rules = snap["entries"]["rules"]["dir"]["oneharness-run.rules"]["file"]
             .as_str()
             .unwrap_or_else(|| panic!("{mode}: {snap}"));
@@ -704,6 +719,12 @@ fn an_unusable_rule_is_refused_before_anything_spawns() {
             assert!(output.stdout.is_empty());
         }
     };
+    check(
+        "allowed_tools = [\"Bash(${GRANTED}:*)\"]\n",
+        "default",
+        &[],
+        &["rule `Bash(${GRANTED}:*)`", "is not a variable name"],
+    );
     check(
         "allowed_tools = [\"Bash($NOT_SET_ANYWHERE)\"]\n",
         "default",
@@ -966,8 +987,7 @@ fn sync_writes_only_the_sync_section_and_run_applies_only_the_run_level_grant() 
             &[("MOCK_HOME_SNAPSHOT", snapshot.to_str().unwrap())],
         );
         assert!(output.status.code().is_some_and(|c| c < 2));
-        let snap: Value =
-            serde_json::from_str(&std::fs::read_to_string(&snapshot).unwrap()).unwrap();
+        let snap = overlay_snapshot(&snapshot);
         let run_rules = snap["entries"]["rules"]["dir"]["oneharness-run.rules"]["file"]
             .as_str()
             .unwrap();
@@ -1040,6 +1060,7 @@ fn a_granted_controlled_codex_turn_runs_its_own_app_server_and_records_its_threa
     let config = world.config(&format!("allowed_tools = [\"Bash({tool})\"]\n"));
     let log = world.path("app-server.log");
     let env_file = world.path("env.json");
+    let snapshot = world.path("snapshot.jsonl");
     let output = world.oh(
         &[
             "run",
@@ -1061,6 +1082,7 @@ fn a_granted_controlled_codex_turn_runs_its_own_app_server_and_records_its_threa
             ("MOCK_CODEX_COMPLETE_TURN", "1"),
             ("MOCK_CODEX_INDEX", "1"),
             ("MOCK_ENV_FILE", env_file.to_str().unwrap()),
+            ("MOCK_HOME_SNAPSHOT", snapshot.to_str().unwrap()),
         ],
     );
     let report = json(&output);
@@ -1092,10 +1114,18 @@ fn a_granted_controlled_codex_turn_runs_its_own_app_server_and_records_its_threa
         .find(|f| f["method"] == "thread/read")
         .unwrap_or_else(|| panic!("the real home never read the thread: {methods:?}"));
     assert_eq!(read["params"]["threadId"], result["session_id"]);
+    // The turn's Codex started on an index the overlay seeded from the one
+    // its helper built over an empty home — not the real home's, and not one
+    // it had to build (and backfill) itself.
+    let index = &overlay_snapshot(&snapshot)["entries"]["state_5.sqlite"];
+    assert_eq!(
+        index["file"], "mock codex thread index built in thread-index-seed",
+        "{index}"
+    );
     assert!(world.overlays().is_empty());
     assert_eq!(
         std::fs::read_to_string(world.path("codex-home/state_5.sqlite")).unwrap(),
-        "mock codex thread index",
+        "mock codex thread index built in codex-home",
         "the real index is Codex's to change, never the overlay's"
     );
 }
@@ -1168,7 +1198,7 @@ fn a_helper_app_server_that_never_answers_leaves_the_run_whole() {
     assert!(world.overlays().is_empty(), "{:?}", world.overlays());
     assert_eq!(
         std::fs::read_to_string(world.path("codex-home/state_5.sqlite")).unwrap(),
-        "mock codex thread index"
+        "mock codex thread index built in codex-home"
     );
 }
 
@@ -1701,72 +1731,4 @@ fn a_helper_that_refuses_answers_badly_or_never_answers_leaves_the_turn_whole() 
             world.overlays()
         );
     }
-}
-
-#[cfg(unix)]
-#[test]
-fn a_killed_runs_corrupt_record_is_reclaimed_without_returning_anything_anywhere() {
-    // A killed granted run whose overlay's record of its real home was
-    // rewritten (corruption, or a foreign hand) before the next run: the
-    // overlay is reclaimed, but what its Codex wrote is returned neither to
-    // the recorded path nor to the real home.
-    let world = World::new("killed-corrupt");
-    let tool = world.tool();
-    let config = world.config(&format!("allowed_tools = [\"Bash({tool})\"]\n"));
-    let profiles = ProfileScratch::new();
-    let gate = world.s("gate");
-    let mut killed = world
-        .command(
-            &[
-                "run",
-                "--harness",
-                "codex",
-                "--mode",
-                "read-only",
-                "--prompt",
-                "p",
-            ],
-            &config,
-            &[
-                ("MOCK_OUTPUT_GATE", gate.as_str()),
-                ("MOCK_HOME_WRITE", "session_index.jsonl={}"),
-            ],
-            &profiles,
-        )
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
-    eventually("the killed run's overlay", || {
-        std::fs::read_dir(world.overlay_root())
-            .into_iter()
-            .flatten()
-            .flatten()
-            .any(|e| e.path().join("codex-home/session_index.jsonl").is_file())
-    });
-    killed.kill().unwrap();
-    killed.wait().unwrap();
-    let decoy = world.path("decoy");
-    std::fs::create_dir_all(&decoy).unwrap();
-    let overlay = std::fs::read_dir(world.overlay_root())
-        .unwrap()
-        .flatten()
-        .next()
-        .unwrap()
-        .path();
-    std::fs::write(overlay.join("real-codex-home"), decoy.display().to_string()).unwrap();
-
-    let next = world.oh(
-        &["run", "--harness", "claude-code", "--prompt", "p"],
-        &config,
-        &[],
-    );
-    assert!(next.status.code().is_some_and(|c| c < 2), "{next:?}");
-    assert!(world.overlays().is_empty(), "{:?}", world.overlays());
-    assert_eq!(
-        std::fs::read_dir(&decoy).unwrap().count(),
-        0,
-        "the sweep wrote into the decoy"
-    );
-    assert!(!world.path("codex-home/session_index.jsonl").exists());
 }

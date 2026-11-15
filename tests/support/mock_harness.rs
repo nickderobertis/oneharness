@@ -31,7 +31,7 @@
 //!   MOCK_HOME_WRITE  `relpath=content;…` written under `$CODEX_HOME` while the
 //!                   harness runs, replacing a top-level link in the way
 //!   MOCK_HOME_SNAPSHOT  if set, what `$CODEX_HOME` holds while the harness
-//!                   runs is written here as JSON (links, files, directories)
+//!                   runs is appended here as one JSON line per invocation
 //!   MOCK_ENV_FILE   if set, the whole inherited environment is written here
 //!                   as one JSON object before answering
 //!   MOCK_CLAUDE_SESSIONS / MOCK_CODEX_SESSIONS / MOCK_COMPACT_BEGUN  act like
@@ -2017,7 +2017,7 @@ fn write_into_home(entries: &str) {
     }
 }
 
-/// `MOCK_HOME_SNAPSHOT`: write, as one JSON object, what the directory
+/// `MOCK_HOME_SNAPSHOT`: append, as one JSON line, what the directory
 /// `$CODEX_HOME` names holds WHILE the harness runs — each entry as
 /// `{"link": <target>}`, `{"file": <contents>}` or `{"dir": {…}}`, recursing
 /// into real directories only. How a journey proves a run overlay's home links
@@ -2046,7 +2046,15 @@ fn record_home_snapshot(path: &str) {
         "home": home,
         "entries": describe(std::path::Path::new(&home)),
     });
-    let _ = std::fs::write(path, snapshot.to_string());
+    // One line per invocation: a run's helper app-servers snapshot their own
+    // homes beside the turn's, and a journey picks the home it means.
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(file, "{snapshot}");
+    }
 }
 
 fn run_codex_app_server(log_path: &str) -> ! {
@@ -2866,7 +2874,17 @@ pub fn run() -> ! {
         let home = std::path::PathBuf::from(std::env::var("CODEX_HOME").unwrap_or_default());
         let index = home.join("state_5.sqlite");
         if !index.exists() {
-            std::fs::write(&index, "mock codex thread index").expect("create the thread index");
+            // Named for the home that built it, so a journey can tell a seeded
+            // copy from an index the turn made itself.
+            let built_in = home.file_name().map(|n| n.to_string_lossy().into_owned());
+            std::fs::write(
+                &index,
+                format!(
+                    "mock codex thread index built in {}",
+                    built_in.unwrap_or_default()
+                ),
+            )
+            .expect("create the thread index");
         }
     }
 

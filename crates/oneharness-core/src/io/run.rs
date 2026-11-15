@@ -1180,6 +1180,7 @@ pub fn run_supervised(
             args.cwd.as_deref(),
             &lean_delivery.env,
             &cli_env,
+            &args.passthrough,
         )?;
         // Ahead of every caller-supplied arg, so a caller's own later override
         // of the same key still wins.
@@ -5847,6 +5848,7 @@ fn plan_unit_grant(
     cwd: Option<&std::path::Path>,
     lean_env: &[(String, String)],
     cli_env: &[(String, String)],
+    passthrough: &[String],
 ) -> Result<UnitGrant, OneharnessError> {
     let rules = cfg.allowed_tools_for(selected_id);
     if rules.is_empty() {
@@ -5895,25 +5897,31 @@ fn plan_unit_grant(
         }
     };
     let home = lean_io::codex_home(&env, &env_remove, Some(cwd));
+    // Every arg the launch carries that can name a login store: the
+    // identity's own, then the caller's passthrough, which rides last.
+    let launch_args: Vec<String> = cfg
+        .args_for(selected_id)
+        .iter()
+        .chain(passthrough)
+        .cloned()
+        .collect();
     // The Codex variant is built only here, where its home is in hand.
-    Ok(
-        match codex_overlay_home(home.as_deref(), cfg.args_for(selected_id)) {
-            Err(reason) => UnitGrant::Plan(grant::plan(spec.id, &resolved, Some(&reason))),
-            Ok(real_home) => match grant::plan(spec.id, &resolved, None) {
-                grant::GrantPlan::Codex {
-                    grant,
-                    statement,
-                    unmapped,
-                } => UnitGrant::Codex {
-                    grant,
-                    statement,
-                    unmapped,
-                    real_home: real_home.to_path_buf(),
-                },
-                plan => UnitGrant::Plan(plan),
+    Ok(match codex_overlay_home(home.as_deref(), &launch_args) {
+        Err(reason) => UnitGrant::Plan(grant::plan(spec.id, &resolved, Some(&reason))),
+        Ok(real_home) => match grant::plan(spec.id, &resolved, None) {
+            grant::GrantPlan::Codex {
+                grant,
+                statement,
+                unmapped,
+            } => UnitGrant::Codex {
+                grant,
+                statement,
+                unmapped,
+                real_home: real_home.to_path_buf(),
             },
+            plan => UnitGrant::Plan(plan),
         },
-    )
+    })
 }
 
 /// The real home this Codex run's grant can be applied through an overlay

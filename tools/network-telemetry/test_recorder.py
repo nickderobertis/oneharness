@@ -523,6 +523,77 @@ class MeasuredLaunch(unittest.TestCase):
         time.sleep(0.5)
         self.assertEqual(len(lines(file)), 2, "the launch was recorded more than once")
 
+    def test_a_launch_that_writes_to_its_gone_caller_s_stderr_while_stopping_still_records(
+        self,
+    ) -> None:
+        # oneharness reads the launch's stderr and is SIGKILLed with the suite;
+        # the launch then writes to stderr as it obeys the stop. The supervisor
+        # relays that onto a pipe nobody reads: its write fails with EPIPE, and
+        # the launch must still get its line and lose its pending marker.
+        need_recorder(self)
+        tmp = scratch(self)
+        ready = tmp / "ready"
+        real = tmp / "real"
+        real.write_text(
+            "#!/usr/bin/env bash\n"
+            "trap 'echo stopping >&2; exit 0' TERM\n"
+            f"echo up >&2; : >{shlex.quote(str(ready))}\n"
+            "sleep 600 & wait\n"
+        )
+        real.chmod(0o755)
+        file = tmp / "codex.jsonl"
+        reader, writer = os.pipe()
+        shim = subprocess.Popen(
+            [
+                BASH,
+                str(NETSHIM),
+                "--suite",
+                "codex",
+                "--harness",
+                "codex",
+                "--real",
+                str(real),
+                "--self",
+                str(tmp / "shims" / "codex"),
+                "--file",
+                str(file),
+                "--",
+                "exec",
+                "x",
+            ],
+            start_new_session=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=writer,
+        )
+        os.close(writer)
+        for _ in range(100):
+            if ready.exists():
+                break
+            time.sleep(0.1)
+        self.assertTrue(ready.exists(), "the launch never started")
+        # The caller is gone: nothing reads the recorder's stderr from here on.
+        os.close(reader)
+        os.killpg(shim.pid, signal.SIGTERM)
+        time.sleep(0.1)
+        try:
+            os.killpg(shim.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        shim.wait()
+        pending = tmp / ".pending"
+        for _ in range(300):
+            records = lines(file)
+            if len(records) == 2 and not any(pending.iterdir()):
+                break
+            time.sleep(0.1)
+        (start,) = starts(records)
+        left = sorted(marker.name for marker in pending.iterdir())
+        written = measurements(records, start["launch_id"])
+        self.assertEqual(len(written), 1, f"lines {written}; pending markers left: {left}")
+        self.assertEqual(written[0]["method"], "netns-pasta", written)
+        self.assertEqual(left, [], "its marker was left")
+
 
 class EarlyStop(unittest.TestCase):
     """A stop can reach a launch's process group at any moment of the

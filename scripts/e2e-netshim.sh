@@ -209,7 +209,8 @@ esac
 
 # The fallback: record the start, run the launch directly, and record that it
 # was not measured.
-if ! { mkdir -p "$(dirname "$pending")" && : >"$pending"; }; then
+# The marker names this shell, which writes the line, as the recorder's does.
+if ! { mkdir -p "$(dirname "$pending")" && printf '%s\n' "$$" >"$pending"; }; then
   die "cannot create $pending; check that $(dirname "$file") is writable, then rerun"
 fi
 if ! printf '%s\n' "$start" >>"$file"; then

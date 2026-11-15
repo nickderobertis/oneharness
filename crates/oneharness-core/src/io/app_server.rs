@@ -166,6 +166,53 @@ pub struct PooledDispatch {
     /// The dispatch marker's value.
     marker: DispatchMarker,
     policy: ShellEnvironmentPolicy,
+    /// Where the candidate's lease waits between its turns, when its overload
+    /// retries share one; `None` releases the lease as each turn ends.
+    held: Option<Arc<HeldServer>>,
+}
+
+/// The lease one candidate's pooled turns share across its overload retries.
+///
+/// A retry repeats the turn on the server it already holds, rather than
+/// releasing it through the backoff and leasing again: a released server is
+/// idle, and once its linger passes the pool stops it, so a retry that
+/// re-leased would land on a fresh server whenever the backoff outlasted the
+/// linger. The lease is released once, when the candidate's turns are over
+/// ([`HeldServer::release`], or the last owner dropping it).
+#[derive(Default)]
+pub(crate) struct HeldServer(Mutex<Option<AppServerLease>>);
+
+impl HeldServer {
+    fn take(&self) -> Option<AppServerLease> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+    }
+
+    fn keep(&self, lease: AppServerLease) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(lease);
+    }
+
+    /// End the hold: the lease it keeps, if any, is released now.
+    pub(crate) fn release(&self) {
+        drop(self.take());
+    }
+}
+
+impl std::fmt::Debug for HeldServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let held = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .map(|lease| lease.record().pid.get());
+        f.debug_tuple("HeldServer").field(&held).finish()
+    }
 }
 
 impl PooledDispatch {
@@ -211,7 +258,16 @@ impl PooledDispatch {
             server_env,
             marker,
             policy,
+            held: None,
         })
+    }
+
+    /// The same plan, its lease kept in `held` when its turn ends rather than
+    /// released, and its turn run on the lease `held` already keeps.
+    #[must_use]
+    pub(crate) fn held_in(mut self, held: &Arc<HeldServer>) -> Self {
+        self.held = Some(Arc::clone(held));
+        self
     }
 
     /// The `config` map the dispatch's `thread/start` / `thread/resume` carry.
@@ -451,6 +507,20 @@ fn lease_server(
             }
         }
     }
+}
+
+/// Connect again to the server `lease` already holds, for a candidate's next
+/// turn. `None` — the lease released — when that server is gone or no longer
+/// accepts, so the turn leases afresh as any other would.
+fn reconnect(lease: AppServerLease) -> Option<(AppServerLease, LocalStream)> {
+    let ServerAddress::UnixSocket { path } = &lease.record().address else {
+        return None;
+    };
+    if !lease.record().is_running() {
+        return None;
+    }
+    let stream = LocalStream::connect(Path::new(&path.to_string())).ok()?;
+    Some((lease, stream))
 }
 
 /// Leave Codex's socket rendezvous directory ([`rules::codex_daemon_dir`],
@@ -1132,9 +1202,17 @@ pub(crate) fn run_pooled_turn(
     } else {
         READY_WINDOW.min(job.timeout)
     };
-    let (lease, stream) = match lease_server(&root, pooled, ready_within) {
-        Ok(leased) => leased,
-        Err(error) => return failed(Status::SpawnError, error),
+    let held = pooled
+        .held
+        .as_deref()
+        .and_then(HeldServer::take)
+        .and_then(reconnect);
+    let (lease, stream) = match held {
+        Some(leased) => leased,
+        None => match lease_server(&root, pooled, ready_within) {
+            Ok(leased) => leased,
+            Err(error) => return failed(Status::SpawnError, error),
+        },
     };
     let marker = pooled.process_marker();
     let mut note = LeaseNote {
@@ -1291,7 +1369,17 @@ pub(crate) fn run_pooled_turn(
         stop_dispatch_commands(&marker, DEAD_LEASE_STOP_DEADLINE);
     }
     connection.close();
-    drop(lease);
+    match pooled.held.as_deref() {
+        // Kept for the candidate's next turn, its note back to the bare
+        // marker: the thread it named is released, so a sweeper retiring the
+        // lease meanwhile has nothing of it left to release.
+        Some(held) if !matches!(end, End::Lost(_)) => {
+            note.thread = None;
+            lease.annotate(&note);
+            held.keep(lease);
+        }
+        _ => drop(lease),
+    }
 
     let (status, error) = match end {
         // A consumer-driven stop is not a harness failure, as for a child.

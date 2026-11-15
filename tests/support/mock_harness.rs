@@ -223,11 +223,6 @@
 //!                              keeps its output, writes its own pid, the
 //!                              descendant's and its working directory to the
 //!                              path, and waits forever.
-//!   MOCK_CODEX_VERSION_GATE    `mock-harness` test builds only: a loopback
-//!                              `host:port`. `--version` connects to it and
-//!                              answers only once one byte arrives, so a test
-//!                              can release many launches' version probes at
-//!                              one instant; unreleased within 60 s, it fails.
 //!   MOCK_CODEX_VERSION_EXIT    the exit code `--version` answers with (the
 //!                              launch itself keeps MOCK_EXIT).
 //!   MOCK_CODEX_CACHE_CORRUPT   with MOCK_CODEX_CATALOG_LOG, a fetch writes a
@@ -244,10 +239,15 @@
 //!                              `apps` feature, resolved like `plugins`) and
 //!                              `argv`. With a catalog
 //!                              it reads that file (`catalog_models`, its model
-//!                              count) and fetches nothing (`fetch` null); a
+//!                              count, and `catalog_fetch_id`, the `fetch_id`
+//!                              of the fetch it came from) and fetches nothing
+//!                              (`fetch` null); a
 //!                              missing or empty catalog fails the launch, as it
 //!                              fails Codex. Without one it fetches: `fetch` is
-//!                              `ok` (with `fetched_ms`) after it writes
+//!                              `ok` (with `fetched_ms`, and `fetch_id`: a
+//!                              stamp unique to that fetch, which every model
+//!                              it writes carries as `mock_fetch_id`) after it
+//!                              writes
 //!                              `$CODEX_HOME/models_cache.json` (Codex's
 //!                              default `~/.codex` when CODEX_HOME is unset)
 //!                              stamped with MOCK_CODEX_CACHE_VERSION, else
@@ -568,32 +568,6 @@ fn refuse(message: &str) -> ! {
     std::process::exit(101);
 }
 
-/// MOCK_CODEX_VERSION_GATE: hold `--version` until the test listening there
-/// sends one byte. Blocked in a read rather than polling, so every probe a
-/// test releases together resumes at once. Compiled only into the
-/// `mock-harness` test build, like the engine's fault injectors, since this
-/// responder also ships in the CLI.
-#[cfg(feature = "mock-harness")]
-fn wait_at_version_gate() {
-    use std::io::Read;
-    let Ok(gate) = std::env::var("MOCK_CODEX_VERSION_GATE") else {
-        return;
-    };
-    let mut stream = std::net::TcpStream::connect(&gate)
-        .unwrap_or_else(|error| refuse(&format!("MOCK_CODEX_VERSION_GATE {gate}: {error}")));
-    let released = stream
-        .set_read_timeout(Some(std::time::Duration::from_secs(60)))
-        .and_then(|()| stream.read_exact(&mut [0u8; 1]));
-    if let Err(error) = released {
-        refuse(&format!(
-            "MOCK_CODEX_VERSION_GATE {gate}: never released: {error}"
-        ));
-    }
-}
-
-#[cfg(not(feature = "mock-harness"))]
-fn wait_at_version_gate() {}
-
 /// `--version`, answered with no other effect: `codex-cli <MOCK_CODEX_VERSION>`
 /// when that is set, else MOCK_STDOUT (else the default document).
 fn answer_version(argv: &[String]) -> ! {
@@ -603,7 +577,6 @@ fn answer_version(argv: &[String]) -> ! {
     if let Some(ms) = millis_knob("MOCK_CODEX_VERSION_DELAY_MS") {
         std::thread::sleep(std::time::Duration::from_millis(ms));
     }
-    wait_at_version_gate();
     if let Ok(path) = std::env::var("MOCK_ARGV_FILE") {
         let _ = std::fs::write(path, argv.join("\n"));
     }
@@ -758,8 +731,8 @@ fn codex_model_catalog(path: &str, argv: &[String]) {
         let models = std::fs::read_to_string(catalog)
             .ok()
             .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-            .and_then(|value| value["models"].as_array().map(Vec::len))
-            .filter(|count| *count > 0);
+            .and_then(|value| value["models"].as_array().cloned())
+            .filter(|models| !models.is_empty());
         let Some(models) = models else {
             let _ = writeln!(
                 std::io::stderr(),
@@ -767,7 +740,8 @@ fn codex_model_catalog(path: &str, argv: &[String]) {
             );
             std::process::exit(1);
         };
-        line["catalog_models"] = models.into();
+        line["catalog_models"] = models.len().into();
+        line["catalog_fetch_id"] = models[0]["mock_fetch_id"].clone();
     } else {
         if subcommand == "app-server" {
             if let Some(path) = mock_var_os("MOCK_CODEX_CATALOG_STALL") {
@@ -800,8 +774,8 @@ fn codex_model_catalog(path: &str, argv: &[String]) {
                     "etag": "W/\"mock\"",
                     "client_version": version,
                     "models": [
-                        {"slug": "mock-model-a", "display_name": "Mock A"},
-                        {"slug": "mock-model-b", "display_name": "Mock B"},
+                        {"slug": "mock-model-a", "display_name": "Mock A", "mock_fetch_id": fetched_at},
+                        {"slug": "mock-model-b", "display_name": "Mock B", "mock_fetch_id": fetched_at},
                     ],
                 });
                 let corrupt = mock_var("MOCK_CODEX_CACHE_CORRUPT").unwrap_or_default();
@@ -827,6 +801,7 @@ fn codex_model_catalog(path: &str, argv: &[String]) {
                 line["fetched_ms"] = u64::try_from(now.as_millis())
                     .expect("milliseconds fit")
                     .into();
+                line["fetch_id"] = fetched_at.into();
                 "ok".into()
             }
         };

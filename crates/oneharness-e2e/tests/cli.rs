@@ -43406,25 +43406,22 @@ fn assert_every_launch_read(world: &CatalogWorld, launches: &[Value]) {
     }
 }
 
-/// Every launch started after the catalog file was written, and all within
-/// `MODEL_CATALOG_WAIT` of the first.
-fn assert_started_after_the_write_and_together(world: &CatalogWorld, launches: &[Value]) {
-    let written = modified_ms(&world.the_catalog());
-    let starts: Vec<u64> = launches
-        .iter()
-        .map(|launch| launch["started_ms"].as_u64().unwrap())
-        .collect();
-    for start in &starts {
-        assert!(
-            *start >= written,
-            "a launch at {start} preceded the write at {written}"
-        );
+/// Every launch read the catalog the refresh `fetched` wrote — its
+/// `catalog_fetch_id` is that fetch's `fetch_id` — so it waited for that
+/// refresh rather than starting Codex on an older file; and every run ended
+/// within MODEL_CATALOG_WAIT of the burst's start on this test's monotonic
+/// clock, so none waited its wait out. Causality rather than two wall-clock
+/// stamps: a host whose clock steps between the catalog's write and a
+/// launch's start (#1483) put a launch 85 ms "before" the write it had read.
+fn assert_read_the_refresh_promptly(fetched: &Value, launches: &[Value], runs: &[CatalogRun]) {
+    let fetch_id = &fetched["fetch_id"];
+    assert!(fetch_id.is_string(), "{fetched}");
+    for launch in launches {
+        assert_eq!(&launch["catalog_fetch_id"], fetch_id, "{launch}");
     }
-    let spread = starts.iter().max().unwrap() - starts.iter().min().unwrap();
-    assert!(
-        u128::from(spread) <= MODEL_CATALOG_WAIT.as_millis(),
-        "{starts:?}"
-    );
+    for run in runs {
+        assert!(run.elapsed < MODEL_CATALOG_WAIT, "{:?}", run.elapsed);
+    }
 }
 
 #[test]
@@ -43449,7 +43446,7 @@ fn a_cold_burst_of_launches_costs_one_catalog_fetch_in_total() {
     let launches = world.launches();
     assert_eq!(launches.len(), 5, "{launches:?}");
     assert_every_launch_read(&world, &launches);
-    assert_started_after_the_write_and_together(&world, &launches);
+    assert_read_the_refresh_promptly(&world.helpers()[0], &launches, &runs);
     // Launches inside the interval fetch nothing and refresh nothing.
     world.burst(5, CodexLaunchPath::Exec, "codex", &[], &[]);
     assert_eq!(world.fetches(), 1, "{:?}", world.records());
@@ -43471,7 +43468,7 @@ fn a_stale_catalog_is_refreshed_once_for_a_burst_that_waits_for_it() {
     world.wait_until_stale_then_step_the_clock_back(std::time::Duration::from_secs(2));
     let stale = modified_ms(&world.the_catalog());
     let before = world.records().len();
-    world.burst(
+    let runs = world.burst(
         5,
         CodexLaunchPath::Exec,
         "codex",
@@ -43482,6 +43479,7 @@ fn a_stale_catalog_is_refreshed_once_for_a_burst_that_waits_for_it() {
     let fetched: Vec<&Value> = burst.iter().filter(|r| !r["fetch"].is_null()).collect();
     assert_eq!(fetched.len(), 1, "{burst:?}");
     assert!(has_refresh_helper_argv(fetched[0]), "{burst:?}");
+    let refresh = fetched[0].clone();
     let launches: Vec<Value> = burst
         .into_iter()
         .filter(|r| !has_refresh_helper_argv(r))
@@ -43489,7 +43487,7 @@ fn a_stale_catalog_is_refreshed_once_for_a_burst_that_waits_for_it() {
     assert_eq!(launches.len(), 5);
     assert!(modified_ms(&world.the_catalog()) > stale + 2_000);
     assert_every_launch_read(&world, &launches);
-    assert_started_after_the_write_and_together(&world, &launches);
+    assert_read_the_refresh_promptly(&refresh, &launches, &runs);
 }
 // llmlint: ignore-end[tests_mirror_real_usage]
 
@@ -44013,34 +44011,17 @@ fn wait_out_the_lock_then_back_off_and_recover(stale: bool) {
 // llmlint: ignore-block[tests_mirror_real_usage] Through the CLI a launch's wait can only outlast MODEL_CATALOG_WAIT when another process holds the lock past the refresh deadline, which no launch this suite starts can be made to do on demand, and a host whose realtime clock steps mid-wait cannot be had on demand either; the test holds the lock as that process would and steps the binary's wall clock through its mock-harness-only seam, and the launch that waits goes through the real CLI.
 #[test]
 fn a_lock_wait_falls_back_at_model_catalog_wait_however_the_wall_clock_steps() {
-    fall_back_at_model_catalog_wait_with_the_wall_clock_stepped(&[
-        -HOST_CLOCK_STEP_MS,
-        HOST_CLOCK_STEP_MS,
-        -3_000,
-        3_000,
-    ]);
+    fall_back_at_model_catalog_wait_with_the_wall_clock_stepped(&[-3_000, 3_000]);
 }
 
-/// How close the fastest launch stepped by each step must come to the
-/// fastest unstepped control: half the smallest step, so a wait timed on the
-/// wall clock — longer or shorter by the step — misses it by as much again as
-/// the noise it allows. A tolerance just under the step left a wall-timed wait
-/// refused by 5 ms on ubuntu-latest, while unstepped launches on
-/// windows-latest differed by up to 64 ms.
-const LOCK_WAIT_TOLERANCE: std::time::Duration = std::time::Duration::from_millis(65);
-
-/// How many launches the journey starts at once for each step, and as many
-/// unstepped controls, each in its own world. A loaded host only ever
-/// lengthens a measured wait, so each group is read by its fastest; and a
-/// runner stall that lengthens every launch at once lengthens the controls
-/// alike. Against the bare constant instead, a windows-latest stall put all
-/// five launches of one journey at 12.42-12.74 s
-/// (https://github.com/nickderobertis/oneharness/actions/runs/43658620108).
-const STEPPED_LAUNCHES: usize = 6;
-
-/// The ceiling no launch's wait may reach: a coarse guard against a wait
-/// that never ends, well past any stall.
-const LOCK_WAIT_CEILING: std::time::Duration = std::time::Duration::from_secs(2);
+/// How far past MODEL_CATALOG_WAIT a stepped launch may report its fallback:
+/// half its step, so a wait timed on the wall clock — longer or shorter by
+/// the whole step — falls outside it, while start-up and a loaded runner's
+/// stalls (one of about 400 ms seen on windows-latest as thirty launches'
+/// failure records were synced at once) stay well inside.
+fn lock_wait_tolerance(step_ms: i64) -> std::time::Duration {
+    std::time::Duration::from_millis(step_ms.unsigned_abs() / 2)
+}
 
 /// One launch waiting on a catalog lock this test holds, its stderr read as
 /// it arrives so the fallback's warning is timed when it is printed.
@@ -44048,6 +44029,8 @@ struct LockWaitLaunch {
     world: CatalogWorld,
     lock: std::fs::File,
     child: std::process::Child,
+    /// Just before the launch was started: never later than its wait began.
+    spawned: std::time::Instant,
     /// When the fallback's warning arrived: on this test's monotonic clock,
     /// and on the world's wall clock in milliseconds.
     warned: std::sync::mpsc::Receiver<(std::time::Instant, u64)>,
@@ -44056,22 +44039,16 @@ struct LockWaitLaunch {
 }
 
 impl LockWaitLaunch {
-    /// Start a launch whose version probe holds at `gate`
-    /// (MOCK_CODEX_VERSION_GATE) until the test releases it.
-    fn start(world: CatalogWorld, gate: &str) -> Self {
+    fn start(world: CatalogWorld) -> Self {
         use fs2::FileExt;
         use std::io::BufRead;
         let (_, lock_path, _) = catalog_paths(&world);
         std::fs::create_dir_all(world.catalog_dir()).unwrap();
         let lock = std::fs::File::create(&lock_path).unwrap();
         lock.lock_exclusive().unwrap();
-        let mut cmd = world.command(
-            CodexLaunchPath::Exec,
-            "codex",
-            &[],
-            &[("MOCK_CODEX_VERSION_GATE", gate)],
-        );
+        let mut cmd = world.command(CodexLaunchPath::Exec, "codex", &[], &[]);
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let spawned = std::time::Instant::now();
         let mut child = cmd.spawn().expect("start oneharness");
         let out = child.stdout.take().unwrap();
         let stdout = std::thread::spawn(move || std::io::read_to_string(out).unwrap());
@@ -44095,6 +44072,7 @@ impl LockWaitLaunch {
             world,
             lock,
             child,
+            spawned,
             warned,
             stderr,
             stdout,
@@ -44105,8 +44083,8 @@ impl LockWaitLaunch {
     /// the lock and prove the launch went without a catalog the way a wait
     /// that ran out does: one warning, no refresh, one failure recorded on
     /// this world's (stepped) clock, and a next launch that backs off.
-    /// Returns when the launch reported the fallback.
-    fn finish(self, label: &str) -> std::time::Instant {
+    /// Returns how long after its start the launch reported the fallback.
+    fn finish(self, label: &str) -> std::time::Duration {
         use fs2::FileExt;
         let mut child = self.child;
         let (warned_at, warned_wall_ms) = self
@@ -44157,131 +44135,52 @@ impl LockWaitLaunch {
         assert_one_catalog_warning_each(std::slice::from_ref(&next), "Codex's own catalog fetch");
         assert!(world.helpers().is_empty(), "{label}: {:?}", world.records());
         assert_eq!(world.failure_records().len(), 1, "{label}");
-        warned_at
+        warned_at - self.spawned
     }
 }
 
-/// With this test holding each world's catalog lock for the whole wait,
-/// [`STEPPED_LAUNCHES`] launches for each of `steps` whose wall clock steps by
-/// it halfway through, and as many unstepped controls, each report the
-/// MODEL_CATALOG_WAIT fallback ([`LockWaitLaunch::finish`]). Every launch's
-/// version probe holds at one gate until all have reached it, and the test
-/// releases them at one instant: the lock wait starts only once the probe
-/// returns (`io::model_catalog::resolve`), so no wait begins before the
-/// release, and process start-up — which varied by about 100 ms across thirty
-/// launches on windows-latest — stays out of what is measured. On this test's
-/// monotonic clock, from that release, every launch waits at least
-/// MODEL_CATALOG_WAIT and under [`LOCK_WAIT_CEILING`] past it, and for each
-/// step the fastest stepped launch reports within [`LOCK_WAIT_TOLERANCE`] of
-/// the fastest control: the fallback does not depend on the wall clock
-/// holding still.
+/// With this test holding each world's catalog lock for the whole wait, one
+/// launch for each of `steps`, all started together and each with its wall
+/// clock stepped by its step halfway through, reports the MODEL_CATALOG_WAIT
+/// fallback ([`LockWaitLaunch::finish`]) no earlier than that wait and within
+/// [`lock_wait_tolerance`] of it on this test's monotonic clock, measured from
+/// the launch's own start: the fallback does not depend on the wall clock
+/// holding still. Every step's verdict is reported together.
 fn fall_back_at_model_catalog_wait_with_the_wall_clock_stepped(steps: &[i64]) {
-    for step_ms in steps {
-        assert!(
-            u128::from(step_ms.unsigned_abs()) > LOCK_WAIT_TOLERANCE.as_millis(),
-            "a step within the tolerance proves nothing"
-        );
-    }
-    // `None` is the controls'. Started round-robin, so no group is the one
-    // started first.
-    let groups: Vec<Option<i64>> = steps.iter().copied().map(Some).chain([None]).collect();
-    let label = |group: Option<i64>| {
-        group.map_or_else(|| "control".to_string(), |ms| format!("step {ms} ms"))
-    };
-    let gate = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let gate_addr = gate.local_addr().unwrap().to_string();
-    let mut launches: Vec<Vec<LockWaitLaunch>> = groups.iter().map(|_| Vec::new()).collect();
-    for n in 0..STEPPED_LAUNCHES {
-        for (group, started) in groups.iter().zip(&mut launches) {
-            let tag = group.map_or_else(|| "c".to_string(), |ms| ms.to_string());
-            started.push(LockWaitLaunch::start(
-                CatalogWorld::new(&format!("catalog-clock-step-{tag}-{n}"), "", ""),
-                &gate_addr,
-            ));
-        }
-    }
-    // Every probe connects as it reaches the gate; one that never does fails
-    // the journey here rather than hanging it.
-    let expected = groups.len() * STEPPED_LAUNCHES;
-    gate.set_nonblocking(true).unwrap();
-    let guard = std::time::Instant::now() + CATALOG_HANG_GUARD;
-    let mut held = Vec::new();
-    while held.len() < expected {
-        match gate.accept() {
-            Ok((stream, _)) => held.push(stream),
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                assert!(
-                    std::time::Instant::now() < guard,
-                    "only {} of {expected} version probes reached the gate",
-                    held.len()
-                );
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-            Err(error) => panic!("the version gate failed: {error}"),
-        }
-    }
-    let released = std::time::Instant::now();
-    for mut stream in held {
-        use std::io::Write;
-        stream.set_nonblocking(false).unwrap();
-        stream.write_all(&[1]).unwrap();
-    }
-    std::thread::sleep(MODEL_CATALOG_WAIT / 2);
-    for (group, started) in groups.iter().zip(&launches) {
-        if let Some(step_ms) = group {
-            for launch in started {
-                launch.world.step_wall_clock(*step_ms);
-            }
-        }
-    }
-    let waits: Vec<Vec<std::time::Duration>> = groups
+    let launches: Vec<LockWaitLaunch> = steps
         .iter()
-        .zip(launches)
-        .map(|(group, started)| {
-            started
-                .into_iter()
-                .enumerate()
-                .map(|(n, launch)| {
-                    launch.finish(&format!("{}, launch {n}", label(*group))) - released
-                })
-                .collect()
+        .map(|step_ms| {
+            LockWaitLaunch::start(CatalogWorld::new(
+                &format!("catalog-clock-step-{step_ms}"),
+                "",
+                "",
+            ))
         })
         .collect();
-    let fastest = |group: &[std::time::Duration]| *group.iter().min().unwrap();
-    let control = waits.last().unwrap();
-    let fastest_control = fastest(control);
-    let mut refused = Vec::new();
-    for (step_ms, stepped) in steps.iter().zip(&waits) {
-        let fastest_stepped = fastest(stepped);
-        println!(
-            "step {step_ms} ms: fastest stepped {fastest_stepped:?} of {stepped:?}; \
-             fastest control {fastest_control:?} of {control:?}"
-        );
-        if fastest_stepped.abs_diff(fastest_control) >= LOCK_WAIT_TOLERANCE {
-            refused.push(format!(
-                "step {step_ms} ms: the fastest stepped launch fell back {fastest_stepped:?} into \
-                 its wait and the fastest unstepped control {fastest_control:?}, more than \
-                 {LOCK_WAIT_TOLERANCE:?} apart (stepped {stepped:?}, controls {control:?})"
-            ));
-        }
+    std::thread::sleep(MODEL_CATALOG_WAIT / 2);
+    for (step_ms, launch) in steps.iter().zip(&launches) {
+        launch.world.step_wall_clock(*step_ms);
     }
-    assert!(refused.is_empty(), "{}", refused.join("\n"));
-    for (group, waited) in groups
+    let waits: Vec<std::time::Duration> = steps
+        .iter()
+        .zip(launches)
+        .map(|(step_ms, launch)| launch.finish(&format!("step {step_ms} ms")))
+        .collect();
+    let refused: Vec<String> = steps
         .iter()
         .zip(&waits)
-        .flat_map(|(group, waits)| waits.iter().map(move |waited| (group, waited)))
-    {
-        let label = label(*group);
-        assert!(
-            *waited >= MODEL_CATALOG_WAIT,
-            "{label}: a fallback came before the wait ran out: {waited:?} ({waits:?})"
-        );
-        assert!(
-            *waited < MODEL_CATALOG_WAIT + LOCK_WAIT_CEILING,
-            "{label}: a wait ran past {LOCK_WAIT_CEILING:?} over the constant: {waited:?} \
-             ({waits:?})"
-        );
-    }
+        .filter_map(|(step_ms, waited)| {
+            let tolerance = lock_wait_tolerance(*step_ms);
+            println!("step {step_ms} ms: waited {waited:?}");
+            (*waited < MODEL_CATALOG_WAIT || *waited >= MODEL_CATALOG_WAIT + tolerance).then(|| {
+                format!(
+                    "step {step_ms} ms: the fallback came {waited:?} into the wait, outside \
+                     {MODEL_CATALOG_WAIT:?} up to {tolerance:?} past it"
+                )
+            })
+        })
+        .collect();
+    assert!(refused.is_empty(), "{}", refused.join("\n"));
 }
 // llmlint: ignore-end[tests_mirror_real_usage]
 

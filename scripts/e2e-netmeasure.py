@@ -48,6 +48,12 @@ signal, and SIGKILL 5 s later. Stopping the namespace, at the deadline
 none) or because this process was signalled, sends SIGTERM to every process in
 it and SIGKILL 5 s later.
 
+The pending marker (`--pending`) holds the pids of the recorder processes
+that can still write the launch's line and remove the marker — its
+supervisor, then the measurer that forked it — space-separated, so a reader
+waiting on it can tell a launch still being recorded from one whose recorder
+is gone. The budget step reads only its presence.
+
 `OH_E2E_NET_OBSERVER`, a JSON argv, is the self-check's seam: that command is
 started inside the namespace before the counters are first read, with the
 interface names as its last argument, and sent SIGTERM after they are read the
@@ -860,19 +866,19 @@ class StartRecord:
         return json.dumps(asdict(self), ensure_ascii=False, separators=(",", ":"))
 
 
-def record_start(args: argparse.Namespace) -> Optional[str]:
-    """Make the launch's pending marker, then append its `start` line — in that
-    order, so no start line is ever written without one. None once both are
-    in (or there is no start line to write); otherwise why not, with neither
-    left behind where that can be helped."""
+def record_start(args: argparse.Namespace, owners: tuple[int, ...] = ()) -> Optional[str]:
+    """Make the launch's pending marker, naming its `owners`' pids, then append
+    its `start` line — in that order, so no start line is ever written without
+    one. None once both are in (or there is no start line to write); otherwise
+    why not, with neither left behind where that can be helped."""
     if args.start_line is None:
         return None
     pending = args.pending
     markers = os.path.dirname(pending)
     try:
         os.makedirs(markers, exist_ok=True)
-        with open(pending, "w"):
-            pass
+        with open(pending, "w") as marker:
+            marker.write(" ".join(map(str, owners)))
     except OSError as error:
         return (
             f"cannot create {pending} ({error}); check that "
@@ -997,10 +1003,11 @@ def group_alive(group: int) -> bool:
     return True
 
 
-def run_launch(args: argparse.Namespace, life: int) -> Outcome:
+def run_launch(args: argparse.Namespace, life: int, owners: tuple[int, ...] = ()) -> Outcome:
     """The supervisor's whole work: record the start, run the launch —
-    measured where the namespace can be built, else directly — and record it."""
-    refusal = record_start(args)
+    measured where the namespace can be built, else directly — and record it.
+    `owners` are the pids its pending marker names."""
+    refusal = record_start(args, owners)
     if refusal is not None:
         return Outcome(Ending.REFUSED, code=126, reason=refusal)
     if args.unmeasured is not None:
@@ -1040,6 +1047,8 @@ def run_launch(args: argparse.Namespace, life: int) -> Outcome:
 def measure(args: argparse.Namespace) -> int:
     life_r, life_w = os.pipe()
     done_r, done_w = os.pipe()
+    # Either may still write the launch's line, so the marker names both.
+    measurer = os.getpid()
     supervisor = os.fork()
     if supervisor == 0:
         # Out of the caller's process group before anything is written: a
@@ -1050,7 +1059,7 @@ def measure(args: argparse.Namespace) -> int:
         os.close(done_r)
         try:
             try:
-                outcome = run_launch(args, life_r)
+                outcome = run_launch(args, life_r, (os.getpid(), measurer))
             except Unrecorded:
                 outcome = Outcome(Ending.EXITED, code=UNRECORDED)
             if outcome.ending is Ending.EXITED:

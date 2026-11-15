@@ -13,6 +13,8 @@ import itertools
 import json
 import os
 import re
+import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -31,6 +33,7 @@ from support import (
     lines,
     measurements,
     need_builds,
+    need_recorder,
     recorder_unavailable,
     run_shim,
     run_suite,
@@ -75,11 +78,111 @@ SUITES = {
 }
 
 
+def recorder_bounds() -> ModuleType:
+    """The recorder's own module, loaded once from its script, for the bounds
+    it enforces on itself."""
+    name = "netmeasure_bounds"
+    if name not in sys.modules:
+        spec = importlib.util.spec_from_file_location(name, ROOT / "scripts" / "e2e-netmeasure.py")
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        # Its dataclasses resolve their annotations through sys.modules.
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return sys.modules[name]
+
+
+def recorder_lifetime() -> float:
+    """The longest a stopped launch's recorder can take to write its line, by
+    the recorder's own constants: every inbound-TCP trial timing out, then the
+    stopped tree's kill grace — or a direct launch's grace and reaping — and
+    the counters' settle."""
+    bounds = recorder_bounds()
+    return float(
+        len(bounds.INBOUND_TCP) * bounds.TRIAL_TIMEOUT
+        + bounds.KILL_GRACE
+        + bounds.REAP_WAIT
+        + bounds.SETTLE
+    )
+
+
+# The one fixed bound on waiting for a stopped suite's launches to be
+# recorded: a hang guard against a recorder that never exits. Twice the
+# recorder's own maximum, so a loaded runner's scheduling cannot make it
+# reject a launch the recorder can still record.
+HANG_GUARD = 2 * recorder_lifetime()
+
+
+def owners(marker: Path) -> list[int] | None:
+    """The pids a pending marker names as able to still record its launch, or
+    None while that is not known (the marker is still being written, or is no
+    longer there to read)."""
+    try:
+        words = marker.read_text().split()
+    except OSError:
+        return None
+    pids = [int(word) for word in words if word.isdigit()]
+    return pids if pids and len(pids) == len(words) else None
+
+
+def running(pid: int) -> bool:
+    """Whether `pid` is still running; a zombie has already exited."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except FileNotFoundError:
+        # Gone between the two looks where there is a procfs; without one
+        # (macOS), kill's answer stands.
+        return not Path("/proc/self/stat").exists()
+    except OSError:
+        return True
+    return stat.rsplit(")", 1)[-1].split()[:1] not in (["Z"], ["X"])
+
+
+def wait_until_recorded(telemetry: Path, suite: str) -> None:
+    """Return once every launch the stopped suite started is recorded — its
+    pending marker gone — however long the recorder takes. Fail, naming them,
+    on the launches whose markers outlived every recorder process they name,
+    which can no longer record them, once no other launch is still being
+    recorded; and at HANG_GUARD on a recorder that has not exited."""
+    pending = telemetry / ".pending"
+    deadline = time.monotonic() + HANG_GUARD
+    while True:
+        markers = sorted(pending.glob("*"))
+        if not markers:
+            return
+        named = {marker.name: owners(marker) for marker in markers}
+        lost = {
+            launch: pids
+            for launch, pids in named.items()
+            if pids is not None and not any(running(pid) for pid in pids)
+        }
+        if lost and len(lost) == len(named):
+            raise AssertionError(
+                f"{suite}: launch(es) {', '.join(lost)} never recorded: every recorder process "
+                f"their pending markers name ({lost}) has exited with the marker still there"
+            )
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                f"{suite}: launch(es) {', '.join(named)} still pending {HANG_GUARD:.0f} s after "
+                f"the suite stopped, over the recorder's own {recorder_lifetime():.0f} s maximum "
+                f"(the pids each marker names: {named})"
+            )
+        time.sleep(0.1)
+
+
 def run_until_recorded(suite: str, env: dict[str, str], harness: str, limit: float = 120) -> str:
     """Run a suite until it has recorded a measured launch of `harness`, or
-    exits; then stop it — by its own process group, as a runner would — and
-    return its stderr. A first phase the double cannot satisfy may otherwise
-    wait out minutes of live-tier timeouts nobody here is testing."""
+    exits; then stop it — by its own process group, as a runner would — wait
+    until the recorder has recorded every launch it started
+    (`wait_until_recorded`), and return its stderr. A first phase the double
+    cannot satisfy may otherwise wait out minutes of live-tier timeouts nobody
+    here is testing."""
     telemetry = Path(env["OH_E2E_TELEMETRY_DIR"]) / f"{suite}.jsonl"
     err = Path(env["TMPDIR"]) / "suite.err"
     with err.open("wb") as sink:
@@ -109,11 +212,8 @@ def run_until_recorded(suite: str, env: dict[str, str], harness: str, limit: flo
                 os.killpg(process.pid, signal.SIGKILL)
                 process.wait()
     # A launch the stop cut short is still recorded, by the recorder's own
-    # supervisor; give it the namespace's kill grace to finish.
-    for _ in range(80):
-        if not any(Path(env["OH_E2E_TELEMETRY_DIR"], ".pending").glob("*")):
-            break
-        time.sleep(0.1)
+    # supervisor, in its own session, once its namespace has wound down.
+    wait_until_recorded(telemetry.parent, suite)
     return err.read_text(errors="replace")
 
 
@@ -181,6 +281,95 @@ class EverySuiteRecords(unittest.TestCase):
         declared = re.search(r"OH_HARNESS_EXECUTABLES=\(([^)]*)\)", library)
         assert declared is not None
         self.assertEqual(sorted(declared.group(1).split()), registry)
+
+
+# How long the stand-in pasta holds a stopped suite's later namespaces open
+# before letting their recorder finish: past the 8 s the helper once allowed
+# and the budget step's 30 s OH_E2E_PENDING_WAIT alike, so no fixed wait of
+# that order passes it.
+HOLD = 35
+
+
+@unittest.skipIf(
+    WINDOWS, "the suites' doubles are bash scripts; Windows runs the recorder's fallback tests"
+)
+class StoppedSuiteRecording(unittest.TestCase):
+    """The control suite stopped while its recorder still owes launches their
+    lines, through the real shim, recorder and pasta: a stand-in pasta in front
+    of the real one lets the first namespace through and does `later` with
+    every one after it — among them the pooled `--version` probe started
+    beside the first, still in flight when the suite is stopped."""
+
+    def stopped_with(self, later: str) -> tuple[Path, dict[str, str]]:
+        need_builds(self)
+        need_recorder(self)
+        real = shutil.which("pasta")
+        assert real is not None  # need_recorder measured through it
+        tmp = scratch(self)
+        stand_in = tmp / "pasta-bin"
+        stand_in.mkdir()
+        first = shlex.quote(str(tmp / "first-namespace"))
+        (stand_in / "pasta").write_text(
+            "#!/usr/bin/env bash\n"
+            f"real={shlex.quote(real)}\n"
+            "# The recorder's inbound-TCP trials run `:`; they and the first\n"
+            "# namespace are pasta's own.\n"
+            f'if [ "${{*: -1}}" = : ] || mkdir {first} 2>/dev/null; then exec "$real" "$@"; fi\n'
+            f"{later}\n"
+        )
+        (stand_in / "pasta").chmod(0o755)
+        env = suite_env(tmp, *EXECUTABLES, OH_E2E_PHASE_LIMIT="1", **SUITES["control"].auth)
+        env["PATH"] = f"{stand_in}{os.pathsep}{env['PATH']}"
+        return tmp / "telemetry", env
+
+    def test_a_launch_recorded_long_after_the_stop_is_waited_for(self) -> None:
+        telemetry, env = self.stopped_with(f'"$real" "$@"; code=$?; sleep {HOLD}; exit "$code"')
+        began = time.monotonic()
+        run_until_recorded("control", env, "codex")
+        took = time.monotonic() - began
+        records = lines(telemetry / "control.jsonl")
+        launched = starts(records)
+        self.assertGreater(len(launched), 1, records)
+        for launch in launched:
+            self.assertEqual(len(measurements(records, launch["launch_id"])), 1, launch)
+        # A namespace was held past both fixed waits, and still recorded.
+        self.assertGreater(took, HOLD, "no namespace was held: the stand-in tested nothing")
+
+    def test_a_launch_whose_recorder_exits_without_its_line_fails_naming_it(self) -> None:
+        # Its measurer and supervisor are SIGKILLed before the namespace
+        # starts, so nothing is left that can write its line or clear its marker.
+        telemetry, env = self.stopped_with(
+            'kill -KILL "$(ps -o ppid= -p "$PPID" | tr -d " ")" "$PPID"; exit 1'
+        )
+        began = time.monotonic()
+        with self.assertRaises(AssertionError) as caught:
+            run_until_recorded("control", env, "codex")
+        took = time.monotonic() - began
+        said = str(caught.exception)
+        records = lines(telemetry / "control.jsonl")
+        unrecorded = [
+            s["launch_id"] for s in starts(records) if not measurements(records, s["launch_id"])
+        ]
+        self.assertTrue(unrecorded, records)
+        self.assertIn("never recorded", said)
+        for launch_id in unrecorded:
+            self.assertIn(launch_id, said)
+        for marker in (telemetry / ".pending").glob("*"):
+            pids = owners(marker)
+            self.assertTrue(pids, marker)
+            assert pids is not None
+            self.assertFalse(any(running(pid) for pid in pids), (marker.name, pids))
+        # Failed on its recorder's exit, not on the hang guard.
+        self.assertLess(took, HANG_GUARD, said)
+
+
+class HangGuard(unittest.TestCase):
+    def test_the_hang_guard_outlasts_the_recorder_s_own_longest_recording(self) -> None:
+        bounds = recorder_bounds()
+        # Every trial timing out, then the stopped tree's kill grace.
+        floor = len(bounds.INBOUND_TCP) * bounds.TRIAL_TIMEOUT + bounds.KILL_GRACE
+        self.assertGreater(HANG_GUARD, floor + bounds.REAP_WAIT + bounds.SETTLE)
+        self.assertGreater(HANG_GUARD, HOLD)
 
 
 def setup_and(

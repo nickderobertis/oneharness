@@ -50,6 +50,7 @@ use fs2::FileExt;
 use serde_json::{json, Value};
 use wait_timeout::ChildExt;
 
+use crate::domain::dialogue;
 use crate::domain::grant::RUN_RULES_FILE;
 use crate::io::marked_processes::{self, ProcessMarker};
 use crate::io::scratch::{ScratchDir, PREFIX};
@@ -660,10 +661,9 @@ fn exchange(
     let send = |stdin: &mut std::process::ChildStdin,
                 id: u64,
                 method: &str,
-                params: Value|
+                frame: String|
      -> Result<(), String> {
-        let frame = json!({ "id": id, "method": method, "params": params });
-        writeln!(stdin, "{frame}").map_err(|e| e.to_string())?;
+        stdin.write_all(frame.as_bytes()).map_err(|e| e.to_string())?;
         stdin.flush().map_err(|e| e.to_string())?;
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
@@ -682,16 +682,12 @@ fn exchange(
             }
         }
     };
-    let mut outcome = send(
-        &mut stdin,
-        0,
-        "initialize",
-        json!({ "clientInfo": { "name": "oneharness", "version": env!("CARGO_PKG_VERSION") } }),
-    );
+    let mut outcome = send(&mut stdin, 0, "initialize", dialogue::codex_initialize(0));
     if outcome.is_ok() {
-        let _ = writeln!(stdin, "{}", json!({ "method": "initialized" }));
+        let _ = stdin.write_all(dialogue::codex_initialized().as_bytes());
         for (id, (method, params)) in (1..).zip(requests) {
-            if let Err(error) = send(&mut stdin, id, method, params.clone()) {
+            let frame = dialogue::request(id, method, params.clone());
+            if let Err(error) = send(&mut stdin, id, method, frame) {
                 outcome = Err(error);
                 break;
             }

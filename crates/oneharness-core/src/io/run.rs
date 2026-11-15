@@ -5895,8 +5895,7 @@ fn plan_unit_grant(
     let resolved = grant::resolve(rules, mode, &lookup).map_err(|refusal| {
         OneharnessError::RunAllowlistRefused {
             harness: selected_id.to_string(),
-            rule: refusal.rule().to_string(),
-            reason: refusal.reason(),
+            refusal,
         }
     })?;
     let platform_reason = grant::platform_withheld_reason();

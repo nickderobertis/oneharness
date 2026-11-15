@@ -152,16 +152,17 @@ pub enum OneharnessError {
     },
 
     #[error(
-        "run-level `allowed_tools` rule `{rule}` for harness `{harness}` cannot be applied: \
-         {reason}. Nothing was spawned"
+        "run-level `allowed_tools` rule `{}` for harness `{harness}` cannot be applied: \
+         {}. Nothing was spawned",
+        refusal.rule(),
+        refusal.reason()
     )]
     RunAllowlistRefused {
         // llmlint: ignore[invalid_states_unrepresentable] Selection has validated this id before the check; the diagnostic keeps the selector exactly as the caller spelled it.
         harness: String,
-        /// The rule exactly as the config spells it.
-        rule: String,
-        /// Why it cannot be applied (`domain::grant::GrantRefusal::reason`).
-        reason: String,
+        /// Which rule cannot be applied, and why; it names the rule as the
+        /// config spells it.
+        refusal: crate::domain::grant::GrantRefusal,
     },
 
     #[error(

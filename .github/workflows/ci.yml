@@ -83,526 +83,101 @@ jobs:
   # the full sweep, which the release workflow later reads instead of sweeping
   # the tagged tree again; every other pull request and every push to main runs
   # the affected tier against an explicitly derived base.
+  # DO NOT MERGE: the stepped-clock demonstration for #1483. Every leg is
+  # forced on (no affected tier, no macOS policy) and runs the four catalog
+  # wait proofs and the stepped-clock journeys RUNS times; the journeys step
+  # the binary's wall clock back 130 ms mid-wait (the stepped-clock journeys
+  # also forward, and by 3 s) through the mock-harness-only seam, then
+  # reintroduces a wall-clock-timed lock wait and shows the journeys refuse it.
   check:
-    needs: macos-policy
-    if: always()
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os != 'macos-latest' && matrix.os || (needs.macos-policy.outputs.macos_required == 'true' && 'macos-latest' || 'ubuntu-latest') }}
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
         shell: bash
+    env:
+      RUNS: "10"
+      FILTER: "package(oneharness-e2e) & test(/a_launch_whose_wait_for_the_lock_runs_out|a_failed_refresh_of_a_stale_catalog_keeps|a_failure_recorded_before_the_catalog_was_written|a_lock_wait_falls_back_at_model_catalog_wait/)"
     steps:
-      - name: Require routing success
-        shell: bash
-        env:
-          POLICY_RESULT: ${{ needs.macos-policy.result }}
-          MACOS_REQUIRED: ${{ needs.macos-policy.outputs.macos_required }}
-        run: |
-          [ "$POLICY_RESULT" = success ] && [[ "$MACOS_REQUIRED" = true || "$MACOS_REQUIRED" = false ]] || exit 1
-      - name: Authorized Mac omission
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'false'
-        run: echo 'Mac assertions omitted by semantic event policy; this Linux carrier reports routing only.'
       - uses: actions/checkout@v5
-        if: matrix.os != 'macos-latest' || needs.macos-policy.outputs.macos_required == 'true'
-        with:
-          # The affected tier diffs against the merge base, which a depth-1
-          # checkout does not carry.
-          fetch-depth: 0
-      - uses: actions/setup-python@v5
-        if: matrix.os != 'macos-latest' || needs.macos-policy.outputs.macos_required == 'true'
-        with:
-          python-version: "3.12"
-      # Reads the pinned channel + components from rust-toolchain.toml.
       - uses: actions-rust-lang/setup-rust-toolchain@v1
-        if: matrix.os != 'macos-latest' || needs.macos-policy.outputs.macos_required == 'true'
-      - uses: actions/setup-node@v4
-        if: matrix.os != 'macos-latest' || needs.macos-policy.outputs.macos_required == 'true'
-        with:
-          node-version: "22"
-      - uses: oven-sh/setup-bun@v2
-        if: matrix.os != 'macos-latest' || needs.macos-policy.outputs.macos_required == 'true'
-      - uses: astral-sh/setup-uv@v6
-        if: matrix.os != 'macos-latest' || needs.macos-policy.outputs.macos_required == 'true'
       - uses: taiki-e/install-action@v2
-        if: matrix.os != 'macos-latest' || needs.macos-policy.outputs.macos_required == 'true'
         with:
-          tool: just,nextest,cargo-llvm-cov
-      # The pinned shell toolchain (.shell-tool-versions) that `just bootstrap`
-      # installs through scripts/shell-tools.sh: shellcheck and shfmt are
-      # release downloads, kcov a source build on Linux alone, so only a cold
-      # cache there needs kcov's build dependencies.
-      - name: Restore the pinned shell toolchain
-        if: matrix.os != 'macos-latest' || needs.macos-policy.outputs.macos_required == 'true'
-        id: shell-tools
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/oneharness/tools
-          key: shell-tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.shell-tool-versions', 'scripts/shell-tools.sh') }}
-      - name: Install kcov's build dependencies
-        if: (matrix.os != 'macos-latest' || needs.macos-policy.outputs.macos_required == 'true') && (runner.os == 'Linux' && steps.shell-tools.outputs.cache-hit != 'true')
-        run: sudo apt-get update -q && sudo apt-get install -y -q binutils-dev libcurl4-openssl-dev libdw-dev libiberty-dev libssl-dev zlib1g-dev
-      # The network recorder's gate-tier tests (tools/network-telemetry, and
-      # the live-variants journey) build unprivileged user+network namespaces
-      # behind the pasta first on PATH. The ubuntu-24.04 image already carries
-      # passt, but its AppArmor profile does not admit pasta's namespace, so
-      # the step lifts the restriction and proves that same pasta can start
-      # one. Below, OH_NET_NO_SKIP turns a recorder that cannot measure here
-      # into a failure rather than a skip.
-      # llmlint: ignore-block[least_privilege_grants, changed_behavior_has_e2e] An ephemeral single-tenant runner whose steps already hold passwordless root gains nothing from the restriction. The probe below is the step's own end-to-end proof; its hosted run is the only place it can run.
-      - name: Permit unprivileged namespaces for pasta (network recorder)
-        if: (matrix.os != 'macos-latest' || needs.macos-policy.outputs.macos_required == 'true') && (runner.os == 'Linux')
+          tool: nextest
+      - name: Record the runner image
         run: |
-          command -v pasta >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q passt; }
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          pasta --config-net --quiet -- true
-      # llmlint: ignore-end[least_privilege_grants, changed_behavior_has_e2e]
-      # A pasta that starts `true` can still refuse the recorder: Ubuntu
-      # 26.04's passt confines pasta to starting programs under /usr/bin and
-      # /bin, and refused the toolcache python the recorder runs in its
-      # namespace. So the recorder itself must measure one launch here.
-      - name: Prove the network recorder measures in pasta's namespace
-        if: (matrix.os != 'macos-latest' || needs.macos-policy.outputs.macos_required == 'true') && (runner.os == 'Linux')
-        run: bash scripts/network-recorder-preflight.sh
-      - name: Bootstrap
-        if: matrix.os != 'macos-latest' || needs.macos-policy.outputs.macos_required == 'true'
-        run: just bootstrap
-      - name: Select the gate tier
-        if: matrix.os != 'macos-latest' || needs.macos-policy.outputs.macos_required == 'true'
-        id: tier
-        shell: bash
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          HEAD_REF: ${{ github.head_ref }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          BEFORE: ${{ github.event.before }}
-          DISPATCH_TIER: ${{ inputs.tier }}
-        run: bash scripts/ci-gate-tier.sh
-      # Exactly one of the next two runs. scripts/ci-verdict.sh reads the second
-      # one's conclusion BY NAME to decide whether a release may ship without
-      # sweeping again, so its name is a contract (scripts/check-ci-gate-tier.sh).
-      - name: Affected tier (just check)
-        if: (matrix.os != 'macos-latest' || needs.macos-policy.outputs.macos_required == 'true') && (steps.tier.outputs.tier == 'affected')
-        env:
-          NX_BASE: ${{ steps.tier.outputs.base }}
-          OH_NET_NO_SKIP: ${{ runner.os == 'Linux' && '1' || '' }}
-        run: just check
-      - name: Full sweep (just check all)
-        if: (matrix.os != 'macos-latest' || needs.macos-policy.outputs.macos_required == 'true') && (steps.tier.outputs.tier == 'all')
-        env:
-          OH_NET_NO_SKIP: ${{ runner.os == 'Linux' && '1' || '' }}
-        run: just check all
-      # `just check` names no budget target, so the offline workflow budgets
-      # (github-workflows:budgets, after its telemetry-recording test) run here
-      # when the diff reaches them; the full sweep's `just budgets` covers them.
-      - name: Offline budgets (just budgets-offline)
-        if: steps.tier.outputs.tier == 'affected' && runner.os == 'Linux'
-        env:
-          NX_BASE: ${{ steps.tier.outputs.base }}
-        run: just budgets-offline
-      # llmlint: ignore-block[external_service_suite_stays_out_of_the_affected_tier] The scheduling contract explicitly requires CI's one Mac check to own the existing real live commands sequentially. They remain separate from Nx's deterministic affected tier, gated to trusted heads and the original workflow paths, while their Linux/Windows workflows retain coverage.
-      - name: Select consolidated live paths
-        id: live-paths
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true'
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          {
+            echo "### ${{ matrix.os }}"
+            echo "- runner image: ${ImageOS:-unknown} ${ImageVersion:-unknown}"
+            echo "- runner: ${{ runner.os }} ${{ runner.arch }} ($RUNNER_NAME)"
+            echo "- commit: $GITHUB_SHA"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Build the suite with the mock-harness seam
+        run: cargo nextest run -p oneharness-e2e -p oneharness -p oneharness-mock-harness --features oneharness/mock-harness --locked --no-run
+      - name: Run the catalog wait proofs and stepped-clock journeys RUNS times
         run: |
-          just github-install
-          node .github/live-paths.mjs
-      - name: Verify the auth token is present
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.claude == 'true'
-        env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          failed=0
+          gaps="$RUNNER_TEMP/gaps.txt"
+          : >"$gaps"
+          echo "| run | result | tests | fastest stepped - fastest control (ms) |" >>"$GITHUB_STEP_SUMMARY"
+          echo "|---|---|---|---|" >>"$GITHUB_STEP_SUMMARY"
+          for i in $(seq 1 "$RUNS"); do
+            log="$RUNNER_TEMP/run-$i.log"
+            if cargo nextest run -p oneharness-e2e -p oneharness -p oneharness-mock-harness --features oneharness/mock-harness --locked --no-fail-fast -E "$FILTER" --status-level all --final-status-level all --success-output immediate >"$log" 2>&1; then
+              result=pass
+            else
+              result=FAIL; failed=$((failed + 1))
+              cat "$log"
+            fi
+            summary="$(perl -pe 's/\e\[[0-9;]*m//g' "$log" | grep -E 'Summary' | tail -1 | perl -pe 's/^ *//')"
+            echo "run $i/$RUNS: $result — $summary"
+            perl -pe 's/\e\[[0-9;]*m//g' "$log" | grep -E '^ *(PASS|FAIL) \[|fastest' || true
+            # The gap per step: a Duration prints as s, ms or µs.
+            run_gaps="$(perl -ne 'sub ms { my ($v, $u) = @_; $u eq "s" ? $v * 1000 : $u eq "ms" ? $v : $v / 1000 } if (/step (-?\d+) ms: fastest stepped ([\d.]+)(s|ms|µs) of .*fastest control ([\d.]+)(s|ms|µs) of/) { printf "%s:%+.1f ", $1, ms($2, $3) - ms($4, $5) }' "$log" || true)"
+            echo "run $i/$RUNS gaps (ms): $run_gaps"
+            printf '%s\n' $run_gaps >>"$gaps"
+            echo "| $i | $result | $summary | $run_gaps |" >>"$GITHUB_STEP_SUMMARY"
+          done
+          largest="$(perl -ne 'if (/:([-+][\d.]+)/) { $a = abs($1); $m = $a if $a > $m } END { printf "%.1f", $m }' "$gaps")"
+          echo "${{ matrix.os }}: largest clean |gap| $largest ms over $(grep -c . "$gaps") step readings (tolerance 65 ms)" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "${{ matrix.os }}: $((RUNS - failed))/$RUNS runs passed" | tee -a "$GITHUB_STEP_SUMMARY"
+          [ "$failed" -eq 0 ]
+      # The manager's condition 3 (ruling a2): reintroduce a wall-clock-timed
+      # lock wait in waited_until and show each stepped-clock journey refuse
+      # it on the stepped-vs-control assertion, at +/-130 ms and +/-3 s.
+      - name: "Fault: a wall-clock-timed lock wait fails the stepped-vs-control assertion"
+        if: always()
         run: |
-          if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-            echo "::error::CLAUDE_CODE_OAUTH_TOKEN secret is not set. Mint one with 'claude setup-token', then sync it (just secrets-sync) or set it: gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo ${{ github.repository }}"
-            exit 1
-          fi
+          f=crates/oneharness-core/src/io/model_catalog.rs
+          perl -pi -e 's/let waited_until = Instant::now\(\) \+ MODEL_CATALOG_WAIT;/let waited_until = wall_now() + MODEL_CATALOG_WAIT;/; s/if Instant::now\(\) >= waited_until \{/if wall_now() >= waited_until {/' "$f"
+          [ "$(grep -cE 'wall_now\(\) \+ MODEL_CATALOG_WAIT|if wall_now\(\) >= waited_until' "$f")" = 2 ] || { echo "fault patch did not apply"; exit 1; }
+          git diff -- "$f"
+          echo "#### fault: wall-clock-timed waited_until" >>"$GITHUB_STEP_SUMMARY"
+          bad=0
+          for i in 1 2 3; do
+            echo "fault run $i:"
+            log="$RUNNER_TEMP/fault-$i.log"
+            cargo nextest run -p oneharness-e2e -p oneharness -p oneharness-mock-harness --features oneharness/mock-harness --locked --no-fail-fast -E 'package(oneharness-e2e) & test(/a_lock_wait_falls_back_at_model_catalog_wait/)' >"$log" 2>&1 && { echo "fault run $i: the journeys PASSED under the fault"; bad=$((bad + 1)); continue; }
+            clean="$(perl -pe 's/\e\[[0-9;]*m//g' "$log")"
+            for step in -130 130 -3000 3000; do
+              line="$(printf '%s\n' "$clean" | grep -E "^ *step $step ms: the fastest stepped launch fell back .* more than 65ms apart" | head -1 | perl -pe 's/ \(stepped \[.*//; s/^ *//' || true)"
+              if [ -n "$line" ]; then
+                echo "fault run $i, step $step ms: refused — $line"
+                echo "- run $i, step $step ms: refused — $line" >>"$GITHUB_STEP_SUMMARY"
+              else
+                echo "fault run $i, step $step ms: NOT refused by the stepped-vs-control assertion"
+                printf '%s\n' "$clean" | grep -E "^ *step $step ms|panicked|error" | head -5 || true
+                echo "- run $i, step $step ms: NOT refused by the stepped-vs-control assertion" >>"$GITHUB_STEP_SUMMARY"
+                bad=$((bad + 1))
+              fi
+            done
+          done
+          git checkout -- "$f"
+          [ "$bad" -eq 0 ]
 
-      - uses: actions/setup-node@v4
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.claude == 'true'
-        with:
-          node-version: lts/*
-      - name: Install Claude Code CLI
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.claude == 'true'
-        run: |
-          npm install -g @anthropic-ai/claude-code
-          claude --version
-
-      - name: Live e2e against the real CLI
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.claude == 'true'
-        env:
-          OH_E2E_NO_SKIP: 1
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          CLAUDE_E2E_MODEL: ${{ vars.CLAUDE_E2E_MODEL }}
-        run: just live-claude
-      - name: Verify the API key is present
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.codex == 'true'
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: |
-          if [ -z "${OPENAI_API_KEY:-}" ]; then
-            echo "::error::OPENAI_API_KEY secret is not set. Create a key at https://platform.openai.com/api-keys, then sync it (just secrets-sync) or set it: gh secret set OPENAI_API_KEY --repo ${{ github.repository }}"
-            exit 1
-          fi
-
-      - uses: actions/setup-node@v4
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.codex == 'true'
-        with:
-          node-version: lts/*
-      - name: Install Codex CLI
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.codex == 'true'
-        run: |
-          npm install -g @openai/codex
-          codex --version
-
-      # Codex does not pick up OPENAI_API_KEY from the env for headless `exec`;
-      # the documented CI pattern is to write ~/.codex/auth.json from the key on
-      # stdin. Without this, codex hits the Responses API with no bearer (401).
-      - name: Authenticate Codex with the API key (headless)
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.codex == 'true'
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: printenv OPENAI_API_KEY | codex login --with-api-key
-
-      - name: Live e2e against the real CLI
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.codex == 'true'
-        env:
-          OH_E2E_NO_SKIP: 1
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          CODEX_E2E_MODEL: ${{ vars.CODEX_E2E_MODEL }}
-        run: just live-codex
-      - name: Verify the provider key is present
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.opencode == 'true'
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: |
-          if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-            echo "::error::ANTHROPIC_API_KEY secret is not set. Create a key at https://console.anthropic.com/, then sync it (just secrets-sync) or set it: gh secret set ANTHROPIC_API_KEY --repo ${{ github.repository }}"
-            exit 1
-          fi
-
-      - uses: actions/setup-node@v4
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.opencode == 'true'
-        with:
-          node-version: lts/*
-      - name: Install OpenCode CLI
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.opencode == 'true'
-        run: |
-          npm install -g opencode-ai
-          opencode --version
-
-      - name: Live e2e against the real CLI
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.opencode == 'true'
-        env:
-          OH_E2E_NO_SKIP: 1
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          OPENCODE_E2E_MODEL: ${{ vars.OPENCODE_E2E_MODEL }}
-        run: just live-opencode
-      - name: Verify the provider key is present
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.goose == 'true'
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: |
-          if [ -z "${OPENAI_API_KEY:-}" ]; then
-            echo "::error::OPENAI_API_KEY secret is not set. Add a provider key (and optionally set the GOOSE_E2E_MODEL repo variable), then sync it (just secrets-sync) or set it: gh secret set OPENAI_API_KEY --repo ${{ github.repository }}"
-            exit 1
-          fi
-
-      - name: Install Goose CLI (Unix)
-        if: (matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.goose == 'true') && (runner.os != 'Windows')
-        run: |
-          # llmlint: ignore[boundary_inputs_validated] Retain Goose's existing vendor TLS installer trust boundary; see e2e-goose.yml.
-          curl -fsSL https://github.com/block/goose/releases/download/stable/download_cli.sh | CONFIGURE=false bash
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: Live e2e against the real CLI
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.goose == 'true'
-        env:
-          OH_E2E_NO_SKIP: 1
-          GOOSE_PROVIDER: openai
-          GOOSE_MODEL: ${{ vars.GOOSE_E2E_MODEL }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: |
-          goose --version
-          just live-goose
-      - name: Verify the provider key is present
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.qwen == 'true'
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: |
-          if [ -z "${OPENAI_API_KEY:-}" ]; then
-            echo "::error::OPENAI_API_KEY secret is not set. Add an OpenAI-compatible key (with OPENAI_BASE_URL / QWEN_E2E_MODEL as needed), then sync it (just secrets-sync) or set it: gh secret set OPENAI_API_KEY --repo ${{ github.repository }}"
-            exit 1
-          fi
-
-      - uses: actions/setup-node@v4
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.qwen == 'true'
-        with:
-          node-version: "22"
-      - name: Install Qwen Code CLI
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.qwen == 'true'
-        run: |
-          npm install -g @qwen-code/qwen-code
-          qwen --version
-
-      # Qwen's default endpoint is DashScope; to drive it with OPENAI_API_KEY we
-      # point it at OpenAI explicitly and pick a model the key can call. Override
-      # either via repo variables (QWEN_OPENAI_BASE_URL / QWEN_E2E_MODEL).
-      - name: Live e2e against the real CLI
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.qwen == 'true'
-        env:
-          OH_E2E_NO_SKIP: 1
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_BASE_URL: ${{ vars.QWEN_OPENAI_BASE_URL || 'https://api.openai.com/v1' }}
-          OPENAI_MODEL: ${{ vars.QWEN_E2E_MODEL || 'gpt-4o-mini' }}
-          QWEN_E2E_MODEL: ${{ vars.QWEN_E2E_MODEL || 'gpt-4o-mini' }}
-        run: just live-qwen
-      - name: Verify the provider key is present
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.crush == 'true'
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: |
-          if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-            echo "::error::ANTHROPIC_API_KEY secret is not set. Create a key at https://console.anthropic.com/, then sync it (just secrets-sync) or set it: gh secret set ANTHROPIC_API_KEY --repo ${{ github.repository }}"
-            exit 1
-          fi
-
-      - uses: actions/setup-node@v4
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.crush == 'true'
-        with:
-          node-version: lts/*
-      - name: Install Crush CLI
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.crush == 'true'
-        run: |
-          npm install -g @charmland/crush
-          crush --version
-
-      - name: Live e2e against the real CLI
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.crush == 'true'
-        env:
-          OH_E2E_NO_SKIP: 1
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          CRUSH_E2E_MODEL: ${{ vars.CRUSH_E2E_MODEL }}
-        run: just live-crush
-      - name: Verify the API token is present
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.copilot == 'true'
-        env:
-          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
-        run: |
-          if [ -z "${COPILOT_GITHUB_TOKEN:-}" ]; then
-            echo "::error::COPILOT_GITHUB_TOKEN secret is not set. Create a fine-grained PAT with the 'Copilot Requests' permission at https://github.com/settings/personal-access-tokens/new, then sync it (just secrets-sync) or set it: gh secret set COPILOT_GITHUB_TOKEN --repo ${{ github.repository }}"
-            exit 1
-          fi
-
-      - uses: actions/setup-node@v4
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.copilot == 'true'
-        with:
-          node-version: lts/*
-      - name: Install Copilot CLI
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.copilot == 'true'
-        run: |
-          npm install -g @github/copilot
-          copilot --version
-
-      - name: Live e2e against the real CLI
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.copilot == 'true'
-        env:
-          OH_E2E_NO_SKIP: 1
-          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
-          COPILOT_E2E_MODEL: ${{ vars.COPILOT_E2E_MODEL }}
-        run: just live-copilot
-      - name: Verify the API key is present
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.cursor == 'true'
-        env:
-          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
-        run: |
-          if [ -z "${CURSOR_API_KEY:-}" ]; then
-            echo "::error::CURSOR_API_KEY secret is not set. Generate a user key at https://cursor.com/dashboard/api, then sync it (just secrets-sync) or set it: gh secret set CURSOR_API_KEY --repo ${{ github.repository }}"
-            exit 1
-          fi
-
-      - name: Install Cursor CLI (Unix)
-        if: (matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.cursor == 'true') && (runner.os != 'Windows')
-        run: |
-          # llmlint: ignore[boundary_inputs_validated] Retain Cursor's existing vendor TLS installer trust boundary; see e2e-cursor.yml.
-          curl https://cursor.com/install -fsS | bash
-          if [ -x "$HOME/.local/bin/cursor-agent" ]; then
-            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          else
-            dir="$(dirname "$(find "$HOME" -name cursor-agent -type f 2>/dev/null | head -1)")"
-            [ -n "$dir" ] && echo "$dir" >> "$GITHUB_PATH"
-          fi
-
-      - name: Show cursor-agent version
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.cursor == 'true'
-        run: |
-          if [ "$RUNNER_OS" = Windows ]; then
-            cursor-agent.cmd --version
-          else
-            cursor-agent --version
-          fi
-
-      - name: Live e2e against the real CLI
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.cursor == 'true'
-        env:
-          OH_E2E_NO_SKIP: 1
-          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
-          CURSOR_E2E_MODEL: ${{ vars.CURSOR_E2E_MODEL }}
-          # Reasoning effort is a `-<tier>` suffix on the model id, so `--reasoning
-          # high` turns this BASE model into `<base>-high` (e.g. `gpt-5.4-mini` →
-          # `gpt-5.4-mini-high`, a real cursor id). Must be a base whose family
-          # accepts the tier suffix; override with `vars.CURSOR_E2E_REASONING_MODEL`
-          # for the account/plan. NOT the shared CURSOR_E2E_MODEL (that one may be a
-          # tier-less id like `auto` that `-high` would make invalid).
-          CURSOR_E2E_REASONING_MODEL: ${{ vars.CURSOR_E2E_REASONING_MODEL || 'gpt-5.4-mini' }}
-        run: just live-cursor
-      - name: Verify the auth token is present
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.schema == 'true'
-        env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-        run: |
-          if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-            echo "::error::CLAUDE_CODE_OAUTH_TOKEN secret is not set. Mint one with 'claude setup-token', then sync it (just secrets-sync) or set it: gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo ${{ github.repository }}"
-            exit 1
-          fi
-
-      - uses: actions/setup-node@v4
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.schema == 'true'
-        with:
-          node-version: lts/*
-      - name: Install Claude Code CLI
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.schema == 'true'
-        run: |
-          npm install -g @anthropic-ai/claude-code
-          claude --version
-
-      - name: Live e2e against the real CLI
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.schema == 'true'
-        env:
-          OH_E2E_NO_SKIP: 1
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          CLAUDE_E2E_MODEL: ${{ vars.CLAUDE_E2E_MODEL }}
-        run: just live-schema
-      - name: Verify API identities
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.variants == 'true'
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: |
-          [ -n "${ANTHROPIC_API_KEY:-}" ] || { echo "::error::ANTHROPIC_API_KEY is missing"; exit 1; }
-          [ -n "${OPENAI_API_KEY:-}" ] || { echo "::error::OPENAI_API_KEY is missing"; exit 1; }
-      - uses: actions/setup-node@v4
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.variants == 'true'
-        with:
-          node-version: lts/*
-      - name: Install workflow policy tooling
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.variants == 'true'
-        run: just github-install
-      - name: Install real CLIs
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.variants == 'true'
-        run: bash scripts/live-variants-tools-e2e.sh
-      - name: Live API variants and same-harness fallback
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.variants == 'true'
-        env:
-          OH_E2E_NO_SKIP: 1
-          OH_E2E_VARIANTS_API_ONLY: 1
-          OH_E2E_VARIANTS_RUN_OPENCODE: "1"
-          OH_E2E_VARIANTS_RUN_QWEN: "0"
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: just live-variants
-      - name: Verify every controllable harness's credential is present
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.control == 'true'
-        env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
-        run: |
-          # Checked up front rather than per phase: with OH_E2E_NO_SKIP set a
-          # missing key fails the suite minutes into paid model calls, and the
-          # error there names the harness rather than the secret to set.
-          missing=()
-          [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || missing+=("CLAUDE_CODE_OAUTH_TOKEN (claude-code)")
-          [ -n "${OPENAI_API_KEY:-}" ] || missing+=("OPENAI_API_KEY (codex, goose)")
-          [ -n "${ANTHROPIC_API_KEY:-}" ] || missing+=("ANTHROPIC_API_KEY (opencode, crush)")
-          [ -n "${COPILOT_GITHUB_TOKEN:-}" ] || missing+=("COPILOT_GITHUB_TOKEN (copilot)")
-          if [ "${#missing[@]}" -gt 0 ]; then
-            printf '::error::missing secret: %s\n' "${missing[@]}"
-            echo "Sync them with 'just secrets-sync', or set each: gh secret set <NAME> --repo ${{ github.repository }}"
-            exit 1
-          fi
-
-      - uses: actions/setup-node@v4
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.control == 'true'
-        with:
-          node-version: lts/*
-
-      - name: Install the npm-distributed harness CLIs
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.control == 'true'
-        run: |
-          npm install -g @anthropic-ai/claude-code @openai/codex opencode-ai @charmland/crush @github/copilot
-          claude --version
-          codex --version
-          opencode --version
-          crush --version
-          copilot --version
-
-      - name: Install Goose CLI
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.control == 'true'
-        run: |
-          # llmlint: ignore[boundary_inputs_validated] Retain Goose's existing vendor TLS installer trust boundary; see e2e-goose.yml.
-          curl -fsSL https://github.com/block/goose/releases/download/stable/download_cli.sh | CONFIGURE=false bash
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      # Codex does not read OPENAI_API_KEY for headless work; the documented CI
-      # pattern is to write ~/.codex/auth.json from the key on stdin. Its
-      # app-server (the control mechanism here) authenticates the same way.
-      - name: Authenticate Codex with the API key (headless)
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.control == 'true'
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: printenv OPENAI_API_KEY | codex login --with-api-key
-
-      - name: Live turn-control e2e against every controllable harness
-        if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.control == 'true'
-        env:
-          OH_E2E_NO_SKIP: 1
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          CLAUDE_E2E_MODEL: ${{ vars.CLAUDE_E2E_MODEL }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          CODEX_E2E_MODEL: ${{ vars.CODEX_E2E_MODEL }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          OPENCODE_E2E_MODEL: ${{ vars.OPENCODE_E2E_MODEL }}
-          CRUSH_E2E_MODEL: ${{ vars.CRUSH_E2E_MODEL }}
-          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
-          COPILOT_E2E_MODEL: ${{ vars.COPILOT_E2E_MODEL }}
-          # Goose takes no --model flag; it resolves provider/model from the
-          # environment. e2e-control.sh prefers Anthropic when its key is
-          # present because a model that batches all 60 steps into one command
-          # can never be caught mid-turn (see the goose phase for the measurement).
-          GOOSE_E2E_MODEL: ${{ vars.GOOSE_E2E_MODEL }}
-        run: just live-control
-
-      # llmlint: ignore-end[external_service_suite_stays_out_of_the_affected_tier]
-
-      # The project budgets no gate tier runs — pool-maintenance's builds the
-      # repository twice — follow the full sweep, on the Linux leg alone: the
-      # pool slots whose maintenance it times are Linux (pool-maintenance/AGENTS.md).
-      - name: Project budgets (just budgets)
-        if: steps.tier.outputs.tier == 'all' && runner.os == 'Linux'
-        run: just budgets
-
-  # Package both crates exactly as Cargo will verify them at publish time. On its
-  # own job for the same reason `deny` is — it needs the network-fetched
-  # crates.io index — and, unlike `check`, deliberately absent from release.yml:
-  # at a release tag the binary already pins the core version that same run
-  # publishes, so this check cannot be green there and must never be in a
-  # position to skip the publish jobs.
   package:
     runs-on: ubuntu-latest
     steps:

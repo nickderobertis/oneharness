@@ -1803,6 +1803,54 @@ fn an_overlay_that_cannot_be_made_stops_the_run_before_anything_spawns() {
 
 #[cfg(unix)]
 #[test]
+fn an_unreadable_user_rules_directory_stops_the_run_rather_than_drop_its_rules() {
+    // The overlay's `rules/` carries the user's own rule files beside the
+    // run's allows. When the real home's `rules/` exists but cannot be read,
+    // an overlay without them would lose their `forbidden` rules while
+    // gaining the run's allows — so the run stops before anything spawns, and
+    // leaves no overlay behind.
+    use std::os::unix::fs::PermissionsExt;
+    let world = World::new("unreadable-rules");
+    let rules = world.path("codex-home/rules");
+    std::fs::set_permissions(&rules, std::fs::Permissions::from_mode(0o000)).unwrap();
+    // Skipped where permissions do not bind, as for root.
+    if std::fs::read_dir(&rules).is_ok() {
+        std::fs::set_permissions(&rules, std::fs::Permissions::from_mode(0o755)).unwrap();
+        return;
+    }
+    let tool = world.tool();
+    let config = world.config(&format!(
+        "allowed_tools = [\"Bash({tool})\"]\n[harness.codex]\nshared_model_catalog = false\n"
+    ));
+    let argv_file = world.path("argv");
+    let output = world.oh(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--mode",
+            "read-only",
+            "--prompt",
+            "p",
+        ],
+        &config,
+        &[("MOCK_ARGV_FILE", argv_file.to_str().unwrap())],
+    );
+    std::fs::set_permissions(&rules, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr
+            .contains("could not create the run overlay a run-level allowlist is applied through"),
+        "{stderr}"
+    );
+    assert!(!argv_file.exists(), "a harness was spawned");
+    assert!(output.stdout.is_empty());
+    assert!(world.overlays().is_empty(), "{:?}", world.overlays());
+}
+
+#[cfg(unix)]
+#[test]
 fn every_spelling_of_a_codex_store_override_withholds_the_grant() {
     let world = World::new("codex-store-spellings");
     let tool = world.tool();

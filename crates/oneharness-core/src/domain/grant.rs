@@ -557,6 +557,21 @@ pub fn platform_withheld_reason() -> Option<String> {
     None
 }
 
+/// The diagnostic a run that withholds `resolved` on harness `id` (a base
+/// id) carries: the withheld rules, as written, and `reason`.
+#[must_use]
+pub fn withheld(id: &str, resolved: &ResolvedRules, reason: &str) -> Diagnostic {
+    Diagnostic::new(
+        id,
+        Setting::AllowedTools,
+        format!(
+            "the run-level allowlist ({}) was withheld on `{id}`, which ran as it does with \
+             none: {reason}",
+            quoted(resolved.rules.iter().map(ResolvedRule::written))
+        ),
+    )
+}
+
 /// Plan how harness `id` (a base id) receives `resolved`, under the mode it
 /// was resolved for.
 ///
@@ -571,15 +586,7 @@ pub fn plan(id: &str, resolved: &ResolvedRules, withhold: Option<&str>) -> Grant
         return GrantPlan::None;
     }
     if let Some(reason) = withhold.or_else(|| withheld_reason(id)) {
-        return GrantPlan::Withheld(Diagnostic::new(
-            id,
-            Setting::AllowedTools,
-            format!(
-                "the run-level allowlist ({}) was withheld on `{id}`, which ran as it does with \
-                 none: {reason}",
-                quoted(rules.iter().map(ResolvedRule::written))
-            ),
-        ));
+        return GrantPlan::Withheld(withheld(id, resolved, reason));
     }
     let read_only = mode == PermissionMode::ReadOnly;
     if id == CLAUDE {

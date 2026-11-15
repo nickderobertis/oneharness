@@ -5774,12 +5774,21 @@ pub(crate) fn parse_env(values: &[String]) -> Result<Vec<(String, String)>, Oneh
         .collect()
 }
 
-/// One unit's run-level allowlist, resolved and planned for its harness:
-/// a Codex grant always with the real home its overlay links into.
+/// One unit's run-level allowlist, resolved and planned for its harness.
+/// Each applying variant carries what its delivery needs, so a Codex grant
+/// cannot exist without the real home its overlay links into.
 enum UnitGrant {
-    /// Anything but a Codex grant: no rule, withheld, unexpressible, or
-    /// Claude Code's flags.
-    Plan(grant::GrantPlan),
+    /// No run-level rule for this unit: the run is exactly as without.
+    None,
+    /// The grant is withheld, and this diagnostic says why.
+    Withheld(lean::Diagnostic),
+    /// No rule is one the harness can express; nothing reaches it.
+    Unexpressible(lean::Diagnostic),
+    /// Claude Code's `--allowedTools` entries.
+    Claude {
+        grant: grant::ClaudeGrant,
+        statement: Option<String>,
+    },
     /// A Codex grant, applied through an overlay of `real_home`.
     Codex {
         grant: grant::CodexGrant,
@@ -5798,22 +5807,28 @@ struct CodexOverlayPlan<'a> {
 impl UnitGrant {
     fn statement(&self) -> Option<&str> {
         match self {
-            UnitGrant::Plan(plan) => plan.statement(),
-            UnitGrant::Codex { statement, .. } => statement.as_deref(),
+            UnitGrant::Claude { statement, .. } | UnitGrant::Codex { statement, .. } => {
+                statement.as_deref()
+            }
+            UnitGrant::None | UnitGrant::Withheld(_) | UnitGrant::Unexpressible(_) => None,
         }
     }
 
     fn claude(&self) -> Option<&grant::ClaudeGrant> {
         match self {
-            UnitGrant::Plan(plan) => plan.claude(),
-            UnitGrant::Codex { .. } => None,
+            UnitGrant::Claude { grant, .. } => Some(grant),
+            _ => None,
         }
     }
 
     fn diagnostics(&self) -> Vec<lean::Diagnostic> {
         match self {
-            UnitGrant::Plan(plan) => plan.diagnostics(),
-            UnitGrant::Codex { unmapped, .. } => unmapped.iter().cloned().collect(),
+            UnitGrant::Withheld(d)
+            | UnitGrant::Unexpressible(d)
+            | UnitGrant::Codex {
+                unmapped: Some(d), ..
+            } => vec![d.clone()],
+            _ => Vec::new(),
         }
     }
 
@@ -5825,7 +5840,7 @@ impl UnitGrant {
                 rules: grant.rules(),
                 real_home,
             }),
-            UnitGrant::Plan(_) => None,
+            _ => None,
         }
     }
 }
@@ -5852,7 +5867,7 @@ fn plan_unit_grant(
 ) -> Result<UnitGrant, OneharnessError> {
     let rules = cfg.allowed_tools_for(selected_id);
     if rules.is_empty() {
-        return Ok(UnitGrant::Plan(grant::GrantPlan::None));
+        return Ok(UnitGrant::None);
     }
     let mut env: Vec<(String, String)> = spec
         .default_env
@@ -5885,50 +5900,53 @@ fn plan_unit_grant(
             reason: refusal.reason(),
         }
     })?;
-    if let Some(reason) = grant::platform_withheld_reason() {
-        return Ok(UnitGrant::Plan(grant::plan(
-            spec.id,
-            &resolved,
-            Some(&reason),
-        )));
-    }
-    if spec.id != "codex" {
-        return Ok(UnitGrant::Plan(grant::plan(spec.id, &resolved, None)));
-    }
-    let fallback_cwd;
-    let cwd = match cwd {
-        Some(cwd) => cwd,
-        None => {
-            fallback_cwd = project_start.to_path_buf();
-            &fallback_cwd
-        }
-    };
-    let home = lean_io::codex_home(&env, &env_remove, Some(cwd));
-    // Every arg the launch carries that can name a login store: the
-    // identity's own, then the caller's passthrough, which rides last.
-    let launch_args: Vec<String> = cfg
-        .args_for(selected_id)
-        .iter()
-        .chain(passthrough)
-        .cloned()
-        .collect();
-    // The Codex variant is built only here, where its home is in hand.
-    Ok(match codex_overlay_home(home.as_deref(), &launch_args) {
-        Err(reason) => UnitGrant::Plan(grant::plan(spec.id, &resolved, Some(&reason))),
-        Ok(real_home) => match grant::plan(spec.id, &resolved, None) {
+    let platform_reason = grant::platform_withheld_reason();
+    // Every variant but Codex's is the plan's own; a Codex plan becomes a
+    // grant only with the real home its overlay links into, and is withheld
+    // when there is none.
+    Ok(
+        match grant::plan(spec.id, &resolved, platform_reason.as_deref()) {
+            grant::GrantPlan::None => UnitGrant::None,
+            grant::GrantPlan::Withheld(d) => UnitGrant::Withheld(d),
+            grant::GrantPlan::Unexpressible(d) => UnitGrant::Unexpressible(d),
+            grant::GrantPlan::Claude { grant, statement } => UnitGrant::Claude { grant, statement },
             grant::GrantPlan::Codex {
                 grant,
                 statement,
                 unmapped,
-            } => UnitGrant::Codex {
-                grant,
-                statement,
-                unmapped,
-                real_home: real_home.to_path_buf(),
-            },
-            plan => UnitGrant::Plan(plan),
+            } => {
+                let fallback_cwd;
+                let cwd = match cwd {
+                    Some(cwd) => cwd,
+                    None => {
+                        fallback_cwd = project_start.to_path_buf();
+                        &fallback_cwd
+                    }
+                };
+                let home = lean_io::codex_home(&env, &env_remove, Some(cwd));
+                // Every arg the launch carries that can name a login store:
+                // the identity's own, then the caller's passthrough, which
+                // rides last.
+                let launch_args: Vec<String> = cfg
+                    .args_for(selected_id)
+                    .iter()
+                    .chain(passthrough)
+                    .cloned()
+                    .collect();
+                match codex_overlay_home(home.as_deref(), &launch_args) {
+                    Err(reason) => {
+                        UnitGrant::Withheld(grant::withheld(spec.id, &resolved, &reason))
+                    }
+                    Ok(real_home) => UnitGrant::Codex {
+                        grant,
+                        statement,
+                        unmapped,
+                        real_home: real_home.to_path_buf(),
+                    },
+                }
+            }
         },
-    })
+    )
 }
 
 /// Every `-c` / `--config` override in a Codex argv, in order, as `(key,

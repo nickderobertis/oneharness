@@ -165,11 +165,18 @@ impl RunOverlay {
         }
         let rules = home.join("rules");
         fs::create_dir_all(&rules)?;
-        if let Ok(entries) = fs::read_dir(real.join("rules")) {
-            for entry in entries {
-                let name = entry?.file_name();
-                if name != RUN_RULES_FILE {
-                    symlink(&real.join("rules").join(&name), &rules.join(&name))?;
+        // A home with no `rules/` has no user rule to carry. Any other failure
+        // to read it stops the overlay: building one without the user's rules
+        // would drop their `forbidden` rules while adding the run's allows.
+        match fs::read_dir(real.join("rules")) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+            Ok(entries) => {
+                for entry in entries {
+                    let name = entry?.file_name();
+                    if name != RUN_RULES_FILE {
+                        symlink(&real.join("rules").join(&name), &rules.join(&name))?;
+                    }
                 }
             }
         }
@@ -183,38 +190,51 @@ impl RunOverlay {
 
     /// Seed the overlay home's thread index with one `bin` builds over an
     /// empty home, so the run never backfills the real `sessions/` tree. Only
-    /// when the real home keeps an index; a seed that cannot be built leaves
-    /// the home without one, and Codex then indexes what it finds — slower
-    /// but correct.
+    /// when the real home keeps an index. Every way a seed can fail — the
+    /// template directory, the helper's exchange, reading or copying what it
+    /// built — takes one path: a warning on stderr, no partial index in the
+    /// home, and Codex indexing what it finds, slower but correct. The
+    /// journey `a_helper_that_refuses_answers_badly_or_never_answers_leaves_the_turn_whole`
+    /// drives that path.
     pub fn seed_thread_index(&self, launch: &HelperLaunch<'_>) {
         let Some(codex) = self.codex.as_ref().filter(|codex| codex.indexed()) else {
             return;
         };
         let template = self.dir.join("thread-index-seed");
-        if fs::create_dir_all(&template).is_err() {
-            return;
-        }
-        let built = exchange(
-            launch,
-            &template,
-            self.marker(),
-            &[("thread/list", json!({}))],
-        );
-        if let Err(error) = built {
+        let seeded = self.build_seed(launch, &template, &codex.home);
+        let _ = fs::remove_dir_all(&template);
+        if let Err(error) = seeded {
+            remove_thread_index(&codex.home);
             eprintln!(
                 "oneharness: warning: could not build the run overlay's Codex thread index \
                  ({error}); Codex will index the home itself"
             );
         }
-        if let Ok(entries) = fs::read_dir(&template) {
-            for entry in entries.flatten() {
-                let name = entry.file_name();
-                if is_thread_index(&name.to_string_lossy()) {
-                    let _ = fs::copy(entry.path(), codex.home.join(&name));
-                }
+    }
+
+    /// Build a thread index in `template` and copy it into `home`.
+    fn build_seed(
+        &self,
+        launch: &HelperLaunch<'_>,
+        template: &Path,
+        home: &Path,
+    ) -> Result<(), String> {
+        fs::create_dir_all(template).map_err(|error| error.to_string())?;
+        exchange(
+            launch,
+            template,
+            self.marker(),
+            &[("thread/list", json!({}))],
+        )?;
+        let entries = fs::read_dir(template).map_err(|error| error.to_string())?;
+        for entry in entries {
+            let entry = entry.map_err(|error| error.to_string())?;
+            let name = entry.file_name();
+            if is_thread_index(&name.to_string_lossy()) {
+                fs::copy(entry.path(), home.join(&name)).map_err(|error| error.to_string())?;
             }
         }
-        let _ = fs::remove_dir_all(&template);
+        Ok(())
     }
 
     /// After a granted Codex turn has ended, have a Codex app-server on the
@@ -563,6 +583,17 @@ pub fn links_supported() -> bool {
 
 /// Start a Codex app-server on `home`, initialize it, send `requests` in turn
 /// and wait for each reply, then close its stdin and wait for it to exit.
+/// Remove every thread-index file at `home`'s top level, so a seed that
+/// failed part-way leaves no partial index for Codex to open. Best-effort: an
+/// entry that cannot be removed is one Codex opens and repairs as its own.
+fn remove_thread_index(home: &Path) {
+    for entry in fs::read_dir(home).into_iter().flatten().flatten() {
+        if is_thread_index(&entry.file_name().to_string_lossy()) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
 fn exchange(
     launch: &HelperLaunch<'_>,
     home: &Path,

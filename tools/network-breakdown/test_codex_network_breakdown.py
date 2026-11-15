@@ -313,13 +313,14 @@ class RefusalsWithoutANamespace(unittest.TestCase):
         # so a refusal there must name the init directly. This runs the real
         # script as Windows presents itself: sys.platform "win32" and no
         # os.environb, the stdlib it uses imported first so only the script
-        # and the recorder it loads see the difference.
+        # and the recorder it loads see the difference. On real Windows
+        # os.environb is already absent, so there is nothing to remove.
         windows = (
             "import argparse, contextlib, ctypes, importlib.util, ipaddress, json, math, os, re,"
             " runpy, select, shutil, signal, socket, subprocess, sys, tempfile, threading, time,"
             " traceback, dataclasses, datetime, enum, pathlib, types, typing\n"
             "sys.platform = 'win32'\n"
-            "del os.environb\n"
+            "if hasattr(os, 'environb'): del os.environb\n"
             "sys.argv = [sys.argv[1], '--', 'true']\n"
             "runpy.run_path(sys.argv[0], run_name='__main__')\n"
         )

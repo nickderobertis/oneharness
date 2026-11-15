@@ -6027,6 +6027,131 @@ fn the_reuse_workload_refuses_a_loaded_list_still_paging_at_its_deadline() {
     );
 }
 
+// llmlint: ignore-block[e2e_not_mocked] The control suite's run-overlay phase runs for real — scripts/e2e-control.sh's selection, Linux guard, argument wiring and failure handling; only `uv`, the launcher of its live workload and budget check, is a recording stand-in (and `uname` one that reports macOS), because that workload drives the real codex CLI against a scripted model endpoint, which the gate cannot run. The workload itself against real Codex is scripts/e2e-control.sh's live run.
+/// The control suite selected to its run-overlay phase, with `uv` a stand-in
+/// that records each launch to `uv.log` and fails the one whose arguments
+/// contain `OH_UV_FAIL_ON`.
+fn run_overlay_suite(tag: &str, envs: &[(&str, &str)]) -> (Output, Vec<String>) {
+    let suite = ControlSuite::new(tag);
+    suite.tool(
+        "uv",
+        r#"printf '%s\n' "$*" >> "$OH_UV_LOG"
+if [ -n "${OH_UV_FAIL_ON:-}" ]; then case "$*" in *"$OH_UV_FAIL_ON"*) exit 7 ;; esac; fi
+exit 0"#,
+    );
+    let log = suite.pool.path("uv.log");
+    let log_env = log.display().to_string();
+    let mut all: Vec<(&str, &str)> =
+        vec![("OH_CONTROL_ONLY", "run-overlay"), ("OH_UV_LOG", &log_env)];
+    all.extend_from_slice(envs);
+    if envs.iter().any(|(k, _)| *k == "OH_FAKE_UNAME") {
+        suite.tool(
+            "uname",
+            r#"if [ "${1:-}" = -s ]; then echo "$OH_FAKE_UNAME"; else command -p uname "$@"; fi"#,
+        );
+    }
+    let out = suite.run(&all);
+    let launches = std::fs::read_to_string(&log)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    (out, launches)
+}
+
+/// Selected alone on Linux, the run-overlay phase runs the controlled-path
+/// proof, then the budget workload writing the telemetry the budget reads,
+/// then checks that one budget — in that order — and runs no other phase.
+#[test]
+fn the_control_suite_s_run_overlay_phase_runs_its_proof_workload_and_budget_check_in_order() {
+    if !cfg!(target_os = "linux") {
+        return;
+    }
+    let (out, launches) = run_overlay_suite("overlay-suite", &[]);
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{said}");
+    assert!(
+        said.contains("the run-overlay phase ran; no other phase was run"),
+        "{said}"
+    );
+    assert!(!said.contains("pooled-env"), "{said}");
+    assert_eq!(launches.len(), 4, "{launches:#?}");
+    assert!(
+        launches[0]
+            .ends_with("live/control/run_allowlist_live.py --harness codex --codex-path control"),
+        "{launches:#?}"
+    );
+    assert!(
+        launches[1].ends_with(&format!(
+            "live/control/run_allowlist_live.py --budget-telemetry {}",
+            repo_root()
+                .join("target/e2e-telemetry/run-overlay/codex-turn.json")
+                .display()
+        )),
+        "{launches:#?}"
+    );
+    assert!(launches[2].starts_with("sync "), "{launches:#?}");
+    assert!(
+        launches[3]
+            .ends_with("onebudgetspec check budgets.yaml --id codex-run-overlay-added-seconds"),
+        "{launches:#?}"
+    );
+}
+
+/// Each step's failure fails the suite naming that step, and nothing after
+/// it is launched: a broken guarantee is never followed by a budget reading
+/// that could read as the phase passing.
+#[test]
+fn the_control_suite_s_run_overlay_phase_fails_naming_the_step_that_failed() {
+    if !cfg!(target_os = "linux") {
+        return;
+    }
+    for (fail_on, said_here, launched) in [
+        (
+            "--codex-path control",
+            "run-overlay: a granted controlled Codex turn broke a guarantee",
+            1,
+        ),
+        (
+            "--budget-telemetry",
+            "run-overlay: the budget workload failed",
+            2,
+        ),
+        (
+            "--no-install-workspace",
+            "run-overlay: could not install onebudgetspec",
+            3,
+        ),
+        (
+            "codex-run-overlay-added-seconds",
+            "run-overlay: the granted-turn budget",
+            4,
+        ),
+    ] {
+        let (out, launches) =
+            run_overlay_suite("overlay-suite-fail", &[("OH_UV_FAIL_ON", fail_on)]);
+        let said = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{fail_on}: the suite passed: {said}");
+        assert!(said.contains(said_here), "{fail_on}: {said}");
+        assert_eq!(launches.len(), launched, "{fail_on}: {launches:#?}");
+    }
+}
+
+/// Off Linux, where every harness withholds the grant, the phase says it
+/// skipped and launches nothing.
+#[test]
+fn the_control_suite_s_run_overlay_phase_skips_off_linux_and_launches_nothing() {
+    let (out, launches) = run_overlay_suite("overlay-suite-mac", &[("OH_FAKE_UNAME", "Darwin")]);
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{said}");
+    assert!(
+        said.contains("SKIP run-overlay: the run-level allowlist is withheld off Linux"),
+        "{said}"
+    );
+    assert!(launches.is_empty(), "{launches:#?}");
+}
+// llmlint: ignore-end[e2e_not_mocked]
+
 /// scripts/e2e-control.sh's pooled-kill bound restates the pool's own sweep
 /// interval and stop deadline, and is held to them here.
 #[test]
@@ -6067,6 +6192,12 @@ fn the_control_suite_s_pooled_phases_pass_and_fail_for_the_right_reason() {
     ] {
         assert!(said.contains(line), "{line} missing from: {said}");
     }
+    // The pooled selection drives the shared-server phases alone: the
+    // run-overlay phase drives the real CLI, so it is not run under it.
+    assert!(
+        !said.contains("run-overlay"),
+        "run-overlay ran under OH_CONTROL_ONLY=pooled: {said}"
+    );
     for (fault, phase, assertion) in [
         ("leak-env", "pooled-env", "saw dispatch"),
         ("rollout-env", "pooled-env", "reached a thread rollout"),

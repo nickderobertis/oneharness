@@ -224,7 +224,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         length = self.headers.get("content-length") or "0"
-        if not length.isdigit() or int(length) > MAX_BODY:
+        # ASCII digits only, and no more of them than MAX_BODY has, so int()
+        # can neither reject what passed nor parse an unbounded string.
+        bounded = length.isascii() and length.isdigit() and len(length) <= len(str(MAX_BODY))
+        if not bounded or int(length) > MAX_BODY:
             self.send_json({"error": {"message": f"content-length {length!r} is not 0..{MAX_BODY}"}}, 400)
             return
         raw = self.rfile.read(int(length))

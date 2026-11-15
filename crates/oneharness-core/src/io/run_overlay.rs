@@ -214,7 +214,6 @@ impl RunOverlay {
         let seeded = self.build_seed(launch, &template, &codex.home);
         let _ = fs::remove_dir_all(&template);
         if let Err(error) = seeded {
-            remove_thread_index(&codex.home);
             eprintln!(
                 "oneharness: warning: could not build the run overlay's Codex thread index \
                  ({error}); Codex will index the home itself"
@@ -235,15 +234,7 @@ impl RunOverlay {
             self.marker(),
             &[("thread/list", json!({}))],
         )?;
-        let entries = fs::read_dir(template).map_err(|error| error.to_string())?;
-        for entry in entries {
-            let entry = entry.map_err(|error| error.to_string())?;
-            let name = entry.file_name();
-            if is_thread_index(&name.to_string_lossy()) {
-                fs::copy(entry.path(), home.join(&name)).map_err(|error| error.to_string())?;
-            }
-        }
-        Ok(())
+        copy_thread_index(template, home).map_err(|error| error.to_string())
     }
 
     /// After a granted Codex turn has ended, have a Codex app-server on the
@@ -367,10 +358,9 @@ fn sweep_dir(from: &Path, to: &Path, keep: &dyn Fn(&str) -> bool) {
         if kind.is_symlink() {
             continue;
         }
-        if fs::create_dir_all(to).is_err() {
-            return;
-        }
-        if let Err(error) = move_into(&entry.path(), &to.join(&name)) {
+        if let Err(error) =
+            fs::create_dir_all(to).and_then(|()| move_into(&entry.path(), &to.join(&name)))
+        {
             eprintln!(
                 "oneharness: warning: could not return `{}` from the run overlay to `{}`: {error}",
                 entry.path().display(),
@@ -501,7 +491,9 @@ fn reclaim_under(root: &Path) -> Vec<PathBuf> {
                     continue;
                 }
                 reclaim(&dir, &name);
-                reclaimed.push(dir);
+                if !dir.exists() {
+                    reclaimed.push(dir);
+                }
                 continue;
             }
         };
@@ -511,7 +503,9 @@ fn reclaim_under(root: &Path) -> Vec<PathBuf> {
         reclaim(&dir, &name);
         drop(lock);
         let _ = fs::remove_dir_all(&dir);
-        reclaimed.push(dir);
+        if !dir.exists() {
+            reclaimed.push(dir);
+        }
     }
     reclaimed
 }
@@ -589,15 +583,35 @@ pub fn links_supported() -> bool {
     cfg!(unix)
 }
 
-/// Remove every thread-index file at `home`'s top level, so a seed that
-/// failed part-way leaves no partial index for Codex to open. Best-effort: an
-/// entry that cannot be removed is one Codex opens and repairs as its own.
-fn remove_thread_index(home: &Path) {
-    for entry in fs::read_dir(home).into_iter().flatten().flatten() {
-        if is_thread_index(&entry.file_name().to_string_lossy()) {
-            let _ = fs::remove_file(entry.path());
+/// Copy every thread-index file at `template`'s top level into `home`. A copy
+/// that fails part-way removes what it had copied, so `home` holds the whole
+/// index or none of it; the unit test beside it proves that, since no journey
+/// can make one copy within the overlay fail and not the others.
+fn copy_thread_index(template: &Path, home: &Path) -> io::Result<()> {
+    let mut copied = Vec::new();
+    let result = (|| {
+        let mut names = Vec::new();
+        for entry in fs::read_dir(template)? {
+            let name = entry?.file_name();
+            if is_thread_index(&name.to_string_lossy()) {
+                names.push(name);
+            }
+        }
+        // In name order, the database before its companions.
+        names.sort();
+        for name in names {
+            let to = home.join(&name);
+            fs::copy(template.join(&name), &to)?;
+            copied.push(to);
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        for path in &copied {
+            let _ = fs::remove_file(path);
         }
     }
+    result
 }
 
 /// Start a Codex app-server on `home`, initialize it, send `requests` in turn
@@ -713,6 +727,31 @@ mod tests {
         ] {
             assert!(!is_thread_index(name), "{name}");
         }
+    }
+
+    #[test]
+    fn a_thread_index_copy_that_fails_part_way_leaves_no_partial_index() {
+        let scratch = ScratchDir::new("seed-copy").unwrap();
+        let (template, home) = (scratch.join("template"), scratch.join("home"));
+        fs::create_dir_all(&template).unwrap();
+        fs::create_dir_all(&home).unwrap();
+        fs::write(template.join("state_5.sqlite"), "db").unwrap();
+        fs::write(template.join("state_5.sqlite-shm"), "shm").unwrap();
+        fs::write(template.join("logs_2.sqlite"), "not the index").unwrap();
+        copy_thread_index(&template, &home).unwrap();
+        let mut names: Vec<String> = fs::read_dir(&home)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["state_5.sqlite", "state_5.sqlite-shm"]);
+        // The last companion in name order cannot be copied (a directory), so
+        // the database and `-shm` were copied first: none is left behind.
+        let home = scratch.join("home-2");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(template.join("state_5.sqlite-wal")).unwrap();
+        assert!(copy_thread_index(&template, &home).is_err());
+        assert_eq!(fs::read_dir(&home).unwrap().count(), 0);
     }
 
     #[cfg(unix)]

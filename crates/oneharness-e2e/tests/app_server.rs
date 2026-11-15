@@ -2329,6 +2329,7 @@ fn pooled_redirect_journey(pool: Pool, after_each_server_stops: bool) {
 }
 // llmlint: ignore-end[e2e_not_mocked]
 
+// llmlint: ignore-block[e2e_not_mocked] These drive the real built `oneharness run --control` through the real pool, its real lease records and its real linger; only codex is the repository's subprocess double, because the gate cannot run real Codex, and real Codex cannot be made to answer a turn as overloaded, hold a thread's opening, or exit between a turn and its retry on demand.
 /// A linger shorter than any retry's backoff: the server a released lease
 /// leaves idle is stopped before the retry could lease it again, as on a host
 /// slow enough to outlast the real one. An overload journey runs under it so
@@ -2497,6 +2498,69 @@ fn a_pooled_overload_retry_runs_under_the_lease_its_first_attempt_took() {
     // included, the pool held this one lease and nothing else.
     held_once(&seen, &lease);
 }
+
+/// A held server that is gone by the retry is let go: its lease is released,
+/// and the retry leases a server afresh and recovers on it, rather than
+/// failing on a server that no longer answers.
+#[test]
+fn a_pooled_overload_retry_whose_held_server_is_gone_leases_afresh() {
+    let pool = Pool::new("pool-overload-gone").with_env(
+        "ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS",
+        OUTLASTED_LINGER_MS,
+    );
+    let count = pool.file("attempts");
+    let watch = pool.watch_leases();
+    let (output, report) = pool.run(pool.command_with_config(
+        "gone",
+        "server_overloaded_max_retries = 1\n",
+        &[],
+        &[
+            ("MOCK_CODEX_OVERLOAD_ATTEMPTS", "1"),
+            ("MOCK_ATTEMPT_FILE", &count),
+            ("MOCK_CODEX_EXIT_AFTER_OVERLOAD", "1"),
+        ],
+    ));
+    let seen = watch.end();
+    succeeded(&output, &report);
+    assert_eq!(result(&report)["text"], "work for gone", "{report}");
+    assert_eq!(std::fs::read_to_string(&count).unwrap(), "2");
+    let servers = pool.server_pids();
+    assert_eq!(
+        servers.len(),
+        2,
+        "a second server for the retry: {servers:?}"
+    );
+    let statuses = |pid: u32| -> Vec<Value> {
+        pool.state(pid)["turns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["status"].clone())
+            .collect()
+    };
+    let retried_on = reported_server(&report);
+    let first = *servers.iter().find(|pid| **pid != retried_on).unwrap();
+    assert_eq!(statuses(first), vec![json!("failed")]);
+    assert_eq!(statuses(retried_on), vec![json!("completed")]);
+    // The gone server's lease released once, before the retry took its own,
+    // and that one released once as the run ended.
+    let taken: Vec<&String> = seen.iter().flatten().collect();
+    assert_eq!(taken.len(), 2, "{seen:?}");
+    assert_ne!(taken[0], taken[1], "{seen:?}");
+    let alone = |lease: &String| BTreeSet::from([lease.clone()]);
+    assert_eq!(
+        seen,
+        [
+            BTreeSet::new(),
+            alone(taken[0]),
+            BTreeSet::new(),
+            alone(taken[1]),
+            BTreeSet::new()
+        ],
+        "each lease held alone and released once"
+    );
+}
+// llmlint: ignore-end[e2e_not_mocked]
 
 // llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run --control` through the real pool and the dispatch's own child; only codex is the repository's subprocess double, replaying a captured real app-server tool turn, because the gate cannot run real Codex and needs the same tool on both servers.
 /// A pooled turn's frames are observed as they arrive, as a dispatch's own
@@ -4284,6 +4348,7 @@ fn the_sweeper_refuses_a_path_that_is_no_pool_entry() {
     assert!(stranger.join("keep").exists());
 }
 
+// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run --control` under the parallel opt-in through the real pool and its real linger; only codex is the repository's subprocess double, because the gate cannot run real Codex and real Codex cannot be made to answer a turn as overloaded on demand.
 /// Under the parallel opt-in, a zero-work overload on a pooled turn repeats it
 /// on the shared server too — the one controlled candidate drives itself, under
 /// the lease its first attempt took — and recovers within
@@ -4317,6 +4382,7 @@ fn a_pooled_overload_retries_on_the_shared_server_under_the_parallel_opt_in() {
         .collect();
     assert_eq!(statuses, vec![json!("failed"), json!("completed")]);
 }
+// llmlint: ignore-end[e2e_not_mocked]
 
 /// Frames whose thread field is no thread id — a number, a null — belong to no
 /// dispatch: none of them reaches the run's output or its answer.

@@ -3494,7 +3494,10 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 /// usage it carries is reported on `thread/tokenUsage/updated` as the thread's
 /// running total, and replayed to a connection that resumes the thread),
 /// MOCK_CODEX_OVERLOAD_ATTEMPTS with MOCK_ATTEMPT_FILE (the first N turns,
-/// counted in that file, fail as an overload),
+/// counted in that file, fail as an overload), MOCK_CODEX_EXIT_AFTER_OVERLOAD
+/// (with them, the whole server exits, unanswered, when asked to release a
+/// thread whose turn was overloaded — after its client has read the turn's
+/// end, so the server is gone between that turn and its retry),
 /// MOCK_CODEX_TOOL_EVENTS, MOCK_CODEX_MODEL, MOCK_CODEX_RUN_COMMAND (a `sh -c`
 /// command each turn runs), MOCK_CODEX_REQUEST_APPROVAL (ask for approval of
 /// that command first), MOCK_CODEX_INTERRUPT_SILENT (never answer
@@ -4405,6 +4408,18 @@ mod listen_server {
                     .pointer("/params/threadId")
                     .and_then(Value::as_str)
                     .unwrap_or_default();
+                let overloaded = {
+                    let s = lock(server);
+                    s.threads
+                        .get(thread)
+                        .is_some_and(|t| t.knob("MOCK_CODEX_EXIT_AFTER_OVERLOAD").is_some())
+                        && s.turns
+                            .iter()
+                            .any(|turn| turn["thread"] == thread && turn["status"] == "failed")
+                };
+                if overloaded {
+                    std::process::exit(0);
+                }
                 let delay = lock(server)
                     .threads
                     .get(thread)

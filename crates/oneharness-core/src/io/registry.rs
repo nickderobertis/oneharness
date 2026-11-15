@@ -267,11 +267,9 @@ fn describe(spec: &'static harness::HarnessSpec, cfg: &FileConfig) -> HarnessInf
         supports_mcp_off: lean::supports(spec.id, Setting::LoadMcp),
         supports_images: lean::supports(spec.id, Setting::Images),
         supports_call_usage: lean::supports(spec.id, Setting::Calls),
-        // Withheld by every harness where the grant is unproven (all but Linux),
-        // and on Codex where its overlay home's links cannot be made.
+        // Withheld by every harness where the grant is unproven (all but Linux).
         supports_run_allowed_tools: lean::supports(spec.id, Setting::AllowedTools)
-            && crate::domain::grant::platform_withheld_reason().is_none()
-            && (spec.id != "codex" || crate::io::run_overlay::links_supported()),
+            && crate::domain::grant::platform_withheld_reason().is_none(),
         example_command: (spec.build_argv)(&ctx),
         variants: cfg
             .harness

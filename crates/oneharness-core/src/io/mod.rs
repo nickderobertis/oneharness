@@ -45,6 +45,9 @@ pub mod registry;
 pub mod run;
 pub mod runner;
 // The per-run overlay a run-level allowlist reaches a harness's home through.
+// Linux only, as the grant is (`domain::grant::platform_withheld_reason`):
+// everywhere else every harness withholds the grant, so no overlay is built.
+#[cfg(target_os = "linux")]
 pub mod run_overlay;
 // A self-removing temp directory. Public because the three builds that need it
 // — this crate's unit tests, the binary crate's unit tests, and the

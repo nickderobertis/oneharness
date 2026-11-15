@@ -37,6 +37,10 @@
 //! and after the turn [`RunOverlay::repair_threads`] asks a Codex app-server on the real
 //! home to read each thread the run touched: finding no row, Codex locates the
 //! rollout under the real `sessions/` and writes the row with its real path.
+//!
+//! Compiled on Linux only: the grant is proven there and withheld everywhere
+//! else (`domain::grant::platform_withheld_reason`), so no other build ever
+//! opens an overlay.
 
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
@@ -439,13 +443,9 @@ pub fn overlay_root() -> PathBuf {
 }
 
 fn create_private_dir(dir: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
     fs::create_dir_all(dir)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
-    }
-    Ok(())
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
 }
 
 /// Reclaim every overlay whose run is gone.
@@ -573,23 +573,8 @@ fn dir_name(path: &Path) -> String {
         .unwrap_or_default()
 }
 
-#[cfg(unix)]
 fn symlink(target: &Path, link: &Path) -> io::Result<()> {
     std::os::unix::fs::symlink(target, link)
-}
-
-#[cfg(not(unix))]
-fn symlink(_target: &Path, _link: &Path) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "a run overlay links into the real home, which this platform cannot do without privilege",
-    ))
-}
-
-/// Whether this platform can build an overlay home of links.
-#[must_use]
-pub fn links_supported() -> bool {
-    cfg!(unix)
 }
 
 /// Copy every thread-index file at `template`'s top level into `home`. A copy
@@ -782,7 +767,6 @@ mod tests {
         assert_eq!(fs::read_dir(&home).unwrap().count(), 0);
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn a_thread_index_copy_that_fails_after_opening_its_destination_removes_it() {
         // The `-wal` destination is a link to `/dev/full`: `fs::copy` opens it
@@ -804,7 +788,6 @@ mod tests {
         assert!(left.is_empty(), "{left:?}");
     }
 
-    #[cfg(unix)]
     #[test]
     fn an_overlay_home_links_the_real_home_and_returns_what_codex_wrote() {
         let real = ScratchDir::new("run-overlay-test-real").unwrap();
@@ -882,7 +865,6 @@ mod tests {
         assert_eq!(fs::read_to_string(real.join("both/added")).unwrap(), "a");
     }
 
-    #[cfg(unix)]
     #[test]
     fn an_orphans_recorded_home_is_trusted_only_when_its_links_agree() {
         let root = ScratchDir::new("run-overlay-test-recorded").unwrap();
@@ -922,7 +904,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn only_an_overlay_whose_owner_is_gone_is_reclaimed() {
         let root = ScratchDir::new("run-overlay-test-root").unwrap();

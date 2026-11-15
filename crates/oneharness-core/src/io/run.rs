@@ -69,6 +69,7 @@ use crate::io::identity::{
 };
 use crate::io::lean as lean_io;
 use crate::io::model_catalog;
+#[cfg(target_os = "linux")]
 use crate::io::run_overlay::{self, HelperLaunch, RunOverlay};
 use crate::io::runner::{self, Job, NextRun, Outcome, ProcessSupervisor, SpawnControls};
 use crate::io::server_pool;
@@ -637,7 +638,8 @@ pub fn run_supervised(
     // A granted run killed before it could remove its overlay (SIGKILL) left
     // the directory, and maybe its harness, behind with the owner lock
     // released. Every run that may spawn reclaims such orphans first; a live
-    // run's overlay is locked and left alone.
+    // run's overlay is locked and left alone. Only Linux ever builds one.
+    #[cfg(target_os = "linux")]
     if !args.print_command {
         run_overlay::reclaim_orphans();
     }
@@ -1071,6 +1073,7 @@ pub fn run_supervised(
     // Per unit beside it: the overlay a granted Codex unit runs through (with
     // what repairing the real home's thread index needs once the turn ends),
     // and the environment the overlay sets, which the result reports.
+    #[cfg(target_os = "linux")]
     let mut unit_overlays: Vec<Option<UnitOverlay>> = Vec::with_capacity(units.len());
     let mut unit_overlay_env: Vec<std::collections::BTreeMap<String, String>> =
         Vec::with_capacity(units.len());
@@ -1086,7 +1089,7 @@ pub fn run_supervised(
         // The prompt this candidate would open its turn with, kept only when it
         // is planned for the control delivery (so it never appears on the argv).
         let mut unit_control_prompt: Option<String> = None;
-        let mut unit_app_server = (unit_control == Some(control::ControlShape::CodexAppServer)
+        let unit_app_server = (unit_control == Some(control::ControlShape::CodexAppServer)
             && cfg.app_server_for(selected_id) == crate::domain::config::AppServerMode::Shared)
             .then(|| SharedAppServer {
                 plugins: cfg.plugins_for(selected_id),
@@ -1279,11 +1282,21 @@ pub fn run_supervised(
         // A granted Codex turn runs on a home of its own, so a controlled one
         // starts its own app-server there: a pooled server's rules are its
         // home's, which would grant every lease or none.
+        #[cfg(target_os = "linux")]
         let codex_overlay = unit_grant.codex_overlay();
-        if codex_overlay.is_some() {
-            unit_app_server = None;
-        }
+        #[cfg(target_os = "linux")]
+        let unit_app_server = if codex_overlay.is_some() {
+            None
+        } else {
+            unit_app_server
+        };
+        // Only Linux opens an overlay, the one thing that sets this; elsewhere
+        // every result reports the empty environment.
+        #[cfg(target_os = "linux")]
         let mut overlay_env = std::collections::BTreeMap::new();
+        #[cfg(not(target_os = "linux"))]
+        let overlay_env = std::collections::BTreeMap::new();
+        #[cfg(target_os = "linux")]
         if codex_overlay.is_some() && args.print_command {
             overlay_env.insert(
                 "CODEX_HOME".to_string(),
@@ -1294,6 +1307,7 @@ pub fn run_supervised(
                 run_overlay::PLANNED_OVERLAY.to_string(),
             );
         }
+        #[cfg(target_os = "linux")]
         let mut unit_overlay: Option<UnitOverlay> = None;
 
         // The unit's own system text: the run's, plus the grant's statement
@@ -1399,7 +1413,7 @@ pub fn run_supervised(
             job_env.extend(lean_delivery.env.iter().cloned());
             job_env.extend(variant_environment(cfg, selected_id, &project_start)?);
             job_env.extend(cli_env.iter().cloned());
-            let mut env_remove = cfg
+            let env_remove = cfg
                 .variant_for(selected_id)
                 .map_or_else(Vec::new, |variant| variant.unset_env.clone());
             if shared_model_catalog {
@@ -1417,6 +1431,9 @@ pub fn run_supervised(
             }
             // After the catalog: it is the real home's, shared with every
             // ungranted launch, never the overlay's.
+            #[cfg(target_os = "linux")]
+            let mut env_remove = env_remove;
+            #[cfg(target_os = "linux")]
             if let Some(codex) = &codex_overlay {
                 let mut overlaid = open_codex_overlay(
                     codex.rules,
@@ -1473,14 +1490,17 @@ pub fn run_supervised(
         if spec.id == "codex" && jobs.len() > jobs_before {
             // An overlaid run's rollout is in the real home its `sessions/`
             // links to, which outlives the overlay.
-            calls_plan.codex_home = unit_overlay
+            #[cfg(target_os = "linux")]
+            let overlaid_home = unit_overlay
                 .as_ref()
-                .map(|overlaid| overlaid.real_home.clone())
-                .or_else(|| {
-                    jobs.last().and_then(|job| {
-                        lean_io::codex_home(&job.env, &job.env_remove, job.cwd.as_deref())
-                    })
-                });
+                .map(|overlaid| overlaid.real_home.clone());
+            #[cfg(not(target_os = "linux"))]
+            let overlaid_home: Option<PathBuf> = None;
+            calls_plan.codex_home = overlaid_home.or_else(|| {
+                jobs.last().and_then(|job| {
+                    lean_io::codex_home(&job.env, &job.env_remove, job.cwd.as_deref())
+                })
+            });
             if let Some(thread) = job_plans.last().and_then(|plan| plan.resume.clone()) {
                 calls_plan.note_codex_resume(&thread);
             }
@@ -1488,6 +1508,7 @@ pub fn run_supervised(
         unit_calls.push(calls_plan);
         control_prompts.push(unit_control_prompt);
         control_app_servers.push(unit_app_server);
+        #[cfg(target_os = "linux")]
         unit_overlays.push(unit_overlay);
         unit_overlay_env.push(overlay_env);
     }
@@ -1873,17 +1894,18 @@ pub fn run_supervised(
     // retired with it): record each thread the run touched in the real home's
     // thread index, return what Codex wrote at the overlay home's top level,
     // and remove the overlay.
-    for ((result, overlaid), env) in results
-        .iter_mut()
-        .zip(unit_overlays.iter_mut())
-        .zip(unit_overlay_env)
-    {
+    for (result, env) in results.iter_mut().zip(unit_overlay_env) {
         result.overlay_env = env;
-        if let Some(overlaid) = overlaid.take() {
-            result.overlay_timings = Some(overlaid.finish(result.session_id.as_deref()));
-        }
     }
-    drop(unit_overlays);
+    #[cfg(target_os = "linux")]
+    {
+        for (result, overlaid) in results.iter_mut().zip(unit_overlays.iter_mut()) {
+            if let Some(overlaid) = overlaid.take() {
+                result.overlay_timings = Some(overlaid.finish(result.session_id.as_deref()));
+            }
+        }
+        drop(unit_overlays);
+    }
     if let Some(report) = fallback_report.as_mut() {
         for (fallthrough, result) in report.fell_through.iter_mut().zip(&results) {
             fallthrough.harness = result.harness_id.clone();
@@ -5801,12 +5823,15 @@ enum UnitGrant {
     Withheld(lean::Diagnostic),
     /// No rule is one the harness can express; nothing reaches it.
     Unexpressible(lean::Diagnostic),
-    /// Claude Code's `--allowedTools` entries.
+    /// Claude Code's `--allowedTools` entries. Like every applying variant,
+    /// Linux only: everywhere else the platform withholds the grant.
+    #[cfg(target_os = "linux")]
     Claude {
         grant: grant::ClaudeGrant,
         statement: Option<String>,
     },
     /// A Codex grant, applied through an overlay of `real_home`.
+    #[cfg(target_os = "linux")]
     Codex {
         grant: grant::CodexGrant,
         statement: Option<String>,
@@ -5815,6 +5840,7 @@ enum UnitGrant {
     },
 }
 
+#[cfg(target_os = "linux")]
 struct CodexOverlayPlan<'a> {
     rules: &'a str,
     real_home: &'a std::path::Path,
@@ -5823,6 +5849,7 @@ struct CodexOverlayPlan<'a> {
 impl UnitGrant {
     fn statement(&self) -> Option<&str> {
         match self {
+            #[cfg(target_os = "linux")]
             UnitGrant::Claude { statement, .. } | UnitGrant::Codex { statement, .. } => {
                 statement.as_deref()
             }
@@ -5832,6 +5859,7 @@ impl UnitGrant {
 
     fn claude(&self) -> Option<&grant::ClaudeGrant> {
         match self {
+            #[cfg(target_os = "linux")]
             UnitGrant::Claude { grant, .. } => Some(grant),
             _ => None,
         }
@@ -5839,15 +5867,16 @@ impl UnitGrant {
 
     fn diagnostics(&self) -> Vec<lean::Diagnostic> {
         match self {
-            UnitGrant::Withheld(d)
-            | UnitGrant::Unexpressible(d)
-            | UnitGrant::Codex {
+            UnitGrant::Withheld(d) | UnitGrant::Unexpressible(d) => vec![d.clone()],
+            #[cfg(target_os = "linux")]
+            UnitGrant::Codex {
                 unmapped: Some(d), ..
             } => vec![d.clone()],
             _ => Vec::new(),
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn codex_overlay(&self) -> Option<CodexOverlayPlan<'_>> {
         match self {
             UnitGrant::Codex {
@@ -5924,7 +5953,20 @@ fn plan_unit_grant(
             grant::GrantPlan::None => UnitGrant::None,
             grant::GrantPlan::Withheld(d) => UnitGrant::Withheld(d),
             grant::GrantPlan::Unexpressible(d) => UnitGrant::Unexpressible(d),
+            // Off Linux the platform's reason withholds every plan before one
+            // can apply, so these arms are Linux's alone.
+            #[cfg(not(target_os = "linux"))]
+            grant::GrantPlan::Claude { .. } | grant::GrantPlan::Codex { .. } => {
+                let _ = (cwd, passthrough);
+                UnitGrant::Withheld(grant::withheld(
+                    spec.id,
+                    &resolved,
+                    platform_reason.as_deref().unwrap_or_default(),
+                ))
+            }
+            #[cfg(target_os = "linux")]
             grant::GrantPlan::Claude { grant, statement } => UnitGrant::Claude { grant, statement },
+            #[cfg(target_os = "linux")]
             grant::GrantPlan::Codex {
                 grant,
                 statement,
@@ -5968,6 +6010,7 @@ fn plan_unit_grant(
 /// value)`: the separate (`-c k=v`, `--config k=v`) and attached (`-ck=v`,
 /// `--config=k=v`) spellings Codex accepts, with whitespace around `=`
 /// trimmed and a quoted TOML string value unquoted.
+#[cfg(target_os = "linux")]
 fn codex_config_overrides(args: &[String]) -> Vec<(String, String)> {
     let mut overrides = Vec::new();
     let mut args = args.iter();
@@ -5993,17 +6036,11 @@ fn codex_config_overrides(args: &[String]) -> Vec<(String, String)> {
 
 /// The real home this Codex run's grant can be applied through an overlay
 /// of, or why it cannot.
+#[cfg(target_os = "linux")]
 fn codex_overlay_home<'a>(
     home: Option<&'a std::path::Path>,
     args: &[String],
 ) -> Result<&'a std::path::Path, String> {
-    if !run_overlay::links_supported() {
-        return Err(
-            "an overlay home links into the real one, which this platform cannot do without \
-             privilege"
-                .to_string(),
-        );
-    }
     let Some(home) = home.filter(|home| home.is_dir()) else {
         return Err(format!(
             "its home{} does not exist, so an overlay has no login or sessions to link to",
@@ -6069,6 +6106,7 @@ fn codex_overlay_home<'a>(
 }
 
 /// A granted Codex unit's open overlay, with what finishing it needs.
+#[cfg(target_os = "linux")]
 struct UnitOverlay {
     overlay: RunOverlay,
     home: PathBuf,
@@ -6086,6 +6124,7 @@ struct UnitOverlay {
     build: Duration,
 }
 
+#[cfg(target_os = "linux")]
 impl UnitOverlay {
     fn launch_args() -> Vec<String> {
         [
@@ -6134,6 +6173,7 @@ impl UnitOverlay {
 
 /// Create a granted Codex unit's overlay: its home linking `real_home`, its
 /// per-run rules, and its own thread index seeded by `bin`.
+#[cfg(target_os = "linux")]
 fn open_codex_overlay(
     rules: &str,
     real_home: &std::path::Path,
@@ -6172,6 +6212,7 @@ fn open_codex_overlay(
     })
 }
 
+#[cfg(target_os = "linux")]
 fn millis(elapsed: Duration) -> u64 {
     u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
 }

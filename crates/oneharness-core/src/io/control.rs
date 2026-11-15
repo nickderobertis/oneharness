@@ -96,8 +96,6 @@ struct TestHolds {
     /// Hold the turn's writer once it has written a replacement prompt, before
     /// its delivery is settled, until the run has released its candidate.
     written: std::sync::atomic::AtomicBool,
-    /// Set once the run starts closing the turn.
-    closing: std::sync::atomic::AtomicBool,
     /// Set once the run has released its candidate.
     released: std::sync::atomic::AtomicBool,
     /// Hold the turn's writer before a frame it skips for a closed turn — an
@@ -129,13 +127,11 @@ type Holds = Arc<TestHolds>;
 #[derive(Clone)]
 struct Holds;
 
-/// A handle's holds before a test sets any.
 #[cfg(all(test, unix))]
 fn no_holds() -> Holds {
     Holds::default()
 }
 
-/// A handle's holds: none, in a build.
 #[cfg(not(all(test, unix)))]
 fn no_holds() -> Holds {
     Holds
@@ -157,7 +153,6 @@ impl TestHolds {
         });
     }
 
-    /// Record that a frame is queued for the turn, for the hold above.
     fn mark_queued(&self) {
         self.queued.store(true, std::sync::atomic::Ordering::SeqCst);
     }
@@ -175,15 +170,8 @@ impl TestHolds {
         });
     }
 
-    /// Record that the run has released its candidate, for the hold above.
     fn mark_released(&self) {
         self.released
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-    }
-
-    /// Record that the run is closing the turn, for the hold above.
-    fn mark_closing(&self) {
-        self.closing
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
@@ -203,7 +191,6 @@ impl Holds {
     fn mark_queued(&self) {}
     fn hold_redirect_written(&self) {}
     fn mark_released(&self) {}
-    fn mark_closing(&self) {}
 }
 
 /// Poll `done` until it holds, for a [`TestHolds`] hold. Bounded, so a test
@@ -399,17 +386,16 @@ impl TurnSlot {
         self.changed.notify_all();
     }
 
-    /// End turn `turn` if it is still the live one; `true` when this did.
-    fn close(&self, turn: u64) -> bool {
+    /// End turn `turn` if it is still the live one.
+    fn close(&self, turn: u64) {
         let mut state = self.lock();
         if !matches!(&*state, TurnState::Active(writer) if writer.turn == turn) {
-            return false;
+            return;
         }
         let previous = std::mem::replace(&mut *state, TurnState::Idle);
         drop(state);
         drop(previous);
         self.changed.notify_all();
-        true
     }
 
     /// Whether turn `turn` is still the live one.
@@ -453,8 +439,8 @@ fn run_writer(
             sink.write_all(job.line.as_bytes())
                 .and_then(|()| sink.flush())
         };
-        if written.is_err() && job.policy.closes_on_failure() && slot.close(turn) {
-            holds.mark_closing();
+        if written.is_err() && job.policy.closes_on_failure() {
+            slot.close(turn);
         }
         if let Some(then) = job.then {
             then(&written);
@@ -973,7 +959,6 @@ impl ControlHandle {
     /// write fails because the harness has gone. Which of the two threads gets
     /// there first must not change what the supervisor is told.
     pub(crate) fn release(&self) {
-        self.holds.mark_closing();
         let undelivered = matches!(
             self.mechanism().take(),
             Some(Backend::Dialogue(dialogue)) if dialogue.has_pending_redirect()
@@ -1846,7 +1831,6 @@ impl ControlHandle {
     /// then drops the stdin, so a frame queued before this — a replacement
     /// prompt — still reaches the harness ahead of the EOF.
     pub fn end_turn(&self) {
-        self.holds.mark_closing();
         self.turn.set(TurnState::Idle);
         let mut pooled = self.pooled();
         if let PooledState::Live { command, .. } = std::mem::take(&mut *pooled) {

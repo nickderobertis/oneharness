@@ -43456,6 +43456,7 @@ fn a_cold_burst_of_launches_costs_one_catalog_fetch_in_total() {
     assert_every_launch_read(&world, &world.launches());
 }
 
+// llmlint: ignore-block[tests_mirror_real_usage] A host whose realtime clock steps (#1483: a VM guest stepping back about 130 ms every 10 s) cannot be had on demand, so once the catalog reads stale this journey steps the binary's wall clock back through its mock-harness-only seam, as such a host would; every launch still goes through the real CLI and the catalog goes stale by real elapsed time.
 #[test]
 fn a_stale_catalog_is_refreshed_once_for_a_burst_that_waits_for_it() {
     let world = CatalogWorld::new(
@@ -43489,6 +43490,7 @@ fn a_stale_catalog_is_refreshed_once_for_a_burst_that_waits_for_it() {
     assert_every_launch_read(&world, &launches);
     assert_started_after_the_write_and_together(&world, &launches);
 }
+// llmlint: ignore-end[tests_mirror_real_usage]
 
 #[test]
 fn each_codex_home_and_each_codex_version_keeps_its_own_catalog() {
@@ -43695,6 +43697,7 @@ fn a_failed_refresh_falls_back_for_the_backoff_and_one_refresh_recovers() {
     assert!(world.failure_records().is_empty());
 }
 
+// llmlint: ignore-block[tests_mirror_real_usage] A host whose realtime clock steps (#1483: a VM guest stepping back about 130 ms every 10 s) cannot be had on demand, so once the catalog reads stale this journey steps the binary's wall clock back through its mock-harness-only seam, as such a host would; every launch still goes through the real CLI and the catalog goes stale by real elapsed time.
 #[test]
 fn a_failed_refresh_of_a_stale_catalog_keeps_launching_with_the_stale_one() {
     let world = CatalogWorld::new(
@@ -43729,6 +43732,7 @@ fn a_failed_refresh_of_a_stale_catalog_keeps_launching_with_the_stale_one() {
         Some(stale)
     );
 }
+// llmlint: ignore-end[tests_mirror_real_usage]
 
 #[test]
 fn a_hung_refresh_returns_at_its_deadline_and_its_waiters_within_theirs() {

@@ -72,6 +72,7 @@ ALLOWED_TOOLS_SETTING = "allowed_tools"
 
 def json_type(value: object) -> str:
     """The JSON Schema type name of a decoded JSON `value`."""
+    # llmlint: ignore[structural_pattern_matching] This module shares the Python SDK's 3.9 floor (tools/network-telemetry/ruff.toml extends it), where `match` is a syntax error; the if/isinstance chain is the 3.9 spelling of those alternatives.
     if value is None:
         return "null"
     if isinstance(value, bool):

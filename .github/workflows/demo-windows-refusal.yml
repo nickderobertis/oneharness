@@ -1,0 +1,32 @@
+name: DO NOT MERGE demo windows refusal
+on:
+  pull_request:
+jobs:
+  windows-refusal:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --project python --frozen --no-install-workspace --quiet
+      - name: fixed tree (a8f515bc), RefusalsWithoutANamespace
+        run: |
+          uname -a; echo "ImageOS=$ImageOS ImageVersion=$ImageVersion"
+          git log --oneline -1 HEAD^ -- scripts/codex-network-breakdown.py
+          uv run --project python --frozen --no-sync python -I tools/network-breakdown/test_codex_network_breakdown.py -v RefusalsWithoutANamespace
+      - name: fixed tree, whole network-breakdown suite
+        run: uv run --project python --frozen --no-sync python -I tools/network-breakdown/test_codex_network_breakdown.py -v
+      - name: control, script from 4f294476 (expected to fail)
+        run: |
+          git show 4f294476:scripts/codex-network-breakdown.py > scripts/codex-network-breakdown.py
+          set +e
+          uv run --project python --frozen --no-sync python -I tools/network-breakdown/test_codex_network_breakdown.py -v \
+            RefusalsWithoutANamespace.test_a_pasta_that_cannot_start_says_how_to_get_one \
+            RefusalsWithoutANamespace.test_a_pasta_that_records_nothing_says_how_to_find_out_why
+          code=$?
+          echo "control exit: $code"
+          [ "$code" -ne 0 ]

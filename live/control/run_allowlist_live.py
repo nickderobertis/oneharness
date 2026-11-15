@@ -1044,8 +1044,17 @@ def status_of(out: str) -> str | None:
 
 def group_lifecycle(world: World, fails: Failures) -> None:
     label = f"{world.label} lifecycle"
-    turn, _ = run_turn(world, probe_id("fail"), [Call(CallKind.FAIL)], "Answer.")
-    fails.check(turn.result.status in ("nonzero", "error", "ok"), f"{label} failure: status {turn.result.status}")
+    turn, script = run_turn(world, probe_id("fail"), [Call(CallKind.FAIL)], "Answer.")
+    # The failure is the endpoint's scripted 400, so it must have been served
+    # and must surface in the run. A `--control` Codex turn ends on
+    # `turn/completed` without reading the turn's status, so it reports `ok`
+    # with the error in its report; every other path reports the harness's
+    # nonzero exit.
+    surfaced = "scripted failure" in json.dumps(turn.report) + turn.stderr
+    expected = "ok" if world.control else "nonzero"
+    fails.check(bool(script.requests) and surfaced and turn.result.status == expected,
+                f"{label} failure: status {turn.result.status} (expected {expected}), "
+                f"{len(script.requests)} model request(s), scripted failure surfaced: {surfaced}")  # fmt: skip
     check_clean(world, fails, f"{label} after a harness failure")
     held = held_turn(world, "timeout", extra=["--timeout", "5"])
     out, _ = held.process.communicate(timeout=120)

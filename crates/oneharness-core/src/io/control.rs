@@ -2968,7 +2968,17 @@ mod tests {
         handle: &Arc<ControlHandle>,
         script: &str,
     ) -> std::thread::JoinHandle<crate::domain::report::Capture> {
+        run_controlled_with_prompt_in_background(handle, script, "start the task")
+    }
+
+    /// [`run_controlled_in_background`], opening the turn with `prompt`.
+    fn run_controlled_with_prompt_in_background(
+        handle: &Arc<ControlHandle>,
+        script: &str,
+        prompt: &str,
+    ) -> std::thread::JoinHandle<crate::domain::report::Capture> {
         let handle = Arc::clone(handle);
+        let prompt = prompt.to_string();
         let job = crate::io::runner::Job {
             argv: vec!["sh".to_string(), "-c".to_string(), script.to_string()],
             cwd: None,
@@ -2980,7 +2990,7 @@ mod tests {
         std::thread::spawn(move || {
             let input = crate::io::runner::ControlledInput {
                 handle: &handle,
-                prompt: "start the task".to_string(),
+                prompt,
                 app_server: None,
             };
             let capture =
@@ -3110,6 +3120,123 @@ mod tests {
         let events = handle.events();
         assert_eq!(events.len(), 1, "{events:?}");
         assert!(events[0].is_redirected(), "{events:?}");
+    }
+
+    #[test]
+    fn an_interrupt_waiting_on_an_opening_blocked_by_a_full_stdin_pipe_still_redirects_the_turn() {
+        // The prompt is larger than the harness's stdin pipe holds, and the
+        // harness reads none of it until the test says: the runner's opening
+        // write blocks under the turn's lock with the pipe full. The harness
+        // meanwhile writes more than a pipe holds to its stdout, which only
+        // the run's own drain keeps it from blocking on. An interrupt sent
+        // now waits on the turn's lock holding no other; once the harness
+        // reads, the prompt lands first, then the abort, then the replacement.
+        //
+        // Every wait is bounded and fails naming the deadlock, and a failing
+        // test kills the harness on its way out: the write it blocks then
+        // fails, every thread waiting behind it returns, and the listener's
+        // teardown finishes instead of hanging the suite.
+        struct Unwedge {
+            gate: PathBuf,
+            pid: PathBuf,
+        }
+        impl Drop for Unwedge {
+            fn drop(&mut self) {
+                if !std::thread::panicking() {
+                    return;
+                }
+                let _ = std::fs::write(&self.gate, b"");
+                let pid = std::fs::read_to_string(&self.pid)
+                    .ok()
+                    .and_then(|pid| pid.trim().parse::<libc::pid_t>().ok());
+                if let Some(pid) = pid.filter(|pid| *pid > 0) {
+                    // SAFETY: a signal to the harness this test started, whose
+                    // pid it wrote itself and which is still blocked on us.
+                    unsafe { libc::kill(pid, libc::SIGKILL) };
+                }
+            }
+        }
+        /// Poll `ready` for at most `secs`, failing as a deadlock.
+        fn within(secs: u64, what: &str, ready: impl Fn() -> bool) {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+            while !ready() {
+                assert!(
+                    std::time::Instant::now() < until,
+                    "deadlocked: {what} within {secs} s"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+        let (dir, path, _listener, handle) = stdin_control("redirect-full-pipe");
+        let gate = dir.join("read-stdin");
+        let chatter = dir.join("chatter-written");
+        let _unwedge = Unwedge {
+            gate: gate.clone(),
+            pid: dir.join("harness-pid"),
+        };
+        let harness = format!(
+            r#"
+            echo $$ >'{pid}'
+            head -c 262144 /dev/zero | tr '\0' y; echo
+            : >'{chatter}'
+            while [ ! -e '{gate}' ]; do sleep 0.01; done
+            IFS= read -r first || exit 3
+            case "$first" in *'"type":"user"'*) ;; *) exit 2;; esac
+            IFS= read -r abort || exit 4
+            case "$abort" in *control_request*) ;; *) exit 5;; esac
+            echo '{{"type":"result","subtype":"error_during_execution"}}'
+            IFS= read -r next || exit 6
+            case "$next" in *'do X instead'*) ;; *) exit 7;; esac
+            echo '{{"type":"result","subtype":"success"}}'
+            exec cat >/dev/null
+            "#,
+            pid = dir.join("harness-pid").display(),
+            chatter = chatter.display(),
+            gate = gate.display(),
+        );
+        let prompt = "p".repeat(128 * 1024);
+        let run = run_controlled_with_prompt_in_background(&handle, &harness, &prompt);
+        within(10, "the harness did not fill its stdout", || {
+            chatter.exists()
+        });
+        // The opening holds the turn's lock for as long as the full pipe
+        // blocks its write.
+        within(
+            10,
+            "the opening write did not block on the full pipe",
+            || handle.state.try_lock().is_err(),
+        );
+
+        let (answered, response) = std::sync::mpsc::channel();
+        let asked = send_in_background(&path, "do X instead");
+        std::thread::spawn(move || {
+            let _ = answered.send(asked.join());
+        });
+        within(
+            5,
+            "the interrupt did not reach the turn's lock holding no other",
+            || matches!(&*handle.redirect(), Redirect::Aborting(_)),
+        );
+        assert!(
+            handle.state.try_lock().is_err(),
+            "the opening write was still blocked when the interrupt arrived"
+        );
+        std::fs::write(&gate, b"").unwrap();
+
+        let response = response
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("deadlocked: the interrupt did not return within 10 s")
+            .unwrap();
+        let capture = run.join().unwrap();
+        assert!(
+            response.is_redirected(),
+            "an interrupt behind a full pipe must redirect the turn: {response:?}\n{capture:?}"
+        );
+        assert_eq!(capture.exit_code, Some(0), "{capture:?}");
+        assert!(
+            capture.stdout.contains(r#""subtype":"success""#),
+            "the harness ran the replacement turn: {capture:?}"
+        );
     }
 
     #[test]

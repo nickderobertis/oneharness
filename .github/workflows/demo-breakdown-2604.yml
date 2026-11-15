@@ -77,7 +77,7 @@ jobs:
           OH_NET_NO_SKIP: "1"
           CODEX_NETWORK_BREAKDOWN_REQUIRED: "1"
         run: |
-          set -uo pipefail
+          set +e -uo pipefail
           failed=0
           for run in $(seq 1 10); do
             log="$RUNNER_TEMP/run-$run.log"
@@ -88,7 +88,7 @@ jobs:
             summary="$(grep -E '^(Ran [0-9]+ tests|OK|FAILED)' "$log" | tr '\n' ' ')"
             skipped=no; grep -qE 'skipped=' "$log" && skipped=yes
             echo "run $run: exit $code, ${took}s, skipped=$skipped, $summary"
-            if [ "$code" -ne 0 ] || [ "$skipped" = yes ]; then failed=$((failed + 1)); tail -60 "$log"; fi
+            if [ "$code" -ne 0 ] || [ "$skipped" = yes ]; then failed=$((failed + 1)); grep -E "^(FAIL|ERROR):|Error|error" "$log" | head -20; tail -80 "$log"; fi
           done
           echo "runs failed or skipping: $failed of 10"
           [ "$failed" -eq 0 ]

@@ -10,12 +10,15 @@ when it cannot measure. The measuring tests run the script around
 `transfer_double.py`, which moves payloads of known sizes through the proxy
 variables to loopback servers standing for destinations. They need Linux with
 unprivileged user namespaces and pasta; where the namespace cannot be built
-they say so and skip, unless `CODEX_NETWORK_BREAKDOWN_REQUIRED=1` makes that a
-failure.
+they say so and skip, unless `CODEX_NETWORK_BREAKDOWN_REQUIRED=1`, or on Linux
+`OH_NET_NO_SKIP=1` (CI's Linux leg), makes that a failure. Whether the
+namespace can be built is probed once per run.
 """
 
 from __future__ import annotations
 
+import functools
+import importlib.util
 import json
 import os
 import shutil
@@ -31,6 +34,7 @@ import unittest
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 HERE = Path(__file__).resolve().parent
@@ -64,7 +68,12 @@ def run_script(*args: str, env: dict[str, str] | None = None) -> subprocess.Comp
 # modelled twice.
 def breakdown(*args: str) -> dict[str, Any]:
     """The script's document, which must be one line on stdout."""
-    run = run_script(*args)
+    return breakdown_with(None, *args)
+
+
+def breakdown_with(env: dict[str, str] | None, *args: str) -> dict[str, Any]:
+    """`breakdown`, run in `env`."""
+    run = run_script(*args, env=env)
     if run.returncode != 0:
         raise AssertionError(f"exit {run.returncode}\n{run.stdout}\n{run.stderr}")
     lines = run.stdout.splitlines()
@@ -452,14 +461,73 @@ def closed_port() -> int:
         return int(probe.getsockname()[1])
 
 
+@functools.cache
+def probe() -> subprocess.CompletedProcess[str] | subprocess.TimeoutExpired:
+    """The script around `true`, run once however many tests ask: a probe that
+    hung is kept as its timeout, which every test asking then raises."""
+    try:
+        return run_script("--label", "probe", "--", "true")
+    except subprocess.TimeoutExpired as hung:
+        return hung
+
+
 def namespace_unavailable() -> str:
-    """Why the measuring namespace cannot be built here, or "" when it can."""
+    """Why the measuring namespace cannot be built here, or "" when it can. A
+    probe that hangs is no answer, and raises rather than skipping."""
     if not sys.platform.startswith("linux"):
         return f"the measuring namespace is Linux-only, and this is {sys.platform}"
-    run = run_script("--label", "probe", "--", "true")
+    run = probe()
+    if isinstance(run, subprocess.TimeoutExpired):
+        raise run
     if run.returncode != 0:
         return f"the measuring namespace could not be built: {run.stderr.strip()}"
     return ""
+
+
+def measuring_required() -> bool:
+    """Whether a namespace that cannot be built fails the measuring tests."""
+    return os.environ.get("CODEX_NETWORK_BREAKDOWN_REQUIRED") == "1" or (
+        os.environ.get("OH_NET_NO_SKIP") == "1" and sys.platform.startswith("linux")
+    )
+
+
+def need_namespace(test: unittest.TestCase) -> None:
+    """Skip `test`, saying why, where the namespace cannot be built; fail it
+    instead where the measuring tests are required."""
+    why = namespace_unavailable()
+    if why:
+        if measuring_required():
+            test.fail(why)
+        test.skipTest(why)
+
+
+def script_module() -> ModuleType:
+    """The script itself, loaded as a module for its own `find_pasta`."""
+    spec = importlib.util.spec_from_file_location("codex_network_breakdown", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        del sys.modules[spec.name]
+    return module
+
+
+def real_pasta() -> str:
+    """The pasta the script would use here, found as it finds it."""
+    pasta = script_module().find_pasta()
+    assert pasta is not None, "need_namespace found a pasta, so find_pasta must"
+    return pasta
+
+
+def gone(pid: int) -> bool:
+    """Whether no process `pid` is left (a zombie still counts as left)."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    return False
 
 
 class Side(Enum):
@@ -484,11 +552,7 @@ class MeasureAroundATransferDouble(unittest.TestCase):
     UP = 2_000_000
 
     def need_namespace(self) -> None:
-        why = namespace_unavailable()
-        if why:
-            if os.environ.get("CODEX_NETWORK_BREAKDOWN_REQUIRED") == "1":
-                self.fail(why)
-            self.skipTest(why)
+        need_namespace(self)
 
     def assert_payload(self, tunnel: dict[str, Any], expected: Expected) -> None:
         self.assertEqual(tunnel["port"], expected.port, tunnel)
@@ -967,6 +1031,151 @@ class MeasureAroundATransferDouble(unittest.TestCase):
         self.assertIn("/transfer/up", carried["results"][0]["stderr"])
         self.assertEqual(len(recorded["tunnels"]), 2)
         self.assertEqual(recorded["received_bytes"], report["received_bytes"])
+
+
+@unittest.skipUnless(os.name == "posix", "the stand-in pastas are shell scripts")
+class APastaThatMisbehaves(unittest.TestCase):
+    """The script around stand-in pastas that never exit, or that are confined
+    as Ubuntu 26.04's packaged pasta is: it must end on its own, saying what
+    happened, never by the test's hang guard."""
+
+    def test_a_pasta_that_never_starts_the_namespace_is_ended_and_reported_unavailable(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            pid_file = Path(scratch) / "pasta.pid"
+            stand_in = executable(
+                Path(scratch) / "pasta",
+                f"#!/bin/sh\necho 'pasta: stuck before the namespace' >&2\n"
+                f"echo $$ > {pid_file}\nexec sleep 600\n",
+            )
+            env = dict(
+                os.environ,
+                CODEX_NETWORK_BREAKDOWN_PASTA=str(stand_in),
+                CODEX_NETWORK_BREAKDOWN_START_SECONDS="2",
+            )
+            started = time.monotonic()
+            run = run_script("--", "true", env=env)
+            took = time.monotonic() - started
+            pid = int(pid_file.read_text())
+        self.assertEqual(run.returncode, 3, run)
+        self.assertEqual(run.stdout, "")
+        self.assertIn(f"pasta ({stand_in}) started no namespace within 2 s", run.stderr)
+        self.assertIn("(its stderr: pasta: stuck before the namespace)", run.stderr)
+        self.assertLess(took, 30, run)
+        self.assertTrue(gone(pid), "the stuck pasta outlived the script")
+
+    def test_a_bad_start_deadline_is_refused(self) -> None:
+        for value in ("0", "-1", "nan", "soon"):
+            with self.subTest(value=value):
+                env = dict(
+                    os.environ,
+                    CODEX_NETWORK_BREAKDOWN_PASTA="/nonexistent/oneharness-no-pasta",
+                    CODEX_NETWORK_BREAKDOWN_START_SECONDS=value,
+                )
+                run = run_script("--", "true", env=env)
+                self.assertEqual(run.returncode, 3, run)
+                self.assertIn(
+                    f"CODEX_NETWORK_BREAKDOWN_START_SECONDS must be a finite number of seconds > 0, "
+                    f"got {value!r}",
+                    run.stderr,
+                )
+
+    def test_a_pasta_that_never_exits_after_its_launch_is_ended_and_the_launch_reported(
+        self,
+    ) -> None:
+        need_namespace(self)
+        with tempfile.TemporaryDirectory() as scratch:
+            pid_file = Path(scratch) / "pasta.pid"
+            stand_in = executable(
+                Path(scratch) / "pasta",
+                f'#!/bin/sh\n{real_pasta()} "$@"\necho $$ > {pid_file}\nexec sleep 600\n',
+            )
+            env = dict(os.environ, CODEX_NETWORK_BREAKDOWN_PASTA=str(stand_in))
+            run = run_script("--label", "lingering", "--", "sh", "-c", "exit 4", env=env)
+            pid = int(pid_file.read_text())
+        self.assertEqual(run.returncode, 0, run)
+        report = json.loads(run.stdout)
+        self.assertEqual(report["label"], "lingering", report)
+        self.assertEqual(report["argv"], ["sh", "-c", "exit 4"], report)
+        self.assertEqual(report["launch_exit"], 4, report)
+        self.assertIn(
+            f"pasta ({stand_in}) had not exited 5 s after its launch was measured, and was ended",
+            run.stderr,
+        )
+        self.assertTrue(gone(pid), "the lingering pasta outlived the script")
+
+    def test_a_pasta_confined_to_starting_programs_in_bin_still_builds_the_namespace(
+        self,
+    ) -> None:
+        need_namespace(self)
+        with tempfile.TemporaryDirectory() as scratch:
+            out = Path(scratch) / "seen"
+            # As 26.04's `usr.bin.pasta` AppArmor profile does: the program
+            # after `--` must resolve to a file under /usr/bin or /bin.
+            stand_in = executable(
+                Path(scratch) / "pasta",
+                "#!/bin/bash\n"
+                'for ((i = 1; i <= $#; i++)); do [ "${!i}" = -- ] && break; done\n'
+                "i=$((i + 1))\n"
+                'program="$(realpath -- "$(command -v -- "${!i}")")"\n'
+                'case "$program" in\n'
+                f'  /usr/bin/* | /bin/*) exec {real_pasta()} "$@" ;;\n'
+                "esac\n"
+                "echo 'Failed to start command or shell: Permission denied' >&2\n"
+                "exit 1\n",
+            )
+            env = dict(os.environ, CODEX_NETWORK_BREAKDOWN_PASTA=str(stand_in))
+            launch = 'printf "%s %s" "$(readlink /proc/self/ns/net)" "$HTTPS_PROXY" > "$1"'
+            report = breakdown_with(env, "--", "sh", "-c", launch, "sh", str(out))
+            seen_net, proxy = out.read_text().split(" ")
+        self.assertEqual(report["launch_exit"], 0, report)
+        self.assertNotEqual(seen_net, os.readlink("/proc/self/ns/net"), "ran outside the namespace")
+        self.assertRegex(proxy, r"^http://127\.0\.0\.1:\d+$")
+
+
+class RequiredMeasuring(unittest.TestCase):
+    """Where the measuring tests are required, a namespace that cannot be built
+    fails them rather than skipping them."""
+
+    MEASURING = "MeasureAroundATransferDouble.test_env_values_reach_the_measured_launch"
+
+    def suite(self, **settings: str) -> subprocess.CompletedProcess[str]:
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if key not in ("CODEX_NETWORK_BREAKDOWN_REQUIRED", "OH_NET_NO_SKIP")
+        }
+        env.update(CODEX_NETWORK_BREAKDOWN_PASTA="/nonexistent/oneharness-no-pasta", **settings)
+        return subprocess.run(
+            [sys.executable, "-I", str(Path(__file__).resolve()), "-v", self.MEASURING],
+            capture_output=True,
+            text=True,
+            timeout=HANG_GUARD_SECONDS,
+            env=env,
+            check=False,
+        )
+
+    def test_a_namespace_that_cannot_be_built_skips_unless_required(self) -> None:
+        run = self.suite()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("skipped", run.stderr)
+        required = [{"CODEX_NETWORK_BREAKDOWN_REQUIRED": "1"}]
+        if sys.platform.startswith("linux"):
+            required.append({"OH_NET_NO_SKIP": "1"})
+        for settings in required:
+            with self.subTest(**settings):
+                run = self.suite(**settings)
+                self.assertEqual(run.returncode, 1, run.stderr)
+                self.assertIn("FAIL: test_env_values_reach_the_measured_launch", run.stderr)
+                self.assertNotIn("skipped", run.stderr)
+
+    def test_ci_requires_the_measuring_tests_on_its_linux_leg(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+        for step in ("Affected tier (just check)", "Full sweep (just check all)"):
+            with self.subTest(step=step):
+                text = workflow.split(f"- name: {step}\n", 1)[1].split("\n      - name:", 1)[0]
+                self.assertIn("OH_NET_NO_SKIP: ${{ runner.os == 'Linux' && '1' || '' }}", text)
 
 
 if __name__ == "__main__":

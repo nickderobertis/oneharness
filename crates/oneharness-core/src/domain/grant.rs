@@ -242,11 +242,33 @@ pub fn resolve(
     rules: &[String],
     mode: PermissionMode,
     lookup: &dyn Fn(&str) -> Option<String>,
-) -> Result<Vec<ResolvedRule>, GrantRefusal> {
-    rules
+) -> Result<ResolvedRules, GrantRefusal> {
+    let rules = rules
         .iter()
         .map(|rule| resolve_one(rule, mode, lookup))
-        .collect()
+        .collect::<Result<_, _>>()?;
+    Ok(ResolvedRules { mode, rules })
+}
+
+/// A run's rules, resolved and checked under the one mode [`plan`] then
+/// plans them for: built only by [`resolve`], so a rule another mode accepted
+/// never reaches a `read-only` plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedRules {
+    mode: PermissionMode,
+    rules: Vec<ResolvedRule>,
+}
+
+impl ResolvedRules {
+    #[must_use]
+    pub fn mode(&self) -> PermissionMode {
+        self.mode
+    }
+
+    #[must_use]
+    pub fn rules(&self) -> &[ResolvedRule] {
+        &self.rules
+    }
 }
 
 fn resolve_one(
@@ -490,19 +512,16 @@ pub fn withheld_reason(id: &str) -> Option<&'static str> {
     })
 }
 
-/// Plan how harness `id` (a base id) receives `rules` under `mode`.
+/// Plan how harness `id` (a base id) receives `resolved`, under the mode it
+/// was resolved for.
 ///
 /// `withhold` is a reason the `io` layer found that this run cannot carry the
 /// grant on this harness (Codex credentials in the keyring, a missing home);
 /// with one, or with a harness that has no per-run mechanism, the plan applies
 /// nothing and carries one diagnostic naming the withheld rules.
 #[must_use]
-pub fn plan(
-    id: &str,
-    mode: PermissionMode,
-    rules: &[ResolvedRule],
-    withhold: Option<&str>,
-) -> GrantPlan {
+pub fn plan(id: &str, resolved: &ResolvedRules, withhold: Option<&str>) -> GrantPlan {
+    let (mode, rules) = (resolved.mode, resolved.rules.as_slice());
     if rules.is_empty() {
         return GrantPlan::None;
     }
@@ -631,7 +650,7 @@ mod tests {
     }
 
     fn one(rule: &str, mode: PermissionMode) -> Result<ResolvedRule, GrantRefusal> {
-        resolve(&[rule.to_string()], mode, &env).map(|mut v| v.remove(0))
+        resolve(&[rule.to_string()], mode, &env).map(|v| v.rules()[0].clone())
     }
 
     fn path(rule: &ResolvedRule) -> Option<&str> {
@@ -731,7 +750,7 @@ mod tests {
         }
     }
 
-    fn rules(list: &[&str], mode: PermissionMode) -> Vec<ResolvedRule> {
+    fn rules(list: &[&str], mode: PermissionMode) -> ResolvedRules {
         let list: Vec<String> = list.iter().map(|s| s.to_string()).collect();
         resolve(&list, mode, &env).unwrap()
     }
@@ -739,7 +758,7 @@ mod tests {
     #[test]
     fn claude_gets_each_rule_on_allowed_tools_and_read_only_grants_any_arguments() {
         let ro = rules(&["Bash($TOOL)", "Bash($TOOL:*)"], PermissionMode::ReadOnly);
-        let p = plan(CLAUDE, PermissionMode::ReadOnly, &ro, None);
+        let p = plan(CLAUDE, &ro, None);
         assert_eq!(
             p.claude().map(ClaudeGrant::entries).unwrap_or_default(),
             ["Bash(/opt/bin/decline:*)", "Bash(/opt/bin/decline:*)"]
@@ -748,7 +767,7 @@ mod tests {
         assert_eq!(statement.matches("`/opt/bin/decline`").count(), 1);
         assert!(p.diagnostics().is_empty() && p.applies());
         let def = rules(&["Bash($TOOL)", "Edit"], PermissionMode::Default);
-        let p = plan(CLAUDE, PermissionMode::Default, &def, None);
+        let p = plan(CLAUDE, &def, None);
         assert_eq!(
             p.claude().map(ClaudeGrant::entries).unwrap_or_default(),
             ["Bash(/opt/bin/decline)", "Edit"]
@@ -762,7 +781,7 @@ mod tests {
             &["Bash($TOOL)", "Bash(/usr/bin/x:*)"],
             PermissionMode::ReadOnly,
         );
-        let p = plan(CODEX, PermissionMode::ReadOnly, &ro, None);
+        let p = plan(CODEX, &ro, None);
         let text = p.codex().unwrap().rules();
         assert!(text.starts_with(RUN_RULES_HEADER));
         assert!(text.contains("prefix_rule(pattern=[\"/opt/bin/decline\"], decision=\"allow\")"));
@@ -776,7 +795,7 @@ mod tests {
             &["Bash($TOOL)", "Edit", "Bash(git status:*)"],
             PermissionMode::Default,
         );
-        let p = plan(CODEX, PermissionMode::Default, &def, None);
+        let p = plan(CODEX, &def, None);
         let text = p.codex().unwrap().rules();
         assert!(text.contains("pattern=[\"git\", \"status\"]"));
         assert!(!text.contains("decline"));
@@ -790,7 +809,7 @@ mod tests {
     #[test]
     fn codex_with_no_expressible_rule_applies_nothing_and_names_them_all() {
         let def = rules(&["Edit", "Bash($TOOL)"], PermissionMode::Default);
-        let p = plan(CODEX, PermissionMode::Default, &def, None);
+        let p = plan(CODEX, &def, None);
         assert!(!p.applies());
         assert_eq!(p.codex(), None);
         assert_eq!(p.statement(), None);
@@ -803,7 +822,7 @@ mod tests {
     fn a_harness_without_a_proven_mechanism_withholds_and_says_so() {
         let ro = rules(&["Bash($TOOL)"], PermissionMode::ReadOnly);
         for id in ["opencode", "copilot", "cursor", "qwen", "goose", "crush"] {
-            let p = plan(id, PermissionMode::ReadOnly, &ro, None);
+            let p = plan(id, &ro, None);
             assert!(!p.applies(), "{id}");
             assert_eq!(p.statement(), None);
             let diagnostics = p.diagnostics();
@@ -812,18 +831,12 @@ mod tests {
             assert!(diagnostics[0].message.contains("`Bash($TOOL)`"));
             assert!(diagnostics[0].message.contains(&format!("`{id}`")));
         }
-        let p = plan(
-            CODEX,
-            PermissionMode::ReadOnly,
-            &ro,
-            Some("its login is in the keyring"),
-        );
+        let p = plan(CODEX, &ro, Some("its login is in the keyring"));
         assert!(!p.applies());
         assert!(p.diagnostics()[0].message.contains("keyring"));
-        assert_eq!(
-            plan(CLAUDE, PermissionMode::ReadOnly, &[], None),
-            GrantPlan::None
-        );
+        let none = resolve(&[], PermissionMode::ReadOnly, &env).unwrap();
+        assert_eq!(none.mode(), PermissionMode::ReadOnly);
+        assert_eq!(plan(CLAUDE, &none, None), GrantPlan::None);
         assert!(GrantPlan::None.diagnostics().is_empty());
     }
 

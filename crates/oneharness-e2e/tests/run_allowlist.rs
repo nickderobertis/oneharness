@@ -1598,3 +1598,44 @@ fn a_granted_run_keeps_one_overlay_across_its_schema_retries() {
         "x"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn a_codex_store_that_cannot_be_determined_withholds_the_grant() {
+    use std::os::unix::fs::PermissionsExt;
+    let world = World::new("codex-unknown-store");
+    let tool = world.tool();
+    let rule = format!("allowed_tools = [\"Bash({tool})\"]\n");
+    let config = world.path("codex-home/config.toml");
+    let message = |run: &Spawn| {
+        run.report["results"][0]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["setting"] == "allowed_tools")
+            .unwrap()["message"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    // A store named as no string.
+    std::fs::write(&config, "cli_auth_credentials_store = 5\n").unwrap();
+    let run = spawn(&world, "codex", "read-only", &rule, &[]);
+    assert!(message(&run).contains("not a store"), "{}", message(&run));
+    assert_eq!(run.env["CODEX_HOME"], world.s("codex-home"));
+    // A config the run cannot read (skipped where permissions do not bind,
+    // as for root).
+    std::fs::write(&config, "model = \"m\"\n").unwrap();
+    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read(&config).is_err() {
+        let run = spawn(&world, "codex", "read-only", &rule, &[]);
+        assert!(
+            message(&run).contains("could not be read"),
+            "{}",
+            message(&run)
+        );
+        assert!(run.report["results"][0].get("overlay_env").is_none());
+    }
+    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(world.overlays().is_empty());
+}

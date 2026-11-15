@@ -25,6 +25,10 @@ BATCHES = (1, 2, 20)
 
 SIDES = ("ungranted", "granted")
 
+AGREEMENT = 0.002
+"""How far a turn's seconds may differ from its end minus its start: the
+rounding of three figures each kept to the millisecond."""
+
 
 @dataclass(frozen=True)
 class OverlayTimings:
@@ -113,6 +117,11 @@ def decode_turn(
         return None
     if started is None or ended is None or ended < started:
         faults.append(f"{where} names no start and end it ran between")
+        return None
+    if abs(seconds - (ended - started)) > AGREEMENT:
+        faults.append(
+            f"{where}'s seconds {seconds!r} disagree with its start {started!r} and end {ended!r}"
+        )
         return None
     timings = entry.get("overlay_timings")
     overlay = None

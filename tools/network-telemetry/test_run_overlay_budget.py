@@ -93,6 +93,7 @@ class RunOverlayAddedSecondsBudget(unittest.TestCase):
             (FIXTURES / "run-overlay-short-batch.json", "the granted batch of 20 holds 19 turns"),
             (FIXTURES / "run-overlay-no-overlay.json", "carries no overlay_timings"),
             (FIXTURES / "run-overlay-zero-seconds.json", "not a positive duration"),
+            (FIXTURES / "run-overlay-disagreeing-seconds.json", "disagree with its start"),
             (FIXTURES / "run-overlay-no-version.json", "the record names no codex version"),
             (FIXTURES / "run-overlay-not-json.json", "is not JSON"),
             (FIXTURES / "run-overlay-not-an-object.json", "holds no JSON object"),

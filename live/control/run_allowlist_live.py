@@ -42,6 +42,7 @@ import http.server
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import sqlite3
@@ -66,6 +67,7 @@ MARK = re.compile(r"\[probe:([A-Za-z0-9_.-]+)\]")
 PAYLOAD = "line one\nit's line two"
 OUTSIDE_TEXT = "outside the worktree: sentinel text"
 HARNESSES = ("claude-code", "codex", "opencode")
+SAFE_PATH = re.compile(r"[A-Za-z0-9_./-]+")
 GROUPS = (
     "sync", "probes", "posture", "lifecycle", "kill", "concurrency", "session",
     "record", "login", "keyring", "withheld",
@@ -318,8 +320,9 @@ def history(dialect: str, body: Json, mark: str) -> tuple[int, list[str]]:
             start = max((i for i, m in enumerate(messages) if mark in json.dumps(m)), default=0)
             for m in messages[start:]:
                 if dialect == "chat":
-                    if m.get("role") == "assistant":
-                        made += len(m.get("tool_calls") or [])
+                    calls = m.get("tool_calls")
+                    if m.get("role") == "assistant" and isinstance(calls, list):
+                        made += sum(1 for call in calls if isinstance(call, dict))
                     if m.get("role") == "tool":
                         results.append(text_of(m.get("content")))
                     continue
@@ -569,7 +572,7 @@ class World:
             (self.grant, self.log, "grant"),
             (self.other, self.root / "out" / "other.jsonl", "other"),
         ):
-            exe.write_text(STANDIN.replace("@LOG@", str(log)).replace("@NAME@", name))
+            exe.write_text(STANDIN.replace("@LOG@", shlex.quote(str(log))).replace("@NAME@", name))
             exe.chmod(0o755)
             log.touch()
         self.home.mkdir(parents=True, exist_ok=True)
@@ -1362,7 +1365,13 @@ def main(argv: list[str]) -> int:
         return usage_error(f"--only names {args.only!r}; each must be one of {', '.join(GROUPS)}")
     if not Path(oneharness_bin()).is_file():
         return usage_error(f"no oneharness binary at {oneharness_bin()}; run 'just build-release' or set ONEHARNESS_BIN")
-    base = args.scratch or Path(tempfile.mkdtemp(prefix="oh-run-allowlist-", dir=os.environ.get("ONEPIPELINE_NODE_SCRATCH_DIR")))
+    root = args.scratch or Path(os.environ.get("ONEPIPELINE_NODE_SCRATCH_DIR") or tempfile.gettempdir())
+    if not SAFE_PATH.fullmatch(str(root.resolve())):
+        # Every probe types paths under the scratch root into a real shell, and
+        # a grant matches only an executable's path typed exactly as written —
+        # quoting one would change what the harness checks.
+        return usage_error(f"the scratch root {root} must be a path of letters, digits, `_`, `.`, `-` and `/` only")
+    base = args.scratch or Path(tempfile.mkdtemp(prefix="oh-run-allowlist-", dir=root))
     endpoint = Endpoint()
     fails = Failures()
     worlds: list[World] = []
@@ -1388,7 +1397,9 @@ def main(argv: list[str]) -> int:
                     run(world)
                 except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as error:
                     fails.check(False, f"{world.label} {group}: crashed: {error!r}")
-            print(f"{world.label}: {len(fails.items) - count} failure(s) in {time.time() - started:.0f}s", flush=True)
+            if len(fails.items) > count:
+                print(f"{world.label}: {len(fails.items) - count} failure(s) in {time.time() - started:.0f}s",
+                      file=sys.stderr, flush=True)  # fmt: skip
         if ran == 0:
             return usage_error(f"--only {args.only!r} selects no group any selected harness runs")
     finally:
@@ -1400,6 +1411,7 @@ def main(argv: list[str]) -> int:
     if fails.items:
         print(f"run_allowlist_live: {len(fails.items)} failure(s)", file=sys.stderr)
         return 1
+    print(f"run_allowlist_live: ok ({', '.join(w.label for w in worlds)})")
     return 0
 
 

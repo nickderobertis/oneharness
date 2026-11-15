@@ -5776,11 +5776,14 @@ pub(crate) fn parse_env(values: &[String]) -> Result<Vec<(String, String)>, Oneh
 /// One unit's run-level allowlist, resolved and planned for its harness:
 /// a Codex grant always with the real home its overlay links into.
 enum UnitGrant {
-    /// Anything but a Codex grant: no rule, withheld, Claude Code's flags.
+    /// Anything but a Codex grant: no rule, withheld, unexpressible, or
+    /// Claude Code's flags.
     Plan(grant::GrantPlan),
     /// A Codex grant, applied through an overlay of `real_home`.
     Codex {
-        plan: grant::GrantPlan,
+        grant: grant::CodexGrant,
+        statement: Option<String>,
+        unmapped: Option<lean::Diagnostic>,
         real_home: PathBuf,
     },
 }
@@ -5792,28 +5795,58 @@ struct CodexOverlayPlan<'a> {
 }
 
 impl UnitGrant {
-    fn plan(&self) -> &grant::GrantPlan {
-        match self {
-            UnitGrant::Plan(plan) | UnitGrant::Codex { plan, .. } => plan,
+    /// `plan` for a unit, with the real home a Codex grant's overlay links
+    /// into: `codex_real_home` is `Some` whenever `plan` is a Codex grant,
+    /// since Codex withholds over a home it cannot link.
+    fn new(plan: grant::GrantPlan, codex_real_home: Option<PathBuf>) -> UnitGrant {
+        match (plan, codex_real_home) {
+            (
+                grant::GrantPlan::Codex {
+                    grant,
+                    statement,
+                    unmapped,
+                },
+                Some(real_home),
+            ) => UnitGrant::Codex {
+                grant,
+                statement,
+                unmapped,
+                real_home,
+            },
+            (grant::GrantPlan::Codex { .. }, None) => {
+                unreachable!("a Codex grant is planned only over a home it can link")
+            }
+            (plan, _) => UnitGrant::Plan(plan),
         }
     }
 
     fn statement(&self) -> Option<&str> {
-        self.plan().statement()
+        match self {
+            UnitGrant::Plan(plan) => plan.statement(),
+            UnitGrant::Codex { statement, .. } => statement.as_deref(),
+        }
     }
 
     fn claude(&self) -> Option<&grant::ClaudeGrant> {
-        self.plan().claude()
+        match self {
+            UnitGrant::Plan(plan) => plan.claude(),
+            UnitGrant::Codex { .. } => None,
+        }
     }
 
     fn diagnostics(&self) -> Vec<lean::Diagnostic> {
-        self.plan().diagnostics()
+        match self {
+            UnitGrant::Plan(plan) => plan.diagnostics(),
+            UnitGrant::Codex { unmapped, .. } => unmapped.iter().cloned().collect(),
+        }
     }
 
     fn codex_overlay(&self) -> Option<CodexOverlayPlan<'_>> {
         match self {
-            UnitGrant::Codex { plan, real_home } => plan.codex().map(|codex| CodexOverlayPlan {
-                rules: codex.rules(),
+            UnitGrant::Codex {
+                grant, real_home, ..
+            } => Some(CodexOverlayPlan {
+                rules: grant.rules(),
                 real_home,
             }),
             UnitGrant::Plan(_) => None,
@@ -5894,11 +5927,8 @@ fn plan_unit_grant(
     } else {
         None
     };
-    let plan = grant::plan(spec.id, mode, &resolved, withhold.as_deref());
-    Ok(match codex_real_home {
-        Some(real_home) if plan.codex().is_some() => UnitGrant::Codex { plan, real_home },
-        _ => UnitGrant::Plan(plan),
-    })
+    let plan = grant::plan(spec.id, &resolved, withhold.as_deref());
+    Ok(UnitGrant::new(plan, codex_real_home))
 }
 
 /// Why this Codex run cannot carry a grant through an overlay home, or `None`

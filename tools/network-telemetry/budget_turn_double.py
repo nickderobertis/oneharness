@@ -51,6 +51,7 @@ def endpoint() -> str:
     return str(found.group(1))
 
 
+# llmlint: ignore-block[async_typed_clients_at_boundaries] This double stands in for a CLI talking to the test's own loopback model endpoint: a turn's two requests are sequential by protocol (the second carries the first answer's call), so there is nothing to overlap, and it runs on whatever bare python3 is on PATH, outside the uv environment, so a typed async client is a dependency it cannot have. Each streamed event is checked for shape before it is used.
 def respond(items: list[dict[str, object]]) -> list[dict[str, object]]:
     """The output items the endpoint streams back for one request."""
     body = {
@@ -70,7 +71,18 @@ def respond(items: list[dict[str, object]]) -> list[dict[str, object]]:
             for line in answer.read().decode().splitlines()
             if line.startswith("data: ")
         ]
-    return [e["item"] for e in events if e.get("type") == "response.output_item.done"]
+    # Only a finished output item that is an object counts; anything else in
+    # the stream is not a call this double could act on.
+    return [
+        e["item"]
+        for e in events
+        if isinstance(e, dict)
+        and e.get("type") == "response.output_item.done"
+        and isinstance(e.get("item"), dict)
+    ]
+
+
+# llmlint: ignore-end[async_typed_clients_at_boundaries]
 
 
 def turn(prompt: str, grant: bool, fault: str) -> None:

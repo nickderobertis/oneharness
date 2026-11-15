@@ -5885,6 +5885,13 @@ fn plan_unit_grant(
             reason: refusal.reason(),
         }
     })?;
+    if let Some(reason) = grant::platform_withheld_reason() {
+        return Ok(UnitGrant::Plan(grant::plan(
+            spec.id,
+            &resolved,
+            Some(reason),
+        )));
+    }
     if spec.id != "codex" {
         return Ok(UnitGrant::Plan(grant::plan(spec.id, &resolved, None)));
     }

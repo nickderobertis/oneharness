@@ -520,6 +520,27 @@ pub fn withheld_reason(id: &str) -> Option<&'static str> {
     })
 }
 
+/// Why every harness withholds the run-level allowlist on this platform, or
+/// `None` where it is proven. Only unix is: every test that drives a harness's
+/// real CLI under a grant runs there, and none has run on Windows. A
+/// compile-time fact about the build, not a probe of the host.
+#[cfg(windows)]
+#[must_use]
+pub const fn platform_withheld_reason() -> Option<&'static str> {
+    Some(
+        "the per-run allowlist is withheld on Windows, where no test against a harness's real \
+         CLI proves it applies to this run alone and nothing wider",
+    )
+}
+
+/// Why every harness withholds the run-level allowlist on this platform:
+/// never, on unix, where the tests against each granting harness's real CLI run.
+#[cfg(not(windows))]
+#[must_use]
+pub const fn platform_withheld_reason() -> Option<&'static str> {
+    None
+}
+
 /// Plan how harness `id` (a base id) receives `resolved`, under the mode it
 /// was resolved for.
 ///

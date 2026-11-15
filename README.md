@@ -865,9 +865,17 @@ allowed_tools = ["Bash(git log:*)"]  # what `sync` writes; never applied to a ru
   nothing. A harness that withholds the grant runs exactly as it would with no
   run-level allowlist and reports it in `diagnostics` (`setting:
   "allowed_tools"`, naming the harness and the withheld rules). `oneharness
-  list` reports `supports_run_allowed_tools` per harness.
+  list` reports `supports_run_allowed_tools` per harness, for the platform it
+  runs on.
+- **On Windows every harness withholds it.** No test against a harness's real
+  CLI has proven the grant there, so a Windows run with a run-level allowlist
+  runs exactly as it would with none — same argv, environment and files — and
+  its report carries the withheld diagnostic, naming the harness and Windows;
+  `oneharness list` reports `supports_run_allowed_tools: false` for every
+  harness. The table below is the unix behaviour. Rules are still validated
+  first, so a rule refused before spawn is refused on Windows too.
 
-| Harness | run-level `allowed_tools` |
+| Harness | run-level `allowed_tools` (unix; every harness withholds it on Windows) |
 |---|---|
 | Claude Code | **Applied**, on per-run flags; nothing is written. Under `read-only` the run uses `--permission-mode dontAsk` (not `bypassPermissions`) with `--tools Read Grep Glob WebFetch WebSearch Bash` and `--allowedTools` the same read tools plus each `Bash(<absolute path>:*)`, so reads outside the worktree behave as before; in other modes the rules join `--allowedTools`. Type the absolute path. Besides one quoted argument it admits the payload on stdin as a quoted here-document, a here-string, or a `printf`/`echo` pipe (`spike-command-grant`, Claude Code 2.1.323). |
 | Codex | **Applied**, through a per-run `CODEX_HOME` overlay (unix): every entry but `rules/` and the thread index links to the home the run would use (the identity's own, `env_from` honoured), `rules/` links the user's rule files beside one file of the run's `prefix_rule(pattern=["<absolute path>"], decision="allow")` rules, and `--sandbox read-only` is unchanged — a matching plain command runs outside the sandbox, every other command stays sandboxed. Type the absolute path. One quoted argument is the only payload form: every stdin form runs sandboxed. Outside `read-only`, a rule Codex cannot express as a prefix rule is reported and the rest applied. Withheld for a login in the OS keyring (`cli_auth_credentials_store = "keyring"` or `"auto"`; Codex keys it by the home's path), a home that does not exist, and on Windows (the overlay is built of links). |
@@ -2666,8 +2674,8 @@ which also cites the evidence for each entry):
 
 | Harness (release) | `auto_compact_tokens` | compact now | `tool_set` | `load_skills = false` | `load_mcp = false` | `images` | `calls` | run-level `allowed_tools` |
 |---|---|---|---|---|---|---|---|---|
-| Claude Code (2.1.316) | `CLAUDE_CODE_AUTO_COMPACT_WINDOW` = N + 33000; below 67000, the 100000 window floor plus `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` = N / 80000 × 100 | `-p /compact --resume ID --fork-session` | `--tools Bash Read` (intersected with read-only's set under `--mode read-only`) | `--disable-slash-commands` | `--strict-mcp-config` | base64 `image` blocks in one stream-json user frame (`--input-format stream-json`) | one `assistant.message.usage` per `message.id` under `--output-format stream-json` | `--allowedTools` per rule; under read-only `--permission-mode dontAsk`, `--tools` gains `Bash` |
-| Codex (0.159.2) | `-c model_auto_compact_token_limit=N` | app-server `thread/fork` + `thread/compact/start` | partial: `features.goals`, `features.view_image`, `features.sleep_tool` off, `web_search="disabled"`, and `features.shell_tool` off only for a set naming neither `shell` nor `read` (codex's shell also reads files); `apply_patch`, `request_user_input`, the multi-agent `collaboration` tools and `clock__curr_time` stay loaded (no setting removes them) and the run says so | `-c skills.include_instructions=false` | each configured server overridden `-c mcp_servers.<name>={command="true",enabled=false}`, plus `features.apps=false` | `--image=PATH` | the rollout record's `event_msg token_count info.last_token_usage`, one per event | a per-run overlay `CODEX_HOME` whose `rules/` adds one `prefix_rule` per rule |
+| Claude Code (2.1.316) | `CLAUDE_CODE_AUTO_COMPACT_WINDOW` = N + 33000; below 67000, the 100000 window floor plus `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` = N / 80000 × 100 | `-p /compact --resume ID --fork-session` | `--tools Bash Read` (intersected with read-only's set under `--mode read-only`) | `--disable-slash-commands` | `--strict-mcp-config` | base64 `image` blocks in one stream-json user frame (`--input-format stream-json`) | one `assistant.message.usage` per `message.id` under `--output-format stream-json` | `--allowedTools` per rule; under read-only `--permission-mode dontAsk`, `--tools` gains `Bash` (unix; withheld on Windows) |
+| Codex (0.159.2) | `-c model_auto_compact_token_limit=N` | app-server `thread/fork` + `thread/compact/start` | partial: `features.goals`, `features.view_image`, `features.sleep_tool` off, `web_search="disabled"`, and `features.shell_tool` off only for a set naming neither `shell` nor `read` (codex's shell also reads files); `apply_patch`, `request_user_input`, the multi-agent `collaboration` tools and `clock__curr_time` stay loaded (no setting removes them) and the run says so | `-c skills.include_instructions=false` | each configured server overridden `-c mcp_servers.<name>={command="true",enabled=false}`, plus `features.apps=false` | `--image=PATH` | the rollout record's `event_msg token_count info.last_token_usage`, one per event | a per-run overlay `CODEX_HOME` whose `rules/` adds one `prefix_rule` per rule (unix; withheld on Windows) |
 | OpenCode (1.18.5) | — | — | — | — | — | `-f PATH` | one per `step_finish` event (`step_finish.part.tokens`, `part.cost`) of `--format json` | withheld |
 | Copilot (1.0.78) | — | — | — | — | — | `--attachment PATH` | — | withheld |
 | Goose, Qwen, Crush, Cursor | — | — | — | — | — | refused | — | withheld |
@@ -3129,8 +3137,8 @@ concern (`oneharness sync`), not `--mode`.
 
 Under `read-only`, a [run-level `allowed_tools`](#the-run-level-allowlist) can
 permit a short list of named executables and nothing else, on the harnesses
-that enforce it (Claude Code and Codex); every other harness withholds it and
-says so.
+that enforce it (Claude Code and Codex, on unix); every other harness, and every
+harness on Windows, withholds it and says so.
 
 Relatedly, a harness can carry a small **default environment** so headless runs
 stay clean — e.g. oneharness sets `QWEN_CODE_SUPPRESS_YOLO_WARNING=1` for Qwen

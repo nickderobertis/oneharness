@@ -6104,6 +6104,44 @@ fn the_control_suite_s_pooled_phases_pass_and_fail_for_the_right_reason() {
     }
 }
 
+/// A heartbeat the pool never stops that stalls for two seconds soon after
+/// the kill — the way a command starved of the CPU on a loaded host stalls —
+/// still fails pooled-kill as one that kept beating: a heartbeat gone still
+/// is not yet a stopped one, and the beats written after the stall show it.
+#[test]
+fn the_control_suite_s_pooled_kill_tells_a_stalled_heartbeat_from_a_stopped_one() {
+    let suite = ControlSuite::new("pool-suite-stall");
+    // `date` first on the dispatch's PATH: called by the heartbeat (the only
+    // caller with OH_POOLED_BEAT) once it has written 20 beats, it records the
+    // stall beside itself, sleeps two seconds, then runs the real `date`.
+    suite.tool(
+        "date",
+        r#"stalled="$(dirname "$0")/../date-stalled"
+real=""
+for candidate in $(type -ap date); do
+  [ "$candidate" -ef "$0" ] || { real="$candidate"; break; }
+done
+[ -n "$real" ] || { echo "date shim: no real date on PATH" >&2; exit 1; }
+if [ -n "${OH_POOLED_BEAT:-}" ] && [ ! -e "$stalled" ] && [ -e "$OH_POOLED_BEAT" ] &&
+  [ "$(wc -l <"$OH_POOLED_BEAT")" -ge 20 ]; then
+  : >"$stalled"
+  sleep 2
+fi
+exec "$real" "$@""#,
+    );
+    let failed = suite.run(&[("CODEX_MOCK_FAULT", "escape-marker")]);
+    let said = String::from_utf8_lossy(&failed.stderr);
+    assert!(
+        suite.pool.path("date-stalled").exists(),
+        "the heartbeat never stalled: {said}"
+    );
+    assert!(!failed.status.success(), "the suite passed: {said}");
+    assert!(
+        said.contains("FAIL: pooled-kill: ") && said.contains("kept beating"),
+        "expected `FAIL: pooled-kill: … kept beating` in: {said}"
+    );
+}
+
 // llmlint: ignore-block[e2e_not_mocked] The control suite's pooled-env phase runs for real — scripts/e2e-control.sh, the built oneharness behind a wrapper that only starts dispatch B late or ends it before it runs, and a host mktemp on PATH that cannot create a file, and oneharness-core's pool; only codex is the repository's subprocess double, as in every ControlSuite journey, because the gate cannot run real Codex. The same phase against real Codex is scripts/e2e-control.sh's live run.
 /// The suite's pooled-env dispatches share one server however late the
 /// second of them starts — here only once the first's command is already

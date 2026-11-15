@@ -242,7 +242,7 @@ oh_pooled_kill() {
   # the_control_suite_s_kill_bound_is_the_pool_s_own_deadlines fails when the two
   # drift apart.
   local sweep_s=2 stop_s=5
-  local beat="$POOLED_DIR/heartbeat" pid lines last before bound=$((sweep_s + stop_s)) waited=0 grown=0 quiet=0
+  local beat="$POOLED_DIR/heartbeat" pid lines last killed_at limit settled stamp now bound=$((sweep_s + stop_s)) waited=0 quiet=0
   mkdir -p "$POOLED_DIR/wk" ||
     fail "pooled-kill: cannot create the dispatch's working directory under $POOLED_DIR; check that it is writable"
   # shellcheck disable=SC2016 # expanded by the dispatch's own shell, in its own environment
@@ -275,28 +275,41 @@ oh_pooled_kill() {
       fail "pooled-kill: cannot SIGKILL the dispatch (pid $pid), which is still running; check that this shell owns it"
     fail "pooled-kill: the dispatch (pid $pid) ended before it could be killed: $(cat "$POOLED_DIR/kill.json.err")"
   fi
+  # The kill's own second, read once it has landed: each heartbeat line is the
+  # epoch second it was written, so the verdict reads the heartbeat's clock and
+  # not this loop's pace, which a loaded host slows.
+  killed_at="$(date +%s)" || fail "pooled-kill: cannot read the clock after the kill"
   wait "$pid" 2>/dev/null || true
-  # Sample the heartbeat every 0.2 s until it has been still for 1 s; the last
-  # sample that grew it is when it stopped.
-  last="$(beats)"
+  # A line stamped past the bound (and a second's grace for whole-second
+  # stamps) fails the phase. A heartbeat that goes still is watched on until
+  # the wall clock is past the bound by a margin and it has been still for 1 s:
+  # one starved of the CPU for a second stalls without stopping, and only a
+  # line written after the stall tells the two apart.
+  limit=$((killed_at + bound + 1))
+  settled=$((limit + 3))
+  last="$(beats)" || exit 1
   waited=0
-  while [ "$quiet" -lt 5 ]; do
+  while :; do
     sleep 0.2
     waited=$((waited + 1))
-    lines="$(beats)"
+    stamp="$(tail -n 1 "$beat")" || fail "pooled-kill: cannot read the heartbeat file $beat"
+    [[ "$stamp" =~ ^[0-9]+$ ]] ||
+      fail "pooled-kill: the heartbeat's last line is not an epoch second: '$stamp' in $beat"
+    [ "$stamp" -le "$limit" ] ||
+      fail "pooled-kill: the killed dispatch's heartbeat kept beating $((stamp - killed_at)) s after the kill, past DEAD_LEASE_SWEEP_INTERVAL + DEAD_LEASE_STOP_DEADLINE (${bound} s)"
+    lines="$(beats)" || exit 1
     if [ "$lines" != "$last" ]; then
-      grown=$waited
       quiet=0
       last="$lines"
     else
       quiet=$((quiet + 1))
     fi
-    [ "$waited" -lt 150 ] || break
+    now="$(date +%s)" || fail "pooled-kill: cannot read the clock while watching the heartbeat"
+    [ "$now" -lt "$settled" ] || [ "$quiet" -lt 5 ] || break
+    [ "$waited" -lt 300 ] ||
+      fail "pooled-kill: the heartbeat was still not settled $((now - killed_at)) s after the kill (last line: $stamp)"
   done
-  before=$((grown * 2))
-  [ "$quiet" -ge 5 ] && [ "$before" -le "$(((bound * 10) + 15))" ] ||
-    fail "pooled-kill: the killed dispatch's heartbeat kept beating $((before / 10)).$((before % 10)) s after the kill, past DEAD_LEASE_SWEEP_INTERVAL + DEAD_LEASE_STOP_DEADLINE (${bound} s)"
-  note "  ok: the killed dispatch's heartbeat stopped $((before / 10)).$((before % 10)) s after the kill (bound ${bound} s)"
+  note "  ok: the killed dispatch's heartbeat stopped $((stamp - killed_at)) s after the kill (bound ${bound} s)"
 }
 
 oh_pooled_reuse() {

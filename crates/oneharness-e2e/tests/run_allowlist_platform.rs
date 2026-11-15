@@ -130,33 +130,7 @@ impl World {
         for file in [&argv, &env, &stdin] {
             let _ = std::fs::remove_file(file);
         }
-        let project = self.path("project").display().to_string();
-        let bin = format!(
-            "{harness}={}",
-            workspace_bin("oneharness-mock-harness").display()
-        );
-        let output: Output = self
-            .command(
-                &[
-                    "run",
-                    "--harness",
-                    harness,
-                    "--mode",
-                    mode(harness),
-                    "--prompt",
-                    "p",
-                    "--cwd",
-                    &project,
-                    "--bin",
-                    &bin,
-                ],
-                &config,
-            )
-            .env("MOCK_ARGV_FILE", &argv)
-            .env("MOCK_ENV_FILE", &env)
-            .env("MOCK_INPUT_FILE", &stdin)
-            .output()
-            .expect("run oneharness");
+        let output = self.run(harness, mode(harness), &config, &argv, &env, &stdin);
         assert!(
             output.status.code().is_some_and(|code| code < 2),
             "{harness}: {output:?}"
@@ -174,6 +148,47 @@ impl World {
             stdin: std::fs::read_to_string(&stdin).unwrap_or_default(),
         }
     }
+
+    // llmlint: ignore-block[e2e_not_mocked] The journey drives the real built `oneharness` over a real TOML config; only each harness's own process is the repository's mock harness, at the existing `--bin` seam, because the deterministic gate (windows-latest among its legs) cannot run the paid, authenticated CLIs. A withheld grant reaches no harness at all, so what it must prove — the spawn is the ungranted one — is fully observed at that seam.
+    /// `oneharness run` on `harness` under `config`, the mock harness standing
+    /// in for its process and recording what it received.
+    fn run(
+        &self,
+        harness: &str,
+        mode: &str,
+        config: &Path,
+        argv: &Path,
+        env: &Path,
+        stdin: &Path,
+    ) -> Output {
+        let project = self.path("project").display().to_string();
+        let bin = format!(
+            "{harness}={}",
+            workspace_bin("oneharness-mock-harness").display()
+        );
+        self.command(
+            &[
+                "run",
+                "--harness",
+                harness,
+                "--mode",
+                mode,
+                "--prompt",
+                "p",
+                "--cwd",
+                &project,
+                "--bin",
+                &bin,
+            ],
+            config,
+        )
+        .env("MOCK_ARGV_FILE", argv)
+        .env("MOCK_ENV_FILE", env)
+        .env("MOCK_INPUT_FILE", stdin)
+        .output()
+        .expect("run oneharness")
+    }
+    // llmlint: ignore-end[e2e_not_mocked]
 
     /// Every file under the world, but the recorder's own output.
     fn files(&self) -> Vec<PathBuf> {
@@ -248,6 +263,12 @@ fn list_reports_the_run_level_allowlist_as_this_platform_applies_it() {
     assert!(output.status.success(), "{output:?}");
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
     let harnesses = report["harnesses"].as_array().unwrap();
+    // Every registered harness, no more: one added later is held here too.
+    let mut listed: Vec<&str> = harnesses.iter().filter_map(|h| h["id"].as_str()).collect();
+    let mut known = HARNESSES.to_vec();
+    listed.sort_unstable();
+    known.sort_unstable();
+    assert_eq!(listed, known, "update HARNESSES to the registry");
     for id in HARNESSES {
         let h = harnesses
             .iter()
@@ -257,5 +278,36 @@ fn list_reports_the_run_level_allowlist_as_this_platform_applies_it() {
         // Codex also withholds where its overlay's links cannot be made,
         // which a unix host always can.
         assert_eq!(h["supports_run_allowed_tools"], !withheld, "{id}");
+    }
+}
+
+/// Withholding never relaxes validation: on every platform, Windows included,
+/// a rule that cannot be one is refused before anything spawns, as it is where
+/// the grant applies.
+#[test]
+fn a_rule_that_cannot_be_granted_is_refused_before_spawn_wherever_it_is_withheld() {
+    let world = World::new("refused");
+    let (argv, env, stdin) = (
+        world.path("out/argv"),
+        world.path("out/env.json"),
+        world.path("out/stdin"),
+    );
+    for (toml, wants) in [
+        (
+            "allowed_tools = [\"Bash($ONEHARNESS_TEST_UNSET_GRANT)\"]\n",
+            "`$ONEHARNESS_TEST_UNSET_GRANT` is unset or empty",
+        ),
+        ("allowed_tools = [\"Edit\"]\n", "--mode read-only"),
+    ] {
+        let config = world.path("oneharness.toml");
+        std::fs::write(&config, toml).unwrap();
+        for harness in ["claude-code", "codex", "opencode"] {
+            let _ = std::fs::remove_file(&argv);
+            let output = world.run(harness, "read-only", &config, &argv, &env, &stdin);
+            let said = String::from_utf8_lossy(&output.stderr);
+            assert_eq!(output.status.code(), Some(2), "{harness}: {output:?}");
+            assert!(said.contains(wants), "{harness}: {said}");
+            assert!(!argv.exists(), "{harness}: the harness was spawned");
+        }
     }
 }

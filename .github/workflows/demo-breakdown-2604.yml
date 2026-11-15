@@ -82,13 +82,17 @@ jobs:
           for run in $(seq 1 10); do
             log="$RUNNER_TEMP/run-$run.log"
             start=$(date +%s)
+            export DEMO_LOG="$RUNNER_TEMP/unittest-$run.log"
             bunx nx run network-breakdown:test --skip-nx-cache --output-style=static > "$log" 2>&1
             code=$?
             took=$(( $(date +%s) - start ))
-            summary="$(grep -oE '(Ran [0-9]+ tests in [0-9.]+s|OK( \(.*\))?$|FAILED.*$)' "$log" | tr '\n' ' ')"
-            skipped=no; grep -qE 'skipped=' "$log" && skipped=yes
-            echo "run $run: exit $code, ${took}s, skipped=$skipped, $summary"
-            if [ "$code" -ne 0 ] || [ "$skipped" = yes ]; then failed=$((failed + 1)); grep -E "^(FAIL|ERROR):|Error|error" "$log" | head -20; tail -80 "$log"; fi
+            summary="$(grep -E '^(Ran [0-9]+ tests in|OK|FAILED)' "$DEMO_LOG" | tr '\n' ' ')"
+            measured="$(grep -cE '\(__main__\.MeasureAroundATransferDouble\) \.\.\. ok$' "$DEMO_LOG")"
+            stand_ins="$(grep -cE '\(__main__\.APastaThatMisbehaves\) \.\.\. ok$' "$DEMO_LOG")"
+            skips="$(grep -cE '\.\.\. skipped' "$DEMO_LOG")"
+            skipped=no; [ "$skips" -eq 0 ] || skipped=yes
+            echo "run $run: exit $code, ${took}s, MeasureAroundATransferDouble ok=$measured, APastaThatMisbehaves ok=$stand_ins, skipped=$skips, $summary"
+            if [ "$code" -ne 0 ] || [ "$skipped" = yes ]; then cat "$DEMO_LOG" | grep -E "FAIL|ERROR|skipped" | head -30; failed=$((failed + 1)); grep -E "^(FAIL|ERROR):|Error|error" "$log" | head -20; tail -80 "$log"; fi
           done
           echo "runs failed or skipping: $failed of 10"
           [ "$failed" -eq 0 ]

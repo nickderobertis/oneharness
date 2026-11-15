@@ -774,6 +774,20 @@ def supervise(args: argparse.Namespace, pasta: str, scratch: Path, life: int) ->
     # namespace (`Couldn't write to /proc/self/uid_map` where AppArmor
     # restricts user namespaces) would carry pasta's errors as its own.
     held: Optional[bytes] = b""
+    # The caller reading this stderr may be gone — oneharness SIGKILLed with
+    # the suite — while the launch still writes during its stop. A relay that
+    # cannot write is dropped, not raised: the line is still this process's
+    # to write, and its marker to remove.
+    relaying = True
+
+    def relay(data: bytes) -> None:
+        nonlocal relaying
+        if relaying:
+            try:
+                os.write(2, data)
+            except OSError:
+                relaying = False
+
     errors = pasta_run.stderr.fileno()
     watched = [life, errors]
     # Until pasta's stderr closes — the namespace's last process has exited —
@@ -789,16 +803,16 @@ def supervise(args: argparse.Namespace, pasta: str, scratch: Path, life: int) ->
             elif chunk:
                 stderr_tail = (stderr_tail + chunk)[-2000:]
                 if held is None:
-                    os.write(2, chunk)
+                    relay(chunk)
                 elif (scratch / "launched").exists():
-                    os.write(2, held + chunk)
+                    relay(held + chunk)
                     held = None
                 else:
                     held += chunk
             else:
                 watched.remove(stream)
     if held is not None and (scratch / "launched").exists():
-        os.write(2, held)
+        relay(held)
     pasta_code = pasta_run.wait()
     result_path = scratch / "result.json"
     if result_path.exists():

@@ -5976,12 +5976,20 @@ fn codex_overlay_home<'a>(
         arg.strip_prefix("cli_auth_credentials_store=")
             .map(|value| value.trim_matches(['"', '\'']).to_string())
     });
+    // Only the file store (Codex's default) keeps the login where the
+    // overlay's link reaches; `keyring` and `auto` may keep it in the OS
+    // keyring, keyed by the home's path, and a store this release does not
+    // know could keep it anywhere.
     match overridden.or(configured).as_deref() {
+        None | Some("file") => Ok(home),
         Some(store @ ("keyring" | "auto")) => Err(format!(
             "its login may be stored in the OS keyring (`cli_auth_credentials_store = \"{store}\"`), \
              which Codex keys by the home's path, so an overlay home cannot reach it"
         )),
-        _ => Ok(home),
+        Some(store) => Err(format!(
+            "its login store `cli_auth_credentials_store = \"{store}\"` is not one an overlay is \
+             known to reach (only `file` is)"
+        )),
     }
 }
 

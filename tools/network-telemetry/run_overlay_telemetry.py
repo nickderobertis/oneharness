@@ -32,10 +32,22 @@ rounding of three figures each kept to the millisecond."""
 
 @dataclass(frozen=True)
 class OverlayTimings:
-    """What one granted turn's overlay cost, as oneharness reported it."""
+    """What one granted turn's overlay cost, as oneharness reported it: the
+    report's `overlay_timings` (`domain::report::OverlayTimings`), whose field
+    names test_run_overlay_budget.py holds equal to the generated report
+    schema's."""
 
     build_ms: int
     teardown_ms: int
+
+    @staticmethod
+    def from_json(value: object) -> Optional[OverlayTimings]:
+        """`value` as overlay timings: an object of non-negative millisecond
+        counts under exactly these field names, else None."""
+        if not isinstance(value, dict):
+            return None
+        build, teardown = count(value.get("build_ms")), count(value.get("teardown_ms"))
+        return None if build is None or teardown is None else OverlayTimings(build, teardown)
 
 
 @dataclass(frozen=True)
@@ -134,11 +146,10 @@ def decode_turn(
         if not isinstance(timings, dict):
             faults.append(f"{where} carries no overlay_timings, so it ran on no overlay")
             return None
-        build, teardown = count(timings.get("build_ms")), count(timings.get("teardown_ms"))
-        if build is None or teardown is None:
+        overlay = OverlayTimings.from_json(timings)
+        if overlay is None:
             faults.append(f"{where}'s overlay_timings {timings!r} are not two millisecond counts")
             return None
-        overlay = OverlayTimings(build, teardown)
     return TurnTiming(seconds, started, ended, number(entry.get("first_model_request")), overlay)
 
 

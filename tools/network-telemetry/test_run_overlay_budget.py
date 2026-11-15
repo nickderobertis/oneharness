@@ -12,6 +12,7 @@ checks the budget against real telemetry; the live-control leg does.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import subprocess
@@ -127,6 +128,40 @@ class RunOverlayTelemetryContract(unittest.TestCase):
         self.assertLess(stuck.ended - stuck.started, 10)
         self.assertEqual(quick.returncode, 0)
         self.assertLess(quick.ended - quick.started, 0.9)
+
+    def test_overlay_timings_name_the_fields_the_report_schema_declares(self) -> None:
+        # The drift gate between `domain::report::OverlayTimings` and the
+        # Python that reads it: the schema is generated from the Rust type.
+        schemas = json.loads(
+            (
+                ROOT
+                / "python"
+                / "oneharness-sdk"
+                / "src"
+                / "oneharness_sdk"
+                / "_generated"
+                / "schemas.json"
+            ).read_text(encoding="utf-8")
+        )
+        found = []
+
+        def walk(node: object) -> None:
+            if isinstance(node, dict):
+                timings = node.get("OverlayTimings")
+                if isinstance(timings, dict) and "properties" in timings:
+                    found.append(timings)
+                for value in node.values():
+                    walk(value)
+            elif isinstance(node, list):
+                for value in node:
+                    walk(value)
+
+        walk(schemas)
+        self.assertTrue(found, "the generated report schema declares no OverlayTimings")
+        fields = {field.name for field in dataclasses.fields(OverlayTimings)}
+        for timings in found:
+            self.assertEqual(set(timings["properties"]), fields)
+            self.assertEqual(set(timings.get("required", [])), fields)
 
     def test_a_number_too_large_for_a_float_is_no_figure(self) -> None:
         self.assertIsNone(number(10**400))

@@ -735,16 +735,7 @@ class Result:
             value = raw.get(key)
             return value if isinstance(value, str) else None
 
-        def millis(timings: Json, key: str) -> int | None:
-            value = timings.get(key)
-            return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
-
-        timings = raw.get("overlay_timings")
-        overlay = None
-        if isinstance(timings, dict):
-            build, teardown = millis(timings, "build_ms"), millis(timings, "teardown_ms")
-            if build is not None and teardown is not None:
-                overlay = OverlayTimings(build, teardown)
+        overlay = OverlayTimings.from_json(raw.get("overlay_timings"))
         diagnostics = raw.get("diagnostics")
         diagnostics = [d for d in diagnostics if isinstance(d, dict)] if isinstance(diagnostics, list) else []
         usage = raw.get("usage")
@@ -775,11 +766,7 @@ def run_turn(world: World, probe: ProbeId, calls: list[Call], what: str,
         world.argv(prompt, session, extra), env=world.env(), capture_output=True, text=True,
         timeout=600, stdin=subprocess.DEVNULL,
     )  # fmt: skip
-    try:
-        report = json.loads(proc.stdout)
-    except ValueError:
-        report = {}
-    report = report if isinstance(report, dict) else {}
+    report = report_of(proc.stdout)
     return Turn(report, Result.of(report), proc.stderr, proc.returncode), script
 
 
@@ -981,12 +968,18 @@ def held_turn(world: World, name: str, extra: list[str] | None = None, config: P
     return Held(proc, script)
 
 
-def status_of(out: str) -> str | None:
+def report_of(stdout: str) -> Json:
+    """A run's report: the JSON object on its stdout, or an empty one when
+    stdout holds anything else."""
     try:
-        report = json.loads(out)
+        report = json.loads(stdout)
     except ValueError:
-        return None
-    return Result.of(report).status if isinstance(report, dict) else None
+        return {}
+    return report if isinstance(report, dict) else {}
+
+
+def status_of(out: str) -> str | None:
+    return Result.of(report_of(out)).status
 
 
 def group_lifecycle(world: World, fails: Failures) -> None:
@@ -1297,7 +1290,7 @@ def budget_turns(world: World, size: int, grant: bool) -> list[TurnTiming]:
         argvs.append(world.argv(f"[probe:{probe}] Use your shell tool to run exactly: {command}"))
     turns = []
     for script, done in zip(scripts, run_concurrently(argvs, world.env(), timeout=900)):
-        result = Result.of(json.loads(done.stdout) if done.stdout.strip() else {})
+        result = Result.of(report_of(done.stdout))
         if result.status != "ok":
             raise RuntimeError(f"a budget turn ended {result.status}: {done.stderr[-400:]}")
         first = script.requests[0].at if script.requests else None
@@ -1365,13 +1358,15 @@ def main(argv: list[str]) -> int:
         return usage_error(f"--only names {args.only!r}; each must be one of {', '.join(GROUPS)}")
     if not Path(oneharness_bin()).is_file():
         return usage_error(f"no oneharness binary at {oneharness_bin()}; run 'just build-release' or set ONEHARNESS_BIN")
-    root = args.scratch or Path(os.environ.get("ONEPIPELINE_NODE_SCRATCH_DIR") or tempfile.gettempdir())
-    if not SAFE_PATH.fullmatch(str(root.resolve())):
+    # Resolved once and used as resolved: the spelling validated is the one
+    # every command is built from.
+    root = (args.scratch or Path(os.environ.get("ONEPIPELINE_NODE_SCRATCH_DIR") or tempfile.gettempdir())).resolve()
+    if not SAFE_PATH.fullmatch(str(root)):
         # Every probe types paths under the scratch root into a real shell, and
         # a grant matches only an executable's path typed exactly as written —
         # quoting one would change what the harness checks.
         return usage_error(f"the scratch root {root} must be a path of letters, digits, `_`, `.`, `-` and `/` only")
-    base = args.scratch or Path(tempfile.mkdtemp(prefix="oh-run-allowlist-", dir=root))
+    base = root if args.scratch else Path(tempfile.mkdtemp(prefix="oh-run-allowlist-", dir=root))
     endpoint = Endpoint()
     fails = Failures()
     worlds: list[World] = []

@@ -1622,6 +1622,14 @@ fn a_codex_store_that_cannot_be_determined_withholds_the_grant() {
     std::fs::write(&config, "cli_auth_credentials_store = 5\n").unwrap();
     let run = spawn(&world, "codex", "read-only", &rule, &[]);
     assert!(message(&run).contains("not a store"), "{}", message(&run));
+    // A store this release does not know.
+    std::fs::write(&config, "cli_auth_credentials_store = \"vault\"\n").unwrap();
+    let run = spawn(&world, "codex", "read-only", &rule, &[]);
+    assert!(
+        message(&run).contains("not one an overlay is known to reach"),
+        "{}",
+        message(&run)
+    );
     assert_eq!(run.env["CODEX_HOME"], world.s("codex-home"));
     // A config the run cannot read (skipped where permissions do not bind,
     // as for root).
@@ -1693,4 +1701,72 @@ fn a_helper_that_refuses_answers_badly_or_never_answers_leaves_the_turn_whole() 
             world.overlays()
         );
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_killed_runs_corrupt_record_is_reclaimed_without_returning_anything_anywhere() {
+    // A killed granted run whose overlay's record of its real home was
+    // rewritten (corruption, or a foreign hand) before the next run: the
+    // overlay is reclaimed, but what its Codex wrote is returned neither to
+    // the recorded path nor to the real home.
+    let world = World::new("killed-corrupt");
+    let tool = world.tool();
+    let config = world.config(&format!("allowed_tools = [\"Bash({tool})\"]\n"));
+    let profiles = ProfileScratch::new();
+    let gate = world.s("gate");
+    let mut killed = world
+        .command(
+            &[
+                "run",
+                "--harness",
+                "codex",
+                "--mode",
+                "read-only",
+                "--prompt",
+                "p",
+            ],
+            &config,
+            &[
+                ("MOCK_OUTPUT_GATE", gate.as_str()),
+                ("MOCK_HOME_WRITE", "session_index.jsonl={}"),
+            ],
+            &profiles,
+        )
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    eventually("the killed run's overlay", || {
+        std::fs::read_dir(world.overlay_root())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|e| e.path().join("codex-home/session_index.jsonl").is_file())
+    });
+    killed.kill().unwrap();
+    killed.wait().unwrap();
+    let decoy = world.path("decoy");
+    std::fs::create_dir_all(&decoy).unwrap();
+    let overlay = std::fs::read_dir(world.overlay_root())
+        .unwrap()
+        .flatten()
+        .next()
+        .unwrap()
+        .path();
+    std::fs::write(overlay.join("real-codex-home"), decoy.display().to_string()).unwrap();
+
+    let next = world.oh(
+        &["run", "--harness", "claude-code", "--prompt", "p"],
+        &config,
+        &[],
+    );
+    assert!(next.status.code().is_some_and(|c| c < 2), "{next:?}");
+    assert!(world.overlays().is_empty(), "{:?}", world.overlays());
+    assert_eq!(
+        std::fs::read_dir(&decoy).unwrap().count(),
+        0,
+        "the sweep wrote into the decoy"
+    );
+    assert!(!world.path("codex-home/session_index.jsonl").exists());
 }

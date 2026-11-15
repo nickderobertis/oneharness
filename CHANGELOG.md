@@ -6,6 +6,40 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** a top-level, per-harness or per-variant `allowed_tools` — the
+  run-level allowlist since 0.29.0, which `run` refused — is now applied by
+  `oneharness run` to each run alone. It used to be synced into each harness's
+  config file; `sync` still never writes it. **Migration:** move it to
+  `[sync] allowed_tools` (or `[sync.harness.<id>] allowed_tools`) to keep it
+  synced. Until you do, `sync` refuses, writing nothing, rather than remove a
+  rule an earlier release synced from it — and an old synced
+  `Bash(<absolute path>)` rule left at the top level now grants every
+  `read-only` run that executable, on Codex running it outside the read-only
+  sandbox.
+
+### Added
+
+- **`oneharness run` applies the run-level `allowed_tools` to that run alone**,
+  writing it nowhere that outlives the run. A command written `$NAME` resolves
+  to the absolute path the run's environment holds; under `--mode read-only`
+  only `Bash(<absolute path>)` / `Bash(<absolute path>:*)` is accepted, and the
+  run may then run exactly those executables, typed as their absolute paths
+  with one quoted argument, and nothing else. Claude Code takes it on per-run
+  flags (`--permission-mode dontAsk` with `Bash` added to its read-only tools);
+  Codex on a per-run overlay `CODEX_HOME` under
+  `$XDG_STATE_HOME/oneharness/run-overlays/` whose `rules/` adds one
+  `prefix_rule` per rule, removed when the run ends and reclaimed by the next
+  run after a kill. Every other harness withholds it and reports a diagnostic,
+  and on Windows every harness does. The turn's system instructions name each
+  granted path.
+- **Breaking:** report schema `0.15`: the `allowed_tools` diagnostic `setting`,
+  each result's `overlay_env` and `overlay_timings`, and `list`'s
+  `supports_run_allowed_tools`. `oneharness-core`'s `BuildCtx` gains
+  `allowed_tools`, and `OneharnessError::RunLevelAllowlistNotApplied` is
+  replaced by `RunAllowlistRefused`.
+
 ## [0.29.0](https://github.com/nickderobertis/oneharness/compare/v0.28.8...v0.29.0) - 2026-11-14
 
 ### Added
@@ -26,38 +60,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   file, each field and its `[sync]` spelling.
 - **Breaking:** a top-level, per-harness or per-variant `allowed_tools` changed
   meaning. It used to be synced into each harness's config file; it is now the
-  run-level allowlist, which `sync` never writes and `oneharness run` now
-  applies to each run alone. **Migration:** move it to `[sync] allowed_tools`
-  (or `[sync.harness.<id>] allowed_tools`) to keep it synced. Until you do,
-  `sync` refuses, writing nothing, rather than remove from a harness's allow
-  list or Codex rules file a rule an earlier release synced from it — and an
-  old synced `Bash(<absolute path>)` rule left at the top level now grants every
-  `read-only` run that executable, on Codex running it outside the read-only
-  sandbox.
+  run-level allowlist, which `sync` never writes. In this release `run` refuses
+  a config that sets one, naming the rule, until a later release applies it per
+  run. **Migration:** move it to `[sync] allowed_tools` (or
+  `[sync.harness.<id>] allowed_tools`) to keep it synced. Until you do, `sync`
+  refuses, writing nothing, rather than remove from a harness's allow list or
+  Codex rules file a rule an earlier release synced from it.
 - **Breaking:** the `config` report (schema `0.14`) carries the sync policy in a
   `sync` object mirroring the file, and drops the top-level `denied_tools` /
   `hooks` and each harness's and variant's `denied_tools` / `hooks` /
   `settings`; its `allowed_tools` is the run-level allowlist.
-
-### Added
-
-- **`oneharness run` applies the run-level `allowed_tools` to that run alone**,
-  writing it nowhere that outlives the run. A command written `$NAME` resolves
-  to the absolute path the run's environment holds; under `--mode read-only`
-  only `Bash(<absolute path>)` / `Bash(<absolute path>:*)` is accepted, and the
-  run may then run exactly those executables, typed as their absolute paths
-  with one quoted argument, and nothing else. Claude Code takes it on per-run
-  flags (`--permission-mode dontAsk` with `Bash` added to its read-only tools);
-  Codex on a per-run overlay `CODEX_HOME` under
-  `$XDG_STATE_HOME/oneharness/run-overlays/` whose `rules/` adds one
-  `prefix_rule` per rule, removed when the run ends and reclaimed by the next
-  run after a kill. Every other harness withholds it and reports a diagnostic.
-  The turn's system instructions name each granted path.
-- **Breaking:** report schema `0.15`: the `allowed_tools` diagnostic `setting`,
-  each result's `overlay_env` and `overlay_timings`, and `list`'s
-  `supports_run_allowed_tools`. `oneharness-core`'s `BuildCtx` gains
-  `allowed_tools`, and `OneharnessError::RunLevelAllowlistNotApplied` is
-  replaced by `RunAllowlistRefused`.
 
 <!-- llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate] -->
 

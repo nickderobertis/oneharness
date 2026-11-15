@@ -663,7 +663,9 @@ fn exchange(
                 method: &str,
                 frame: String|
      -> Result<(), String> {
-        stdin.write_all(frame.as_bytes()).map_err(|e| e.to_string())?;
+        stdin
+            .write_all(frame.as_bytes())
+            .map_err(|e| e.to_string())?;
         stdin.flush().map_err(|e| e.to_string())?;
         loop {
             let left = deadline.saturating_duration_since(Instant::now());

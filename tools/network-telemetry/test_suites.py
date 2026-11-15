@@ -13,6 +13,7 @@ import itertools
 import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -406,17 +407,16 @@ class Setup(unittest.TestCase):
                 real.mkdir()
                 words = transfer_argv(0, 0, 0, "--detach", "--linger", "600")
                 (real / "codex").write_text(
-                    "#!/usr/bin/env bash\nexec "
-                    + " ".join(f"'{w}'" for w in words)
-                    + ' --heartbeat "$OH_TEST_BEAT"\n'
+                    f'#!/usr/bin/env bash\nexec {shlex.join(words)} --heartbeat "$OH_TEST_BEAT"\n'
                 )
                 (real / "codex").chmod(0o755)
                 started = time.monotonic()
                 run = setup_and(
                     tmp,
-                    f"{setup}; OH_TEST_BEAT={heartbeat} codex {' '.join(args)}",
+                    f"{setup}; codex {shlex.join(args)}",
                     path_first=real,
                     extra={
+                        "OH_TEST_BEAT": str(heartbeat),
                         "OH_E2E_NET_DESCENDANT_GRACE": str(grace),
                         "OH_E2E_NET_DEADLINE": str(deadline),
                     },

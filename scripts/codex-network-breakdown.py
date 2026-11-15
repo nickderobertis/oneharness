@@ -1184,12 +1184,16 @@ def measure(args: argparse.Namespace) -> int:
         inner += ["--launch-stdout", os.path.abspath(launch_stdout)]
         # pasta starts /bin/bash, which then execs this script's init: Ubuntu
         # 26.04's packaged pasta may start only programs under /usr/bin and
-        # /bin, and refuses the uv or toolcache python this runs in.
+        # /bin, and refuses the uv or toolcache python this runs in. Windows
+        # has neither /bin/bash nor the os.environb `through_bash` reads, and
+        # no pasta to confine: there the init is named directly, so a pasta
+        # that cannot start or records nothing is refused as on Linux.
+        launch = [*inner, "--", *args.argv]
         command: list[str | bytes] = [
             pasta,
             *PASTA_OPTIONS,
             "--",
-            *through_bash([*inner, "--", *args.argv]),
+            *(launch if sys.platform == "win32" else through_bash(launch)),
         ]
         try:
             run = subprocess.Popen(

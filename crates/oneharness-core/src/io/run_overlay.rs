@@ -222,7 +222,6 @@ impl RunOverlay {
         }
     }
 
-    /// Build a thread index in `template` and copy it into `home`.
     fn build_seed(
         &self,
         launch: &HelperLaunch<'_>,
@@ -320,7 +319,6 @@ pub struct HelperLaunch<'a> {
     pub cwd: Option<&'a Path>,
 }
 
-/// The real home and overlay home of one run's Codex overlay.
 #[derive(Debug)]
 struct CodexHome {
     home: PathBuf,

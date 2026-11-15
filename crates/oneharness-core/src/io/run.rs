@@ -5798,7 +5798,6 @@ enum UnitGrant {
     },
 }
 
-/// What a Codex unit's overlay is built from.
 struct CodexOverlayPlan<'a> {
     rules: &'a str,
     real_home: &'a std::path::Path,

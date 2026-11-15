@@ -72,10 +72,11 @@ OVERLAY_PREFIX = "oneharness-run-overlay-"
 OVERLAY_ROOT = ("oneharness", "run-overlays")
 """How this suite finds an overlay: the marker its processes carry, its
 directory's name, and the state-dir path it is made under. They restate
-`io::run_overlay`'s constants, and `oneharness-core`'s gated unit test
-`the_live_suites_overlay_detector_restates_the_engines_layout` reads these
-three lines and fails when they drift; `check_layout` also holds them to what
-every granted Codex run's report says."""
+`io::run_overlay`'s constants, and network-telemetry's gated test
+`test_the_live_suite_s_overlay_detector_restates_the_engine_s_layout`
+(tools/network-telemetry/test_run_overlay_budget.py) reads these three lines
+and fails when they drift; `check_layout` also holds them to what every
+granted Codex run's report says."""
 SAFE_PATH = re.compile(r"[A-Za-z0-9_./-]+")
 GROUPS = (
     "sync", "probes", "posture", "lifecycle", "kill", "concurrency", "session",

@@ -434,7 +434,6 @@ fn move_into(from: &Path, to: &Path) -> io::Result<()> {
         }
         return fs::remove_dir_all(from);
     }
-    // Replace the file at `to`, as the rename would have.
     if to_meta.is_some() {
         fs::remove_file(to)?;
     }

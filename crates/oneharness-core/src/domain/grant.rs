@@ -53,15 +53,23 @@ impl ExecutablePath {
     }
 }
 
+/// Which invocations of an executable a rule grants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Arguments {
+    /// `Bash(<abs>)`: the bare command alone, outside `read-only`.
+    Exact,
+    /// `Bash(<abs>:*)`: the command with any arguments. Under `read-only`
+    /// both spellings grant this.
+    Any,
+}
+
 /// What one resolved run-level rule grants.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuleKind {
     /// `Bash(<abs>)` or `Bash(<abs>:*)`: one executable, by its path.
     Executable {
         path: ExecutablePath,
-        /// `Bash(<abs>:*)`: any arguments. `Bash(<abs>)` is the exact command
-        /// outside `read-only`; under it, both spellings grant any arguments.
-        any_arguments: bool,
+        arguments: Arguments,
     },
     /// Any other rule, outside `read-only` only, with a leading `$NAME`
     /// command word resolved, passed on as text.
@@ -92,13 +100,13 @@ impl ResolvedRule {
     #[must_use]
     pub fn resolved(&self) -> String {
         match &self.kind {
-            RuleKind::Executable {
-                path,
-                any_arguments,
-            } => format!(
+            RuleKind::Executable { path, arguments } => format!(
                 "Bash({}{})",
                 path.as_str(),
-                if *any_arguments { ":*" } else { "" }
+                match arguments {
+                    Arguments::Any => ":*",
+                    Arguments::Exact => "",
+                }
             ),
             RuleKind::Other { resolved } => resolved.clone(),
         }
@@ -300,9 +308,9 @@ fn resolve_one(
         }
         return Ok(other(rule.to_string()));
     };
-    let (command, any_arguments) = match inner.strip_suffix(":*") {
-        Some(command) => (command.trim(), true),
-        None => (inner.trim(), false),
+    let (command, arguments) = match inner.strip_suffix(":*") {
+        Some(command) => (command.trim(), Arguments::Any),
+        None => (inner.trim(), Arguments::Exact),
     };
     let (first, rest) = match command.split_once(char::is_whitespace) {
         Some((first, rest)) => (first, rest.trim_start()),
@@ -316,10 +324,7 @@ fn resolve_one(
         if let Some(path) = ExecutablePath::new(&first) {
             return Ok(ResolvedRule {
                 written: rule.to_string(),
-                kind: RuleKind::Executable {
-                    path,
-                    any_arguments,
-                },
+                kind: RuleKind::Executable { path, arguments },
             });
         }
     }
@@ -342,7 +347,10 @@ fn resolve_one(
     } else {
         format!("{first} {rest}")
     };
-    let suffix = if any_arguments { ":*" } else { "" };
+    let suffix = match arguments {
+        Arguments::Any => ":*",
+        Arguments::Exact => "",
+    };
     Ok(other(format!("Bash({command}{suffix})")))
 }
 

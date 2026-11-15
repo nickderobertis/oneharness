@@ -113,9 +113,14 @@ def number(value: object) -> Optional[float]:
     return converted if math.isfinite(converted) else None
 
 
+MAX_COUNT = 10**12
+"""The largest millisecond count a turn may report: about 31 years, so every
+accepted count converts to a float exactly."""
+
+
 def count(value: object) -> Optional[int]:
-    """`value` as a non-negative integer, or None."""
-    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+    """`value` as a non-negative integer no larger than MAX_COUNT, or None."""
+    if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= MAX_COUNT:
         return value
     return None
 

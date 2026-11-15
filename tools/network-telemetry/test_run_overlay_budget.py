@@ -166,6 +166,7 @@ class RunOverlayTelemetryContract(unittest.TestCase):
 
     def test_a_number_too_large_for_a_float_is_no_figure(self) -> None:
         self.assertIsNone(number(10**400))
+        self.assertIsNone(OverlayTimings.from_json({"build_ms": 10**400, "teardown_ms": 1}))
         self.assertIsNone(number(True))
         self.assertIsNone(number(float("nan")))
         self.assertEqual(number(3), 3.0)

@@ -67,6 +67,12 @@ MARK = re.compile(r"\[probe:([A-Za-z0-9_.-]+)\]")
 PAYLOAD = "line one\nit's line two"
 OUTSIDE_TEXT = "outside the worktree: sentinel text"
 HARNESSES = ("claude-code", "codex", "opencode")
+OVERLAY_MARKER = "ONEHARNESS_RUN_OVERLAY"
+OVERLAY_PREFIX = "oneharness-run-overlay-"
+"""How this suite finds an overlay: the marker its processes carry and its
+directory's name, as the README documents them. `check_layout` holds both to
+what every granted Codex run's report says, so a rename fails the suite
+loudly instead of leaving `overlay_pids` and `overlays` finding nothing."""
 SAFE_PATH = re.compile(r"[A-Za-z0-9_./-]+")
 GROUPS = (
     "sync", "probes", "posture", "lifecycle", "kill", "concurrency", "session",
@@ -653,7 +659,7 @@ class World:
 
     def overlays(self) -> list[str]:
         roots = (self.tmp, self.state / "oneharness" / "run-overlays")
-        return [p.name for r in roots if r.is_dir() for p in r.iterdir() if "run-overlay" in p.name]
+        return [p.name for r in roots if r.is_dir() for p in r.iterdir() if p.name.startswith(OVERLAY_PREFIX)]
 
 
 def write_codex_home(home: Path, port: int, provider: str | None = None) -> None:
@@ -723,9 +729,13 @@ class Result:
     session_id: str | None
     stderr: str
     diagnostics: list[Json]
-    overlaid: bool
+    overlay_env: dict[str, str]
     overlay: OverlayTimings | None
     usage: Json | None
+
+    @property
+    def overlaid(self) -> bool:
+        return bool(self.overlay_env)
 
     @staticmethod
     def of(report: Json) -> Result:
@@ -742,9 +752,10 @@ class Result:
         diagnostics = raw.get("diagnostics")
         diagnostics = [d for d in diagnostics if isinstance(d, dict)] if isinstance(diagnostics, list) else []
         usage = raw.get("usage")
+        env = raw.get("overlay_env")
+        overlay_env = {k: v for k, v in env.items() if isinstance(v, str)} if isinstance(env, dict) else {}
         return Result(text("status"), text("session_id"), text("stderr") or "", diagnostics,
-                      isinstance(raw.get("overlay_env"), dict), overlay,
-                      usage if isinstance(usage, dict) else None)  # fmt: skip
+                      overlay_env, overlay, usage if isinstance(usage, dict) else None)  # fmt: skip
 
     def grant_diagnostics(self) -> list[Json]:
         return [d for d in self.diagnostics if d.get("setting") == "allowed_tools"]
@@ -882,6 +893,7 @@ def judge(world: World, probe: Probe, fails: Failures) -> None:
         "Refusing to create helper binaries" not in turn.result.stderr,
         f"{label}: Codex lost its PATH helpers on the overlay home: {turn.result.stderr[:300]}",
     )
+    check_layout(world, turn.result, fails, label)
     changed = changed_between(before, snapshot(world))
     new = records(world)[len(before_records) :]
     match probe.expect:
@@ -897,6 +909,22 @@ def judge(world: World, probe: Probe, fails: Failures) -> None:
                         f"{label}: a read outside the worktree was refused: {decision[:300]}")  # fmt: skip
             fails.check(not changed, f"{label}: a read changed {changed}")
     check_clean(world, fails, label)
+
+
+def check_layout(world: World, result: Result, fails: Failures, label: str) -> None:
+    """A granted Codex run's report names its overlay where this suite looks:
+    the marker and the directory under the world's overlay root."""
+    if world.harness != "codex" or not result.overlaid:
+        return
+    marker = result.overlay_env.get(OVERLAY_MARKER, "")
+    home = Path(result.overlay_env.get("CODEX_HOME", ""))
+    fails.check(
+        marker.startswith(OVERLAY_PREFIX)
+        and home.parent.name == marker
+        and home.parent.parent == world.state / "oneharness" / "run-overlays",
+        f"{label}: oneharness reports its overlay as {result.overlay_env}, not where this suite looks "
+        f"({OVERLAY_MARKER}={OVERLAY_PREFIX}… under {world.state}/oneharness/run-overlays); update the detector",
+    )
 
 
 def check_clean(world: World, fails: Failures, label: str) -> None:
@@ -922,7 +950,7 @@ def overlay_pids(world: World) -> list[int]:
             environ = (entry / "environ").read_bytes()
         except OSError:
             continue
-        if b"ONEHARNESS_RUN_OVERLAY=oneharness-run-overlay" in environ and str(world.state).encode() in environ:
+        if f"{OVERLAY_MARKER}={OVERLAY_PREFIX}".encode() in environ and str(world.state).encode() in environ:
             found.append(int(entry.name))
     return found
 

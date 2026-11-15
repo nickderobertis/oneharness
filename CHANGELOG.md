@@ -44,6 +44,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 <!-- llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate] -->
 
+## [0.29.2](https://github.com/nickderobertis/oneharness/compare/v0.29.1...v0.29.2) - 2026-11-15
+
+### Fixed
+
+- *(e2e)* count a stopped suite's network measurements only once the recorder has written them ([#1617](https://github.com/nickderobertis/oneharness/pull/1617))
+
 ## [0.29.1](https://github.com/nickderobertis/oneharness/compare/v0.29.0...v0.29.1) - 2026-11-15
 
 ### Fixed

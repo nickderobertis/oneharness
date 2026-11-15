@@ -100,6 +100,12 @@ struct TestHolds {
     closing: std::sync::atomic::AtomicBool,
     /// Set once the run has released its candidate.
     released: std::sync::atomic::AtomicBool,
+    /// Hold the turn's writer before a frame it skips for a closed turn — an
+    /// interrupt's abort — until that turn has closed.
+    skip: std::sync::atomic::AtomicBool,
+    /// Hold the run's release once it has closed the turn, until an
+    /// interrupt racing it has answered.
+    release_closed: std::sync::atomic::AtomicBool,
 }
 
 /// What [`TestHolds::abort`] waits for.
@@ -180,10 +186,19 @@ impl TestHolds {
         self.closing
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
+
+    /// The [`TestHolds::skip`] hold: a frame skipped for a closed turn is
+    /// next, and is held until `closed` says its turn is over.
+    fn hold_skippable(&self, closed: impl FnMut() -> bool) {
+        if self.skip.load(std::sync::atomic::Ordering::SeqCst) {
+            hold_until("the turn to close", closed);
+        }
+    }
 }
 
 #[cfg(not(all(test, unix)))]
 impl Holds {
+    fn hold_skippable(&self, _closed: impl FnMut() -> bool) {}
     fn hold_opening(&self) {}
     fn mark_queued(&self) {}
     fn hold_redirect_written(&self) {}
@@ -393,6 +408,9 @@ fn run_writer(
     for job in jobs {
         if std::mem::take(&mut first) {
             holds.hold_opening();
+        }
+        if job.skip_if_closed {
+            holds.hold_skippable(|| !slot.is_live(turn));
         }
         let written = if job.skip_if_closed && !slot.is_live(turn) {
             Err(io::Error::new(
@@ -929,15 +947,19 @@ impl ControlHandle {
             Some(Backend::Dialogue(dialogue)) if dialogue.has_pending_redirect()
         );
         let held = std::mem::replace(&mut *self.redirect(), Redirect::None);
-        self.turn.set(TurnState::Idle);
         if undelivered || !matches!(held, Redirect::None) {
             eprintln!(
                 "oneharness: warning: the interrupted turn ended before its redirection could be \
                  delivered; the message was not carried to another candidate"
             );
         }
-        // Never over a replacement prompt still being written: the writer
-        // settles that with what its write did.
+        // Settled before the turn is closed. Closing it fails an abort still
+        // queued behind it (its writer skips a frame for a closed turn), and
+        // the interrupt waiting on that abort withdraws a still-pending
+        // message as `no_active_turn` — so settled after, the answer would be
+        // whichever of the two threads got there first. Never over a
+        // replacement prompt still being written: the writer settles that
+        // with what its write did.
         let ended = if matches!(held, Redirect::Answered(_)) {
             turn_ended_undelivered(None)
         } else {
@@ -946,6 +968,8 @@ impl ControlHandle {
         if let Some(delivery) = self.delivery().take() {
             delivery.settle_unless_sending(ended);
         }
+        self.turn.set(TurnState::Idle);
+        self.hold_release_closed();
         self.holds.mark_released();
     }
 
@@ -1299,6 +1323,28 @@ impl ControlHandle {
 
     #[cfg(not(all(test, unix)))]
     fn hold_abort_written(&self) {}
+
+    /// The [`TestHolds::release_closed`] hold: the release has closed the
+    /// turn and holds no lock; it ends once an interrupt has answered.
+    #[cfg(all(test, unix))]
+    fn hold_release_closed(&self) {
+        if self
+            .holds
+            .release_closed
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            hold_until("the racing interrupt's answer", || {
+                !self
+                    .events
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .is_empty()
+            });
+        }
+    }
+
+    #[cfg(not(all(test, unix)))]
+    fn hold_release_closed(&self) {}
 
     /// Shorten how long a redirection may wait to be written, so a test can
     /// reach the withdrawal without waiting out the real deadline.
@@ -3011,6 +3057,66 @@ mod tests {
         // The dropped redirection must not open another candidate's turn.
         assert_eq!(frames.len(), 1, "{frames:?}");
         assert!(!frames[0].contains("do X instead"), "{frames:?}");
+        child.kill().ok();
+        child.wait().ok();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_redirection_whose_abort_the_release_skipped_is_refused_not_running() {
+        // The race the test above lost under load. The run releases its
+        // candidate while the interrupt's abort is still queued: closing the
+        // turn makes its writer skip the abort, and the interrupt, told its
+        // turn is gone, would take its still-pending message back as
+        // `no_active_turn` — if it got there before the release settled the
+        // message `not_running`. The holds force that order: the writer
+        // waits for the turn to close, and the release, once it has closed
+        // it, waits for the interrupt's answer.
+        let dir = temp_dir("redirect-skipped");
+        let path = socket_path(&dir, "live")
+            .expect("a short fixture name fits every platform's socket-address budget");
+        let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
+        let handle = listener.handle();
+        handle
+            .holds
+            .skip
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        handle
+            .holds
+            .release_closed
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let mut child = std::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        handle.bind(Binding::Stdin);
+        handle.begin_turn(child.stdin.take().unwrap());
+
+        let pending = send_in_background(&path, "do X instead");
+        wait_for("the abort to be queued", || {
+            handle
+                .holds
+                .queued
+                .load(std::sync::atomic::Ordering::SeqCst)
+        });
+        handle.release();
+
+        let response = pending.join().unwrap();
+        assert_eq!(
+            response.reason(),
+            Some(ControlReason::NotRunning),
+            "the run ended under the interrupt, whichever thread got there first: {response:?}"
+        );
+        assert!(
+            response
+                .to_line()
+                .contains("the redirection was not delivered"),
+            "{response:?}"
+        );
+        let events = handle.events();
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].reason(), Some(ControlReason::NotRunning));
         child.kill().ok();
         child.wait().ok();
         std::fs::remove_dir_all(&dir).ok();

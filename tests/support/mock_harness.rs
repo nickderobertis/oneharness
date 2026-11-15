@@ -247,10 +247,15 @@
 //!                              `apps` feature, resolved like `plugins`) and
 //!                              `argv`. With a catalog
 //!                              it reads that file (`catalog_models`, its model
-//!                              count) and fetches nothing (`fetch` null); a
+//!                              count, and `catalog_fetch_id`, the `fetch_id`
+//!                              of the fetch it came from) and fetches nothing
+//!                              (`fetch` null); a
 //!                              missing or empty catalog fails the launch, as it
 //!                              fails Codex. Without one it fetches: `fetch` is
-//!                              `ok` (with `fetched_ms`) after it writes
+//!                              `ok` (with `fetched_ms`, and `fetch_id`: a
+//!                              stamp unique to that fetch, which every model
+//!                              it writes carries as `mock_fetch_id`) after it
+//!                              writes
 //!                              `$CODEX_HOME/models_cache.json` (Codex's
 //!                              default `~/.codex` when CODEX_HOME is unset)
 //!                              stamped with MOCK_CODEX_CACHE_VERSION, else
@@ -734,8 +739,8 @@ fn codex_model_catalog(path: &str, argv: &[String]) {
         let models = std::fs::read_to_string(catalog)
             .ok()
             .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-            .and_then(|value| value["models"].as_array().map(Vec::len))
-            .filter(|count| *count > 0);
+            .and_then(|value| value["models"].as_array().cloned())
+            .filter(|models| !models.is_empty());
         let Some(models) = models else {
             let _ = writeln!(
                 std::io::stderr(),
@@ -743,7 +748,8 @@ fn codex_model_catalog(path: &str, argv: &[String]) {
             );
             std::process::exit(1);
         };
-        line["catalog_models"] = models.into();
+        line["catalog_models"] = models.len().into();
+        line["catalog_fetch_id"] = models[0]["mock_fetch_id"].clone();
     } else {
         if subcommand == "app-server" {
             if let Some(path) = mock_var_os("MOCK_CODEX_CATALOG_STALL") {
@@ -776,8 +782,8 @@ fn codex_model_catalog(path: &str, argv: &[String]) {
                     "etag": "W/\"mock\"",
                     "client_version": version,
                     "models": [
-                        {"slug": "mock-model-a", "display_name": "Mock A"},
-                        {"slug": "mock-model-b", "display_name": "Mock B"},
+                        {"slug": "mock-model-a", "display_name": "Mock A", "mock_fetch_id": fetched_at},
+                        {"slug": "mock-model-b", "display_name": "Mock B", "mock_fetch_id": fetched_at},
                     ],
                 });
                 let corrupt = mock_var("MOCK_CODEX_CACHE_CORRUPT").unwrap_or_default();
@@ -803,6 +809,7 @@ fn codex_model_catalog(path: &str, argv: &[String]) {
                 line["fetched_ms"] = u64::try_from(now.as_millis())
                     .expect("milliseconds fit")
                     .into();
+                line["fetch_id"] = fetched_at.into();
                 "ok".into()
             }
         };

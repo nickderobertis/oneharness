@@ -92,7 +92,7 @@ def figure(path: Path) -> Figure:
         size: slowest(record.granted[size]).seconds - slowest(record.ungranted[size]).seconds
         for size in BATCHES
     }
-    load = ", ".join(f"{value:.2f}" for value in record.load_average) or "unrecorded"
+    load = ", ".join(f"{value:.2f}" for value in record.load_average)
     ungranted = ", ".join(
         f"{size}: {slowest(record.ungranted[size]).seconds:.3f}s" for size in BATCHES
     )

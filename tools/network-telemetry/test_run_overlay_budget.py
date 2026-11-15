@@ -99,6 +99,11 @@ class RunOverlayAddedSecondsBudget(unittest.TestCase):
             (FIXTURES / "run-overlay-no-version.json", "the record names no codex version"),
             (FIXTURES / "run-overlay-not-json.json", "is not JSON"),
             (FIXTURES / "run-overlay-not-an-object.json", "holds no JSON object"),
+            (FIXTURES / "run-overlay-malformed-load.json", "is not three non-negative readings"),
+            (
+                FIXTURES / "run-overlay-request-outside-turn.json",
+                "granted batch 1 turn 1's first model request",
+            ),
         ):
             with self.subTest(fixture=fixture.name):
                 run = check(fixture)

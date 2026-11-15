@@ -155,7 +155,15 @@ def decode_turn(
         if overlay is None:
             faults.append(f"{where}'s overlay_timings {timings!r} are not two millisecond counts")
             return None
-    return TurnTiming(seconds, started, ended, number(entry.get("first_model_request")), overlay)
+    raw_first = entry.get("first_model_request")
+    first = number(raw_first)
+    if raw_first is not None and (first is None or not started <= first <= ended):
+        faults.append(
+            f"{where}'s first model request {raw_first!r} is not a moment between its start "
+            f"{started!r} and end {ended!r}"
+        )
+        return None
+    return TurnTiming(seconds, started, ended, first, overlay)
 
 
 def decode_side(
@@ -193,13 +201,16 @@ def decode(record: object) -> Telemetry:
     version = record.get("codex_version")
     if not isinstance(version, str) or version == "":
         faults.append(f"the record names no codex version: {version!r}")
+    raw_load = record.get("load_average")
+    load = tuple(number(value) for value in raw_load) if isinstance(raw_load, list) else ()
+    readings = tuple(value for value in load if value is not None and value >= 0)
+    if len(readings) != 3 or len(load) != 3:
+        faults.append(f"the load average {raw_load!r} is not three non-negative readings")
     ungranted = decode_side(record, "ungranted", faults)
     granted = decode_side(record, "granted", faults)
     if faults or not isinstance(version, str):
         raise Incomplete("; ".join(faults))
-    raw_load = record.get("load_average")
-    load = tuple(number(value) or 0.0 for value in raw_load) if isinstance(raw_load, list) else ()
-    return Telemetry(version, "linux", load, ungranted, granted)
+    return Telemetry(version, "linux", readings, ungranted, granted)
 
 
 @dataclass(frozen=True)

@@ -6078,6 +6078,11 @@ fn open_codex_overlay(
     let started = Instant::now();
     let failed = |source: std::io::Error| OneharnessError::RunOverlay { source };
     let mut overlay = RunOverlay::create().map_err(failed)?;
+    // A link that cannot be made fails here through the same error, dropping
+    // (and so removing) the half-built overlay. The journey
+    // `an_overlay_that_cannot_be_made_stops_the_run_before_anything_spawns`
+    // proves that path from `create`; a filesystem that refuses a symlink
+    // inside a directory oneharness has just made cannot be arranged portably.
     let home = overlay.codex_home(real_home, rules).map_err(failed)?;
     let args = UnitOverlay::launch_args();
     overlay.seed_thread_index(&HelperLaunch {

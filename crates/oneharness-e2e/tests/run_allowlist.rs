@@ -756,6 +756,9 @@ fn an_unusable_rule_is_refused_before_anything_spawns() {
         ("Read", "not a `Bash(...)` rule"),
         ("Bash(/usr/bin/*)", "wildcard"),
         ("Bash(/usr/bin/git status:*)", "several words"),
+        ("Bash", "the whole shell"),
+        ("Bash(:*)", "names no command"),
+        ("Bash(/usr/bin/a;b)", "shell syntax"),
     ] {
         check(
             &format!("allowed_tools = [\"{rule}\"]\n"),
@@ -1739,4 +1742,55 @@ fn a_helper_that_refuses_answers_badly_or_never_answers_leaves_the_turn_whole() 
             world.overlays()
         );
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn an_overlay_that_cannot_be_made_stops_the_run_before_anything_spawns() {
+    // The state directory an overlay lives under is a file here, so no
+    // overlay can be made: the run stops with a usage error naming why,
+    // launches no harness, and leaves no partial overlay behind.
+    let world = World::new("no-overlay-root");
+    let state = world.path("state-is-a-file");
+    std::fs::write(&state, "").unwrap();
+    let tool = world.tool();
+    // The shared model catalog's own probe of codex runs before an overlay
+    // is opened; off here, so the one launch this journey watches for is the
+    // turn's.
+    let config = world.config(&format!(
+        "allowed_tools = [\"Bash({tool})\"]\n[harness.codex]\nshared_model_catalog = false\n"
+    ));
+    let argv_file = world.path("argv");
+    let state_s = state.display().to_string();
+    let output = world.oh(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--mode",
+            "read-only",
+            "--prompt",
+            "p",
+        ],
+        &config,
+        &[
+            ("XDG_STATE_HOME", state_s.as_str()),
+            ("MOCK_ARGV_FILE", argv_file.to_str().unwrap()),
+        ],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr
+            .contains("could not create the run overlay a run-level allowlist is applied through"),
+        "{stderr}"
+    );
+    assert!(!argv_file.exists(), "a harness was spawned");
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        std::fs::read_to_string(&state).unwrap(),
+        "",
+        "the state file was written"
+    );
+    assert!(world.overlays().is_empty());
 }

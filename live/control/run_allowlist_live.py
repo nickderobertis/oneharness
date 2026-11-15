@@ -346,6 +346,7 @@ def history(dialect: str, body: Json, mark: str) -> tuple[int, list[str]]:
     return made, results
 
 
+# llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] These answers are the live suite's own double of three provider protocols, and the real CLIs that read them in the live tier are its drift alarm: a CLI that stops understanding one records no decision, which fails every probe as inconclusive. The deterministic gate cannot run those CLIs, and no provider publishes a schema to generate them from.
 def answer_anthropic(h: Handler, body: Json, call: Call | None) -> None:
     mid = "msg_" + uuid.uuid4().hex[:20]
     match call:
@@ -475,6 +476,8 @@ def answer_chat(h: Handler, body: Json, call: Call | None) -> None:
     h.wfile.write(b"data: [DONE]\n\n")
     h.wfile.flush()
 
+
+# llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 
 ANSWERS: dict[str, Callable[[Handler, Json, Call | None], None]] = {
     "anthropic": answer_anthropic,
@@ -1137,6 +1140,7 @@ def group_record(world: World, fails: Failures) -> None:
     if fails.check(bool(dbs) and bool(rollouts), f"{label}: the real home has no thread index"):
         # llmlint: ignore[async_typed_clients_at_boundaries] A single-threaded live check reads one row of Codex's own index once its turn has ended; nothing here runs on an event loop, and stdlib sqlite3 is the only reader this dependency-free script has.
         with sqlite3.connect(dbs[-1]) as db:
+            # llmlint: ignore[contracts_have_one_source_or_a_drift_gate] An assertion about Codex's own private index, made only in the live tier against the installed codex: a schema change fails it loudly there (sqlite raises on an unknown table or column), which is the drift alarm a store Codex alone defines can have.
             row = db.execute("select rollout_path from threads where id = ?", (thread,)).fetchone()
         fails.check(row is not None and Path(row[0]) == rollouts[0],
                     f"{label}: the real index holds {row} for {thread}, wanted {rollouts}")  # fmt: skip

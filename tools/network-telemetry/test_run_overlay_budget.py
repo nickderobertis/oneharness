@@ -23,6 +23,7 @@ from run_overlay_telemetry import (
     OverlayTimings,
     Telemetry,
     TurnTiming,
+    number,
     run_concurrently,
 )
 from support import ROOT, scratch
@@ -117,6 +118,21 @@ class RunOverlayTelemetryContract(unittest.TestCase):
         self.assertGreaterEqual(slow.ended - slow.started, 0.9)
         self.assertLess(fast.ended - fast.started, 0.6)
         self.assertEqual((slow.returncode, fast.returncode), (0, 0))
+
+    def test_a_process_past_the_timeout_is_killed_and_the_rest_still_count(self) -> None:
+        stuck, quick = run_concurrently(
+            [["sleep", "30"], ["sleep", "0.1"]], dict(os.environ), timeout=1
+        )
+        self.assertNotEqual(stuck.returncode, 0, "the stuck process was not killed")
+        self.assertLess(stuck.ended - stuck.started, 10)
+        self.assertEqual(quick.returncode, 0)
+        self.assertLess(quick.ended - quick.started, 0.9)
+
+    def test_a_number_too_large_for_a_float_is_no_figure(self) -> None:
+        self.assertIsNone(number(10**400))
+        self.assertIsNone(number(True))
+        self.assertIsNone(number(float("nan")))
+        self.assertEqual(number(3), 3.0)
 
     def test_a_record_the_writer_builds_is_one_the_budget_reads(self) -> None:
         timed = run_concurrently([["sleep", "0.05"]], dict(os.environ), timeout=30)[0]

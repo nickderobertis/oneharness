@@ -1639,3 +1639,58 @@ fn a_codex_store_that_cannot_be_determined_withholds_the_grant() {
     std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o644)).unwrap();
     assert!(world.overlays().is_empty());
 }
+
+#[cfg(unix)]
+#[test]
+fn a_helper_that_refuses_answers_badly_or_never_answers_leaves_the_turn_whole() {
+    for (reply, says) in [
+        ("error", "the mock refuses thread/list"),
+        ("no-result", "answered with no result object"),
+        ("silent", "no reply to `thread/list`"),
+    ] {
+        let world = World::new(&format!("helper-{reply}"));
+        index_the_home(&world);
+        let tool = world.tool();
+        let config = world.config(&format!("allowed_tools = [\"Bash({tool})\"]\n"));
+        let log = world.path("app-server.log");
+        let output = world.oh(
+            &[
+                "run",
+                "--harness",
+                "codex",
+                "--mode",
+                "read-only",
+                "--prompt",
+                "judge it",
+                "--control",
+                "--session",
+                "granted",
+                "--session-dir",
+                &world.s("sessions"),
+            ],
+            &config,
+            &[
+                ("MOCK_CODEX_APP_SERVER_LOG", log.to_str().unwrap()),
+                ("MOCK_CODEX_COMPLETE_TURN", "1"),
+                ("MOCK_CODEX_HELPER_REPLY", reply),
+            ],
+        );
+        let report = json(&output);
+        assert_eq!(report["results"][0]["status"], "ok", "{reply}: {report}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("could not build the run overlay's Codex thread index")
+                && stderr.contains(says),
+            "{reply}: {stderr}"
+        );
+        assert!(
+            stderr.contains("could not record the granted run's Codex thread"),
+            "{reply}: {stderr}"
+        );
+        assert!(
+            world.overlays().is_empty(),
+            "{reply}: {:?}",
+            world.overlays()
+        );
+    }
+}

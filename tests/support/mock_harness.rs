@@ -24,6 +24,8 @@
 //!                   holding a newline stays one element), before answering
 //!   MOCK_ECHO_PWD   if set, write `PWD=<the inherited $PWD>` to stdout and exit
 //!                   (used to assert that --cwd keeps $PWD consistent)
+//!   MOCK_CODEX_HELPER_REPLY `error`, `no-result` or `silent`: how the stdio
+//!                   app-server answers `thread/list` / `thread/read`
 //!   MOCK_CODEX_INDEX if set, create `$CODEX_HOME/state_5.sqlite` when absent, as
 //!                   Codex opens its thread index on its first run in a home
 //!   MOCK_HOME_WRITE  `relpath=content;…` written under `$CODEX_HOME` while the
@@ -2120,16 +2122,29 @@ fn run_codex_app_server(log_path: &str) -> ! {
             // build a thread index over, and a read of each thread the granted
             // turn touched. Answered so the exchange ends at once; the frames
             // are in the log a test reads.
-            Some("thread/list") => send(&json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": {"data": [], "nextCursor": null},
-            })),
-            Some("thread/read") => send(&json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": {"thread": {"id": message["params"]["threadId"]}},
-            })),
+            Some(helper @ ("thread/list" | "thread/read")) => {
+                // MOCK_CODEX_HELPER_REPLY makes these helper replies misbehave:
+                // `error`, `no-result` (an envelope without one), or `silent`.
+                match mock_var("MOCK_CODEX_HELPER_REPLY").ok().as_deref() {
+                    Some("error") => send(&json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": {"code": -32600, "message": format!("the mock refuses {helper}")},
+                    })),
+                    Some("no-result") => send(&json!({"jsonrpc": "2.0", "id": id})),
+                    Some("silent") => {}
+                    _ if helper == "thread/list" => send(&json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": {"data": [], "nextCursor": null},
+                    })),
+                    _ => send(&json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": {"thread": {"id": message["params"]["threadId"]}},
+                    })),
+                }
+            }
             // Rejoining the thread the client named, exactly as the real
             // app-server does: `ThreadResumeResponse` carries the same required
             // `thread` field `ThreadStartResponse` does, so the client reads the

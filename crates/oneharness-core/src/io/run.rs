@@ -5795,31 +5795,6 @@ struct CodexOverlayPlan<'a> {
 }
 
 impl UnitGrant {
-    /// `plan` for a unit, with the real home a Codex grant's overlay links
-    /// into: `codex_real_home` is `Some` whenever `plan` is a Codex grant,
-    /// since Codex withholds over a home it cannot link.
-    fn new(plan: grant::GrantPlan, codex_real_home: Option<PathBuf>) -> UnitGrant {
-        match (plan, codex_real_home) {
-            (
-                grant::GrantPlan::Codex {
-                    grant,
-                    statement,
-                    unmapped,
-                },
-                Some(real_home),
-            ) => UnitGrant::Codex {
-                grant,
-                statement,
-                unmapped,
-                real_home,
-            },
-            (grant::GrantPlan::Codex { .. }, None) => {
-                unreachable!("a Codex grant is planned only over a home it can link")
-            }
-            (plan, _) => UnitGrant::Plan(plan),
-        }
-    }
-
     fn statement(&self) -> Option<&str> {
         match self {
             UnitGrant::Plan(plan) => plan.statement(),
@@ -5908,41 +5883,54 @@ fn plan_unit_grant(
             reason: refusal.reason(),
         }
     })?;
-    let mut codex_real_home = None;
-    let withhold = if spec.id == "codex" {
-        let fallback_cwd;
-        let cwd = match cwd {
-            Some(cwd) => cwd,
-            None => {
-                fallback_cwd = project_start.to_path_buf();
-                &fallback_cwd
-            }
-        };
-        let home = lean_io::codex_home(&env, &env_remove, Some(cwd));
-        let reason = codex_withhold(home.as_deref(), cfg.args_for(selected_id));
-        if reason.is_none() {
-            codex_real_home = home;
+    if spec.id != "codex" {
+        return Ok(UnitGrant::Plan(grant::plan(spec.id, &resolved, None)));
+    }
+    let fallback_cwd;
+    let cwd = match cwd {
+        Some(cwd) => cwd,
+        None => {
+            fallback_cwd = project_start.to_path_buf();
+            &fallback_cwd
         }
-        reason
-    } else {
-        None
     };
-    let plan = grant::plan(spec.id, &resolved, withhold.as_deref());
-    Ok(UnitGrant::new(plan, codex_real_home))
+    let home = lean_io::codex_home(&env, &env_remove, Some(cwd));
+    // The Codex variant is built only here, where its home is in hand.
+    Ok(
+        match codex_overlay_home(home.as_deref(), cfg.args_for(selected_id)) {
+            Err(reason) => UnitGrant::Plan(grant::plan(spec.id, &resolved, Some(&reason))),
+            Ok(real_home) => match grant::plan(spec.id, &resolved, None) {
+                grant::GrantPlan::Codex {
+                    grant,
+                    statement,
+                    unmapped,
+                } => UnitGrant::Codex {
+                    grant,
+                    statement,
+                    unmapped,
+                    real_home: real_home.to_path_buf(),
+                },
+                plan => UnitGrant::Plan(plan),
+            },
+        },
+    )
 }
 
-/// Why this Codex run cannot carry a grant through an overlay home, or `None`
-/// when it can.
-fn codex_withhold(home: Option<&std::path::Path>, args: &[String]) -> Option<String> {
+/// The real home this Codex run's grant can be applied through an overlay
+/// of, or why it cannot.
+fn codex_overlay_home<'a>(
+    home: Option<&'a std::path::Path>,
+    args: &[String],
+) -> Result<&'a std::path::Path, String> {
     if !run_overlay::links_supported() {
-        return Some(
+        return Err(
             "an overlay home links into the real one, which this platform cannot do without \
              privilege"
                 .to_string(),
         );
     }
     let Some(home) = home.filter(|home| home.is_dir()) else {
-        return Some(format!(
+        return Err(format!(
             "its home{} does not exist, so an overlay has no login or sessions to link to",
             home.map(|h| format!(" `{}`", h.display()))
                 .unwrap_or_default()
@@ -5956,7 +5944,7 @@ fn codex_withhold(home: Option<&std::path::Path>, args: &[String]) -> Option<Str
     let configured = match std::fs::read_to_string(&config) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => {
-            return Some(format!(
+            return Err(format!(
                 "its config `{}` could not be read ({error}), so where its login is stored is \
                  unknown",
                 config.display()
@@ -5964,7 +5952,7 @@ fn codex_withhold(home: Option<&std::path::Path>, args: &[String]) -> Option<Str
         }
         Ok(text) => match text.parse::<toml::Table>() {
             Err(error) => {
-                return Some(format!(
+                return Err(format!(
                     "its config `{}` is not valid TOML ({}), so where its login is stored is \
                      unknown",
                     config.display(),
@@ -5975,7 +5963,7 @@ fn codex_withhold(home: Option<&std::path::Path>, args: &[String]) -> Option<Str
                 None => None,
                 Some(toml::Value::String(store)) => Some(store.clone()),
                 Some(other) => {
-                    return Some(format!(
+                    return Err(format!(
                         "its config `{}` names `cli_auth_credentials_store` as {other}, not a \
                          store, so where its login is stored is unknown",
                         config.display()
@@ -5989,11 +5977,11 @@ fn codex_withhold(home: Option<&std::path::Path>, args: &[String]) -> Option<Str
             .map(|value| value.trim_matches(['"', '\'']).to_string())
     });
     match overridden.or(configured).as_deref() {
-        Some(store @ ("keyring" | "auto")) => Some(format!(
+        Some(store @ ("keyring" | "auto")) => Err(format!(
             "its login may be stored in the OS keyring (`cli_auth_credentials_store = \"{store}\"`), \
              which Codex keys by the home's path, so an overlay home cannot reach it"
         )),
-        _ => None,
+        _ => Ok(home),
     }
 }
 

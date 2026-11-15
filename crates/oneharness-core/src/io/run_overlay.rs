@@ -82,8 +82,10 @@ const CODEX_HOME_DIR: &str = "codex-home";
 /// an orphan (a run killed between creating the directory and locking it).
 const UNLOCKED_GRACE: Duration = Duration::from_secs(60);
 
-/// How long one helper app-server exchange may take before it is abandoned.
-const HELPER_DEADLINE: Duration = Duration::from_secs(15);
+/// How long one helper app-server exchange may take before it is abandoned:
+/// a real Codex answers it in about 0.1-0.3 s, so a helper this slow is
+/// stuck, and the turn it serves must not wait on it longer.
+const HELPER_DEADLINE: Duration = Duration::from_secs(5);
 
 /// One granted run's overlay directory: locked while it lives, removed when
 /// dropped.

@@ -90,10 +90,15 @@ class Incomplete(Exception):
 
 
 def number(value: object) -> Optional[float]:
-    """`value` as a finite number, or None (a bool is no number)."""
-    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
-        return float(value)
-    return None
+    """`value` as a finite number, or None (a bool is no number, and neither is
+    an integer too large for a float)."""
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    try:
+        converted = float(value)
+    except OverflowError:
+        return None
+    return converted if math.isfinite(converted) else None
 
 
 def count(value: object) -> Optional[int]:

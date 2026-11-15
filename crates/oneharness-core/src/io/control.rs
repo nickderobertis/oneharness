@@ -266,7 +266,7 @@ fn now() -> UtcInstant {
 /// that instant report the write that landed. A write still blocked past it is
 /// one the harness is not draining, and waiting longer is waiting on the
 /// harness.
-const ENDED_TURN_WRITE_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
+pub(crate) const ENDED_TURN_WRITE_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// What became of one queued frame: written, or why not. Kept as a kind and a
 /// message because every waiter is told, and `io::Error` is not `Clone`.
@@ -322,6 +322,7 @@ struct WriteJob {
 }
 
 /// Where a queued frame's outcome will appear, and the turn it was queued on.
+#[derive(Clone)]
 struct WriteTicket {
     turn: u64,
     done: Arc<Mutex<Option<WriteOutcome>>>,
@@ -834,6 +835,12 @@ pub struct ControlHandle {
     delivery: Mutex<Option<Arc<RedirectDelivery>>>,
     /// How long a redirect waits to be written before it is taken back.
     delivery_deadline: Mutex<std::time::Duration>,
+    /// The last frame a dialogue queued to keep its turn going (a reply or a
+    /// replacement turn), so the thread reading the connection can learn its
+    /// write was refused: that write fails on the turn's writer, and the
+    /// reader would otherwise see only the connection's end that follows it.
+    /// Locked alone, never with another of these locks held.
+    continuation: Mutex<Option<WriteTicket>>,
     /// The serving candidate's shared app-server state, when its turn runs on
     /// one.
     pooled: Mutex<PooledState>,
@@ -900,6 +907,7 @@ impl ControlHandle {
             redirect: Mutex::new(Redirect::None),
             delivery: Mutex::new(None),
             delivery_deadline: Mutex::new(redirect_delivery_deadline()),
+            continuation: Mutex::new(None),
             pooled: Mutex::new(PooledState::default()),
             app_server: Mutex::new(None),
             holds: no_holds(),
@@ -1129,12 +1137,15 @@ impl ControlHandle {
                     }
                     (Ok(()), _) => {}
                 });
-                if let Err(err) = self.send(frame.clone(), FramePolicy::Continuation, Some(then)) {
-                    eprintln!("oneharness: warning: could not write a control frame: {err}");
-                    if let Some(delivery) = &delivery {
-                        delivery.settle(turn_ended_undelivered(Some(&err)));
+                match self.send(frame.clone(), FramePolicy::Continuation, Some(then)) {
+                    Ok(ticket) => *self.continuation() = Some(ticket),
+                    Err(err) => {
+                        eprintln!("oneharness: warning: could not write a control frame: {err}");
+                        if let Some(delivery) = &delivery {
+                            delivery.settle(turn_ended_undelivered(Some(&err)));
+                        }
+                        return true;
                     }
-                    return true;
                 }
             }
         }
@@ -1575,6 +1586,7 @@ impl ControlHandle {
     /// shrugs it off runs the whole prompt before the redirection is written.
     fn start_turn(&self, sink: Box<dyn io::Write + Send>, opening: Vec<WriteJob>) {
         let turn = self.turns.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        *self.continuation() = None;
         let (jobs, queue) = std::sync::mpsc::channel();
         #[cfg(all(test, unix))]
         let pending = Arc::new(std::sync::atomic::AtomicUsize::new(opening.len()));
@@ -1815,6 +1827,50 @@ impl ControlHandle {
     #[must_use]
     pub(crate) fn in_turn(&self) -> bool {
         matches!(self.mechanism().as_ref(), Some(Backend::Dialogue(dialogue)) if dialogue.in_turn())
+    }
+
+    /// Whether the last frame the dialogue queued to keep its turn going was
+    /// refused, waiting at most `within` for a write still going out.
+    ///
+    /// `advance` only queues that frame, so its failure surfaces on the turn's
+    /// writer, after the line that asked for it was read: a connection that
+    /// refused the write, then ended, reads as its end alone unless the reader
+    /// asks here. Never waits past `within` — a write the server is not
+    /// draining is not a refusal, and the reader must keep reaching its own
+    /// deadline. No lock is held across the wait but the turn's own, which the
+    /// writer never needs to finish a write.
+    pub(crate) fn continuation_refused(&self, within: std::time::Duration) -> bool {
+        let Some(ticket) = self.continuation().clone() else {
+            return false;
+        };
+        let until = std::time::Instant::now() + within;
+        let mut state = self.turn.lock();
+        loop {
+            let outcome = ticket
+                .done
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
+            if let Some(outcome) = outcome {
+                return outcome.is_err();
+            }
+            let now = std::time::Instant::now();
+            if now >= until {
+                return false;
+            }
+            state = self
+                .turn
+                .changed
+                .wait_timeout(state, until - now)
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .0;
+        }
+    }
+
+    fn continuation(&self) -> std::sync::MutexGuard<'_, Option<WriteTicket>> {
+        self.continuation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn pooled(&self) -> std::sync::MutexGuard<'_, PooledState> {

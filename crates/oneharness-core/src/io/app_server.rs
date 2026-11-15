@@ -1262,6 +1262,11 @@ pub(crate) fn run_pooled_turn(
             if deadline.is_some_and(|deadline| now >= deadline) {
                 break End::TimedOut;
             }
+            // The answer the last line asked for was refused on the turn's
+            // writer: the connection under the turn is gone.
+            if handle.in_turn() && handle.continuation_refused(Duration::ZERO) {
+                break End::Lost(REFUSED_WRITE.to_string());
+            }
             let slice = deadline.map_or(crate::io::runner::CANCEL_POLL_SLICE, |deadline| {
                 (deadline - now).min(crate::io::runner::CANCEL_POLL_SLICE)
             });
@@ -1449,18 +1454,25 @@ fn deliver(
         // A dialogue that still holds its turn ended because a write failed:
         // the connection under it is gone.
         if handle.in_turn() {
-            return Some(End::Lost(
-                "the shared codex app-server refused a write while the turn was running"
-                    .to_string(),
-            ));
+            return Some(End::Lost(REFUSED_WRITE.to_string()));
         }
         return Some(End::Done);
     }
     None
 }
 
+const REFUSED_WRITE: &str =
+    "the shared codex app-server refused a write while the turn was running";
+
+/// The connection ended, or could not be read: lost under a live turn, failed
+/// before one. A server that refused the answer the turn was waiting on and
+/// then ended the connection is lost to that refusal — the cause the run can
+/// name — so a write still going out is given
+/// [`crate::io::control::ENDED_TURN_WRITE_GRACE`] to say whether it was.
 fn lost_or_failed(handle: &ControlHandle, cause: String) -> End {
-    if handle.in_turn() {
+    if handle.in_turn() && handle.continuation_refused(crate::io::control::ENDED_TURN_WRITE_GRACE) {
+        End::Lost(REFUSED_WRITE.to_string())
+    } else if handle.in_turn() {
         End::Lost(format!(
             "the shared codex app-server went away while the turn was running ({cause})"
         ))

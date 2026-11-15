@@ -87,6 +87,11 @@ impl World {
             std::fs::create_dir_all(dir.path().join(sub)).unwrap();
         }
         std::fs::write(dir.path().join("user.toml"), "").unwrap();
+        // What a grant written anywhere would overwrite.
+        std::fs::create_dir_all(dir.path().join("codex-home/rules")).unwrap();
+        std::fs::write(dir.path().join("codex-home/config.toml"), "model = \"m\"\n").unwrap();
+        std::fs::write(dir.path().join("codex-home/rules/user.rules"), "# user\n").unwrap();
+        std::fs::write(dir.path().join("project/README.md"), "project\n").unwrap();
         World { dir }
     }
 
@@ -117,8 +122,6 @@ impl World {
         cmd
     }
 
-    /// `oneharness run` on `harness` under `toml`, recording what the mock
-    /// harness received.
     fn spawn(&self, harness: &str, toml: &str) -> Spawn {
         let config = self.path("oneharness.toml");
         std::fs::write(&config, toml).unwrap();
@@ -150,8 +153,6 @@ impl World {
     }
 
     // llmlint: ignore-block[e2e_not_mocked] The journey drives the real built `oneharness` over a real TOML config; only each harness's own process is the repository's mock harness, at the existing `--bin` seam, because the deterministic gate (windows-latest among its legs) cannot run the paid, authenticated CLIs. A withheld grant reaches no harness at all, so what it must prove — the spawn is the ungranted one — is fully observed at that seam.
-    /// `oneharness run` on `harness` under `config`, the mock harness standing
-    /// in for its process and recording what it received.
     fn run(
         &self,
         harness: &str,
@@ -190,8 +191,10 @@ impl World {
     }
     // llmlint: ignore-end[e2e_not_mocked]
 
-    /// Every file under the world, but the recorder's own output.
-    fn files(&self) -> Vec<PathBuf> {
+    /// Every file under the world but the recorder's own output, with its
+    /// contents — but under `state`, whose history store every run appends to,
+    /// granted or not, by path alone.
+    fn files(&self) -> Vec<(PathBuf, Option<Vec<u8>>)> {
         fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
             for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
                 let path = entry.path();
@@ -204,7 +207,12 @@ impl World {
         }
         let mut out = Vec::new();
         for sub in ["project", "tmp", "home", "codex-home", "state"] {
-            walk(&self.path(sub), &mut out);
+            let mut paths = Vec::new();
+            walk(&self.path(sub), &mut paths);
+            out.extend(paths.into_iter().map(|path| {
+                let contents = (sub != "state").then(|| std::fs::read(&path).unwrap());
+                (path, contents)
+            }));
         }
         out.sort();
         out

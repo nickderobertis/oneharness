@@ -119,6 +119,8 @@ have_env() {
 #                 --codex-path control, against a scripted model endpoint, so
 #                 it needs no Codex login), then (Linux) the budget workload
 #                 and onebudgetspec's check of codex-run-overlay-added-seconds.
+# OH_CONTROL_ONLY=run-overlay runs the run-overlay phase alone: it needs no
+# Codex login, only the installed codex.
 # OH_CONTROL_ONLY=pooled runs these alone (the gate's journeys drive them with
 # the mock harness standing for codex).
 
@@ -350,6 +352,14 @@ oh_run_overlay() {
       --id codex-run-overlay-added-seconds) ||
     fail "run-overlay: the granted-turn budget (live/control/budgets.yaml) failed; its figures are above"
 }
+
+if [ "${OH_CONTROL_ONLY:-}" = run-overlay ]; then
+  command -v codex >/dev/null 2>&1 || skip "run-overlay: no codex on PATH"
+  note "» codex: run-overlay — a granted controlled turn runs its executable alone, on its own overlay home"
+  oh_run_overlay
+  note "OH_CONTROL_ONLY=run-overlay: the run-overlay phase ran; no other phase was run"
+  exit 0
+fi
 
 if printf '%s\n' "${CONTROLLABLE[@]}" | grep -q '^codex'; then
   if have_env "Codex auth (shared app-server phases)" CODEX_E2E_AUTH OPENAI_API_KEY; then

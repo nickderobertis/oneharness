@@ -757,92 +757,104 @@ where
     // Park stdin in the control handle and open the turn with the prompt frame.
     // A failed hand-off is not fatal: the harness simply never receives the
     // prompt and reports its own error, which is more useful than a panic.
-    if let Some(control) = control {
-        if let Some(stdin) = process.take_stdin() {
-            if let Err(err) = control.handle.open_turn(stdin, &control.prompt) {
-                eprintln!("oneharness: warning: could not open the controlled turn: {err}");
-            }
-        }
-    }
-
-    // Stdin was held open past the prompt, so a controlled harness waits for
-    // another message instead of exiting. Closing it on the end-of-turn document
-    // is what lets the run finish on its own, interrupted or not.
     //
-    // A harness whose turn oneharness *drives* (a JSON-RPC server) has no reason
-    // to exit at all once its turn is over — it is a server, waiting for the
-    // next one — so there the end of the turn is the end of the run and the
-    // child is torn down rather than waited on.
-    let mut stopped_after_turn = false;
-    let mut on_line = |line: &str| {
+    // The frames are written on a thread of their own while this one runs the
+    // deadline loop: a harness that never drains its stdin blocks only that
+    // write, and the run still times out, is still cancellable, and killing
+    // the child at the end is what fails the write and lets the thread end.
+    // The scope joins it once the child is gone.
+    let (status, exit_code, finished) = std::thread::scope(|scope| {
         if let Some(control) = control {
-            if control.handle.advance(line) {
-                control.handle.end_turn();
-                if control.handle.drives_turn_over_stdin() {
-                    stopped_after_turn = true;
-                    on_line(line);
-                    return StreamStep::Stop;
-                }
+            if let Some(stdin) = process.take_stdin() {
+                let opening = control.handle.open_turn(stdin, &control.prompt);
+                scope.spawn(move || {
+                    if let Err(err) = opening.write() {
+                        eprintln!("oneharness: warning: could not open the controlled turn: {err}");
+                    }
+                });
             }
         }
-        on_line(line)
-    };
 
-    let deadline = (!job.timeout.is_zero()).then(|| start + job.timeout);
-    let mut pending = Vec::new();
-    let end = loop {
-        if cancellation_requested(cancel) {
-            break StreamEnd::Cancelled;
-        }
-        let now = Instant::now();
-        if deadline.is_some_and(|deadline| now >= deadline) {
-            break StreamEnd::TimedOut;
-        }
-        let poll_until = deadline.map_or(now + CANCEL_POLL_SLICE, |deadline| {
-            deadline.min(now + CANCEL_POLL_SLICE)
-        });
-        match process.recv_stdout_until(poll_until) {
-            PipeEvent::Data(chunk) => {
-                pending.extend_from_slice(&chunk);
-                if deliver_complete_lines(&mut pending, &mut on_line) == StreamStep::Stop {
-                    break StreamEnd::Stopped;
+        // Stdin was held open past the prompt, so a controlled harness waits for
+        // another message instead of exiting. Closing it on the end-of-turn document
+        // is what lets the run finish on its own, interrupted or not.
+        //
+        // A harness whose turn oneharness *drives* (a JSON-RPC server) has no reason
+        // to exit at all once its turn is over — it is a server, waiting for the
+        // next one — so there the end of the turn is the end of the run and the
+        // child is torn down rather than waited on.
+        let mut stopped_after_turn = false;
+        let mut on_line = |line: &str| {
+            if let Some(control) = control {
+                if control.handle.advance(line) {
+                    control.handle.end_turn();
+                    if control.handle.drives_turn_over_stdin() {
+                        stopped_after_turn = true;
+                        on_line(line);
+                        return StreamStep::Stop;
+                    }
                 }
             }
-            PipeEvent::Closed => {
-                if deliver_final_line(&mut pending, &mut on_line) == StreamStep::Stop {
-                    break StreamEnd::Stopped;
+            on_line(line)
+        };
+
+        let deadline = (!job.timeout.is_zero()).then(|| start + job.timeout);
+        let mut pending = Vec::new();
+        let end = loop {
+            if cancellation_requested(cancel) {
+                break StreamEnd::Cancelled;
+            }
+            let now = Instant::now();
+            if deadline.is_some_and(|deadline| now >= deadline) {
+                break StreamEnd::TimedOut;
+            }
+            let poll_until = deadline.map_or(now + CANCEL_POLL_SLICE, |deadline| {
+                deadline.min(now + CANCEL_POLL_SLICE)
+            });
+            match process.recv_stdout_until(poll_until) {
+                PipeEvent::Data(chunk) => {
+                    pending.extend_from_slice(&chunk);
+                    if deliver_complete_lines(&mut pending, &mut on_line) == StreamStep::Stop {
+                        break StreamEnd::Stopped;
+                    }
                 }
-                break match wait_or_cancel(&mut process, deadline, cancel) {
-                    Wait::Exited(exit) => StreamEnd::Exited(exit),
-                    Wait::TimedOut => StreamEnd::TimedOut,
-                    Wait::Cancelled => StreamEnd::Cancelled,
-                    Wait::Failed => StreamEnd::WaitFailed,
+                PipeEvent::Closed => {
+                    if deliver_final_line(&mut pending, &mut on_line) == StreamStep::Stop {
+                        break StreamEnd::Stopped;
+                    }
+                    break match wait_or_cancel(&mut process, deadline, cancel) {
+                        Wait::Exited(exit) => StreamEnd::Exited(exit),
+                        Wait::TimedOut => StreamEnd::TimedOut,
+                        Wait::Cancelled => StreamEnd::Cancelled,
+                        Wait::Failed => StreamEnd::WaitFailed,
+                    };
+                }
+                // A poll tick, not the run's deadline: loop back to re-check both
+                // cancellation and the real deadline.
+                PipeEvent::Deadline => {}
+            }
+        };
+
+        let (status, exit_code, finish) = match end {
+            StreamEnd::Exited(exit) => {
+                let code = exit.code();
+                let status = if code == Some(0) {
+                    Status::Ok
+                } else {
+                    Status::Nonzero
                 };
+                (status, code, Finish::Exited)
             }
-            // A poll tick, not the run's deadline: loop back to re-check both
-            // cancellation and the real deadline.
-            PipeEvent::Deadline => {}
-        }
-    };
-
-    let (status, exit_code, finish) = match end {
-        StreamEnd::Exited(exit) => {
-            let code = exit.code();
-            let status = if code == Some(0) {
-                Status::Ok
-            } else {
-                Status::Nonzero
-            };
-            (status, code, Finish::Exited)
-        }
-        // Consumer-driven stop is not a harness failure. The consumer already
-        // received what it needed, so the best-effort envelope remains Ok.
-        StreamEnd::Stopped => (Status::Ok, None, Finish::Terminate),
-        StreamEnd::TimedOut => (Status::Timeout, None, Finish::Terminate),
-        StreamEnd::Cancelled => (Status::Cancelled, None, Finish::Terminate),
-        StreamEnd::WaitFailed => (Status::SpawnError, None, Finish::Terminate),
-    };
-    let finished = process.finish(finish);
+            // Consumer-driven stop is not a harness failure. The consumer already
+            // received what it needed, so the best-effort envelope remains Ok.
+            StreamEnd::Stopped => (Status::Ok, None, Finish::Terminate),
+            StreamEnd::TimedOut => (Status::Timeout, None, Finish::Terminate),
+            StreamEnd::Cancelled => (Status::Cancelled, None, Finish::Terminate),
+            StreamEnd::WaitFailed => (Status::SpawnError, None, Finish::Terminate),
+        };
+        let finished = process.finish(finish);
+        (status, exit_code, finished)
+    });
 
     let error = match status {
         Status::Timeout => Some(timeout_error(job)),

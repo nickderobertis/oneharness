@@ -88,6 +88,8 @@ struct TestHolds {
     opening: std::sync::atomic::AtomicBool,
     /// Set once the opening is being held, for the test to send its interrupt.
     opening_held: std::sync::atomic::AtomicBool,
+    /// Set once a write is waiting for the opening to land.
+    waiting_on_opening: std::sync::atomic::AtomicBool,
     /// Hold an interrupt whose abort frames are written, before it hands its
     /// redirection on, until this says.
     abort: Mutex<Option<AbortHold>>,
@@ -184,6 +186,12 @@ fn write_to_turn(state: &mut TurnState, line: &str) -> io::Result<()> {
             io::ErrorKind::NotConnected,
             "no active turn to write to",
         )),
+        // Only reachable through a guard taken without `ControlHandle::turn`,
+        // which waits the opening out; the stdin is the opener's until then.
+        TurnState::Opening(_) => Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "the turn is still opening",
+        )),
     }
 }
 
@@ -197,9 +205,54 @@ fn write_to_turn(state: &mut TurnState, line: &str) -> io::Result<()> {
 enum TurnState {
     /// No turn in flight (before the prompt, or after the turn ended).
     Idle,
+    /// The turn's stdin is parked and its opening frames are being written,
+    /// outside this lock, by the opening numbered here. A write waits on
+    /// [`ControlHandle::opened`] until the opening has landed, so nothing
+    /// reaches the harness ahead of its prompt.
+    Opening(u64),
     /// A turn is running; the line sink frames go to is held open for control
     /// frames — the child's stdin, or a shared app-server connection.
     Active(Box<dyn io::Write + Send>),
+}
+
+/// A turn [`ControlHandle::open_turn`] parked, whose opening frames are still
+/// to be written.
+pub(crate) struct TurnOpening<'a> {
+    handle: &'a ControlHandle,
+    id: u64,
+    frames: Vec<String>,
+    sink: Box<dyn io::Write + Send>,
+}
+
+impl TurnOpening<'_> {
+    /// Write the opening frames, then open the turn on the stdin they went to.
+    ///
+    /// No lock is held while writing, so a full pipe delays only this thread.
+    /// The stdin is installed only if the turn is still this opening's: a turn
+    /// the run closed meanwhile (its harness ended it, or the run timed out)
+    /// stays closed, and dropping the stdin here is what closes it.
+    ///
+    /// A write that fails still leaves the turn parked, as a run whose prompt
+    /// never arrived — the harness's own exit and output then report it.
+    pub(crate) fn write(mut self) -> io::Result<()> {
+        self.handle.hold_opening();
+        let sink = &mut self.sink;
+        let written = self.frames.iter().try_for_each(|frame| {
+            sink.write_all(frame.as_bytes())?;
+            sink.flush()
+        });
+        let mut state = self
+            .handle
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if matches!(*state, TurnState::Opening(id) if id == self.id) {
+            *state = TurnState::Active(self.sink);
+        }
+        drop(state);
+        self.handle.opened.notify_all();
+        written
+    }
 }
 
 /// The answers a pooled turn's connection delivers for requests the control
@@ -522,6 +575,12 @@ pub struct ControlHandle {
     /// candidate has taken the turn — the one the chain would start on.
     reported: Mutex<ControlShape>,
     state: Mutex<TurnState>,
+    /// Signalled whenever `state` leaves [`TurnState::Opening`], for a write
+    /// waiting to follow the opening.
+    opened: std::sync::Condvar,
+    /// The number the next opening is known by, so an opening that ends after
+    /// its turn was closed never installs its stdin into a later one.
+    openings: Mutex<u64>,
     events: Mutex<Vec<ControlEvent>>,
     requests: Mutex<u64>,
     /// The serving candidate's mechanism, or `None` between candidates. Locked
@@ -595,6 +654,8 @@ impl ControlHandle {
         ControlHandle {
             reported: Mutex::new(starts_on),
             state: Mutex::new(TurnState::Idle),
+            opened: std::sync::Condvar::new(),
+            openings: Mutex::new(0),
             events: Mutex::new(Vec::new()),
             requests: Mutex::new(0),
             mechanism: Mutex::new(None),
@@ -667,10 +728,7 @@ impl ControlHandle {
             Some(Backend::Dialogue(dialogue)) if dialogue.has_pending_redirect()
         );
         let held = std::mem::replace(&mut *self.redirect(), Redirect::None);
-        *self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = TurnState::Idle;
+        self.set_turn(TurnState::Idle);
         if undelivered || !matches!(held, Redirect::None) {
             eprintln!(
                 "oneharness: warning: the interrupted turn ended before its redirection could be \
@@ -990,33 +1048,32 @@ impl ControlHandle {
     }
 
     /// The [`TestHolds::opening`] hold: the turn's stdin is parked and its
-    /// prompt is not written yet. `under_turn_lock` says the caller holds the
-    /// turn's lock, so an interrupt that has begun its abort is waiting on it.
-    ///
-    /// The redirection is read with `try_lock` only: this runs under the
-    /// turn's lock, and blocking on the `redirect` lock there would nest it
-    /// inside `state`, the inverse of the type's order.
+    /// prompt is not written yet. It ends once an interrupt has begun its
+    /// abort and is waiting for the opening to land.
     #[cfg(all(test, unix))]
-    fn hold_opening(&self, under_turn_lock: bool) {
+    fn hold_opening(&self) {
         use std::sync::atomic::Ordering;
         if !self.holds.opening.load(Ordering::SeqCst) {
             return;
         }
         self.holds.opening_held.store(true, Ordering::SeqCst);
-        hold_until("an interrupt's abort", || {
-            let Ok(slot) = self.redirect.try_lock() else {
-                return false;
-            };
-            match &*slot {
-                Redirect::Deliverable(_) | Redirect::Answered(_) => true,
-                Redirect::Aborting(_) => under_turn_lock || self.state.try_lock().is_err(),
-                Redirect::None | Redirect::Committed(_) => false,
-            }
+        hold_until("an interrupt's abort", || match &*self.redirect() {
+            Redirect::Deliverable(_) | Redirect::Answered(_) => true,
+            Redirect::Aborting(_) => self.holds.waiting_on_opening.load(Ordering::SeqCst),
+            Redirect::None | Redirect::Committed(_) => false,
         });
     }
 
     #[cfg(not(all(test, unix)))]
-    fn hold_opening(&self, _under_turn_lock: bool) {}
+    fn hold_opening(&self) {}
+
+    /// Record that a write is waiting for the opening, for the hold above.
+    fn mark_waiting_on_opening(&self) {
+        #[cfg(all(test, unix))]
+        self.holds
+            .waiting_on_opening
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
 
     /// The [`TestHolds::abort`] hold: every abort frame is written and the
     /// redirection not yet handed on. Holds no lock while it waits.
@@ -1219,11 +1276,11 @@ impl ControlHandle {
         // The lock order is unchanged: this takes the turn's lock alone or
         // under the `mechanism` lock (from `advance`), and only the delivery's
         // own locks under it, which nothing holds while taking the turn's.
+        // Its wait for an opening never comes under the `mechanism` lock: a
+        // redirection is deliverable only once its abort was written, which
+        // itself waited the opening out, and a turn never reopens after that.
         let written = {
-            let mut state = self
-                .state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut state = self.turn();
             let written = write_to_turn(&mut state, &frame);
             match &written {
                 // Written as the replacement turn's prompt: delivered, and
@@ -1259,51 +1316,82 @@ impl ControlHandle {
 
     /// Park the child's stdin and mark a turn in flight.
     pub fn begin_turn(&self, stdin: std::process::ChildStdin) {
+        self.set_turn(TurnState::Active(Box::new(stdin)));
+    }
+
+    /// Replace the turn's state, waking any write waiting on an opening — it
+    /// then finds the turn open, or closed and nothing to write to.
+    fn set_turn(&self, next: TurnState) {
         *self
             .state
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = TurnState::Active(Box::new(stdin));
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = next;
+        self.opened.notify_all();
     }
 
-    /// Park the child's stdin and open the turn on it with `prompt`, in one
-    /// step an interrupt cannot land inside.
+    /// The turn's state, once any opening in flight has landed: what every
+    /// write to the turn goes through, so none can reach the harness ahead of
+    /// its prompt.
+    ///
+    /// The wait gives the lock up while it waits, so an opening blocked on a
+    /// full stdin pipe holds nothing anyone else needs: the run's own thread
+    /// still closes the turn and kills the child at its deadline, and the
+    /// write waiting here then wakes to find the opening failed or the turn
+    /// closed, and returns.
+    fn turn(&self) -> std::sync::MutexGuard<'_, TurnState> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.opened
+            .wait_while(state, |state| {
+                let opening = matches!(state, TurnState::Opening(_));
+                if opening {
+                    self.mark_waiting_on_opening();
+                }
+                opening
+            })
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Park the child's stdin and begin opening the turn on it with `prompt`;
+    /// [`TurnOpening::write`] then writes the opening frames.
     ///
     /// The turn is interruptible only once its opening frames are written. An
     /// abort written before the prompt is the harness's first line, aimed at a
     /// turn that does not exist yet: a strict harness exits on it, and one that
     /// shrugs it off runs the whole prompt before the redirection is written.
-    /// So the frames are written under the SAME acquisition of the `state` lock
-    /// that parks stdin, and an interrupt arriving meanwhile waits on that lock
-    /// in its own write and then lands as an abort of the turn just opened.
+    /// So from here until the frames are written the turn is
+    /// [`TurnState::Opening`], and an interrupt arriving meanwhile waits for
+    /// the opening in [`Self::turn`] and then lands as an abort of the turn
+    /// just opened.
     ///
-    /// The frames are rendered first, under the `mechanism` lock alone; only the
-    /// `state` lock is held while they are written, and no other lock is taken
-    /// under it, so this nests inside the `mechanism`, `redirect`, `state` order
-    /// rather than inverting it. A full stdin pipe only delays the write: the
-    /// child drains its stdin without waiting on anything this run holds (its
-    /// stdout is drained by its own reader thread), and the interrupt waiting on
-    /// the lock holds no other lock while it waits.
-    ///
-    /// A write that fails leaves the turn parked, as a run whose prompt never
-    /// arrived — the harness's own exit and output then report it.
+    /// The frames are written WITHOUT the `state` lock, and the runner writes
+    /// them on a thread of their own: a harness that never drains its stdin
+    /// would otherwise hold the turn's lock — and the run's own thread, before
+    /// its deadline loop — for as long as it lives, so neither `--timeout` nor
+    /// cancellation could end the run, and an interrupt would wait forever.
     pub(crate) fn open_turn(
         &self,
         stdin: std::process::ChildStdin,
         prompt: &str,
-    ) -> io::Result<()> {
+    ) -> TurnOpening<'_> {
         let frames = self.open_frames(prompt);
-        let mut sink: Box<dyn io::Write + Send> = Box::new(stdin);
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.hold_opening(true);
-        let written = frames.iter().try_for_each(|frame| {
-            sink.write_all(frame.as_bytes())?;
-            sink.flush()
-        });
-        *state = TurnState::Active(sink);
-        written
+        let id = {
+            let mut openings = self
+                .openings
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *openings += 1;
+            *openings
+        };
+        self.set_turn(TurnState::Opening(id));
+        TurnOpening {
+            handle: self,
+            id,
+            frames,
+            sink: Box::new(stdin),
+        }
     }
 
     /// Mark a turn in flight on a shared app-server connection: `sink` sends
@@ -1325,6 +1413,7 @@ impl ControlHandle {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = TurnState::Active(sink);
+        self.opened.notify_all();
     }
 
     /// The shared app-server went away under the live turn.
@@ -1402,10 +1491,7 @@ impl ControlHandle {
     /// — learns it may exit).
     pub fn end_turn(&self) {
         self.mark_closing();
-        *self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = TurnState::Idle;
+        self.set_turn(TurnState::Idle);
         let mut pooled = self.pooled();
         if let PooledState::Live { command, .. } = std::mem::take(&mut *pooled) {
             *pooled = PooledState::Ended {
@@ -1418,11 +1504,7 @@ impl ControlHandle {
     /// Write one raw line into the live turn's stdin, e.g. the prompt frame.
     /// Errors when no turn is active or the child closed its end.
     pub fn write_line(&self, line: &str) -> io::Result<()> {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        write_to_turn(&mut state, line)
+        write_to_turn(&mut self.turn(), line)
     }
 
     /// Serve one request, recording it for the report either way.
@@ -2977,6 +3059,22 @@ mod tests {
         script: &str,
         prompt: &str,
     ) -> std::thread::JoinHandle<crate::domain::report::Capture> {
+        run_controlled_with_timeout_in_background(
+            handle,
+            script,
+            prompt,
+            std::time::Duration::from_secs(60),
+        )
+    }
+
+    /// [`run_controlled_with_prompt_in_background`], under the run timeout
+    /// `timeout`.
+    fn run_controlled_with_timeout_in_background(
+        handle: &Arc<ControlHandle>,
+        script: &str,
+        prompt: &str,
+        timeout: std::time::Duration,
+    ) -> std::thread::JoinHandle<crate::domain::report::Capture> {
         let handle = Arc::clone(handle);
         let prompt = prompt.to_string();
         let job = crate::io::runner::Job {
@@ -2984,7 +3082,7 @@ mod tests {
             cwd: None,
             env: Vec::new(),
             env_remove: Vec::new(),
-            timeout: std::time::Duration::from_secs(60),
+            timeout,
             stdin: None,
         };
         std::thread::spawn(move || {
@@ -3025,6 +3123,17 @@ mod tests {
                 TurnState::Active(_)
             )
         });
+    }
+
+    /// Whether the runner is still writing the turn's opening frames.
+    fn opening_in_progress(handle: &ControlHandle) -> bool {
+        matches!(
+            &*handle
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            TurnState::Opening(_)
+        )
     }
 
     #[test]
@@ -3126,11 +3235,11 @@ mod tests {
     fn an_interrupt_waiting_on_an_opening_blocked_by_a_full_stdin_pipe_still_redirects_the_turn() {
         // The prompt is larger than the harness's stdin pipe holds, and the
         // harness reads none of it until the test says: the runner's opening
-        // write blocks under the turn's lock with the pipe full. The harness
+        // write blocks with the pipe full, holding no lock. The harness
         // meanwhile writes more than a pipe holds to its stdout, which only
         // the run's own drain keeps it from blocking on. An interrupt sent
-        // now waits on the turn's lock holding no other; once the harness
-        // reads, the prompt lands first, then the abort, then the replacement.
+        // now waits for the opening holding no lock; once the harness reads,
+        // the prompt lands first, then the abort, then the replacement.
         //
         // Every wait is bounded and fails naming the deadlock, and a failing
         // test kills the harness on its way out: the write it blocks then
@@ -3199,12 +3308,12 @@ mod tests {
         within(10, "the harness did not fill its stdout", || {
             chatter.exists()
         });
-        // The opening holds the turn's lock for as long as the full pipe
-        // blocks its write.
+        // The turn stays opening for as long as the full pipe blocks its
+        // write.
         within(
             10,
             "the opening write did not block on the full pipe",
-            || handle.state.try_lock().is_err(),
+            || opening_in_progress(&handle),
         );
 
         let (answered, response) = std::sync::mpsc::channel();
@@ -3212,13 +3321,15 @@ mod tests {
         std::thread::spawn(move || {
             let _ = answered.send(asked.join());
         });
-        within(
-            5,
-            "the interrupt did not reach the turn's lock holding no other",
-            || matches!(&*handle.redirect(), Redirect::Aborting(_)),
-        );
+        within(5, "the interrupt did not wait for the opening", || {
+            matches!(&*handle.redirect(), Redirect::Aborting(_))
+                && handle
+                    .holds
+                    .waiting_on_opening
+                    .load(std::sync::atomic::Ordering::SeqCst)
+        });
         assert!(
-            handle.state.try_lock().is_err(),
+            opening_in_progress(&handle),
             "the opening write was still blocked when the interrupt arrived"
         );
         std::fs::write(&gate, b"").unwrap();
@@ -3237,6 +3348,85 @@ mod tests {
             capture.stdout.contains(r#""subtype":"success""#),
             "the harness ran the replacement turn: {capture:?}"
         );
+    }
+
+    #[test]
+    fn an_opening_a_harness_never_reads_times_out_and_an_interrupt_meanwhile_returns() {
+        // The opening is larger than the harness's stdin pipe holds, and the
+        // harness never reads its stdin at all. Written on the runner's own
+        // thread before its deadline loop, the opening blocked there forever:
+        // `--timeout` was never checked, the harness never killed, and an
+        // interrupt waited on the turn's lock behind that write. The run must
+        // end as timed out on its deadline, and the interrupt must return.
+        //
+        // Bounded by its own watchdog: past it, the test kills the harness it
+        // started — which fails the blocked write and lets every waiting
+        // thread return — and fails naming the hang.
+        let (dir, path, _listener, handle) = stdin_control("opening-never-read");
+        let pid = dir.join("harness-pid");
+        let harness = format!(
+            "echo $$ >'{pid}'; echo '{{\"type\":\"system\"}}'; exec sleep 30",
+            pid = pid.display()
+        );
+        let timeout = std::time::Duration::from_secs(2);
+        let margin = std::time::Duration::from_secs(4);
+        let prompt = "p".repeat(512 * 1024);
+        let started = std::time::Instant::now();
+        let run = run_controlled_with_timeout_in_background(&handle, &harness, &prompt, timeout);
+        wait_for("the opening to block on the full pipe", || {
+            pid.exists() && opening_in_progress(&handle)
+        });
+        let (answered, response) = std::sync::mpsc::channel();
+        let asked = send_in_background(&path, "do X instead");
+        std::thread::spawn(move || {
+            let _ = answered.send(asked.join());
+        });
+        let (finished, capture) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = finished.send(run.join());
+        });
+
+        let watchdog = started + timeout + margin;
+        let left = || watchdog.saturating_duration_since(std::time::Instant::now());
+        let capture = capture.recv_timeout(left());
+        let response = response.recv_timeout(left());
+        let hung = capture.is_err() || response.is_err();
+        if hung {
+            let pid = std::fs::read_to_string(&pid)
+                .ok()
+                .and_then(|pid| pid.trim().parse::<libc::pid_t>().ok());
+            if let Some(pid) = pid.filter(|pid| *pid > 0) {
+                // SAFETY: a signal to the harness this test started, whose pid
+                // it wrote itself.
+                unsafe { libc::kill(pid, libc::SIGKILL) };
+            }
+        }
+        assert!(
+            !hung,
+            "hung: within {timeout:?} + {margin:?} the run ended: {}, the interrupt returned: {}",
+            capture.is_ok(),
+            response.is_ok()
+        );
+        let capture = capture.unwrap().unwrap();
+        let response = response.unwrap().unwrap();
+        assert_eq!(
+            capture.status,
+            crate::domain::report::Status::Timeout,
+            "{capture:?}"
+        );
+        assert!(
+            !response.is_redirected(),
+            "a harness that read nothing took no redirection: {response:?}"
+        );
+        assert!(
+            matches!(
+                response.reason(),
+                Some(ControlReason::NotRunning | ControlReason::NoActiveTurn)
+            ),
+            "the interrupt is refused because the run ended: {response:?}"
+        );
+        let events = handle.events();
+        assert_eq!(events.len(), 1, "{events:?}");
     }
 
     #[test]

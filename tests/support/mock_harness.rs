@@ -24,6 +24,8 @@
 //!                   holding a newline stays one element), before answering
 //!   MOCK_ECHO_PWD   if set, write `PWD=<the inherited $PWD>` to stdout and exit
 //!                   (used to assert that --cwd keeps $PWD consistent)
+//!   MOCK_CODEX_INDEX if set, create `$CODEX_HOME/state_5.sqlite` when absent, as
+//!                   Codex opens its thread index on its first run in a home
 //!   MOCK_HOME_WRITE  `relpath=content;…` written under `$CODEX_HOME` while the
 //!                   harness runs, replacing a top-level link in the way
 //!   MOCK_HOME_SNAPSHOT  if set, what `$CODEX_HOME` holds while the harness
@@ -1993,6 +1995,14 @@ fn write_into_home(entries: &str) {
         let (rel, content) = entry
             .split_once('=')
             .expect("MOCK_HOME_WRITE entry is relpath=content");
+        let relative = std::path::Path::new(rel);
+        assert!(
+            !rel.is_empty()
+                && relative
+                    .components()
+                    .all(|part| matches!(part, std::path::Component::Normal(_))),
+            "MOCK_HOME_WRITE path `{rel}` must stay inside $CODEX_HOME: relative, with no `..`"
+        );
         let path = home.join(rel);
         let top = home.join(rel.split('/').next().unwrap_or(rel));
         if std::fs::symlink_metadata(&top).is_ok_and(|m| m.file_type().is_symlink()) {
@@ -2834,6 +2844,15 @@ pub fn run() -> ! {
         }
         let input = serde_json::json!({ "argv": argv, "stdin": stdin });
         let _ = std::fs::write(path, input.to_string());
+    }
+
+    if std::env::var_os("MOCK_CODEX_INDEX").is_some() {
+        // What Codex does on its first run in a home: open its thread index.
+        let home = std::path::PathBuf::from(std::env::var("CODEX_HOME").unwrap_or_default());
+        let index = home.join("state_5.sqlite");
+        if !index.exists() {
+            std::fs::write(&index, "mock codex thread index").expect("create the thread index");
+        }
     }
 
     if let Ok(entries) = std::env::var("MOCK_HOME_WRITE") {

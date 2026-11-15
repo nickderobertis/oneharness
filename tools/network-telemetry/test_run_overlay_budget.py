@@ -15,23 +15,20 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import sys
 import unittest
 from pathlib import Path
 
-from support import ROOT, scratch
-
-CONTROL = ROOT / "live" / "control"
-FIXTURES = CONTROL / "fixtures"
-sys.path.insert(0, str(CONTROL))
-
-from run_overlay_telemetry import (  # noqa: E402 — importable only once CONTROL is on the path.
+from run_overlay_telemetry import (
     BATCHES,
     OverlayTimings,
     Telemetry,
     TurnTiming,
     run_concurrently,
 )
+from support import ROOT, scratch
+
+CONTROL = ROOT / "live" / "control"
+FIXTURES = CONTROL / "fixtures"
 
 
 def check(telemetry: Path) -> subprocess.CompletedProcess[str]:

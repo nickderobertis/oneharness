@@ -39,8 +39,8 @@ Rules for the `live-control` suite alone (`scripts/e2e-control.sh`,
 ## The run-level allowlist's live proof
 
 `live/control/run_allowlist_live.py` (Python 3.10+), with the budget's
-telemetry shape and collector in `run_overlay_telemetry.py` and its reader in
-`run_overlay_budget.py`.
+telemetry shape and collector in `tools/network-telemetry/run_overlay_telemetry.py`
+(a declared dependency) and its reader in `run_overlay_budget.py`.
 
 - **It is the drift alarm for every harness that applies a run-level
   `allowed_tools`** (Claude Code and Codex; the rest withhold it). Each turn is

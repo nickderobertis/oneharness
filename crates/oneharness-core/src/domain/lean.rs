@@ -1511,7 +1511,7 @@ mod tests {
                         analytics: false,
                         model_catalog: None,
                         tools: Some(&classes),
-                        allowed_tools: &[],
+                        allowed_tools: None,
                     });
                     let Knob::Flag(flag) = t.knobs[0].knob else {
                         panic!("claude-code's tool set is a flag")
@@ -1594,7 +1594,7 @@ mod tests {
             analytics: false,
             model_catalog: None,
             tools: None,
-            allowed_tools: &[],
+            allowed_tools: None,
         };
         let forked = (spec.build_argv)(&ctx(true, harness::PromptDelivery::Argv));
         for k in translation(CLAUDE, Setting::CompactNow).knobs {

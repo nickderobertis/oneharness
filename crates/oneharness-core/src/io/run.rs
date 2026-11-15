@@ -1224,7 +1224,7 @@ pub fn run_supervised(
             // The turn's system instructions gain the grant's statement — each
             // granted executable by its absolute path — through the harness's
             // own system mapping, only where a rule is actually applied.
-            system: grant::with_statement(system, unit_grant.plan.statement()),
+            system: grant::with_statement(system, unit_grant.statement()),
             // A `--session` continue supplies the native token to resume with,
             // reusing the harness's verified `--resume` mapping; a create (or no
             // session) leaves it to the explicit `--resume` value (they are
@@ -1262,7 +1262,7 @@ pub fn run_supervised(
                 PromptDelivery::Argv
             },
             tools: lean_settings.tool_set.clone(),
-            allowed_tools: unit_grant.plan.claude_allowed().to_vec(),
+            allowed_tools: unit_grant.claude().cloned(),
             images: if image_frame {
                 images.clone()
             } else {
@@ -1278,7 +1278,7 @@ pub fn run_supervised(
         // A granted Codex turn runs on a home of its own, so a controlled one
         // starts its own app-server there: a pooled server's rules are its
         // home's, which would grant every lease or none.
-        let codex_overlay = unit_grant.codex_overlay.clone();
+        let codex_overlay = unit_grant.codex_overlay();
         if codex_overlay.is_some() {
             unit_app_server = None;
         }
@@ -1418,8 +1418,8 @@ pub fn run_supervised(
             // ungranted launch, never the overlay's.
             if let Some(codex) = &codex_overlay {
                 let mut overlaid = open_codex_overlay(
-                    &codex.rules,
-                    &codex.real_home,
+                    codex.rules,
+                    codex.real_home,
                     &resolved.bin,
                     &job_env,
                     &env_remove,
@@ -1463,7 +1463,7 @@ pub fn run_supervised(
             job_plans.push(harness_plan);
         }
         let mut diagnostics = lean_delivery.diagnostics;
-        diagnostics.extend(unit_grant.plan.diagnostics());
+        diagnostics.extend(unit_grant.diagnostics());
         let mut calls_plan = lean_io::CallsPlan {
             diagnostics,
             codex_home: None,
@@ -5168,9 +5168,9 @@ struct HarnessPlan {
     model_catalog: Option<PathBuf>,
     /// The lean `tool_set`, carried to [`BuildCtx::tools`].
     tools: Option<Vec<lean::ToolClass>>,
-    /// The run-level allowlist's Claude Code entries, carried to
-    /// [`BuildCtx::allowed_tools`]; empty for every other harness.
-    allowed_tools: Vec<String>,
+    /// The run-level allowlist's Claude Code grant, carried to
+    /// [`BuildCtx::allowed_tools`]; `None` for every other harness.
+    allowed_tools: Option<grant::ClaudeGrant>,
     /// The images a [`PromptDelivery::MessageFrame`] carries (claude-code);
     /// empty otherwise — a path-taking harness has them in `extra`.
     images: Vec<lean::ImageInput>,
@@ -5263,7 +5263,7 @@ impl HarnessPlan {
             analytics: self.analytics,
             model_catalog: self.model_catalog.as_deref(),
             tools: self.tools.as_deref(),
-            allowed_tools: &self.allowed_tools,
+            allowed_tools: self.allowed_tools.as_ref(),
         };
         let argv = harness::argv_with_caller_args(self.spec, &ctx, &self.extra);
         let prompt =
@@ -5773,18 +5773,52 @@ pub(crate) fn parse_env(values: &[String]) -> Result<Vec<(String, String)>, Oneh
         .collect()
 }
 
-/// One unit's run-level allowlist, resolved and planned for its harness.
-struct UnitGrant {
-    plan: grant::GrantPlan,
-    /// For a Codex plan, the overlay it is applied through.
-    codex_overlay: Option<CodexOverlayPlan>,
+/// One unit's run-level allowlist, resolved and planned for its harness:
+/// a Codex grant always with the real home its overlay links into.
+enum UnitGrant {
+    /// Anything but a Codex grant: no rule, withheld, Claude Code's flags.
+    Plan(grant::GrantPlan),
+    /// A Codex grant, applied through an overlay of `real_home`.
+    Codex {
+        plan: grant::GrantPlan,
+        real_home: PathBuf,
+    },
 }
 
-/// A Codex grant's per-run rules, with the real home its overlay links into.
-#[derive(Clone)]
-struct CodexOverlayPlan {
-    rules: String,
-    real_home: PathBuf,
+/// What a Codex unit's overlay is built from.
+struct CodexOverlayPlan<'a> {
+    rules: &'a str,
+    real_home: &'a std::path::Path,
+}
+
+impl UnitGrant {
+    fn plan(&self) -> &grant::GrantPlan {
+        match self {
+            UnitGrant::Plan(plan) | UnitGrant::Codex { plan, .. } => plan,
+        }
+    }
+
+    fn statement(&self) -> Option<&str> {
+        self.plan().statement()
+    }
+
+    fn claude(&self) -> Option<&grant::ClaudeGrant> {
+        self.plan().claude()
+    }
+
+    fn diagnostics(&self) -> Vec<lean::Diagnostic> {
+        self.plan().diagnostics()
+    }
+
+    fn codex_overlay(&self) -> Option<CodexOverlayPlan<'_>> {
+        match self {
+            UnitGrant::Codex { plan, real_home } => plan.codex().map(|codex| CodexOverlayPlan {
+                rules: codex.rules(),
+                real_home,
+            }),
+            UnitGrant::Plan(_) => None,
+        }
+    }
 }
 
 /// Resolve and plan the run-level allowlist for one unit, before anything is
@@ -5808,10 +5842,7 @@ fn plan_unit_grant(
 ) -> Result<UnitGrant, OneharnessError> {
     let rules = cfg.allowed_tools_for(selected_id);
     if rules.is_empty() {
-        return Ok(UnitGrant {
-            plan: grant::GrantPlan::None,
-            codex_overlay: None,
-        });
+        return Ok(UnitGrant::Plan(grant::GrantPlan::None));
     }
     let mut env: Vec<(String, String)> = spec
         .default_env
@@ -5864,16 +5895,9 @@ fn plan_unit_grant(
         None
     };
     let plan = grant::plan(spec.id, mode, &resolved, withhold.as_deref());
-    let codex_overlay = plan
-        .codex_rules()
-        .zip(codex_real_home)
-        .map(|(rules, real_home)| CodexOverlayPlan {
-            rules: rules.to_string(),
-            real_home,
-        });
-    Ok(UnitGrant {
-        plan,
-        codex_overlay,
+    Ok(match codex_real_home {
+        Some(real_home) if plan.codex().is_some() => UnitGrant::Codex { plan, real_home },
+        _ => UnitGrant::Plan(plan),
     })
 }
 
@@ -5894,15 +5918,42 @@ fn codex_withhold(home: Option<&std::path::Path>, args: &[String]) -> Option<Str
                 .unwrap_or_default()
         ));
     };
-    let configured = std::fs::read_to_string(home.join("config.toml"))
-        .ok()
-        .and_then(|text| text.parse::<toml::Table>().ok())
-        .and_then(|table| {
-            table
-                .get("cli_auth_credentials_store")
-                .and_then(toml::Value::as_str)
-                .map(str::to_string)
-        });
+    // The store the home's own config names. A config that cannot be read or
+    // parsed, or names the store as anything but a string, leaves the store
+    // unknown — and an unknown store may be the keyring, so the grant is
+    // withheld rather than built over a login the overlay might not reach.
+    let config = home.join("config.toml");
+    let configured = match std::fs::read_to_string(&config) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Some(format!(
+                "its config `{}` could not be read ({error}), so where its login is stored is \
+                 unknown",
+                config.display()
+            ))
+        }
+        Ok(text) => match text.parse::<toml::Table>() {
+            Err(error) => {
+                return Some(format!(
+                    "its config `{}` is not valid TOML ({}), so where its login is stored is \
+                     unknown",
+                    config.display(),
+                    error.message()
+                ))
+            }
+            Ok(table) => match table.get("cli_auth_credentials_store") {
+                None => None,
+                Some(toml::Value::String(store)) => Some(store.clone()),
+                Some(other) => {
+                    return Some(format!(
+                        "its config `{}` names `cli_auth_credentials_store` as {other}, not a \
+                         store, so where its login is stored is unknown",
+                        config.display()
+                    ))
+                }
+            },
+        },
+    };
     let overridden = args.iter().rev().find_map(|arg| {
         arg.strip_prefix("cli_auth_credentials_store=")
             .map(|value| value.trim_matches(['"', '\'']).to_string())
@@ -6192,7 +6243,7 @@ mod tests {
             analytics: false,
             model_catalog: None,
             tools: None,
-            allowed_tools: Vec::new(),
+            allowed_tools: None,
             images: Vec::new(),
         }
     }

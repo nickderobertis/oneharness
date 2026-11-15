@@ -327,6 +327,7 @@ oh_pooled_reuse() {
 
 oh_run_overlay() {
   _oh_phase run-overlay
+  # llmlint: ignore[e2e_not_mocked] The model is the one thing replaced: each CLI's permission check, sandbox and execution are the real installed codex, which is what this phase proves, and its acceptance bar names a scripted model endpoint in place of the paid provider (the spike-command-grant method), so a refusal settles by the decision Codex records rather than by a model's choice.
   ONEHARNESS_BIN="$BIN" uv run --no-project --python ">=3.10" python "$OH_REPO_ROOT/live/control/run_allowlist_live.py" \
     --harness codex --codex-path control ||
     fail "run-overlay: a granted controlled Codex turn broke a guarantee; each failed check is above"
@@ -337,6 +338,7 @@ oh_run_overlay() {
       return 0
       ;;
   esac
+  # llmlint: ignore[e2e_not_mocked] The budget's stated workload is a scripted model endpoint answering each turn with one call of the granted command: what it times is what a grant adds around a turn, which a real model's own seconds, orders of magnitude longer and varying, would bury.
   ONEHARNESS_BIN="$BIN" uv run --no-project --python ">=3.10" python "$OH_REPO_ROOT/live/control/run_allowlist_live.py" \
     --budget-telemetry "$OH_REPO_ROOT/target/e2e-telemetry/run-overlay/codex-turn.json" ||
     fail "run-overlay: the budget workload failed; its error is above"

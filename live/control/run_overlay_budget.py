@@ -10,8 +10,9 @@ drives `oneharness run --control` Codex turns against a scripted model
 endpoint — ungranted ones on the warm pooled app-server, then granted ones on
 their own overlay homes — and writes
 `target/e2e-telemetry/run-overlay/codex-turn.json` (or
-`$OH_E2E_RUN_OVERLAY_FILE`), in the shape `run_overlay_telemetry` declares and
-decodes for both.
+`$OH_E2E_RUN_OVERLAY_FILE`), in the shape
+`tools/network-telemetry/run_overlay_telemetry.py` declares and decodes for
+both.
 
 The figure is the slowest of the 2 concurrent granted turns' seconds, from
 its oneharness process's start to its exit, minus the slowest of the 2
@@ -31,9 +32,13 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from run_overlay_telemetry import BATCHES, Incomplete, TurnTiming, decode
-
 ROOT = Path(__file__).resolve().parents[2]
+# The record's one shape, owned by the network-telemetry project this suite
+# depends on (live/control/project.json).
+sys.path.insert(0, str(ROOT / "tools" / "network-telemetry"))
+
+from run_overlay_telemetry import BATCHES, Incomplete, TurnTiming, decode  # noqa: E402
+
 BUDGETED = 2
 """The batch whose added seconds the budget holds: this host's peak of 2."""
 

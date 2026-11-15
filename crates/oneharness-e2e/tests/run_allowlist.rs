@@ -1036,7 +1036,7 @@ fn a_granted_controlled_codex_turn_runs_its_own_app_server_and_records_its_threa
     let tool = world.tool();
     // A home Codex has indexed: the overlay seeds its own index and, after the
     // turn, has the real home read the thread.
-    std::fs::write(world.path("codex-home/state_5.sqlite"), "real index").unwrap();
+    index_the_home(&world);
     let config = world.config(&format!("allowed_tools = [\"Bash({tool})\"]\n"));
     let log = world.path("app-server.log");
     let env_file = world.path("env.json");
@@ -1059,6 +1059,7 @@ fn a_granted_controlled_codex_turn_runs_its_own_app_server_and_records_its_threa
         &[
             ("MOCK_CODEX_APP_SERVER_LOG", log.to_str().unwrap()),
             ("MOCK_CODEX_COMPLETE_TURN", "1"),
+            ("MOCK_CODEX_INDEX", "1"),
             ("MOCK_ENV_FILE", env_file.to_str().unwrap()),
         ],
     );
@@ -1094,7 +1095,7 @@ fn a_granted_controlled_codex_turn_runs_its_own_app_server_and_records_its_threa
     assert!(world.overlays().is_empty());
     assert_eq!(
         std::fs::read_to_string(world.path("codex-home/state_5.sqlite")).unwrap(),
-        "real index",
+        "mock codex thread index",
         "the real index is Codex's to change, never the overlay's"
     );
 }
@@ -1154,7 +1155,7 @@ fn a_helper_app_server_that_never_answers_leaves_the_run_whole() {
     // double that answers no JSON-RPC: the run still completes, says why on
     // stderr, and leaves nothing behind.
     let world = World::new("helpers-silent");
-    std::fs::write(world.path("codex-home/state_5.sqlite"), "real index").unwrap();
+    index_the_home(&world);
     let tool = world.tool();
     let run = spawn(
         &world,
@@ -1167,8 +1168,29 @@ fn a_helper_app_server_that_never_answers_leaves_the_run_whole() {
     assert!(world.overlays().is_empty(), "{:?}", world.overlays());
     assert_eq!(
         std::fs::read_to_string(world.path("codex-home/state_5.sqlite")).unwrap(),
-        "real index"
+        "mock codex thread index"
     );
+}
+
+/// Have the Codex double run once, ungranted, in the world's real home, as a
+/// home Codex has used is: its first run opens the thread index.
+fn index_the_home(world: &World) {
+    let config = world.config("");
+    let output = world.oh(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--mode",
+            "read-only",
+            "--prompt",
+            "p",
+        ],
+        &config,
+        &[("MOCK_CODEX_INDEX", "1")],
+    );
+    assert!(output.status.code().is_some_and(|c| c < 2), "{output:?}");
+    assert!(world.path("codex-home/state_5.sqlite").is_file());
 }
 
 /// Poll `until` for up to ten seconds.
@@ -1429,4 +1451,150 @@ fn teardown_returns_what_codex_wrote_across_filesystems() {
     let world = World::new("teardown-xfs");
     let state = ScratchDir::under(shm, "run-allowlist-xfs").unwrap();
     assert_teardown_returns_what_codex_wrote(&world, state.path());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_codex_config_that_cannot_be_read_withholds_the_grant() {
+    let world = World::new("codex-bad-config");
+    std::fs::write(
+        world.path("codex-home/config.toml"),
+        "this is = = not toml\n",
+    )
+    .unwrap();
+    let tool = world.tool();
+    let run = spawn(
+        &world,
+        "codex",
+        "read-only",
+        &format!("allowed_tools = [\"Bash({tool})\"]\n"),
+        &[],
+    );
+    let message = run.report["results"][0]["diagnostics"][0]["message"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(message.contains("is not valid TOML"), "{message}");
+    assert_eq!(run.env["CODEX_HOME"], world.s("codex-home"));
+    assert!(world.overlays().is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn every_prompt_of_a_granted_batch_runs_on_an_overlay_of_its_own() {
+    let world = World::new("batch");
+    let tool = world.tool();
+    let config = world.config(&format!("allowed_tools = [\"Bash({tool})\"]\n"));
+    let output = world.oh(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--mode",
+            "read-only",
+            "--prompt",
+            "one",
+            "--prompt",
+            "two",
+        ],
+        &config,
+        &[],
+    );
+    let report = json(&output);
+    let results = report["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2, "{report}");
+    let homes: Vec<&str> = results
+        .iter()
+        .map(|r| r["overlay_env"]["CODEX_HOME"].as_str().unwrap())
+        .collect();
+    assert_ne!(homes[0], homes[1], "two prompts shared one overlay");
+    for result in results {
+        assert!(
+            result["overlay_timings"]["teardown_ms"].is_u64(),
+            "{result}"
+        );
+    }
+    assert!(world.overlays().is_empty(), "{:?}", world.overlays());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_fallback_chain_applies_the_grant_to_the_candidate_that_serves() {
+    // The first candidate's identity has no home: its grant is withheld and
+    // it is skipped (`auth`), so the chain falls through to Claude Code, which
+    // runs granted.
+    let world = World::new("fallback");
+    let tool = world.tool();
+    let gone = world.s("no-such-codex-home");
+    let config = world.config(&format!(
+        "allowed_tools = [\"Bash({tool})\"]\n\
+         [harness.codex.variant.gone.env_from]\nCODEX_HOME = \"OH_GONE_CODEX_HOME\"\n"
+    ));
+    let argv_file = world.path("argv");
+    let output = world.oh(
+        &[
+            "run",
+            "--harness",
+            "codex:gone,claude-code",
+            "--mode",
+            "read-only",
+            "--prompt",
+            "p",
+        ],
+        &config,
+        &[
+            ("MOCK_ARGV_FILE", argv_file.to_str().unwrap()),
+            ("OH_GONE_CODEX_HOME", gone.as_str()),
+        ],
+    );
+    let report = json(&output);
+    assert_eq!(report["fallback"]["ran"], "claude-code", "{report}");
+    let results = report["results"].as_array().unwrap();
+    assert_eq!(results[0]["status"], "skipped");
+    assert!(results[0].get("overlay_env").is_none());
+    let argv = argv_of(&argv_file);
+    assert!(flag_values(&argv, "--allowedTools").contains(&format!("Bash({tool}:*)").as_str()));
+    assert!(world.overlays().is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_granted_run_keeps_one_overlay_across_its_schema_retries() {
+    let world = World::new("schema-retry");
+    let tool = world.tool();
+    let config = world.config(&format!("allowed_tools = [\"Bash({tool})\"]\n"));
+    let attempts = world.path("attempts.log");
+    let schema = world.path("schema.json");
+    std::fs::write(&schema, r#"{"type":"object","required":["a"]}"#).unwrap();
+    let schema = schema.display().to_string();
+    let output = world.oh(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--mode",
+            "read-only",
+            "--prompt",
+            "p",
+            "--schema",
+            &schema,
+            "--schema-max-retries",
+            "2",
+        ],
+        &config,
+        &[
+            ("MOCK_HOME_WRITE", "seen=x"),
+            ("MOCK_ATTEMPT_FILE", attempts.to_str().unwrap()),
+        ],
+    );
+    let report = json(&output);
+    let result = &report["results"][0];
+    assert_eq!(result["schema_attempts"], 3, "{result}");
+    assert!(result["overlay_env"]["CODEX_HOME"].is_string(), "{result}");
+    assert!(world.overlays().is_empty(), "{:?}", world.overlays());
+    // Each attempt wrote through the one overlay home, returned at the end.
+    assert_eq!(
+        std::fs::read_to_string(world.path("codex-home/seen")).unwrap(),
+        "x"
+    );
 }

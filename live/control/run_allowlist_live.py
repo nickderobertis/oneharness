@@ -55,9 +55,12 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NamedTuple, NewType
 
-from run_overlay_telemetry import BATCHES, OverlayTimings, Telemetry, TurnTiming, run_concurrently
-
 ROOT = Path(__file__).resolve().parents[2]
+# The budget record's one shape and its collector, owned by the
+# network-telemetry project this suite depends on (live/control/project.json).
+sys.path.insert(0, str(ROOT / "tools" / "network-telemetry"))
+
+from run_overlay_telemetry import BATCHES, OverlayTimings, Telemetry, TurnTiming, run_concurrently  # noqa: E402
 GRANT_VAR = "OH_LIVE_GRANT"
 MARK = re.compile(r"\[probe:([A-Za-z0-9_.-]+)\]")
 PAYLOAD = "line one\nit's line two"
@@ -212,7 +215,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_json({"object": "list", "data": [], "models": []})
 
     def do_POST(self) -> None:
-        raw = self.rfile.read(int(self.headers.get("content-length") or 0))
+        length = self.headers.get("content-length") or "0"
+        if not length.isdigit() or int(length) > MAX_BODY:
+            self.send_json({"error": {"message": f"content-length {length!r} is not 0..{MAX_BODY}"}}, 400)
+            return
+        raw = self.rfile.read(int(length))
         path = self.path.split("?")[0]
         if path.endswith("/oauth/token"):
             self.answer_refresh(raw)
@@ -221,8 +228,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             body = json.loads(raw or b"{}")
         except ValueError:
             body = None
-        if not isinstance(body, dict) or not isinstance(body.get("tools", []), list):
-            self.send_json({"error": {"message": "the request is not a JSON object"}}, 400)
+        if not well_formed(body):
+            self.send_json({"error": {"message": "the request is not a model request object"}}, 400)
             return
         if path.endswith("/count_tokens"):
             self.send_json({"input_tokens": 10})
@@ -282,6 +289,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_json({"error": "unscripted"}, 400)
             return
         self.send_json(dataclasses.asdict(reply))
+
+
+MAX_BODY = 64 * 1024 * 1024
+"""The largest request body the endpoint reads: far past any turn's context."""
+
+
+def well_formed(body: object) -> bool:
+    """Whether `body` is a model request the endpoint can read: an object whose
+    `tools`, `messages` and `input`, when present, are lists of objects."""
+    if not isinstance(body, dict):
+        return False
+    for key in ("tools", "messages"):
+        value = body.get(key, [])
+        if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+            return False
+    items = body.get("input", [])
+    return isinstance(items, str) or (isinstance(items, list) and all(isinstance(i, dict) for i in items))
 
 
 def history(dialect: str, body: Json, mark: str) -> tuple[int, list[str]]:
@@ -673,10 +697,15 @@ def snapshot(world: World) -> dict[str, str]:
 
 
 def records(world: World) -> list[list[str]]:
+    """Each record the granted stand-in appended: its argv, decoded. A line the
+    stand-in did not write is a failure of the suite's own world, named."""
     rows = []
-    for line in world.log.read_text().splitlines():
+    for number, line in enumerate(world.log.read_text().splitlines(), start=1):
         rec = json.loads(line)
-        rows.append([base64.b64decode(a).decode() for a in rec["args_b64"].split()])
+        encoded = rec.get("args_b64") if isinstance(rec, dict) else None
+        if not isinstance(encoded, str):
+            raise ValueError(f"{world.log}:{number} is no stand-in record: {line!r}")
+        rows.append([base64.b64decode(a, validate=True).decode() for a in encoded.split()])
     return rows
 
 
@@ -694,17 +723,31 @@ class Result:
 
     @staticmethod
     def of(report: Json) -> Result:
+        """The report's first result, each field kept only in its documented
+        type: a field of another shape reads as absent."""
         results = report.get("results")
         raw = results[0] if isinstance(results, list) and results and isinstance(results[0], dict) else {}
+
+        def text(key: str) -> str | None:
+            value = raw.get(key)
+            return value if isinstance(value, str) else None
+
+        def millis(timings: Json, key: str) -> int | None:
+            value = timings.get(key)
+            return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
         timings = raw.get("overlay_timings")
-        overlay = (
-            OverlayTimings(int(timings["build_ms"]), int(timings["teardown_ms"]))
-            if isinstance(timings, dict)
-            else None
-        )
-        diagnostics = [d for d in raw.get("diagnostics") or [] if isinstance(d, dict)]
-        return Result(raw.get("status"), raw.get("session_id"), raw.get("stderr") or "",
-                      diagnostics, "overlay_env" in raw, overlay, raw.get("usage"))  # fmt: skip
+        overlay = None
+        if isinstance(timings, dict):
+            build, teardown = millis(timings, "build_ms"), millis(timings, "teardown_ms")
+            if build is not None and teardown is not None:
+                overlay = OverlayTimings(build, teardown)
+        diagnostics = raw.get("diagnostics")
+        diagnostics = [d for d in diagnostics if isinstance(d, dict)] if isinstance(diagnostics, list) else []
+        usage = raw.get("usage")
+        return Result(text("status"), text("session_id"), text("stderr") or "", diagnostics,
+                      isinstance(raw.get("overlay_env"), dict), overlay,
+                      usage if isinstance(usage, dict) else None)  # fmt: skip
 
     def grant_diagnostics(self) -> list[Json]:
         return [d for d in self.diagnostics if d.get("setting") == "allowed_tools"]
@@ -1093,6 +1136,7 @@ def group_record(world: World, fails: Failures) -> None:
     fails.check(len(rollouts) == 1, f"{label}: the granted rollout {thread} is not in the real sessions/")
     dbs = sorted(world.home.glob("state_*.sqlite"))
     if fails.check(bool(dbs) and bool(rollouts), f"{label}: the real home has no thread index"):
+        # llmlint: ignore[async_typed_clients_at_boundaries] A single-threaded live check reads one row of Codex's own index once its turn has ended; nothing here runs on an event loop, and stdlib sqlite3 is the only reader this dependency-free script has.
         with sqlite3.connect(dbs[-1]) as db:
             row = db.execute("select rollout_path from threads where id = ?", (thread,)).fetchone()
         fails.check(row is not None and Path(row[0]) == rollouts[0],

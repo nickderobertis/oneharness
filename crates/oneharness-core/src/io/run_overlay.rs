@@ -502,20 +502,26 @@ fn reclaim(dir: &Path, name: &str) {
 /// orphan's home points into. Anything else — a corrupt or foreign record —
 /// returns nothing to anywhere, and the orphan is only removed.
 fn recorded_real_home(dir: &Path) -> Option<PathBuf> {
-    let real = PathBuf::from(fs::read_to_string(dir.join(REAL_HOME_FILE)).ok()?);
-    if !real.is_absolute() || !real.is_dir() {
+    let recorded = PathBuf::from(fs::read_to_string(dir.join(REAL_HOME_FILE)).ok()?);
+    if !recorded.is_absolute() {
         return None;
     }
+    // Containment on resolved paths: a `..` or a further link in a target
+    // cannot pass for the home lexically and resolve outside it.
+    let real = fs::canonicalize(&recorded)
+        .ok()
+        .filter(|real| real.is_dir())?;
     let mut links = 0;
     for entry in fs::read_dir(dir.join(CODEX_HOME_DIR)).ok()?.flatten() {
         if entry.file_type().is_ok_and(|kind| kind.is_symlink()) {
-            if !fs::read_link(entry.path()).ok()?.starts_with(&real) {
+            let target = fs::canonicalize(fs::read_link(entry.path()).ok()?).ok()?;
+            if !target.starts_with(&real) {
                 return None;
             }
             links += 1;
         }
     }
-    (links > 0).then_some(real)
+    (links > 0).then_some(recorded)
 }
 
 fn dir_name(path: &Path) -> String {
@@ -597,9 +603,13 @@ fn exchange(
                 .recv_timeout(left)
                 .map_err(|_| format!("no reply to `{method}`"))?;
             if reply.get("id").and_then(Value::as_u64) == Some(id) {
-                return match reply.get("error") {
-                    Some(error) => Err(format!("`{method}` failed: {error}")),
-                    None => Ok(()),
+                return match (reply.get("error"), reply.get("result")) {
+                    (Some(error), _) => Err(format!("`{method}` failed: {error}")),
+                    (None, Some(result)) if result.is_object() => Ok(()),
+                    (None, other) => Err(format!(
+                        "`{method}` answered with no result object: {}",
+                        other.map_or_else(|| "nothing".to_string(), Value::to_string)
+                    )),
                 };
             }
         }
@@ -760,6 +770,15 @@ mod tests {
             recorded_real_home(&orphan),
             None,
             "its links point elsewhere"
+        );
+        // A target that names the home lexically but resolves out of it.
+        let sneaky = orphan.join(CODEX_HOME_DIR).join("sneaky");
+        symlink(&real.join("..").join("elsewhere"), &sneaky).unwrap();
+        record(real.to_str().unwrap());
+        assert_eq!(
+            recorded_real_home(&orphan),
+            None,
+            "a `..` target escapes the home"
         );
     }
 

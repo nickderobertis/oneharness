@@ -356,6 +356,35 @@ fn resolve_variable(
     }
 }
 
+/// Claude Code's `--allowedTools` entries for one run: never empty, and
+/// built only by [`plan`] from resolved rules.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaudeGrant {
+    entries: Vec<String>,
+}
+
+impl ClaudeGrant {
+    #[must_use]
+    pub fn entries(&self) -> &[String] {
+        &self.entries
+    }
+}
+
+/// A Codex run's per-run rules file: at least one `prefix_rule`, built only
+/// by [`plan`] from resolved rules.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexGrant {
+    rules: String,
+}
+
+impl CodexGrant {
+    /// The rules file's whole text.
+    #[must_use]
+    pub fn rules(&self) -> &str {
+        &self.rules
+    }
+}
+
 /// How one harness receives a run's resolved allowlist.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum GrantPlan {
@@ -367,35 +396,35 @@ pub enum GrantPlan {
     /// The harness applies grants per run, but none of these rules is one it
     /// can express; nothing reaches it, and this diagnostic names them.
     Unexpressible(Diagnostic),
-    /// Claude Code: the run's `--allowedTools` entries (never empty).
+    /// Claude Code: the run's `--allowedTools` entries.
     Claude {
-        allowed: Vec<String>,
+        grant: ClaudeGrant,
         statement: Option<String>,
     },
-    /// Codex: the per-run rules file's whole text, and the rules it could not
-    /// express, when any.
+    /// Codex: the per-run rules file, and the rules it could not express,
+    /// when any.
     Codex {
-        rules: String,
+        grant: CodexGrant,
         statement: Option<String>,
         unmapped: Option<Diagnostic>,
     },
 }
 
 impl GrantPlan {
-    /// Claude Code's `--allowedTools` entries; empty for any other plan.
+    /// Claude Code's grant, for a Claude Code plan.
     #[must_use]
-    pub fn claude_allowed(&self) -> &[String] {
+    pub fn claude(&self) -> Option<&ClaudeGrant> {
         match self {
-            GrantPlan::Claude { allowed, .. } => allowed,
-            _ => &[],
+            GrantPlan::Claude { grant, .. } => Some(grant),
+            _ => None,
         }
     }
 
-    /// The per-run Codex rules file's text, for a Codex plan.
+    /// The per-run Codex rules, for a Codex plan.
     #[must_use]
-    pub fn codex_rules(&self) -> Option<&str> {
+    pub fn codex(&self) -> Option<&CodexGrant> {
         match self {
-            GrantPlan::Codex { rules, .. } => Some(rules),
+            GrantPlan::Codex { grant, .. } => Some(grant),
             _ => None,
         }
     }
@@ -490,7 +519,7 @@ pub fn plan(
     }
     let read_only = mode == PermissionMode::ReadOnly;
     if id == CLAUDE {
-        let allowed = rules
+        let entries = rules
             .iter()
             .map(|rule| match (rule.kind(), read_only) {
                 // Under read-only a rule grants its executable with any
@@ -500,7 +529,7 @@ pub fn plan(
             })
             .collect();
         return GrantPlan::Claude {
-            allowed,
+            grant: ClaudeGrant { entries },
             statement: statement(rules.iter().filter_map(ResolvedRule::executable)),
         };
     }
@@ -538,7 +567,7 @@ pub fn plan(
         ));
     }
     GrantPlan::Codex {
-        rules: text,
+        grant: CodexGrant { rules: text },
         statement: statement(granted.into_iter()),
         unmapped: (!unmapped.is_empty())
             .then(|| unmapped_diagnostic("those rules were not applied; the rest were")),
@@ -712,7 +741,7 @@ mod tests {
         let ro = rules(&["Bash($TOOL)", "Bash($TOOL:*)"], PermissionMode::ReadOnly);
         let p = plan(CLAUDE, PermissionMode::ReadOnly, &ro, None);
         assert_eq!(
-            p.claude_allowed(),
+            p.claude().map(ClaudeGrant::entries).unwrap_or_default(),
             ["Bash(/opt/bin/decline:*)", "Bash(/opt/bin/decline:*)"]
         );
         let statement = p.statement().unwrap();
@@ -720,8 +749,11 @@ mod tests {
         assert!(p.diagnostics().is_empty() && p.applies());
         let def = rules(&["Bash($TOOL)", "Edit"], PermissionMode::Default);
         let p = plan(CLAUDE, PermissionMode::Default, &def, None);
-        assert_eq!(p.claude_allowed(), ["Bash(/opt/bin/decline)", "Edit"]);
-        assert_eq!(p.codex_rules(), None);
+        assert_eq!(
+            p.claude().map(ClaudeGrant::entries).unwrap_or_default(),
+            ["Bash(/opt/bin/decline)", "Edit"]
+        );
+        assert_eq!(p.codex(), None);
     }
 
     #[test]
@@ -731,21 +763,21 @@ mod tests {
             PermissionMode::ReadOnly,
         );
         let p = plan(CODEX, PermissionMode::ReadOnly, &ro, None);
-        let text = p.codex_rules().unwrap();
+        let text = p.codex().unwrap().rules();
         assert!(text.starts_with(RUN_RULES_HEADER));
         assert!(text.contains("prefix_rule(pattern=[\"/opt/bin/decline\"], decision=\"allow\")"));
         assert!(text.contains("prefix_rule(pattern=[\"/usr/bin/x\"], decision=\"allow\")"));
         assert!(!text.contains('$'));
         let s = p.statement().unwrap();
         assert!(s.contains("`/opt/bin/decline`") && s.contains("`/usr/bin/x`"));
-        assert!(p.claude_allowed().is_empty());
+        assert!(p.claude().is_none());
 
         let def = rules(
             &["Bash($TOOL)", "Edit", "Bash(git status:*)"],
             PermissionMode::Default,
         );
         let p = plan(CODEX, PermissionMode::Default, &def, None);
-        let text = p.codex_rules().unwrap();
+        let text = p.codex().unwrap().rules();
         assert!(text.contains("pattern=[\"git\", \"status\"]"));
         assert!(!text.contains("decline"));
         let diagnostics = p.diagnostics();
@@ -760,7 +792,7 @@ mod tests {
         let def = rules(&["Edit", "Bash($TOOL)"], PermissionMode::Default);
         let p = plan(CODEX, PermissionMode::Default, &def, None);
         assert!(!p.applies());
-        assert_eq!(p.codex_rules(), None);
+        assert_eq!(p.codex(), None);
         assert_eq!(p.statement(), None);
         let message = &p.diagnostics()[0].message;
         assert!(message.contains("`Edit`, `Bash($TOOL)`"), "{message}");

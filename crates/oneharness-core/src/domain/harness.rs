@@ -101,14 +101,14 @@ pub struct BuildCtx<'a> {
     /// together in the claude-code adapter. Other harnesses receive their tool
     /// set as args from [`crate::domain::lean::deliver`].
     pub tools: Option<&'a [ToolClass]>,
-    /// The run-level allowlist's Claude Code entries, already resolved
-    /// ([`crate::domain::grant::GrantPlan::claude_allowed`]). Only claude-code
-    /// reads it: non-empty, they ride `--allowedTools`, and under `read-only`
-    /// the run moves from `bypassPermissions` to `dontAsk` with `Bash` added to
-    /// its `--tools` and the read tools allowed beside the rules, so the shell
-    /// runs only what a rule names. Empty — every run without a run-level
+    /// The run-level allowlist's Claude Code grant
+    /// ([`crate::domain::grant::GrantPlan::claude`]). Only claude-code reads
+    /// it: its entries ride `--allowedTools`, and under `read-only` the run
+    /// moves from `bypassPermissions` to `dontAsk` with `Bash` added to its
+    /// `--tools` and the read tools allowed beside the rules, so the shell runs
+    /// only what a rule names. `None` — every run without a run-level
     /// allowlist — the argv is exactly what it was before the field existed.
-    pub allowed_tools: &'a [String],
+    pub allowed_tools: Option<&'a crate::domain::grant::ClaudeGrant>,
 }
 
 /// How the user prompt reaches the harness.
@@ -1797,7 +1797,7 @@ fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
     // whatever no rule allows, so the read tools are allowed beside the
     // granted executables (without them `dontAsk` refuses a Read outside the
     // worktree and a WebFetch, which today's read-only allows).
-    let granted_read_only = !c.allowed_tools.is_empty() && c.mode == PermissionMode::ReadOnly;
+    let granted_read_only = c.allowed_tools.is_some() && c.mode == PermissionMode::ReadOnly;
     a.push("--permission-mode".into());
     a.push(if granted_read_only {
         "dontAsk".into()
@@ -1807,7 +1807,7 @@ fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
     // read-only: narrow the built-in set to the tools that only read. A lean
     // `tool_set` is the same one list (intersected with read-only's under that
     // mode), because a second `--tools` would widen the first.
-    let read_tools: Option<Vec<&str>> = match c.tools {
+    let selected_tools: Option<Vec<&str>> = match c.tools {
         Some(classes) => Some(lean::claude_tool_names(
             classes,
             c.mode,
@@ -1816,7 +1816,7 @@ fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
         None if c.mode == PermissionMode::ReadOnly => Some(CLAUDE_READ_ONLY_TOOLS.to_vec()),
         None => None,
     };
-    if let Some(names) = &read_tools {
+    if let Some(names) = &selected_tools {
         a.push(lean::claude_tools_flag().into());
         if names.is_empty() && !granted_read_only {
             a.push(String::new());
@@ -1826,12 +1826,17 @@ fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
             a.push("Bash".into());
         }
     }
-    if !c.allowed_tools.is_empty() {
+    if let Some(grant) = c.allowed_tools {
         a.push("--allowedTools".into());
         if granted_read_only {
-            a.extend(read_tools.iter().flatten().map(|name| (*name).to_string()));
+            a.extend(
+                selected_tools
+                    .iter()
+                    .flatten()
+                    .map(|name| (*name).to_string()),
+            );
         }
-        a.extend(c.allowed_tools.iter().cloned());
+        a.extend(grant.entries().iter().cloned());
     }
     if let Some(m) = c.model {
         a.push("--model".into());
@@ -2491,7 +2496,7 @@ mod tests {
             analytics: false,
             model_catalog: None,
             tools: None,
-            allowed_tools: &[],
+            allowed_tools: None,
         }
     }
 
@@ -3042,7 +3047,7 @@ mod tests {
             analytics: false,
             model_catalog: None,
             tools: None,
-            allowed_tools: &[],
+            allowed_tools: None,
         };
         let argv = (spec.build_argv)(&ctx);
         assert!(
@@ -3128,7 +3133,7 @@ mod tests {
             analytics: false,
             model_catalog: None,
             tools: None,
-            allowed_tools: &[],
+            allowed_tools: None,
         }
     }
 

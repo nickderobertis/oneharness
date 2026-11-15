@@ -647,12 +647,23 @@ fn quoted<'a>(rules: impl Iterator<Item = &'a str>) -> String {
 mod tests {
     use super::*;
 
+    /// `text` with each fixture path made absolute on the host's convention:
+    /// unchanged on unix, drive-prefixed on Windows (`C:/opt/…`, still one
+    /// plain word), so every assertion means the same thing on both.
+    fn host(text: &str) -> String {
+        if cfg!(windows) {
+            text.replace("/opt/", "C:/opt/").replace("/usr/", "C:/usr/")
+        } else {
+            text.to_string()
+        }
+    }
+
     fn env(name: &str) -> Option<String> {
         match name {
-            "TOOL" => Some("/opt/bin/decline".into()),
+            "TOOL" => Some(host("/opt/bin/decline")),
             "EMPTY" => Some(String::new()),
             "REL" => Some("bin/decline".into()),
-            "SPACED" => Some("/opt/my tool".into()),
+            "SPACED" => Some(host("/opt/my tool")),
             _ => None,
         }
     }
@@ -673,13 +684,13 @@ mod tests {
         ] {
             for mode in [PermissionMode::ReadOnly, PermissionMode::Default] {
                 let r = one(rule, mode).unwrap();
-                assert_eq!(r.resolved(), resolved);
-                assert_eq!(path(&r), Some("/opt/bin/decline"));
+                assert_eq!(r.resolved(), host(resolved));
+                assert_eq!(path(&r), Some(host("/opt/bin/decline").as_str()));
                 assert_eq!(r.written(), rule);
             }
         }
         let prefix = one("Bash($TOOL status:*)", PermissionMode::Default).unwrap();
-        assert_eq!(prefix.resolved(), "Bash(/opt/bin/decline status:*)");
+        assert_eq!(prefix.resolved(), host("Bash(/opt/bin/decline status:*)"));
         assert_eq!(path(&prefix), None);
     }
 
@@ -732,6 +743,8 @@ mod tests {
             ("Bash(:*)", NotExecutable::Empty),
             ("Bash(/opt/bin/a;b)", NotExecutable::ShellSyntax),
         ] {
+            let rule = host(rule);
+            let rule = rule.as_str();
             let err = one(rule, PermissionMode::ReadOnly).unwrap_err();
             assert_eq!(err.rule(), rule);
             assert_eq!(
@@ -745,8 +758,8 @@ mod tests {
             assert!(err.reason().contains("--mode read-only"), "{rule}: {err:?}");
             assert!(err.reason().contains(why.describe()));
         }
-        let ok = one("Bash(/opt/bin/decline)", PermissionMode::ReadOnly).unwrap();
-        assert_eq!(path(&ok), Some("/opt/bin/decline"));
+        let ok = one(&host("Bash(/opt/bin/decline)"), PermissionMode::ReadOnly).unwrap();
+        assert_eq!(path(&ok), Some(host("/opt/bin/decline").as_str()));
     }
 
     #[test]
@@ -769,16 +782,19 @@ mod tests {
         let p = plan(CLAUDE, &ro, None);
         assert_eq!(
             p.claude().map(ClaudeGrant::entries).unwrap_or_default(),
-            ["Bash(/opt/bin/decline:*)", "Bash(/opt/bin/decline:*)"]
+            [
+                host("Bash(/opt/bin/decline:*)"),
+                host("Bash(/opt/bin/decline:*)")
+            ]
         );
         let statement = p.statement().unwrap();
-        assert_eq!(statement.matches("`/opt/bin/decline`").count(), 1);
+        assert_eq!(statement.matches(&host("`/opt/bin/decline`")).count(), 1);
         assert!(p.diagnostics().is_empty() && p.applies());
         let def = rules(&["Bash($TOOL)", "Edit"], PermissionMode::Default);
         let p = plan(CLAUDE, &def, None);
         assert_eq!(
             p.claude().map(ClaudeGrant::entries).unwrap_or_default(),
-            ["Bash(/opt/bin/decline)", "Edit"]
+            [host("Bash(/opt/bin/decline)"), "Edit".to_string()]
         );
         assert_eq!(p.codex(), None);
     }
@@ -786,17 +802,21 @@ mod tests {
     #[test]
     fn codex_gets_one_allow_prefix_rule_per_translatable_rule() {
         let ro = rules(
-            &["Bash($TOOL)", "Bash(/usr/bin/x:*)"],
+            &["Bash($TOOL)", &host("Bash(/usr/bin/x:*)")],
             PermissionMode::ReadOnly,
         );
         let p = plan(CODEX, &ro, None);
         let text = p.codex().unwrap().rules();
         assert!(text.starts_with(RUN_RULES_HEADER));
-        assert!(text.contains("prefix_rule(pattern=[\"/opt/bin/decline\"], decision=\"allow\")"));
-        assert!(text.contains("prefix_rule(pattern=[\"/usr/bin/x\"], decision=\"allow\")"));
+        assert!(text.contains(&host(
+            "prefix_rule(pattern=[\"/opt/bin/decline\"], decision=\"allow\")"
+        )));
+        assert!(text.contains(&host(
+            "prefix_rule(pattern=[\"/usr/bin/x\"], decision=\"allow\")"
+        )));
         assert!(!text.contains('$'));
         let s = p.statement().unwrap();
-        assert!(s.contains("`/opt/bin/decline`") && s.contains("`/usr/bin/x`"));
+        assert!(s.contains(&host("`/opt/bin/decline`")) && s.contains(&host("`/usr/bin/x`")));
         assert!(p.claude().is_none());
 
         let def = rules(
@@ -850,7 +870,7 @@ mod tests {
 
     #[test]
     fn an_executable_path_is_one_absolute_plain_word() {
-        assert!(ExecutablePath::new("/opt/bin/decline").is_some());
+        assert!(ExecutablePath::new(&host("/opt/bin/decline")).is_some());
         for word in [
             "",
             "decline",
@@ -859,7 +879,7 @@ mod tests {
             "/opt/*",
             "/opt/a\nb",
         ] {
-            assert!(ExecutablePath::new(word).is_none(), "{word:?}");
+            assert!(ExecutablePath::new(&host(word)).is_none(), "{word:?}");
         }
     }
 

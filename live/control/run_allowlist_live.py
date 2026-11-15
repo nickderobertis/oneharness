@@ -1042,19 +1042,52 @@ def status_of(out: str) -> str | None:
     return Result.of(report_of(out)).status
 
 
+def recorded_turn_failure(world: World, report: Json) -> bool:
+    """Whether the harness's recorded event stream (the report's first result's
+    stdout) holds the event that ends a turn as failed on the endpoint's
+    scripted 400: Claude Code's error `result`, `codex exec`'s `turn.failed`,
+    or the app-server's `turn/completed` whose turn has status `failed`."""
+    results = report.get("results")
+    raw = results[0] if isinstance(results, list) and results and isinstance(results[0], dict) else {}
+    stdout = raw.get("stdout")
+    for line in stdout.splitlines() if isinstance(stdout, str) else []:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        params = event.get("params")
+        turn = params.get("turn") if isinstance(params, dict) else None
+        match world.harness, world.control:
+            case "claude-code", _:
+                ended, carries = event.get("type") == "result" and event.get("is_error") is True, event.get("result")
+            case "codex", False:
+                ended, carries = event.get("type") == "turn.failed", event.get("error")
+            case "codex", True:
+                ended = event.get("method") == "turn/completed" and isinstance(turn, dict) and turn.get("status") == "failed"
+                carries = turn.get("error") if isinstance(turn, dict) else None
+            case _:
+                return False
+        if ended and "scripted failure" in json.dumps(carries):
+            return True
+    return False
+
+
 def group_lifecycle(world: World, fails: Failures) -> None:
     label = f"{world.label} lifecycle"
     turn, script = run_turn(world, probe_id("fail"), [Call(CallKind.FAIL)], "Answer.")
-    # The failure is the endpoint's scripted 400, so it must have been served
-    # and must surface in the run. A `--control` Codex turn ends on
-    # `turn/completed` without reading the turn's status, so it reports `ok`
-    # with the error in its report; every other path reports the harness's
-    # nonzero exit.
-    surfaced = "scripted failure" in json.dumps(turn.report) + turn.stderr
+    # The failure is the endpoint's scripted 400: it must have been served, and
+    # the harness's own record of the turn must say the turn failed on it. The
+    # report's status is read beside that record, never in its place: a
+    # `--control` Codex turn ends on `turn/completed` without reading the
+    # turn's status, so oneharness reports it `ok` (main does the same); every
+    # other path reports the harness's nonzero exit.
+    failed = recorded_turn_failure(world, turn.report)
     expected = "ok" if world.control else "nonzero"
-    fails.check(bool(script.requests) and surfaced and turn.result.status == expected,
+    fails.check(bool(script.requests) and failed and turn.result.status == expected,
                 f"{label} failure: status {turn.result.status} (expected {expected}), "
-                f"{len(script.requests)} model request(s), scripted failure surfaced: {surfaced}")  # fmt: skip
+                f"{len(script.requests)} model request(s), turn recorded failed on the scripted 400: {failed}")  # fmt: skip
     check_clean(world, fails, f"{label} after a harness failure")
     held = held_turn(world, "timeout", extra=["--timeout", "5"])
     out, _ = held.process.communicate(timeout=120)

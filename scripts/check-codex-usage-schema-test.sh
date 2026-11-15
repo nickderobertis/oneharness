@@ -75,6 +75,20 @@ case "$mode" in
         sed 's/threadId/thread_id/g' "$read_snapshot" \\
             >"\$out/v2/ThreadReadParams.json" || staging_failed ThreadReadParams.json
         ;;
+    requests-missing)
+        mkdir -p "\$out/v2" || staging_failed "\$out/v2"
+        cp "$snapshot" "\$out/v2/GetAccountRateLimitsResponse.json" || staging_failed GetAccountRateLimitsResponse.json
+        cp "$token_snapshot" "\$out/v2/ThreadTokenUsageUpdatedNotification.json" || staging_failed ThreadTokenUsageUpdatedNotification.json
+        stage_requests '{"enum": ["thread/list"]}, {"enum": ["thread/read"]}'
+        rm "\$out/ClientRequest.json" || staging_failed ClientRequest.json
+        ;;
+    requests-unreadable)
+        mkdir -p "\$out/v2" || staging_failed "\$out/v2"
+        cp "$snapshot" "\$out/v2/GetAccountRateLimitsResponse.json" || staging_failed GetAccountRateLimitsResponse.json
+        cp "$token_snapshot" "\$out/v2/ThreadTokenUsageUpdatedNotification.json" || staging_failed ThreadTokenUsageUpdatedNotification.json
+        stage_requests '{"enum": ["thread/list"]}, {"enum": ["thread/read"]}'
+        chmod 000 "\$out/ClientRequest.json" || staging_failed ClientRequest.json
+        ;;
     method-missing)
         mkdir -p "\$out/v2" || staging_failed "\$out/v2"
         cp "$snapshot" "\$out/v2/GetAccountRateLimitsResponse.json" || staging_failed GetAccountRateLimitsResponse.json
@@ -201,6 +215,30 @@ status="$(run_gate "$(write_fake_codex method-missing)" "$tmp/method-missing.log
 [ "$status" = "1" ] || fail "a request method codex no longer accepts must fail the gate, got exit $status"
 assert_contains "$tmp/method-missing.log" "no longer accepts the \`thread/read\` request" \
   "a removed method must be named, not reported as a pass"
+
+status="$(run_gate "$(write_fake_codex requests-missing)" "$tmp/requests-missing.log")"
+[ "$status" = "1" ] || fail "a missing request catalog must fail the gate, got exit $status"
+assert_contains "$tmp/requests-missing.log" "no longer emits ClientRequest.json" \
+  "a moved request catalog must be named as moved, not as a dropped method"
+grep -qF "no longer accepts" "$tmp/requests-missing.log" &&
+  fail "a missing request catalog must not be reported as a dropped method"
+
+# A catalog grep cannot read keeps grep's own cause. Where a mode cannot deny
+# its owner a read (root, Git Bash) there is no such file to make.
+probe="$tmp/unreadable-probe"
+: >"$probe"
+chmod 000 "$probe"
+if ! cat "$probe" 2>/dev/null; then
+  status="$(run_gate "$(write_fake_codex requests-unreadable)" "$tmp/requests-unreadable.log")"
+  [ "$status" = "1" ] || fail "an unreadable request catalog must fail the gate, got exit $status"
+  assert_contains "$tmp/requests-unreadable.log" "could not read" \
+    "an unreadable request catalog must be named as unreadable"
+  assert_contains "$tmp/requests-unreadable.log" "Permission denied" \
+    "grep's own error must be preserved"
+  grep -qF "no longer accepts" "$tmp/requests-unreadable.log" &&
+    fail "an unreadable request catalog must not be reported as a dropped method"
+fi
+chmod 600 "$probe"
 
 # The diff must survive the way `just lint-workflows` invokes the gate — stdout
 # suppressed. A drift report whose diff went to /dev/null tells a reader the

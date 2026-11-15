@@ -88,14 +88,33 @@ check_snapshot v2/ThreadReadParams.json tests/fixtures/codex-thread-read-params.
   "thread/read request" "RunOverlay::repair_threads (crates/oneharness-core/src/io/run_overlay.rs)" \
   "a granted Codex thread left out of the real home's index"
 
-# Each method the overlay sends must still be one codex accepts.
+# Each method the overlay sends must still be one codex accepts. A catalog that
+# is gone is named as gone, and one grep cannot read keeps grep's own error, so
+# neither reads as a method codex dropped.
+requests="$out/ClientRequest.json"
+if [[ ! -f "$requests" ]]; then
+  echo "check-codex-usage-schema: codex $(codex --version) no longer emits ClientRequest.json." >&2
+  echo "  The request catalog moved or was renamed; find it under the generated schema dir and update" >&2
+  echo "  this script's method check for crates/oneharness-core/src/io/run_overlay.rs." >&2
+  exit 1
+fi
 for method in thread/list thread/read; do
-  if ! grep -qF "\"$method\"" "$out/ClientRequest.json" 2>/dev/null; then
-    echo "check-codex-usage-schema: codex $(codex --version) no longer accepts the \`$method\` request (ClientRequest.json)." >&2
-    echo "  It was renamed or removed; find its replacement under the generated schema dir and update" >&2
-    echo "  crates/oneharness-core/src/io/run_overlay.rs, its schema snapshot and this script." >&2
-    exit 1
-  fi
+  found=0
+  grep -qF "\"$method\"" "$requests" || found=$?
+  case "$found" in
+    0) ;;
+    1)
+      echo "check-codex-usage-schema: codex $(codex --version) no longer accepts the \`$method\` request (ClientRequest.json)." >&2
+      echo "  It was renamed or removed; find its replacement under the generated schema dir and update" >&2
+      echo "  crates/oneharness-core/src/io/run_overlay.rs, its schema snapshot and this script." >&2
+      exit 1
+      ;;
+    *)
+      echo "check-codex-usage-schema: could not read $requests (grep exited $found; its error is above)." >&2
+      echo "  Check the generated schema dir is readable, then re-run this script." >&2
+      exit 1
+      ;;
+  esac
 done
 
 echo "check-codex-usage-schema: ok"

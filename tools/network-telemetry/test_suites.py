@@ -441,7 +441,6 @@ class StoppedSuiteRecording(unittest.TestCase):
 class HangGuard(unittest.TestCase):
     def test_the_hang_guard_outlasts_the_recorder_s_own_longest_recording(self) -> None:
         bounds = recorder_bounds()
-        # Every trial timing out, then the stopped tree's kill grace.
         floor = len(bounds.INBOUND_TCP) * bounds.TRIAL_TIMEOUT + bounds.KILL_GRACE
         self.assertGreater(HANG_GUARD, floor + bounds.REAP_WAIT + bounds.SETTLE)
         self.assertGreater(HANG_GUARD, HOLD)

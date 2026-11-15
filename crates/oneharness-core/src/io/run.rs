@@ -1460,6 +1460,7 @@ pub fn run_supervised(
                 .clone()
                 .zip(session_resume.clone())
                 .map(|(anchor, token)| ControlResume { anchor, token }),
+            held_server: std::sync::Arc::default(),
         }),
         None => None,
     };
@@ -1627,6 +1628,7 @@ pub fn run_supervised(
                             && fallback::RunWork::from_result(result) == fallback::RunWork::None
                     });
                 if !retry {
+                    chain.end_candidate();
                     break results;
                 }
                 server_overloaded_backoff(attempts);
@@ -2932,6 +2934,10 @@ struct ControlledRun<'a> {
     /// The stored conversation this run continues, and the identity that minted
     /// it. `None` on a fresh session (or with no `--session` at all).
     resume: Option<ControlResume>,
+    /// The serving candidate's shared app-server lease, kept across its
+    /// overload retries so each retry runs on the server the first attempt
+    /// leased; released by [`ControlledRun::end_candidate`].
+    held_server: std::sync::Arc<crate::io::app_server::HeldServer>,
 }
 
 /// A `--session` continue as the control channel needs it: the native token,
@@ -2989,7 +2995,8 @@ impl ControlledRun<'_> {
                     self.cwd.as_path(),
                     shared.plugins,
                 )
-            });
+            })
+            .map(|pooled| pooled.held_in(&self.held_server));
         let dialogue = Dialogue::new(
             shape,
             DialogueConfig {
@@ -3030,6 +3037,13 @@ impl ControlledRun<'_> {
             },
         });
         pooled
+    }
+
+    /// End the serving candidate's turns: the shared app-server lease its
+    /// retries held, if any, is released here, once, so the next candidate —
+    /// whose server may be keyed differently — leases its own.
+    fn end_candidate(&self) {
+        self.held_server.release();
     }
 
     fn prompt(&self, index: usize) -> String {
@@ -3157,6 +3171,9 @@ fn drive_plan_sequentially(
                     }
                     server_overloaded_backoff(retry + 1);
                     streamed = run_candidate();
+                }
+                if let Some(chain) = controlled {
+                    chain.end_candidate();
                 }
                 streamed
             }

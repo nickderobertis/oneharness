@@ -26,7 +26,7 @@
 //!   symlink, so sessions, logs, the login (`auth.json`, which Codex resolves
 //!   through the link and renames over its target) and every other file are
 //!   written in place. A file the harness creates or replaces at the home's top
-//!   level is moved into the real home when the run ends ([`CodexHome::sweep`]).
+//!   level is moved into the real home when the run ends (`CodexHome::sweep`).
 //!
 //! The one exception is Codex's thread index (`state_<n>.sqlite`). Its rows
 //! store each rollout's absolute path, which Codex builds from `CODEX_HOME`

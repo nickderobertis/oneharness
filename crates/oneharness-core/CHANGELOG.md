@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.32.1](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.32.0...oneharness-core-v0.32.1) - 2026-11-15
+
+### Fixed
+
+- *(app-server)* keep an overloaded pooled turn's retry on the server it leased ([#1624](https://github.com/nickderobertis/oneharness/pull/1624))
+
 ## [0.32.0](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.31.4...oneharness-core-v0.32.0) - 2026-11-14
 
 ### Added

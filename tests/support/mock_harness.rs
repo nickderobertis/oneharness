@@ -3494,7 +3494,13 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 /// usage it carries is reported on `thread/tokenUsage/updated` as the thread's
 /// running total, and replayed to a connection that resumes the thread),
 /// MOCK_CODEX_OVERLOAD_ATTEMPTS with MOCK_ATTEMPT_FILE (the first N turns,
-/// counted in that file, fail as an overload),
+/// counted in that file, fail as an overload), MOCK_CODEX_EXIT_AFTER_OVERLOAD
+/// (with them, the whole server exits, unanswered, when asked to release a
+/// thread whose turn was overloaded — after its client has read the turn's
+/// end, so the server is gone between that turn and its retry),
+/// MOCK_CODEX_UNLISTEN_AFTER_OVERLOAD (instead, the server stops accepting
+/// connections there and keeps running until the leases held on it then are
+/// released, so the retry's reconnection is refused by a running server),
 /// MOCK_CODEX_TOOL_EVENTS, MOCK_CODEX_MODEL, MOCK_CODEX_RUN_COMMAND (a `sh -c`
 /// command each turn runs), MOCK_CODEX_REQUEST_APPROVAL (ask for approval of
 /// that command first), MOCK_CODEX_INTERRUPT_SILENT (never answer
@@ -3565,6 +3571,8 @@ mod listen_server {
     struct Server {
         pid: u32,
         dir: Option<PathBuf>,
+        /// The socket this server listens on.
+        socket: PathBuf,
         broadcast: bool,
         ignore_unsubscribe: bool,
         /// How long a thread with no subscriber stays loaded.
@@ -3767,6 +3775,7 @@ mod listen_server {
         let server: Shared = Arc::new(Mutex::new(Server {
             pid,
             dir: dir.clone(),
+            socket: path.clone(),
             broadcast: std::env::var_os("CODEX_MOCK_BROADCAST").is_some(),
             ignore_unsubscribe: std::env::var_os("CODEX_MOCK_IGNORE_UNSUBSCRIBE").is_some(),
             unload_delay: unload_delay(argv),
@@ -4411,6 +4420,30 @@ mod listen_server {
                     .pointer("/params/threadId")
                     .and_then(Value::as_str)
                     .unwrap_or_default();
+                let overloaded = {
+                    let s = lock(server);
+                    s.threads
+                        .get(thread)
+                        .is_some_and(|t| t.knob("MOCK_CODEX_EXIT_AFTER_OVERLOAD").is_some())
+                        && s.turns
+                            .iter()
+                            .any(|turn| turn["thread"] == thread && turn["status"] == "failed")
+                };
+                if overloaded {
+                    std::process::exit(0);
+                }
+                let unlisten = {
+                    let s = lock(server);
+                    s.threads
+                        .get(thread)
+                        .is_some_and(|t| t.knob("MOCK_CODEX_UNLISTEN_AFTER_OVERLOAD").is_some())
+                        && s.turns
+                            .iter()
+                            .any(|turn| turn["thread"] == thread && turn["status"] == "failed")
+                };
+                if unlisten {
+                    stop_accepting_until_released(&lock(server).socket.clone());
+                }
                 let mut s = lock(server);
                 s.unsubscribing
                     .push(json!({"thread": thread, "conn": conn}));
@@ -4427,6 +4460,39 @@ mod listen_server {
             }
             _ => {}
         }
+    }
+
+    /// Stop accepting connections — `socket` unlinked, the process still
+    /// running — and exit once every lease the pool entry holds now has been
+    /// released: a held server whose reconnection is refused while it runs.
+    fn stop_accepting_until_released(socket: &Path) {
+        let _ = std::fs::remove_file(socket);
+        let leases = socket
+            .parent()
+            .and_then(Path::parent)
+            .map(|entry| entry.join("leases"));
+        let held = |dir: &Option<PathBuf>| -> Vec<std::ffi::OsString> {
+            dir.as_ref()
+                .and_then(|dir| std::fs::read_dir(dir).ok())
+                .map(|entries| {
+                    entries
+                        .flatten()
+                        .map(|e| e.file_name())
+                        .filter(|name| name.to_string_lossy().ends_with(".lease"))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let before = held(&leases);
+        std::thread::spawn(move || {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            while held(&leases).iter().any(|lease| before.contains(lease))
+                && std::time::Instant::now() < until
+            {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            std::process::exit(0);
+        });
     }
 
     /// Unload `thread`, telling `conn`, the connection that released it.

@@ -6,6 +6,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.29.1](https://github.com/nickderobertis/oneharness/compare/v0.29.0...v0.29.1) - 2026-11-15
+
+### Fixed
+
+- *(app-server)* keep an overloaded pooled turn's retry on the server it leased ([#1624](https://github.com/nickderobertis/oneharness/pull/1624))
+- *(e2e)* make the live Cursor suite finish within its deadline again ([#1603](https://github.com/nickderobertis/oneharness/pull/1603))
+
 ## [0.29.0](https://github.com/nickderobertis/oneharness/compare/v0.28.8...v0.29.0) - 2026-11-14
 
 ### Added

@@ -42736,7 +42736,7 @@ impl CatalogWorld {
     /// returns; once it does, the clock steps back by [`HOST_CLOCK_STEP_MS`],
     /// as a VM guest's can at any moment, and the catalog must still read
     /// stale.
-    fn wait_until_stale(&self, interval: std::time::Duration) {
+    fn wait_until_stale_then_step_the_clock_back(&self, interval: std::time::Duration) {
         let catalog = self.the_catalog();
         loop {
             let written = std::fs::metadata(&catalog).unwrap().modified().unwrap();
@@ -43466,7 +43466,7 @@ fn a_stale_catalog_is_refreshed_once_for_a_burst_that_waits_for_it() {
     world.launch(CodexLaunchPath::Exec, "codex", &[], &[]);
     assert_eq!(world.fetches(), 1);
     // Past the configured interval: a burst must not use the stale file.
-    world.wait_until_stale(std::time::Duration::from_secs(2));
+    world.wait_until_stale_then_step_the_clock_back(std::time::Duration::from_secs(2));
     let stale = modified_ms(&world.the_catalog());
     let before = world.records().len();
     world.burst(
@@ -43703,7 +43703,7 @@ fn a_failed_refresh_of_a_stale_catalog_keeps_launching_with_the_stale_one() {
         "",
     );
     world.launch(CodexLaunchPath::Exec, "codex", &[], &[]);
-    world.wait_until_stale(std::time::Duration::from_secs(1));
+    world.wait_until_stale_then_step_the_clock_back(std::time::Duration::from_secs(1));
     let stale = resolved(world.the_catalog());
     let fail = [("MOCK_CODEX_CATALOG_FAULT", "fail")];
     let before = world.records().len();
@@ -43903,7 +43903,7 @@ fn wait_out_the_lock_then_back_off_and_recover(stale: bool) {
     };
     if stale {
         world.launch(CodexLaunchPath::Exec, "codex", &[], &[]);
-        world.wait_until_stale(std::time::Duration::from_secs(1));
+        world.wait_until_stale_then_step_the_clock_back(std::time::Duration::from_secs(1));
     }
     let expected_catalog = stale.then(|| resolved(world.the_catalog()));
     let helpers_before = world.helpers().len();
@@ -44094,6 +44094,7 @@ fn fall_back_at_model_catalog_wait_with_the_wall_clock_stepped(step_ms: i64) {
         .recv_timeout(CATALOG_HANG_GUARD)
         .expect("the launch reported no fallback");
     let waited = warned_at - probe_answered;
+    let warned_wall_ms = epoch_ms(world.wall_now());
     let status = child.wait().unwrap();
     let stderr = lines.join().unwrap();
     let stdout = drained.join().unwrap();
@@ -44121,6 +44122,14 @@ fn fall_back_at_model_catalog_wait_with_the_wall_clock_stepped(step_ms: i64) {
     );
     assert!(world.helpers().is_empty(), "{:?}", world.records());
     assert_eq!(world.failure_records().len(), 1, "{:?}", world.records());
+    // The record is stamped on the stepped clock, so the binary read the step
+    // this journey took: one that ignored it would be off by the whole step.
+    let failed_at = failed_at_ms(&world);
+    assert!(
+        u128::from(warned_wall_ms.abs_diff(failed_at)) < LOCK_WAIT_TOLERANCE.as_millis(),
+        "step {step_ms} ms: the failure was stamped {failed_at}, not on the stepped clock \
+         ({warned_wall_ms} as the fallback arrived)"
+    );
     // The lock is free now; the backoff the record holds keeps the next
     // launch from refreshing or waiting, on the same stepped clock.
     let next = world.launch(CodexLaunchPath::Exec, "codex", &[], &[]);
@@ -44159,7 +44168,7 @@ fn a_failure_recorded_before_the_catalog_was_written_holds_nothing_off() {
         .to_string(),
     )
     .unwrap();
-    world.wait_until_stale(std::time::Duration::from_secs(1));
+    world.wait_until_stale_then_step_the_clock_back(std::time::Duration::from_secs(1));
     let run = world.launch(CodexLaunchPath::Exec, "codex", &[], &[]);
     assert_eq!(run.warnings(), 0, "{}", run.stderr());
     assert_eq!(world.helpers().len(), 2, "{:?}", world.records());

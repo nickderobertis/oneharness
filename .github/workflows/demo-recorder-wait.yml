@@ -1,0 +1,75 @@
+# DO NOT MERGE: a throwaway demonstration for PR #1617. It runs the network
+# recorder's EverySuiteRecords (and the stopped-suite tests that delay or lose
+# a recording) 20 times on the image every recorded failure ran on, against
+# the image's real pasta and scripts/e2e-netmeasure.py.
+name: Demo recorder wait
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: astral-sh/setup-uv@v6
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - name: Record the runner image
+        run: |
+          echo "ImageOS=${ImageOS:-unset} ImageVersion=${ImageVersion:-unset}"
+          grep -E '^(PRETTY_NAME|VERSION_ID)=' /etc/os-release
+          uname -a
+          nproc
+          {
+            echo "### Runner"
+            echo "ImageOS=${ImageOS:-unset} ImageVersion=${ImageVersion:-unset}; $(grep '^PRETTY_NAME=' /etc/os-release); $(nproc) CPUs"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Permit unprivileged namespaces for pasta (network recorder)
+        run: |
+          command -v pasta >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q passt; }
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          pasta --config-net --quiet -- true
+          echo "pasta: $(command -v pasta); $(dpkg-query -W passt 2>/dev/null || echo 'passt not from dpkg')" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Prove the network recorder measures in pasta's namespace
+        run: bash scripts/network-recorder-preflight.sh
+      - name: Build the binary and the mock harness
+        run: |
+          uv sync --project python --frozen --no-install-workspace --quiet
+          just build
+          just build-mock-harness
+      - name: Run EverySuiteRecords and the stopped-suite tests 20 times
+        env:
+          OH_NET_NO_SKIP: "1"
+        run: |
+          failed=0
+          echo "### Runs (EverySuiteRecords, StoppedSuiteRecording, PendingMarkerOwners, HangGuard)" >> "$GITHUB_STEP_SUMMARY"
+          for run in $(seq 1 20); do
+            log="$RUNNER_TEMP/run-$run.log"
+            started=$(date +%s)
+            if uv run --project python --frozen --no-sync python -I -m unittest discover \
+              -s tools/network-telemetry -t tools/network-telemetry -p test_suites.py \
+              -k EverySuiteRecords -k StoppedSuiteRecording -k PendingMarkerOwners -k HangGuard \
+              > "$log" 2>&1; then
+              verdict=pass
+            else
+              verdict=FAIL
+              failed=$((failed + 1))
+            fi
+            summary="$(grep -E '^(Ran|OK|FAILED)' "$log" | tr '\n' ' ')"
+            line="run $run: $verdict ($(( $(date +%s) - started )) s) $summary"
+            echo "$line"
+            echo "- $line" >> "$GITHUB_STEP_SUMMARY"
+            [ "$verdict" = pass ] || cat "$log"
+          done
+          echo "failed runs: $failed of 20" | tee -a "$GITHUB_STEP_SUMMARY"
+          [ "$failed" -eq 0 ]

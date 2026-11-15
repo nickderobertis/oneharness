@@ -6041,6 +6041,13 @@ fn codex_overlay_home<'a>(
     home: Option<&'a std::path::Path>,
     args: &[String],
 ) -> Result<&'a std::path::Path, String> {
+    if run_overlay::overlay_root().is_none() {
+        return Err(
+            "there is no per-user state directory (`$XDG_STATE_HOME`, or `$HOME`) of \
+             oneharness's own to make its overlay in"
+                .to_string(),
+        );
+    }
     let Some(home) = home.filter(|home| home.is_dir()) else {
         return Err(format!(
             "its home{} does not exist, so an overlay has no login or sessions to link to",

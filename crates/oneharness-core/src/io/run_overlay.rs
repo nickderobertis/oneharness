@@ -116,7 +116,13 @@ impl RunOverlay {
     ///
     /// Creating the directory or its lock file failed.
     pub fn create() -> io::Result<RunOverlay> {
-        RunOverlay::create_in(&overlay_root())
+        let root = overlay_root().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "no per-user state directory (`$XDG_STATE_HOME`, or `$HOME`) to hold a run overlay",
+            )
+        })?;
+        RunOverlay::create_in(&root)
     }
 
     /// [`RunOverlay::create`], under an explicit root.
@@ -453,12 +459,14 @@ pub fn is_thread_index(name: &str) -> bool {
 }
 
 /// Where every run's overlay directory is made: oneharness's per-user state
-/// directory (`$XDG_STATE_HOME`, else `~/.local/state`; `%LOCALAPPDATA%` on
-/// Windows) under `oneharness/run-overlays`, else the host temp dir when the
-/// platform names none.
+/// directory (`$XDG_STATE_HOME`, else `~/.local/state`) under
+/// `oneharness/run-overlays`. `None` when neither is set: then there is no
+/// directory of oneharness's own to make one in (the host temp dir is shared,
+/// not oneharness's to restrict, and codex-cli refuses its helpers for a home
+/// there), so no overlay is made and a Codex grant is withheld.
 #[must_use]
-pub fn overlay_root() -> PathBuf {
-    crate::io::server_pool::state_dir().map_or_else(std::env::temp_dir, |dir| {
+pub fn overlay_root() -> Option<PathBuf> {
+    crate::io::server_pool::state_dir().map(|dir| {
         ROOT_COMPONENTS
             .iter()
             .fold(dir, |path, part| path.join(part))
@@ -475,7 +483,9 @@ fn create_private_dir(dir: &Path) -> io::Result<()> {
 ///
 /// Called as a run starts. Returns the overlays it removed.
 pub fn reclaim_orphans() -> Vec<PathBuf> {
-    let root = overlay_root();
+    let Some(root) = overlay_root() else {
+        return Vec::new();
+    };
     let reclaimed = reclaim_under(&root);
     remove_root_if_empty(&root);
     reclaimed

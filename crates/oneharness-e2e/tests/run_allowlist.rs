@@ -1194,6 +1194,87 @@ fn codex_withholds_over_a_missing_home_or_a_keyring_store_named_in_its_args() {
     assert!(world.overlays().is_empty());
 }
 
+/// With no per-user state directory (neither `XDG_STATE_HOME` nor `HOME`)
+/// there is nowhere of oneharness's own to make an overlay: Codex withholds
+/// the grant by name rather than making one in the host temp dir, whose mode
+/// it leaves as it was. Claude Code, which needs no overlay, still applies it.
+#[test]
+fn with_no_state_directory_codex_withholds_and_the_temp_dir_is_left_alone() {
+    use std::os::unix::fs::PermissionsExt;
+    let world = World::new("no-state-dir");
+    let tool = world.tool();
+    let rule = format!("allowed_tools = [\"Bash({tool})\"]\n");
+    let tmp = world.path("tmp");
+    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let config = world.config(&rule);
+    let argv_s = world.s("argv");
+    let env_s = world.s("env.json");
+    let no_state = [
+        ("HOME", ""),
+        ("XDG_STATE_HOME", ""),
+        ("MOCK_ARGV_FILE", argv_s.as_str()),
+        ("MOCK_ENV_FILE", env_s.as_str()),
+    ];
+    let run = |harness: &str| {
+        let output = world.oh(
+            &[
+                "run",
+                "--harness",
+                harness,
+                "--mode",
+                "read-only",
+                "--prompt",
+                "judge it",
+            ],
+            &config,
+            &no_state,
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        assert!(
+            output.status.code().is_some_and(|c| c == 0 || c == 1),
+            "{harness}: {stderr}"
+        );
+        json(&output)
+    };
+
+    let grant_messages = |report: &Value| -> Vec<String> {
+        report["results"][0]["diagnostics"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|d| d["setting"] == "allowed_tools")
+            .map(|d| d["message"].as_str().unwrap_or_default().to_string())
+            .collect()
+    };
+    let report = run("codex");
+    let messages = grant_messages(&report);
+    assert!(
+        messages.len() == 1
+            && messages[0].contains("withheld on `codex`")
+            && messages[0].contains("no per-user state directory"),
+        "{messages:?}"
+    );
+    assert!(report["results"][0]["overlay_env"].is_null(), "{report}");
+    assert_eq!(
+        env_of(&world.path("env.json"))["CODEX_HOME"],
+        world.s("codex-home")
+    );
+    assert!(world.overlays().is_empty());
+    assert_eq!(
+        std::fs::metadata(&tmp).unwrap().permissions().mode() & 0o777,
+        0o755,
+        "the host temp dir's mode was changed"
+    );
+
+    let report = run("claude-code");
+    assert!(grant_messages(&report).is_empty(), "{report}");
+    let argv = argv_of(&world.path("argv"));
+    assert!(
+        flag_values(&argv, "--allowedTools").contains(&format!("Bash({tool}:*)").as_str()),
+        "{argv:?}"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn a_helper_app_server_that_never_answers_leaves_the_run_whole() {

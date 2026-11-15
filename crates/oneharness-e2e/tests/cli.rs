@@ -44040,7 +44040,7 @@ const LOCK_WAIT_TOLERANCE: std::time::Duration = std::time::Duration::from_milli
 /// world and each stepped alike. A loaded host only ever lengthens a measured
 /// wait, so the fastest is the one held to [`LOCK_WAIT_TOLERANCE`]; a wait
 /// timed on the wall clock would put every one of them past it.
-const STEPPED_LAUNCHES: usize = 3;
+const STEPPED_LAUNCHES: usize = 5;
 
 /// One launch waiting on a catalog lock this test holds, its stderr read as
 /// it arrives so the fallback's warning is timed when it is printed.
@@ -44140,7 +44140,10 @@ fn fall_back_at_model_catalog_wait_with_the_wall_clock_stepped(step_ms: i64) {
                 continue;
             }
             let looked = std::time::Instant::now();
-            if launch.probed.exists() {
+            // Only a definite "not found" is absent: `exists` also reads a
+            // file another process briefly holds (a Windows scanner on a new
+            // file) as missing, which would put the mark after the answer.
+            if !matches!(launch.probed.try_exists(), Ok(false)) {
                 answered[n] = Some(absent[n]);
             } else {
                 absent[n] = looked;

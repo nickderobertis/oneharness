@@ -69,10 +69,13 @@ OUTSIDE_TEXT = "outside the worktree: sentinel text"
 HARNESSES = ("claude-code", "codex", "opencode")
 OVERLAY_MARKER = "ONEHARNESS_RUN_OVERLAY"
 OVERLAY_PREFIX = "oneharness-run-overlay-"
-"""How this suite finds an overlay: the marker its processes carry and its
-directory's name, as the README documents them. `check_layout` holds both to
-what every granted Codex run's report says, so a rename fails the suite
-loudly instead of leaving `overlay_pids` and `overlays` finding nothing."""
+OVERLAY_ROOT = ("oneharness", "run-overlays")
+"""How this suite finds an overlay: the marker its processes carry, its
+directory's name, and the state-dir path it is made under. They restate
+`io::run_overlay`'s constants, and `oneharness-core`'s gated unit test
+`the_live_suites_overlay_detector_restates_the_engines_layout` reads these
+three lines and fails when they drift; `check_layout` also holds them to what
+every granted Codex run's report says."""
 SAFE_PATH = re.compile(r"[A-Za-z0-9_./-]+")
 GROUPS = (
     "sync", "probes", "posture", "lifecycle", "kill", "concurrency", "session",
@@ -668,7 +671,7 @@ class World:
         return argv + (extra or [])
 
     def overlays(self) -> list[str]:
-        roots = (self.tmp, self.state / "oneharness" / "run-overlays")
+        roots = (self.tmp, self.state.joinpath(*OVERLAY_ROOT))
         return [p.name for r in roots if r.is_dir() for p in r.iterdir() if p.name.startswith(OVERLAY_PREFIX)]
 
 
@@ -950,9 +953,9 @@ def check_layout(world: World, result: Result, fails: Failures, label: str) -> N
     fails.check(
         marker.startswith(OVERLAY_PREFIX)
         and home.parent.name == marker
-        and home.parent.parent == world.state / "oneharness" / "run-overlays",
+        and home.parent.parent == world.state.joinpath(*OVERLAY_ROOT),
         f"{label}: oneharness reports its overlay as {result.overlay_env}, not where this suite looks "
-        f"({OVERLAY_MARKER}={OVERLAY_PREFIX}… under {world.state}/oneharness/run-overlays); update the detector",
+        f"({OVERLAY_MARKER}={OVERLAY_PREFIX}… under {world.state.joinpath(*OVERLAY_ROOT)}); update the detector",
     )
 
 

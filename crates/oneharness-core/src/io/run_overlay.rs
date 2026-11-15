@@ -68,6 +68,10 @@ pub const PLANNED_OVERLAY: &str = "<run-overlay>";
 /// [`PREFIX`].
 const TAG: &str = "run-overlay-";
 
+/// The path under oneharness's per-user state directory every overlay is made
+/// in, one component per entry.
+const ROOT_COMPONENTS: [&str; 2] = ["oneharness", "run-overlays"];
+
 /// The file inside an overlay its owning run holds an exclusive lock on for
 /// the run's lifetime.
 const OWNER_LOCK: &str = "owner.lock";
@@ -428,7 +432,9 @@ pub fn is_thread_index(name: &str) -> bool {
 #[must_use]
 pub fn overlay_root() -> PathBuf {
     crate::io::server_pool::state_dir().map_or_else(std::env::temp_dir, |dir| {
-        dir.join("oneharness").join("run-overlays")
+        ROOT_COMPONENTS
+            .iter()
+            .fold(dir, |path, part| path.join(part))
     })
 }
 
@@ -709,6 +715,25 @@ fn exchange(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The live-control suite finds overlays (and their processes) by restating
+    /// this module's marker, directory prefix and root path; it runs only in
+    /// the paid live tier, so this gated test is what catches the two drifting.
+    #[test]
+    fn the_live_suites_overlay_detector_restates_the_engines_layout() {
+        let suite = include_str!("../../../../live/control/run_allowlist_live.py");
+        let root = ROOT_COMPONENTS.map(|part| format!("\"{part}\"")).join(", ");
+        for line in [
+            format!("OVERLAY_MARKER = \"{}\"", MARKER_ENV),
+            format!("OVERLAY_PREFIX = \"{}{}\"", PREFIX, TAG),
+            format!("OVERLAY_ROOT = ({root})"),
+        ] {
+            assert!(
+                suite.lines().any(|l| l == line),
+                "live/control/run_allowlist_live.py no longer has `{line}`: update its overlay detector to the engine's layout"
+            );
+        }
+    }
 
     #[test]
     fn the_thread_index_is_the_state_database_and_its_companions_only() {

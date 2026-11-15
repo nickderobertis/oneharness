@@ -14,6 +14,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -28,11 +29,13 @@ from support import (
     BASH,
     ROOT,
     WINDOWS,
+    LaunchId,
     check_step,
     lines,
     measurements,
     need_builds,
     need_recorder,
+    path_without,
     recorder_unavailable,
     run_shim,
     run_suite,
@@ -78,11 +81,131 @@ SUITES = {
 }
 
 
+# llmlint: ignore-block[shared_internals_are_a_project_not_a_reach_in] scripts/e2e-netmeasure.py is this project's own code under test, not a sibling's internals: network-telemetry declares it as an input and formats, lints and type-checks it in its own targets, and its existing tests load it by path the same way (test_recorder's netmeasure_module). The hang guard must be derived from the bounds the recorder itself enforces, so it reads them from the recorder rather than restating them.
+def recorder_bounds() -> ModuleType:
+    """The recorder's own module, loaded once from its script, for the bounds
+    it enforces on itself."""
+    name = "netmeasure_bounds"
+    if name not in sys.modules:
+        spec = importlib.util.spec_from_file_location(name, ROOT / "scripts" / "e2e-netmeasure.py")
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        # Its dataclasses resolve their annotations through sys.modules.
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return sys.modules[name]
+
+
+# llmlint: ignore-end[shared_internals_are_a_project_not_a_reach_in]
+
+
+def recorder_lifetime() -> float:
+    """The longest a stopped launch's recorder can take to write its line, by
+    the recorder's own constants: every inbound-TCP trial timing out, then the
+    stopped tree's kill grace — or a direct launch's grace and reaping — and
+    the counters' settle."""
+    bounds = recorder_bounds()
+    return float(
+        len(bounds.INBOUND_TCP) * bounds.TRIAL_TIMEOUT
+        + bounds.KILL_GRACE
+        + bounds.REAP_WAIT
+        + bounds.SETTLE
+    )
+
+
+# The one fixed bound on waiting for a stopped suite's launches to be
+# recorded: a hang guard against a recorder that never exits. Twice the
+# recorder's own maximum, so a loaded runner's scheduling cannot make it
+# reject a launch the recorder can still record.
+HANG_GUARD = 2 * recorder_lifetime()
+
+
+# A pid as a marker spells it: ASCII decimal, positive — 0 would name a
+# process group, not a recorder — and within pid_t.
+PID = re.compile(r"[1-9][0-9]{0,9}")
+PID_MAX = 2**31 - 1
+
+
+def owners(marker: Path) -> list[int] | None:
+    """The pids a pending marker names as able to still record its launch, or
+    None while that is not known: the marker is still being written, is no
+    longer there to read, or names anything but pids."""
+    try:
+        words = marker.read_text().split()
+    except OSError:
+        return None
+    pids = [int(word) for word in words if PID.fullmatch(word) and int(word) <= PID_MAX]
+    return pids if pids and len(pids) == len(words) else None
+
+
+def running(pid: int) -> bool:
+    """Whether `pid` is still running; a zombie has already exited."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except FileNotFoundError:
+        # Gone between the two looks where there is a procfs; without one
+        # (macOS), kill's answer stands.
+        return not Path("/proc/self/stat").exists()
+    except OSError:
+        return True
+    return stat.rsplit(")", 1)[-1].split()[:1] not in (["Z"], ["X"])
+
+
+def wait_until_recorded(telemetry: Path, suite: str) -> None:
+    """Return once every launch the stopped suite started is recorded — its
+    pending marker gone — however long the recorder takes. Fail at once, naming
+    them, on the launches whose markers outlived every recorder process they
+    name, which can no longer record them, whatever other launches are still
+    being recorded; and at HANG_GUARD on a recorder that has not exited."""
+    pending = telemetry / ".pending"
+    deadline = time.monotonic() + HANG_GUARD
+    while True:
+        markers = sorted(pending.glob("*"))
+        if not markers:
+            return
+        named = {marker.name: owners(marker) for marker in markers}
+        # Looked for again once its owners are seen gone: a recorder removes
+        # the marker before it exits, so one still there now is lost.
+        lost = {
+            launch: pids
+            for launch, pids in named.items()
+            if pids is not None
+            and not any(running(pid) for pid in pids)
+            and (pending / launch).exists()
+        }
+        if lost:
+            # Each lost launch's start line, so the failure says which launch
+            # (phase, kind, argv) went unrecorded, not only its id.
+            launched = [
+                s for s in starts(lines(telemetry / f"{suite}.jsonl")) if s["launch_id"] in lost
+            ]
+            raise AssertionError(
+                f"{suite}: launch(es) {', '.join(lost)} never recorded: every recorder process "
+                f"their pending markers name ({lost}) has exited with the marker still there; "
+                f"their start lines: {launched}"
+            )
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                f"{suite}: launch(es) {', '.join(named)} still pending {HANG_GUARD:.0f} s after "
+                f"the suite stopped, over the recorder's own {recorder_lifetime():.0f} s maximum "
+                f"(the pids each marker names: {named})"
+            )
+        time.sleep(0.1)
+
+
 def run_until_recorded(suite: str, env: dict[str, str], harness: str, limit: float = 120) -> str:
     """Run a suite until it has recorded a measured launch of `harness`, or
-    exits; then stop it — by its own process group, as a runner would — and
-    return its stderr. A first phase the double cannot satisfy may otherwise
-    wait out minutes of live-tier timeouts nobody here is testing."""
+    exits; then stop it — by its own process group, as a runner would — wait
+    until the recorder has recorded every launch it started
+    (`wait_until_recorded`), and return its stderr. A first phase the double
+    cannot satisfy may otherwise wait out minutes of live-tier timeouts nobody
+    here is testing."""
     telemetry = Path(env["OH_E2E_TELEMETRY_DIR"]) / f"{suite}.jsonl"
     err = Path(env["TMPDIR"]) / "suite.err"
     with err.open("wb") as sink:
@@ -112,11 +235,8 @@ def run_until_recorded(suite: str, env: dict[str, str], harness: str, limit: flo
                 os.killpg(process.pid, signal.SIGKILL)
                 process.wait()
     # A launch the stop cut short is still recorded, by the recorder's own
-    # supervisor; give it the namespace's kill grace to finish.
-    for _ in range(80):
-        if not any(Path(env["OH_E2E_TELEMETRY_DIR"], ".pending").glob("*")):
-            break
-        time.sleep(0.1)
+    # supervisor, in its own session, once its namespace has wound down.
+    wait_until_recorded(telemetry.parent, suite)
     return err.read_text(errors="replace")
 
 
@@ -220,6 +340,199 @@ class EverySuiteRecords(unittest.TestCase):
         declared = re.search(r"OH_HARNESS_EXECUTABLES=\(([^)]*)\)", library)
         assert declared is not None
         self.assertEqual(sorted(declared.group(1).split()), registry)
+
+
+# How long the stand-in pasta holds a stopped suite's later namespaces open
+# before letting their recorder finish: past the 8 s the helper once allowed
+# and the budget step's 30 s OH_E2E_PENDING_WAIT alike, so no fixed wait of
+# that order passes it.
+HOLD = 35
+
+
+class StoppedSuite(NamedTuple):
+    """The control suite set up to run behind the stand-in pasta."""
+
+    telemetry: Path  # its OH_E2E_TELEMETRY_DIR
+    env: dict[str, str]
+
+
+class Failure(NamedTuple):
+    """The helper's failure, as a test reads it."""
+
+    said: str
+    took: float  # seconds from the suite's start to the failure
+
+
+# What the stand-in pasta does with a namespace: start it as pasta itself
+# would, or SIGKILL its measurer and supervisor before it starts, so nothing
+# is left that can write its line or clear its marker.
+THROUGH = 'exec "$real" "$@"'
+LOSE = 'kill -KILL "$(ps -o ppid= -p "$PPID" | tr -d " ")" "$PPID"; exit 1'
+
+
+@unittest.skipIf(
+    WINDOWS, "the suites' doubles are bash scripts; Windows runs the recorder's fallback tests"
+)
+class StoppedSuiteRecording(unittest.TestCase):
+    """The control suite stopped while its recorder still owes launches their
+    lines, through the real shim, recorder and pasta: a stand-in pasta in front
+    of the real one does `first` with the first namespace and `later` with
+    every one after it — among them the pooled `--version` probe started
+    beside the first, still in flight when the suite is stopped."""
+
+    def stopped_with(self, later: str, first: str = THROUGH) -> StoppedSuite:
+        need_builds(self)
+        need_recorder(self)
+        real = shutil.which("pasta")
+        assert real is not None  # need_recorder measured through it
+        tmp = scratch(self)
+        stand_in = tmp / "pasta-bin"
+        stand_in.mkdir()
+        claimed = shlex.quote(str(tmp / "first-namespace"))
+        (stand_in / "pasta").write_text(
+            "#!/usr/bin/env bash\n"
+            f"real={shlex.quote(real)}\n"
+            "# The recorder's inbound-TCP trials run `:`; they are pasta's own.\n"
+            f'if [ "${{*: -1}}" = : ]; then {THROUGH}; fi\n'
+            f"if mkdir {claimed} 2>/dev/null; then {first}; fi\n"
+            f"{later}\n"
+        )
+        (stand_in / "pasta").chmod(0o755)
+        env = suite_env(tmp, *EXECUTABLES, OH_E2E_PHASE_LIMIT="1", **SUITES["control"].auth)
+        env["PATH"] = f"{stand_in}{os.pathsep}{env['PATH']}"
+        return StoppedSuite(tmp / "telemetry", env)
+
+    def test_a_launch_recorded_long_after_the_stop_is_waited_for(self) -> None:
+        stopped = self.stopped_with(f'"$real" "$@"; code=$?; sleep {HOLD}; exit "$code"')
+        began = time.monotonic()
+        run_until_recorded("control", stopped.env, "codex")
+        took = time.monotonic() - began
+        records = lines(stopped.telemetry / "control.jsonl")
+        launched = starts(records)
+        self.assertGreater(len(launched), 1, records)
+        for launch in launched:
+            self.assertEqual(len(measurements(records, launch["launch_id"])), 1, launch)
+        # A namespace was held past both fixed waits, and still recorded.
+        self.assertGreater(took, HOLD, "no namespace was held: the stand-in tested nothing")
+
+    def failure(self, stopped: StoppedSuite) -> Failure:
+        """The helper's failure on `stopped`, and how long it took to come."""
+        began = time.monotonic()
+        with self.assertRaises(AssertionError) as caught:
+            run_until_recorded("control", stopped.env, "codex")
+        return Failure(str(caught.exception), time.monotonic() - began)
+
+    def assert_names_only_lost_launches(self, stopped: StoppedSuite, said: str) -> list[LaunchId]:
+        """The launch ids `said` names as never recorded, each one unrecorded
+        with every recorder process its marker names gone."""
+        self.assertIn("never recorded", said)
+        named = [
+            LaunchId(str(found))
+            for found in sorted(set(re.findall(r"control-[0-9]+-[0-9a-f]{12}", said)))
+        ]
+        self.assertTrue(named, said)
+        records = lines(stopped.telemetry / "control.jsonl")
+        for launch_id in named:
+            self.assertEqual(measurements(records, launch_id), [], launch_id)
+            # Its start line is quoted, so the failure says which launch it was.
+            self.assertIn(f"'launch_id': '{launch_id}'", said)
+            pids = owners(stopped.telemetry / ".pending" / launch_id)
+            self.assertTrue(pids, launch_id)
+            assert pids is not None
+            self.assertFalse(any(running(pid) for pid in pids), (launch_id, pids))
+        return named
+
+    def test_a_launch_whose_recorder_exits_without_its_line_fails_naming_it(self) -> None:
+        stopped = self.stopped_with(LOSE)
+        failed = self.failure(stopped)
+        self.assert_names_only_lost_launches(stopped, failed.said)
+        # Failed on its recorder's exit, not on the hang guard.
+        self.assertLess(failed.took, HANG_GUARD, failed.said)
+
+    def test_a_lost_launch_fails_while_another_is_still_being_recorded(self) -> None:
+        # The two pooled probes start together: the first held open, its
+        # supervisor recorded, until the test releases it; the other lost.
+        tmp = scratch(self)
+        held, release = tmp / "held-supervisor", tmp / "release"
+        stopped = self.stopped_with(
+            LOSE,
+            first=(
+                f'echo "$PPID" > {shlex.quote(str(held))}; "$real" "$@"; code=$?; '
+                f"for _ in $(seq {HOLD * 10}); do [ -e {shlex.quote(str(release))} ] && break; "
+                'sleep 0.1; done; exit "$code"'
+            ),
+        )
+        self.addCleanup(release.touch)
+        failed = self.failure(stopped)
+        supervisor = int(held.read_text())
+        # The failure came while the held launch's recorder was still at work.
+        self.assertTrue(running(supervisor), failed.said)
+        self.assertLess(failed.took, HOLD, failed.said)
+        named = self.assert_names_only_lost_launches(stopped, failed.said)
+        markers = (stopped.telemetry / ".pending").glob("*")
+        recording = [LaunchId(m.name) for m in markers if supervisor in (owners(m) or [])]
+        self.assertEqual(len(recording), 1, recording)
+        self.assertNotIn(recording[0], named)
+        # Released, it is still recorded: its marker goes with its line.
+        release.touch()
+        deadline = time.monotonic() + HANG_GUARD
+        while running(supervisor) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        self.assertFalse(running(supervisor), "the held recorder never finished")
+        records = lines(stopped.telemetry / "control.jsonl")
+        self.assertEqual(len(measurements(records, recording[0])), 1, records)
+
+
+class HangGuard(unittest.TestCase):
+    def test_the_hang_guard_outlasts_the_recorder_s_own_longest_recording(self) -> None:
+        bounds = recorder_bounds()
+        floor = len(bounds.INBOUND_TCP) * bounds.TRIAL_TIMEOUT + bounds.KILL_GRACE
+        self.assertGreater(HANG_GUARD, floor + bounds.REAP_WAIT + bounds.SETTLE)
+        self.assertGreater(HANG_GUARD, HOLD)
+
+
+class MarkerSeen(NamedTuple):
+    """A pending marker's owners as its launch read them, beside its parents."""
+
+    owners: list[int] | None
+    parent: int  # the process that started the launch
+    grandparent: int  # that process's parent
+
+
+@unittest.skipIf(WINDOWS, "the launch reads its parents with ps, and the recorder forks")
+class PendingMarkerOwners(unittest.TestCase):
+    """A launch's pending marker names the processes that can still record it,
+    as the launch itself sees them while it runs, through the real shim."""
+
+    def marker_and_parents(self, env: dict[str, str]) -> MarkerSeen:
+        tmp = scratch(self)
+        real = tmp / "real-codex"
+        real.write_text(
+            "#!/usr/bin/env bash\n"
+            f"cp {shlex.quote(str(tmp))}/.pending/* {shlex.quote(str(tmp / 'marker'))}\n"
+            f'echo "$PPID" > {shlex.quote(str(tmp / "parent"))}\n'
+            f'ps -o ppid= -p "$PPID" | tr -d " " > {shlex.quote(str(tmp / "grandparent"))}\n'
+        )
+        real.chmod(0o755)
+        run = run_shim(tmp, [str(real)], ["exec", "x"], env=env)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertFalse(list((tmp / ".pending").glob("*")), "the marker outlived the line")
+        return MarkerSeen(
+            owners(tmp / "marker"),
+            int((tmp / "parent").read_text()),
+            int((tmp / "grandparent").read_text()),
+        )
+
+    def test_the_recorder_s_marker_names_its_supervisor_then_its_measurer(self) -> None:
+        # Unmeasured, so the launch is the supervisor's own child on any host.
+        seen = self.marker_and_parents({"OH_E2E_OS": "Darwin"})
+        # The supervisor started the launch; the measurer forked the supervisor.
+        self.assertEqual(seen.owners, [seen.parent, seen.grandparent])
+
+    def test_the_shim_s_fallback_marker_names_the_shell_that_records_the_launch(self) -> None:
+        tmp = scratch(self)
+        seen = self.marker_and_parents({"PATH": path_without(tmp, "python3")})
+        self.assertEqual(seen.owners, [seen.parent])
 
 
 def setup_and(

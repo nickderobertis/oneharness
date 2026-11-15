@@ -13,6 +13,7 @@ import itertools
 import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -38,6 +39,7 @@ from support import (
     scratch,
     starts,
     suite_env,
+    transfer_argv,
 )
 
 EXECUTABLES = ("claude", "codex", "copilot", "crush", "cursor-agent", "goose", "opencode", "qwen")
@@ -226,9 +228,10 @@ def setup_and(
     *,
     path_first: Path | None = None,
     telemetry_dir: str | None = None,
+    extra: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """oh_telemetry_setup's library sourced in the test's scratch, then `script`."""
-    env = suite_env(tmp, "codex")
+    env = {**suite_env(tmp, "codex"), **(extra or {})}
     if path_first is not None:
         env["PATH"] = f"{path_first}{os.pathsep}{env['PATH']}"
     if telemetry_dir is not None:
@@ -343,6 +346,15 @@ class WindowsFormDirectory(unittest.TestCase):
         )
 
 
+class GraceCase(NamedTuple):
+    """One launch the shared-server grace test runs under a suite's setup."""
+
+    suite: str  # the suite whose telemetry file records the launch
+    setup: str  # the oh_telemetry_setup line that suite sources
+    argv: list[str]  # the codex arguments the launch runs
+    keeps_leftovers: bool  # whether the measurer leaves its detached command running
+
+
 @unittest.skipIf(WINDOWS, "the doubles are bash scripts")
 class Setup(unittest.TestCase):
     """oh_telemetry_setup itself, driven as a suite drives it."""
@@ -371,6 +383,80 @@ class Setup(unittest.TestCase):
             shim,
             "the inner shim wraps the outer one, not the real codex",
         )
+
+    def test_only_the_control_suite_s_shared_servers_keep_what_they_leave_running(self) -> None:
+        # pooled-kill proves the pool itself stops a killed dispatch's
+        # commands; a command a shared server's stop left running is the
+        # defect it exists to catch. The measurer's descendant grace (#1603)
+        # reaped such a command 5 s after the server exited, so on a measuring
+        # runner the escape-marker fault passed. The control suite's own setup
+        # exempts its shared-server launches; its other launches, and every
+        # other suite's shared servers, keep the grace.
+        need_builds(self)
+        need_recorder(self)
+        control = re.search(
+            r"^oh_telemetry_setup control\b.*$",
+            (ROOT / "scripts" / "e2e-control.sh").read_text(),
+            re.MULTILINE,
+        )
+        assert control is not None, "scripts/e2e-control.sh no longer sets up its recorder"
+        grace, deadline = 1, 8
+        server = ["app-server", "--listen", "unix:///nonexistent/app.sock"]
+        for case in (
+            GraceCase("control", control.group(0), server, keeps_leftovers=True),
+            GraceCase("control", control.group(0), ["exec", "stay"], keeps_leftovers=False),
+            GraceCase("codex", "oh_telemetry_setup codex", server, keeps_leftovers=False),
+        ):
+            suite, setup, args = case.suite, case.setup, case.argv
+            with self.subTest(suite=suite, launch=args[0]):
+                tmp = scratch(self)
+                heartbeat = tmp / "heartbeat"
+                # A codex whose launch exits at once, leaving a detached
+                # command beating until something stops it.
+                real = tmp / "real-bin"
+                real.mkdir()
+                words = transfer_argv(0, 0, 0, "--detach", "--linger", "600")
+                (real / "codex").write_text(
+                    f'#!/usr/bin/env bash\nexec {shlex.join(words)} --heartbeat "$OH_TEST_BEAT"\n'
+                )
+                (real / "codex").chmod(0o755)
+                started = time.monotonic()
+                run = setup_and(
+                    tmp,
+                    f"{setup}; codex {shlex.join(args)}",
+                    path_first=real,
+                    extra={
+                        "OH_TEST_BEAT": str(heartbeat),
+                        "OH_E2E_NET_DESCENDANT_GRACE": str(grace),
+                        "OH_E2E_NET_DEADLINE": str(deadline),
+                    },
+                )
+                took = time.monotonic() - started
+                self.assertEqual(run.returncode, 0, run.stderr)
+                beats = [float(b.split()[1]) for b in heartbeat.read_text().splitlines()]
+                if case.keeps_leftovers:
+                    self.assertGreater(took, deadline - 0.5, "the server's command was reaped")
+                    self.assertGreater(beats[-1] - beats[0], 6, "it did not outlive the grace")
+                else:
+                    self.assertLess(took, grace + 4, "the launch kept no grace")
+                    self.assertLess(beats[-1] - beats[0], grace + 2, "it outlived the grace")
+                size = heartbeat.stat().st_size
+                time.sleep(0.5)
+                self.assertEqual(heartbeat.stat().st_size, size, "the command is still alive")
+                records = lines(tmp / "telemetry" / f"{suite}.jsonl")
+                (start,) = starts(records)
+                (line,) = measurements(records, start["launch_id"])
+                self.assertEqual(line["method"], "netns-pasta", line)
+
+    def test_a_shared_server_grace_that_is_no_number_stops_the_setup(self) -> None:
+        need_builds(self)
+        for given in ("--shared-server-grace soon", "--shared-server-grace", "--grace 0"):
+            with self.subTest(given=given):
+                tmp = scratch(self)
+                run = setup_and(tmp, f"oh_telemetry_setup control {given}; codex --version")
+                self.assertNotEqual(run.returncode, 0)
+                self.assertIn("oh_telemetry_setup control: ", run.stderr)
+                self.assertFalse((tmp / "telemetry" / "control.jsonl").exists(), run.stderr)
 
     def test_a_stale_shim_of_the_same_suite_is_refused_when_it_cannot_be_rewritten(self) -> None:
         # The last run's shim (same suite, same marker) wraps an executable

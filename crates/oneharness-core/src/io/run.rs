@@ -6043,8 +6043,8 @@ fn codex_overlay_home<'a>(
 ) -> Result<&'a std::path::Path, String> {
     if run_overlay::overlay_root().is_none() {
         return Err(
-            "there is no per-user state directory (`$XDG_STATE_HOME`, or `$HOME`) of \
-             oneharness's own to make its overlay in"
+            "there is no per-user state directory (an absolute `$XDG_STATE_HOME`, or \
+             `$HOME`) of oneharness's own to make its overlay in"
                 .to_string(),
         );
     }

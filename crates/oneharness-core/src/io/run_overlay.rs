@@ -465,13 +465,16 @@ pub fn is_thread_index(name: &str) -> bool {
 
 /// Where every run's overlay directory is made: oneharness's per-user state
 /// directory (`$XDG_STATE_HOME`, else `~/.local/state`) under
-/// `oneharness/run-overlays`. `None` when neither is set: then there is no
-/// directory of oneharness's own to make one in (the host temp dir is shared,
-/// not oneharness's to restrict, and codex-cli refuses its helpers for a home
-/// there), so no overlay is made and a Codex grant is withheld.
+/// `oneharness/run-overlays`. `None` when neither is set, or the one that
+/// is names a relative path (which would land under whatever directory the
+/// run started in, as the XDG spec has such a value ignored): then there is
+/// no directory of oneharness's own to make one in (the host temp dir is
+/// shared, not oneharness's to restrict, and codex-cli refuses its helpers
+/// for a home there), so no overlay is made and a Codex grant is withheld.
 #[must_use]
 pub fn overlay_root() -> Option<PathBuf> {
-    crate::io::server_pool::state_dir().map(|dir| {
+    let state = crate::io::server_pool::state_dir().filter(|dir| dir.is_absolute());
+    state.map(|dir| {
         ROOT_COMPONENTS
             .iter()
             .fold(dir, |path, part| path.join(part))

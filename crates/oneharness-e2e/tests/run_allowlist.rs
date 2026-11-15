@@ -1346,6 +1346,35 @@ fn with_no_state_directory_codex_withholds_and_the_temp_dir_is_left_alone() {
         "the host temp dir's mode was changed"
     );
 
+    // A relative state directory is no place of oneharness's own either: it
+    // would land under whatever directory the run started in.
+    let started_in = world.path("project");
+    let profiles = ProfileScratch::new();
+    let output = world
+        .command(
+            &[
+                "run",
+                "--harness",
+                "codex",
+                "--mode",
+                "read-only",
+                "--prompt",
+                "judge it",
+            ],
+            &config,
+            &[("HOME", "home-rel"), ("XDG_STATE_HOME", "state-rel")],
+            &profiles,
+        )
+        .current_dir(&started_in)
+        .output()
+        .expect("run oneharness");
+    let messages = grant_messages(&json(&output));
+    assert!(
+        messages.len() == 1 && messages[0].contains("no per-user state directory"),
+        "{messages:?}"
+    );
+    assert!(!started_in.join("state-rel").exists() && !started_in.join("home-rel").exists());
+
     let report = run("claude-code");
     assert!(grant_messages(&report).is_empty(), "{report}");
     let argv = argv_of(&world.path("argv"));

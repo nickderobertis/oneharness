@@ -110,11 +110,16 @@ have_env() {
 #                 thread rollout under the home;
 #   pooled-kill   a pooled dispatch killed while its turn runs a heartbeat: the
 #                 heartbeat stops within DEAD_LEASE_SWEEP_INTERVAL (2 s) plus
-#                 DEAD_LEASE_STOP_DEADLINE (5 s);
+#                 DEAD_LEASE_STOP_DEADLINE (5 s), while a second dispatch holds
+#                 the same server's lease so only the pool's stop can end it;
 #   pooled-reuse  (Linux) the sustained-reuse workload, then onebudgetspec's
 #                 check over live/control/budgets.yaml.
 # OH_CONTROL_ONLY=pooled runs these alone (the gate's journeys drive them with
 # the mock harness standing for codex).
+
+# $1 as a single-quoted shell literal (any ' in it as '\''), so a path written
+# into a dispatch's command is always a path and never shell syntax.
+literal() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
 
 # Start one pooled codex dispatch in the background; its pid is in POOLED_PID.
 # Its session store is "$POOLED_DIR/s", one letter so the control socket's path
@@ -186,7 +191,6 @@ oh_pooled_env() {
   # '\''), so whatever TMPDIR holds is a path and never shell syntax; its
   # glob always matches the command's own arrival, so no shell's no-match
   # rule applies; the end is one fixed name, tested with -e, never a glob.
-  literal() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
   local meet_dir="$POOLED_DIR/meet" ended="$POOLED_DIR/ended" meet end
   mkdir -p "$meet_dir" ||
     fail "pooled-env: cannot create the rendezvous directory $meet_dir; check that $POOLED_DIR is writable"
@@ -243,8 +247,28 @@ oh_pooled_kill() {
   # drift apart.
   local sweep_s=2 stop_s=5
   local beat="$POOLED_DIR/heartbeat" pid lines last killed_at limit settled stamp now bound=$((sweep_s + stop_s)) waited=0 quiet=0
-  mkdir -p "$POOLED_DIR/wk" ||
-    fail "pooled-kill: cannot create the dispatch's working directory under $POOLED_DIR; check that it is writable"
+  local held="$POOLED_DIR/held" release="$POOLED_DIR/release" hold
+  mkdir -p "$POOLED_DIR/wk" "$POOLED_DIR/wh" ||
+    fail "pooled-kill: cannot create the dispatches' working directories under $POOLED_DIR; check that it is writable"
+  # A second dispatch holds the same server's lease until the verdict is in.
+  # Left with no lease, the server lingers out and stops during the watch, and
+  # whatever ends its process tree with it — the network recorder's measuring
+  # namespace does, on every Linux leg with pasta — ends an escaped heartbeat
+  # too, so a pool that never stopped it would pass. Held, the server outlives
+  # the watch, and only the pool's stop of the killed dispatch's commands can
+  # end the heartbeat. Its command ends on the release, or once this phase's
+  # directory is gone (a failing suite removes it), never on a clock.
+  _oh_pooled_start pooled-hold "$POOLED_DIR/hold.json" "$POOLED_DIR/wh" \
+    "$(printf ': >%s || exit 1; until [ -e %s ] || [ ! -d %s ]; do sleep 0.2; done' \
+      "$(literal "$held")" "$(literal "$release")" "$(literal "$POOLED_DIR/wh")")"
+  hold=$POOLED_PID
+  until [ -e "$held" ]; do
+    sleep 0.2
+    waited=$((waited + 1))
+    [ "$waited" -lt 900 ] || fail "pooled-kill: the holding dispatch's command never started (see $POOLED_DIR/hold.json.err)"
+    kill -0 "$hold" 2>/dev/null || fail "pooled-kill: the holding dispatch ended before its command started: $(cat "$POOLED_DIR/hold.json.err")"
+  done
+  waited=0
   # shellcheck disable=SC2016 # expanded by the dispatch's own shell, in its own environment
   OH_POOLED_BEAT="$beat" _oh_pooled_start pooled-kill "$POOLED_DIR/kill.json" "$POOLED_DIR/wk" \
     'while date +%s >>"$OH_POOLED_BEAT"; do sleep 0.1; done; echo "heartbeat: cannot append to $OH_POOLED_BEAT" >&2; exit 1'
@@ -309,6 +333,8 @@ oh_pooled_kill() {
     [ "$waited" -lt 300 ] ||
       fail "pooled-kill: the heartbeat was still not settled $((now - killed_at)) s after the kill (last line: $stamp)"
   done
+  : >"$release" || fail "pooled-kill: cannot create $release to end the holding dispatch; check that $POOLED_DIR is writable"
+  wait "$hold" || fail "pooled-kill: the holding dispatch failed: $(cat "$POOLED_DIR/hold.json.err")"
   note "  ok: the killed dispatch's heartbeat stopped $((stamp - killed_at)) s after the kill (bound ${bound} s)"
 }
 

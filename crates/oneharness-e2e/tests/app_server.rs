@@ -6144,6 +6144,58 @@ exec "$real" "$@""#,
 }
 // llmlint: ignore-end[e2e_not_mocked]
 
+// llmlint: ignore-block[e2e_not_mocked] The subject is scripts/e2e-control.sh's own pooled-kill verdict, run for real over the built oneharness and oneharness-core's pool; the `codex` wrapper is fault injection, not a mock — it execs the repository's codex double unchanged and only, once an app-server it launched has exited, sends SIGTERM to the commands that server recorded, as the network recorder's measuring namespace does to every process in it on the CI legs with pasta, because that namespace cannot be built on every host the gate runs on. Only codex is the repository's subprocess double, as in every ControlSuite journey.
+/// A heartbeat the pool never stops, ended by something else as its server
+/// stops — the network recorder's measuring namespace ends every process in
+/// it once the server it measures exits — still fails pooled-kill as one that
+/// kept beating: the phase holds the server's lease through its watch, so the
+/// server outlives it and only the pool's own stop can end the heartbeat.
+#[test]
+fn the_control_suite_s_pooled_kill_is_not_passed_by_a_heartbeat_its_server_s_end_stops() {
+    let suite = ControlSuite::new("pool-suite-tree");
+    // `codex` first on PATH: every invocation but `app-server` is the double
+    // itself; an app-server runs under it, and once it has exited every
+    // command it recorded is sent SIGTERM. A stop of the server (which carries
+    // the server marker, as this wrapper does) is passed on to it. The double's
+    // path is read from a file beside the pool, not the environment, which the
+    // pool's version probe clears; the double keeps its state in the pool's
+    // `mock` directory (CODEX_MOCK_DIR).
+    std::fs::remove_file(suite.pool.path("bin/codex")).unwrap();
+    std::fs::write(
+        suite.pool.path("real-codex"),
+        mock_bin().display().to_string(),
+    )
+    .unwrap();
+    suite.tool(
+        "codex",
+        r#"root="$(dirname "$0")/.."
+real="$(cat "$root/real-codex")" || exit 1
+case " $* " in *" app-server "*) ;; *) exec "$real" "$@" ;; esac
+: >"$root/server-tree-wrapped"
+"$real" "$@" &
+server=$!
+trap 'kill -TERM "$server" 2>/dev/null' TERM
+status=0
+while kill -0 "$server" 2>/dev/null; do wait "$server" || status=$?; done
+for pid in $(jq -r '.commands[]?.pid // empty' "$root/mock/state-$server.json" 2>/dev/null); do
+  kill -TERM "$pid" 2>/dev/null
+done
+exit "$status""#,
+    );
+    let failed = suite.run(&[("CODEX_MOCK_FAULT", "escape-marker")]);
+    let said = String::from_utf8_lossy(&failed.stderr);
+    assert!(
+        suite.pool.path("server-tree-wrapped").exists(),
+        "no app-server ran under the wrapper: {said}"
+    );
+    assert!(!failed.status.success(), "the suite passed: {said}");
+    assert!(
+        said.contains("FAIL: pooled-kill: ") && said.contains("kept beating"),
+        "expected `FAIL: pooled-kill: … kept beating` in: {said}"
+    );
+}
+// llmlint: ignore-end[e2e_not_mocked]
+
 // llmlint: ignore-block[e2e_not_mocked] The control suite's pooled-env phase runs for real — scripts/e2e-control.sh, the built oneharness behind a wrapper that only starts dispatch B late or ends it before it runs, and a host mktemp on PATH that cannot create a file, and oneharness-core's pool; only codex is the repository's subprocess double, as in every ControlSuite journey, because the gate cannot run real Codex. The same phase against real Codex is scripts/e2e-control.sh's live run.
 /// The suite's pooled-env dispatches share one server however late the
 /// second of them starts — here only once the first's command is already

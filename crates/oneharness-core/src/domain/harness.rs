@@ -107,7 +107,9 @@ pub struct BuildCtx<'a> {
     /// moves from `bypassPermissions` to `dontAsk` with `Bash` added to its
     /// `--tools` and the read tools allowed beside the rules, so the shell runs
     /// only what a rule names. `None` — every run without a run-level
-    /// allowlist — the argv is exactly what it was before the field existed.
+    /// allowlist — the argv is exactly what it was before the field existed,
+    /// and so it is for a grant resolved under another mode than this one's
+    /// ([`crate::domain::grant::ClaudeGrant::mode`]).
     pub allowed_tools: Option<&'a crate::domain::grant::ClaudeGrant>,
 }
 
@@ -1797,7 +1799,11 @@ fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
     // whatever no rule allows, so the read tools are allowed beside the
     // granted executables (without them `dontAsk` refuses a Read outside the
     // worktree and a WebFetch, which today's read-only allows).
-    let granted_read_only = c.allowed_tools.is_some() && c.mode == PermissionMode::ReadOnly;
+    // A grant applies only under the mode its rules were resolved for; under
+    // any other the run is exactly the ungranted one, so a grant `default`
+    // admitted (`Edit`, a bare `Bash`) can never widen a `read-only` run.
+    let grant = c.allowed_tools.filter(|grant| grant.mode() == c.mode);
+    let granted_read_only = grant.is_some() && c.mode == PermissionMode::ReadOnly;
     a.push("--permission-mode".into());
     a.push(if granted_read_only {
         "dontAsk".into()
@@ -1826,7 +1832,7 @@ fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
             a.push("Bash".into());
         }
     }
-    if let Some(grant) = c.allowed_tools {
+    if let Some(grant) = grant {
         a.push("--allowedTools".into());
         if granted_read_only {
             a.extend(
@@ -2498,6 +2504,38 @@ mod tests {
             tools: None,
             allowed_tools: None,
         }
+    }
+
+    /// A Claude Code grant applies only under the mode its rules were
+    /// resolved (and refused) for: one resolved under `default`, which may
+    /// hold `Edit` or a bare `Bash`, given to a context of any other mode
+    /// leaves the argv exactly the ungranted one, so it can never widen a
+    /// `read-only` run.
+    #[test]
+    fn a_claude_grant_applies_only_under_the_mode_it_was_resolved_for() {
+        let spec = by_id("claude-code").unwrap();
+        let rules = ["Bash".to_string(), "Edit".to_string()];
+        let resolved =
+            crate::domain::grant::resolve(&rules, PermissionMode::Default, &|_| None).unwrap();
+        let plan = crate::domain::grant::plan("claude-code", &resolved, None);
+        let wide = plan.claude().unwrap();
+        for mode in [
+            PermissionMode::ReadOnly,
+            PermissionMode::Plan,
+            PermissionMode::Edit,
+            PermissionMode::Auto,
+            PermissionMode::Bypass,
+        ] {
+            let mut c = ctx("claude", None, mode);
+            let plain = (spec.build_argv)(&c);
+            c.allowed_tools = Some(wide);
+            assert_eq!((spec.build_argv)(&c), plain, "{mode:?}");
+        }
+        let mut c = ctx("claude", None, PermissionMode::Default);
+        c.allowed_tools = Some(wide);
+        let argv = (spec.build_argv)(&c);
+        let at = argv.iter().position(|a| a == "--allowedTools").unwrap();
+        assert_eq!(argv[at + 1..at + 3], ["Bash", "Edit"], "{argv:?}");
     }
 
     #[test]

@@ -389,16 +389,26 @@ fn resolve_variable(
 }
 
 /// Claude Code's `--allowedTools` entries for one run: never empty, and
-/// built only by [`plan`] from resolved rules.
+/// built only by [`plan`] from rules resolved under [`ClaudeGrant::mode`],
+/// the one mode it applies under.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaudeGrant {
     entries: Vec<String>,
+    mode: PermissionMode,
 }
 
 impl ClaudeGrant {
     #[must_use]
     pub fn entries(&self) -> &[String] {
         &self.entries
+    }
+
+    /// The mode the entries were resolved (and refused) for. The Claude Code
+    /// adapter applies the grant only under this mode, since a rule another
+    /// mode admits (`Edit`, a bare `Bash`) would widen it.
+    #[must_use]
+    pub fn mode(&self) -> PermissionMode {
+        self.mode
     }
 }
 
@@ -602,7 +612,7 @@ pub fn plan(id: &str, resolved: &ResolvedRules, withhold: Option<&str>) -> Grant
             })
             .collect();
         return GrantPlan::Claude {
-            grant: ClaudeGrant { entries },
+            grant: ClaudeGrant { entries, mode },
             statement: statement(rules.iter().filter_map(ResolvedRule::executable)),
         };
     }

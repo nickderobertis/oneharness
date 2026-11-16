@@ -1760,6 +1760,7 @@ fn an_interrupt_reaches_only_its_own_dispatch_s_turn_over_its_own_connection() {
     }
 }
 
+// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run --control` and `oneharness interrupt` through the real pool; only codex is the repository's subprocess double, which can be made to hold a thread's release, leave an interrupt unanswered, report a thread gone, or answer an unparsable frame on demand — real Codex does none of these within the gate. The journey waits on the double's record of the dispatch's `thread/unsubscribe` because no dispatch-side output marks its turn's end: `--stream` publishes no event for `turn/completed`. Real Codex's pooled interrupt is held by scripts/e2e-control.sh's pooled-env phase.
 /// After its turn ended — the dispatch still alive, releasing its thread — an
 /// interrupt answers `no_active_turn` from oneharness's own record and sends
 /// nothing to a server that would never answer one; once the dispatch is gone
@@ -1783,13 +1784,28 @@ fn a_pooled_interrupt_answers_from_its_own_record_and_never_waits_unbounded() {
             ("MOCK_CODEX_INTERRUPT_SILENT", "1"),
         ],
     ));
-    wait_for("the turn to end", Duration::from_secs(20), || {
-        pool.server_pids().len() == 1
-            && pool.state(pool.server_pids()[0])["turns"]
-                .as_array()
-                .is_some_and(|turns| turns.iter().any(|t| t["status"] == "completed"))
-    });
+    // Waited on the dispatch, not the server: the server records its turn
+    // completed as it queues `turn/completed`, before the dispatch has read it,
+    // and an interrupt asked in that gap still finds the turn live in the
+    // dispatch's record and goes to the server. The dispatch asks to release
+    // its thread only after its own record has seen the turn end.
+    wait_for(
+        "the dispatch to release its ended turn's thread",
+        Duration::from_secs(20),
+        || {
+            pool.server_pids().len() == 1
+                && pool.state(pool.server_pids()[0])["unsubscribing"]
+                    .as_array()
+                    .is_some_and(|asks| !asks.is_empty())
+        },
+    );
     let server = pool.the_server();
+    assert!(
+        pool.state(server)["turns"]
+            .as_array()
+            .is_some_and(|turns| turns.iter().any(|t| t["status"] == "completed")),
+        "the turn ended before its thread was released"
+    );
     let started = Instant::now();
     let by_cli = interrupt(&pool, "ending").0;
     let by_socket = control_request(&pool.socket("ending"), INTERRUPT_LINE);
@@ -1903,6 +1919,7 @@ fn a_pooled_interrupt_answers_from_its_own_record_and_never_waits_unbounded() {
     sigkill(silent.id());
     let _ = silent.wait_with_output();
 }
+// llmlint: ignore-end[e2e_not_mocked]
 
 /// Spawn a dispatch of the fallback chain `config` names — its own
 /// candidates, so the default `--harness` is dropped — under `envs`.
@@ -6570,6 +6587,138 @@ fn the_control_suite_s_pooled_phases_pass_and_fail_for_the_right_reason() {
         );
     }
 }
+
+// llmlint: ignore-block[e2e_not_mocked] The subject is scripts/e2e-control.sh's own pooled-kill verdict, run for real over the built oneharness and oneharness-core's pool; the `date` wrapper is fault injection, not a mock — it only injects a two-second stall into the heartbeat before exec'ing the real `date`, because a real CPU stall of a loaded host cannot be forced deterministically within the gate. Only codex is the repository's subprocess double, as in every ControlSuite journey.
+/// A heartbeat the pool never stops that stalls for two seconds soon after
+/// the kill — the way a command starved of the CPU on a loaded host stalls —
+/// still fails pooled-kill as one that kept beating: a heartbeat gone still
+/// is not yet a stopped one, and the beats written after the stall show it.
+#[test]
+fn the_control_suite_s_pooled_kill_tells_a_stalled_heartbeat_from_a_stopped_one() {
+    let suite = ControlSuite::new("pool-suite-stall");
+    // `date` first on the dispatch's PATH: called by the heartbeat (the only
+    // caller with OH_POOLED_BEAT) once it has written 20 beats, it records the
+    // stall beside itself, sleeps two seconds, then runs the real `date`.
+    suite.tool(
+        "date",
+        r#"stalled="$(dirname "$0")/../date-stalled"
+real=""
+for candidate in $(type -ap date); do
+  [ "$candidate" -ef "$0" ] || { real="$candidate"; break; }
+done
+[ -n "$real" ] || { echo "date shim: no real date on PATH" >&2; exit 1; }
+if [ -n "${OH_POOLED_BEAT:-}" ] && [ ! -e "$stalled" ] && [ -e "$OH_POOLED_BEAT" ] &&
+  [ "$(wc -l <"$OH_POOLED_BEAT")" -ge 20 ]; then
+  : >"$stalled"
+  sleep 2
+fi
+exec "$real" "$@""#,
+    );
+    let failed = suite.run(&[("CODEX_MOCK_FAULT", "escape-marker")]);
+    let said = String::from_utf8_lossy(&failed.stderr);
+    assert!(
+        suite.pool.path("date-stalled").exists(),
+        "the heartbeat never stalled: {said}"
+    );
+    assert!(!failed.status.success(), "the suite passed: {said}");
+    assert!(
+        said.contains("FAIL: pooled-kill: ") && said.contains("kept beating"),
+        "expected `FAIL: pooled-kill: … kept beating` in: {said}"
+    );
+}
+// llmlint: ignore-end[e2e_not_mocked]
+
+// llmlint: ignore-block[e2e_not_mocked] The subject is scripts/e2e-control.sh's own pooled-kill verdict, run for real over the built oneharness and oneharness-core's pool; the `codex` wrapper is fault injection, not a mock — it execs the repository's codex double unchanged and only, once an app-server it launched has exited, sends SIGTERM to the commands that server recorded, as the network recorder's measuring namespace does to every process in it on the CI legs with pasta, because that namespace cannot be built on every host the gate runs on. Only codex is the repository's subprocess double, as in every ControlSuite journey.
+/// A heartbeat the pool never stops, ended by something else as its server
+/// stops — the network recorder's measuring namespace ends every process in
+/// it once the server it measures exits — still fails pooled-kill as one that
+/// kept beating: the phase holds the server's lease through its watch, so the
+/// server outlives it and only the pool's own stop can end the heartbeat.
+#[test]
+fn the_control_suite_s_pooled_kill_is_not_passed_by_a_heartbeat_its_server_s_end_stops() {
+    let suite = ControlSuite::new("pool-suite-tree");
+    // `codex` first on PATH: every invocation but `app-server` is the double
+    // itself; an app-server runs under it, and once it has exited every
+    // command it recorded is sent SIGTERM. A stop of the server (which carries
+    // the server marker, as this wrapper does) is passed on to it. The double's
+    // path is read from a file beside the pool, not the environment, which the
+    // pool's version probe clears; the double keeps its state in the pool's
+    // `mock` directory (CODEX_MOCK_DIR).
+    std::fs::remove_file(suite.pool.path("bin/codex")).unwrap();
+    std::fs::write(
+        suite.pool.path("real-codex"),
+        mock_bin().display().to_string(),
+    )
+    .unwrap();
+    suite.tool(
+        "codex",
+        r#"root="$(dirname "$0")/.."
+real="$(cat "$root/real-codex")" || exit 1
+case " $* " in *" app-server "*) ;; *) exec "$real" "$@" ;; esac
+: >"$root/server-tree-wrapped"
+"$real" "$@" &
+server=$!
+trap 'kill -TERM "$server" 2>/dev/null' TERM
+status=0
+while kill -0 "$server" 2>/dev/null; do wait "$server" || status=$?; done
+for pid in $(jq -r '.commands[]?.pid // empty' "$root/mock/state-$server.json" 2>/dev/null); do
+  kill -TERM "$pid" 2>/dev/null
+done
+exit "$status""#,
+    );
+    let failed = suite.run(&[("CODEX_MOCK_FAULT", "escape-marker")]);
+    let said = String::from_utf8_lossy(&failed.stderr);
+    assert!(
+        suite.pool.path("server-tree-wrapped").exists(),
+        "no app-server ran under the wrapper: {said}"
+    );
+    assert!(!failed.status.success(), "the suite passed: {said}");
+    assert!(
+        said.contains("FAIL: pooled-kill: ") && said.contains("kept beating"),
+        "expected `FAIL: pooled-kill: … kept beating` in: {said}"
+    );
+}
+// llmlint: ignore-end[e2e_not_mocked]
+
+// llmlint: ignore-block[e2e_not_mocked] The subject is scripts/e2e-control.sh's own pooled-kill verdict, run for real over the built oneharness and oneharness-core's pool; the `oneharness` wrapper only adds one CODEX_ variable to the killed dispatch's environment before exec'ing the real binary, which moves that dispatch's pool key exactly as a dispatch configured differently from the holder's would. Only codex is the repository's subprocess double, as in every ControlSuite journey, because the gate cannot run real Codex.
+/// pooled-kill's hold proves only the pool stopped the heartbeat when the
+/// holding and killed dispatches lease ONE server; on two, the killed one's
+/// server lingers out during the watch and whatever ends its tree could stop
+/// the heartbeat in the pool's place. A killed dispatch whose environment puts
+/// it on a server of its own fails the phase naming both dispatches' pool
+/// entries — even though the pool does stop its heartbeat — rather than
+/// passing a watch the hold no longer guards.
+#[test]
+fn the_control_suite_s_pooled_kill_fails_when_the_hold_and_the_killed_dispatch_lease_two_servers() {
+    let suite = ControlSuite::new("pool-suite-split");
+    let envs = suite.staged(
+        r#"case " $* " in *" --session pooled-kill "*) export CODEX_OH_POOLED_SPLIT=killed ;; esac"#,
+    );
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let out = suite.run(&envs);
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "the suite passed: {said}");
+    assert!(
+        said.contains("FAIL: pooled-kill: the holding dispatch (pid ")
+            && said.contains("do not lease one server"),
+        "expected `FAIL: pooled-kill: … do not lease one server` in: {said}"
+    );
+    let entries: Vec<&str> = said
+        .split("pool entry ")
+        .skip(1)
+        .filter_map(|rest| rest.split(',').next())
+        .collect();
+    assert_eq!(
+        entries.len(),
+        2,
+        "both dispatches' pool entries named: {said}"
+    );
+    assert!(
+        entries.iter().all(|entry| *entry != "none") && entries[0] != entries[1],
+        "each dispatch found on a server of its own: {said}"
+    );
+}
+// llmlint: ignore-end[e2e_not_mocked]
 
 // llmlint: ignore-block[e2e_not_mocked] The control suite's pooled-env phase runs for real — scripts/e2e-control.sh, the built oneharness behind a wrapper that only starts dispatch B late or ends it before it runs, and a host mktemp on PATH that cannot create a file, and oneharness-core's pool; only codex is the repository's subprocess double, as in every ControlSuite journey, because the gate cannot run real Codex. The same phase against real Codex is scripts/e2e-control.sh's live run.
 /// The suite's pooled-env dispatches share one server however late the

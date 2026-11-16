@@ -57,6 +57,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import ctypes
+import importlib.util
 import ipaddress
 import json
 import math
@@ -74,6 +75,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
+from types import ModuleType
 from typing import cast
 
 METHOD = "netns-pasta-ifcounters+connect-proxy"
@@ -93,6 +95,16 @@ MAX_REQUEST_HEAD = 65536
 # How long, after a signal ends pasta, the script waits for the namespace to
 # finish recording the measurement it took.
 RECORD_AFTER_SIGNAL_SECONDS = 5.0
+# How long pasta has to start the namespace's init before the script ends it
+# and reports the namespace unavailable, unless
+# CODEX_NETWORK_BREAKDOWN_START_SECONDS says otherwise: far above the fraction
+# of a second a namespace takes to start, so only a pasta that is stuck meets it.
+START_SECONDS = 30.0
+# How long pasta may outlive the measurement its namespace recorded, or a
+# timed-out launch the init's own SIGKILL, before the script ends it.
+PASTA_EXIT_GRACE_SECONDS = 5.0
+# The init's wait between a timed-out launch's SIGTERM and its SIGKILL.
+KILL_GRACE_SECONDS = 5.0
 # How much of a failed launch's stdout, or traced stderr, is shown when it was
 # not kept.
 LAUNCH_STDOUT_TAIL_LINES = 20
@@ -110,6 +122,20 @@ SPAN_PATH = re.compile(r'api\.path="?([^"\s}]+)')
 # whose port is not digits (`host:x`) is no URL this reads.
 URL = re.compile(r"^(https?|wss?)://([A-Za-z0-9.-]+)(?::(\d{1,5}))?(?=$|[/?#\s,])(/[^\s\"'?#]*)?")
 # llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
+# pasta's options: IPv4 only, and no port forwarded either way.
+PASTA_OPTIONS = (
+    "--config-net",
+    "--quiet",
+    "-4",
+    "-t",
+    "none",
+    "-u",
+    "none",
+    "-T",
+    "none",
+    "-U",
+    "none",
+)
 ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # A hostname a proxy request may name, in the limits the resolver's IDNA
 # encoding holds it to: 1 to 63 characters a label, at most 253 in all.
@@ -772,6 +798,8 @@ def init(args: argparse.Namespace) -> int:
     namespace, run the proxy and the launch, and record the measurement."""
     if sys.platform == "win32":
         raise Unusable("the measuring namespace is Linux-only; run this inside pasta on Linux")
+    # The script outside waits for this to know pasta started the namespace.
+    write_text(Path(args.result).with_name("started"), "")
     libc = ctypes.CDLL(None, use_errno=True)
     if libc.unshare(CLONE_NEWNS | CLONE_NEWPID) != 0:
         raise Unusable(
@@ -853,7 +881,7 @@ def init(args: argparse.Namespace) -> int:
             if deadline is not None and now > deadline and not timed_out:
                 timed_out = True
                 signal_namespace(signal.SIGTERM)
-                deadline = now + 5
+                deadline = now + KILL_GRACE_SECONDS
             elif timed_out and deadline is not None and now > deadline:
                 signal_namespace(signal.SIGKILL)
                 deadline = now + 3600
@@ -990,9 +1018,135 @@ def env_pair(text: str) -> tuple[str, str]:
     return key, value
 
 
+# llmlint: ignore-block[shared_internals_are_a_project_not_a_reach_in] Both are single-file scripts run by path under `python -I`, so neither has an import path; this reuses the recorder's launcher unchanged rather than copying it, and network-breakdown lists scripts/e2e-netmeasure.py in its Nx inputs so a recorder edit re-runs this suite.
+def recorder() -> ModuleType:
+    """scripts/e2e-netmeasure.py, the network recorder beside this script, whose
+    `through_bash` is how both start a program in pasta's namespace."""
+    path = Path(__file__).resolve().with_name("e2e-netmeasure.py")
+    spec = importlib.util.spec_from_file_location("e2e_netmeasure", path)
+    if spec is None or spec.loader is None or not path.is_file():
+        raise Unusable(
+            f"cannot load {path}, which starts the namespace's init; restore it beside this "
+            "script (git checkout -- scripts/e2e-netmeasure.py) and rerun"
+        )
+    module = importlib.util.module_from_spec(spec)
+    # Its dataclasses resolve their annotations through sys.modules.
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+# llmlint: ignore-end[shared_internals_are_a_project_not_a_reach_in]
+
+
+def start_seconds() -> float:
+    """How long pasta has to start the namespace: START_SECONDS, unless
+    CODEX_NETWORK_BREAKDOWN_START_SECONDS names another positive number."""
+    text = os.environ.get("CODEX_NETWORK_BREAKDOWN_START_SECONDS", "")
+    if text == "":
+        return START_SECONDS
+    try:
+        seconds = float(text)
+    except ValueError:
+        seconds = math.nan
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise Unusable(
+            f"CODEX_NETWORK_BREAKDOWN_START_SECONDS must be a finite number of seconds > 0, got "
+            f"{text!r}; fix or unset it"
+        )
+    return seconds
+
+
+class StderrRelay:
+    """pasta's stderr, copied to this script's as it comes, its tail kept to
+    say why a namespace did not start."""
+
+    def __init__(self, fd: int) -> None:
+        self.fd = fd
+        self.tail = b""
+        self.thread = threading.Thread(target=self.relay, daemon=True)
+        self.thread.start()
+
+    def relay(self) -> None:
+        while chunk := os.read(self.fd, 65536):
+            self.tail = (self.tail + chunk)[-2000:]
+            # The script's own stderr gone leaves nothing to relay to.
+            with contextlib.suppress(OSError):
+                os.write(2, chunk)
+
+    def said(self) -> str:
+        """What pasta said, on one line, once its stderr closed or two
+        seconds have passed (a process it left may still hold it)."""
+        self.thread.join(2)
+        return self.tail.decode(errors="replace").strip().replace("\n", " | ")[-500:]
+
+
+def end_group(run: subprocess.Popen[bytes]) -> None:
+    """Kill pasta and every process in its process group (it leads one, being
+    started in a new session), and reap it."""
+    with contextlib.suppress(ProcessLookupError):
+        if sys.platform == "win32":
+            run.kill()
+        else:
+            os.killpg(run.pid, signal.SIGKILL)
+    run.wait()
+
+
+def await_pasta(
+    run: subprocess.Popen[bytes],
+    scratch: Path,
+    stderr: StderrRelay,
+    pasta: str,
+    *,
+    start_within: float,
+    launch_timeout: float,
+) -> None:
+    """Wait for pasta, bounded by its own deadlines and by the launch: a
+    namespace not started within `start_within` seconds is refused; once it
+    has recorded its measurement, or the launch's --timeout and the init's
+    kill grace have run out, a pasta still running PASTA_EXIT_GRACE_SECONDS
+    later is ended with its process group. Without a --timeout, a launch that
+    has not ended is waited for, as it was asked to run."""
+    started, result = scratch / "started", scratch / "measurement.json"
+    start_by = time.monotonic() + start_within
+    while run.poll() is None and not started.exists():
+        if time.monotonic() >= start_by:
+            end_group(run)
+            raise Unusable(
+                f"pasta ({pasta}) started no namespace within {start_within:g} s and was ended "
+                f"(its stderr: {stderr.said() or 'no message'}). Rerun it by hand to see why: "
+                f"{pasta} --config-net --quiet -4 -- true; or {NAMESPACE_ADVICE}"
+            )
+        time.sleep(0.05)
+    launch_by = (
+        time.monotonic() + launch_timeout + KILL_GRACE_SECONDS + PASTA_EXIT_GRACE_SECONDS
+        if launch_timeout > 0
+        else None
+    )
+    exit_by: float | None = None
+    while run.poll() is None:
+        now = time.monotonic()
+        if exit_by is None and result.exists():
+            exit_by = now + PASTA_EXIT_GRACE_SECONDS
+        if (exit_by is not None and now >= exit_by) or (
+            exit_by is None and launch_by is not None and now >= launch_by
+        ):
+            end_group(run)
+            print(
+                f"codex-network-breakdown: warning: pasta ({pasta}) had not exited "
+                f"{PASTA_EXIT_GRACE_SECONDS:g} s after its launch "
+                f"{'was measured' if exit_by is not None else 'ran out of time'}, and was ended; "
+                f"if it recurs, run `{pasta} --config-net --quiet -4 -- true` by hand: a pasta "
+                "that does not return there is the one to replace (`apt install passt`)",
+                file=sys.stderr,
+            )
+            return
+        time.sleep(0.05)
+
+
 def measure(args: argparse.Namespace) -> int:
-    env = dict(os.environ)
-    env.update(args.env)
+    allowed = start_seconds()
+    through_bash = recorder().through_bash
     pasta = find_pasta() or fetch_pasta()
     try:
         scratch = tempfile.mkdtemp(prefix="codex-network-breakdown-")
@@ -1000,6 +1154,10 @@ def measure(args: argparse.Namespace) -> int:
         raise Unusable(
             f"cannot create a scratch directory: {error}; point TMPDIR at a writable directory"
         ) from None
+    # Set in this script's own environment only now that pasta is found and the
+    # scratch made, so the launch's --env values reach pasta alone, and
+    # `through_bash` restores them too where pasta's secure exec drops them.
+    os.environ.update(args.env)
     try:
         result = os.path.join(scratch, "measurement.json")
         trace_file = args.trace_out or os.path.join(scratch, "trace.log")
@@ -1024,31 +1182,31 @@ def measure(args: argparse.Namespace) -> int:
                 os.path.abspath(trace_file),
             ]
         inner += ["--launch-stdout", os.path.abspath(launch_stdout)]
-        command = [
+        # pasta starts /bin/bash, which then execs this script's init: Ubuntu
+        # 26.04's packaged pasta may start only programs under /usr/bin and
+        # /bin, and refuses the uv or toolcache python this runs in. Windows
+        # has neither /bin/bash nor the os.environb `through_bash` reads, and
+        # no pasta to confine: there the init is named directly, so a pasta
+        # that cannot start or records nothing is refused as on Linux.
+        launch = [*inner, "--", *args.argv]
+        command: list[str | bytes] = [
             pasta,
-            "--config-net",
-            "--quiet",
-            "-4",
-            "-t",
-            "none",
-            "-u",
-            "none",
-            "-T",
-            "none",
-            "-U",
-            "none",
+            *PASTA_OPTIONS,
             "--",
-            *inner,
-            "--",
-            *args.argv,
+            *(launch if sys.platform == "win32" else through_bash(launch)),
         ]
         try:
-            run = subprocess.Popen(command, env=env, start_new_session=True, stdout=sys.stderr)
+            run = subprocess.Popen(
+                command, start_new_session=True, stdout=sys.stderr, stderr=subprocess.PIPE
+            )
         except OSError as error:
             raise Unusable(
                 f"cannot start pasta ({pasta}): {error}; install passt (`apt install passt`) or "
                 "point CODEX_NETWORK_BREAKDOWN_PASTA at a pasta binary"
             ) from None
+        if run.stderr is None:  # stderr=PIPE always gives one; this narrows the type
+            raise RuntimeError("pasta started without its stderr pipe")
+        stderr = StderrRelay(run.stderr.fileno())
         interrupted: list[int] = []
 
         def forward(signum: int, _frame: object) -> None:
@@ -1069,7 +1227,15 @@ def measure(args: argparse.Namespace) -> int:
             ends = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
         for signum in ends:
             signal.signal(signum, forward)
-        run.wait()
+        await_pasta(
+            run,
+            Path(scratch),
+            stderr,
+            pasta,
+            start_within=allowed,
+            launch_timeout=float(args.timeout),
+        )
+        stderr.said()
         # A forwarded signal ends pasta at once, while the namespace's init is
         # still ending the launch's tree and recording what it measured.
         record_by = time.monotonic() + RECORD_AFTER_SIGNAL_SECONDS

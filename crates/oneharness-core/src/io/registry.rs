@@ -141,6 +141,12 @@ pub struct HarnessInfo {
     pub supports_images: bool,
     /// Whether a result's `calls` can carry per-call usage.
     pub supports_call_usage: bool,
+    /// Whether a run-level `allowed_tools` (outside `[sync]`) is applied to
+    /// one run on this harness, through per-run flags or a per-run overlay
+    /// that is removed when the run ends. `false`: the harness withholds it,
+    /// runs as it would with none, and the run's `diagnostics` say why.
+    /// Added in report schema `0.15`.
+    pub supports_run_allowed_tools: bool,
     /// The argv oneharness would build, with placeholders, so the adapter's
     /// shape is visible without running anything.
     pub example_command: Vec<String>,
@@ -222,6 +228,7 @@ fn describe(spec: &'static harness::HarnessSpec, cfg: &FileConfig) -> HarnessInf
         analytics: cfg.analytics_for(spec.id),
         model_catalog: None,
         tools: None,
+        allowed_tools: None,
     };
     let sync = spec.sync.as_ref();
     HarnessInfo {
@@ -260,6 +267,9 @@ fn describe(spec: &'static harness::HarnessSpec, cfg: &FileConfig) -> HarnessInf
         supports_mcp_off: lean::supports(spec.id, Setting::LoadMcp),
         supports_images: lean::supports(spec.id, Setting::Images),
         supports_call_usage: lean::supports(spec.id, Setting::Calls),
+        // Withheld by every harness where the grant is unproven (all but Linux).
+        supports_run_allowed_tools: lean::supports(spec.id, Setting::AllowedTools)
+            && crate::domain::grant::platform_withheld_reason().is_none(),
         example_command: (spec.build_argv)(&ctx),
         variants: cfg
             .harness

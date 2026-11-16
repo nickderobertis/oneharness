@@ -101,6 +101,16 @@ pub struct BuildCtx<'a> {
     /// together in the claude-code adapter. Other harnesses receive their tool
     /// set as args from [`crate::domain::lean::deliver`].
     pub tools: Option<&'a [ToolClass]>,
+    /// The run-level allowlist's Claude Code grant
+    /// ([`crate::domain::grant::GrantPlan::claude`]). Only claude-code reads
+    /// it: its entries ride `--allowedTools`, and under `read-only` the run
+    /// moves from `bypassPermissions` to `dontAsk` with `Bash` added to its
+    /// `--tools` and the read tools allowed beside the rules, so the shell runs
+    /// only what a rule names. `None` — every run without a run-level
+    /// allowlist — the argv is exactly what it was before the field existed,
+    /// and so it is for a grant resolved under another mode than this one's
+    /// ([`crate::domain::grant::ClaudeGrant::mode`]).
+    pub allowed_tools: Option<&'a crate::domain::grant::ClaudeGrant>,
 }
 
 /// How the user prompt reaches the harness.
@@ -1784,27 +1794,55 @@ fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
     } else {
         a.push(c.prompt.into());
     }
+    // A run-level allowlist under read-only cannot ride `bypassPermissions`,
+    // which would run any command once `Bash` is offered: `dontAsk` refuses
+    // whatever no rule allows, so the read tools are allowed beside the
+    // granted executables (without them `dontAsk` refuses a Read outside the
+    // worktree and a WebFetch, which today's read-only allows).
+    // A grant applies only under the mode its rules were resolved for; under
+    // any other the run is exactly the ungranted one, so a grant `default`
+    // admitted (`Edit`, a bare `Bash`) can never widen a `read-only` run.
+    let grant = c.allowed_tools.filter(|grant| grant.mode() == c.mode);
+    let granted_read_only = grant.is_some() && c.mode == PermissionMode::ReadOnly;
     a.push("--permission-mode".into());
-    a.push(claude_permission_mode(c.mode).into());
+    a.push(if granted_read_only {
+        "dontAsk".into()
+    } else {
+        claude_permission_mode(c.mode).into()
+    });
     // read-only: narrow the built-in set to the tools that only read. A lean
     // `tool_set` is the same one list (intersected with read-only's under that
     // mode), because a second `--tools` would widen the first.
-    match c.tools {
-        Some(classes) => {
-            let names = lean::claude_tool_names(classes, c.mode, CLAUDE_READ_ONLY_TOOLS);
-            a.push(lean::claude_tools_flag().into());
-            if names.is_empty() {
-                a.push(String::new());
-            }
-            a.extend(names.into_iter().map(String::from));
+    let selected_tools: Option<Vec<&str>> = match c.tools {
+        Some(classes) => Some(lean::claude_tool_names(
+            classes,
+            c.mode,
+            CLAUDE_READ_ONLY_TOOLS,
+        )),
+        None if c.mode == PermissionMode::ReadOnly => Some(CLAUDE_READ_ONLY_TOOLS.to_vec()),
+        None => None,
+    };
+    if let Some(names) = &selected_tools {
+        a.push(lean::claude_tools_flag().into());
+        if names.is_empty() && !granted_read_only {
+            a.push(String::new());
         }
-        None if c.mode == PermissionMode::ReadOnly => {
-            a.push(lean::claude_tools_flag().into());
-            for tool in CLAUDE_READ_ONLY_TOOLS {
-                a.push((*tool).into());
-            }
+        a.extend(names.iter().map(|name| (*name).to_string()));
+        if granted_read_only {
+            a.push("Bash".into());
         }
-        None => {}
+    }
+    if let Some(grant) = grant {
+        a.push("--allowedTools".into());
+        if granted_read_only {
+            a.extend(
+                selected_tools
+                    .iter()
+                    .flatten()
+                    .map(|name| (*name).to_string()),
+            );
+        }
+        a.extend(grant.entries().iter().cloned());
     }
     if let Some(m) = c.model {
         a.push("--model".into());
@@ -2464,7 +2502,40 @@ mod tests {
             analytics: false,
             model_catalog: None,
             tools: None,
+            allowed_tools: None,
         }
+    }
+
+    /// A Claude Code grant applies only under the mode its rules were
+    /// resolved (and refused) for: one resolved under `default`, which may
+    /// hold `Edit` or a bare `Bash`, given to a context of any other mode
+    /// leaves the argv exactly the ungranted one, so it can never widen a
+    /// `read-only` run.
+    #[test]
+    fn a_claude_grant_applies_only_under_the_mode_it_was_resolved_for() {
+        let spec = by_id("claude-code").unwrap();
+        let rules = ["Bash".to_string(), "Edit".to_string()];
+        let resolved =
+            crate::domain::grant::resolve(&rules, PermissionMode::Default, &|_| None).unwrap();
+        let plan = crate::domain::grant::plan("claude-code", &resolved, None);
+        let wide = plan.claude().unwrap();
+        for mode in [
+            PermissionMode::ReadOnly,
+            PermissionMode::Plan,
+            PermissionMode::Edit,
+            PermissionMode::Auto,
+            PermissionMode::Bypass,
+        ] {
+            let mut c = ctx("claude", None, mode);
+            let plain = (spec.build_argv)(&c);
+            c.allowed_tools = Some(wide);
+            assert_eq!((spec.build_argv)(&c), plain, "{mode:?}");
+        }
+        let mut c = ctx("claude", None, PermissionMode::Default);
+        c.allowed_tools = Some(wide);
+        let argv = (spec.build_argv)(&c);
+        let at = argv.iter().position(|a| a == "--allowedTools").unwrap();
+        assert_eq!(argv[at + 1..at + 3], ["Bash", "Edit"], "{argv:?}");
     }
 
     #[test]
@@ -3014,6 +3085,7 @@ mod tests {
             analytics: false,
             model_catalog: None,
             tools: None,
+            allowed_tools: None,
         };
         let argv = (spec.build_argv)(&ctx);
         assert!(
@@ -3099,6 +3171,7 @@ mod tests {
             analytics: false,
             model_catalog: None,
             tools: None,
+            allowed_tools: None,
         }
     }
 

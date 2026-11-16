@@ -41,6 +41,7 @@ use crate::domain::control::{self, ControlReport, ControlShape, DialAddress};
 use crate::domain::dialogue::{Dialogue, DialogueConfig, DialogueResume};
 use crate::domain::events::ActionEvent;
 use crate::domain::fallback::{self, RunMode};
+use crate::domain::grant;
 use crate::domain::harness::{self, BuildCtx, HarnessIdentity, HarnessSpec, PromptDelivery};
 use crate::domain::http::{self, HttpShape};
 use crate::domain::lean;
@@ -68,6 +69,8 @@ use crate::io::identity::{
 };
 use crate::io::lean as lean_io;
 use crate::io::model_catalog;
+#[cfg(target_os = "linux")]
+use crate::io::run_overlay::{self, HelperLaunch, RunOverlay};
 use crate::io::runner::{self, Job, NextRun, Outcome, ProcessSupervisor, SpawnControls};
 use crate::io::server_pool;
 use crate::io::session as session_io;
@@ -632,6 +635,14 @@ pub fn run_supervised(
     };
     let loaded = config_io::load(&args.config, args.no_config, &project_start)?;
     let cfg = &loaded.config;
+    // A granted run killed before it could remove its overlay (SIGKILL) left
+    // the directory, and maybe its harness, behind with the owner lock
+    // released. Every run that may spawn reclaims such orphans first; a live
+    // run's overlay is locked and left alone. Only Linux ever builds one.
+    #[cfg(target_os = "linux")]
+    if !args.print_command {
+        run_overlay::reclaim_orphans();
+    }
 
     // stdin can be consumed only once total, so `--prompt-file -` and
     // `--system-file -` cannot both read it (repeated `--prompt-file -` is caught
@@ -708,7 +719,6 @@ pub fn run_supervised(
             .cloned()
             .collect()
     };
-    refuse_run_level_allowlist(args, cfg, &selected_ids, &project_start)?;
     // `--run-mode` (CLI beats config; an unset mode is `RunMode::default()` —
     // the one source, which `config::explain` reports from too — on every
     // surface: a library caller, the CLI and the SDKs; `parallel` is the
@@ -1060,6 +1070,13 @@ pub fn run_supervised(
     // return path below). Never populated under --print-command (nothing spawns).
     let mut temp_files = TempPromptFiles::default();
     let mut unit_calls: Vec<lean_io::CallsPlan> = Vec::with_capacity(units.len());
+    // Per unit beside it: the overlay a granted Codex unit runs through (with
+    // what repairing the real home's thread index needs once the turn ends),
+    // and the environment the overlay sets, which the result reports.
+    #[cfg(target_os = "linux")]
+    let mut unit_overlays: Vec<Option<UnitOverlay>> = Vec::with_capacity(units.len());
+    let mut unit_overlay_env: Vec<std::collections::BTreeMap<String, String>> =
+        Vec::with_capacity(units.len());
 
     for (spec, selected_id, unit_model, unit_prompt) in &units {
         let spec = *spec;
@@ -1154,6 +1171,20 @@ pub fn run_supervised(
             Vec::new()
         };
         let lean_delivery = lean::deliver(spec.id, &lean_settings, &codex_mcp, mode);
+        // The run-level allowlist, resolved against the environment this unit
+        // would spawn with and planned for its harness. Empty — every run whose
+        // config sets none — it changes nothing below.
+        let unit_grant = plan_unit_grant(
+            cfg,
+            spec,
+            selected_id,
+            mode,
+            &project_start,
+            args.cwd.as_deref(),
+            &lean_delivery.env,
+            &cli_env,
+            &args.passthrough,
+        )?;
         // Ahead of every caller-supplied arg, so a caller's own later override
         // of the same key still wins.
         let mut extra: Vec<String> = lean_delivery.args.clone();
@@ -1194,7 +1225,10 @@ pub fn run_supervised(
             // with a reasoning suffix above for a model-suffix harness (cursor).
             // The *recorded* model (in the result) stays the plain `unit_model`.
             model: plan_model,
-            system: system.map(str::to_string),
+            // The turn's system instructions gain the grant's statement — each
+            // granted executable by its absolute path — through the harness's
+            // own system mapping, only where a rule is actually applied.
+            system: grant::with_statement(system, unit_grant.statement()),
             // A `--session` continue supplies the native token to resume with,
             // reusing the harness's verified `--resume` mapping; a create (or no
             // session) leaves it to the explicit `--resume` value (they are
@@ -1232,6 +1266,7 @@ pub fn run_supervised(
                 PromptDelivery::Argv
             },
             tools: lean_settings.tool_set.clone(),
+            allowed_tools: unit_grant.claude().cloned(),
             images: if image_frame {
                 images.clone()
             } else {
@@ -1244,11 +1279,44 @@ pub fn run_supervised(
         };
         let shared_model_catalog =
             harness::has_plugins_toggle(spec.id) && cfg.shared_model_catalog_for(selected_id);
+        // A granted Codex turn runs on a home of its own, so a controlled one
+        // starts its own app-server there: a pooled server's rules are its
+        // home's, which would grant every lease or none.
+        #[cfg(target_os = "linux")]
+        let codex_overlay = unit_grant.codex_overlay();
+        #[cfg(target_os = "linux")]
+        let unit_app_server = if codex_overlay.is_some() {
+            None
+        } else {
+            unit_app_server
+        };
+        // Only Linux opens an overlay, the one thing that sets this; elsewhere
+        // every result reports the empty environment.
+        #[cfg(target_os = "linux")]
+        let mut overlay_env = std::collections::BTreeMap::new();
+        #[cfg(not(target_os = "linux"))]
+        let overlay_env = std::collections::BTreeMap::new();
+        #[cfg(target_os = "linux")]
+        if codex_overlay.is_some() && args.print_command {
+            overlay_env.insert(
+                "CODEX_HOME".to_string(),
+                format!("{}/codex-home", run_overlay::PLANNED_OVERLAY),
+            );
+            overlay_env.insert(
+                run_overlay::MARKER_ENV.to_string(),
+                run_overlay::PLANNED_OVERLAY.to_string(),
+            );
+        }
+        #[cfg(target_os = "linux")]
+        let mut unit_overlay: Option<UnitOverlay> = None;
 
+        // The unit's own system text: the run's, plus the grant's statement
+        // where a rule is applied, so a materialized system file carries both.
+        let unit_system = harness_plan.system.clone();
         plan_input(
             &mut harness_plan,
             spec,
-            system,
+            unit_system.as_deref(),
             jobs.len(),
             &mut temp_files,
             true,
@@ -1324,7 +1392,7 @@ pub fn run_supervised(
             plan_input(
                 &mut harness_plan,
                 spec,
-                system,
+                unit_system.as_deref(),
                 job_index,
                 &mut temp_files,
                 false,
@@ -1361,6 +1429,35 @@ pub fn run_supervised(
                 }
                 harness_plan.model_catalog = choice.catalog;
             }
+            // After the catalog: it is the real home's, shared with every
+            // ungranted launch, never the overlay's.
+            #[cfg(target_os = "linux")]
+            let mut env_remove = env_remove;
+            #[cfg(target_os = "linux")]
+            if let Some(codex) = &codex_overlay {
+                let mut overlaid = open_codex_overlay(
+                    codex.rules,
+                    codex.real_home,
+                    &resolved.bin,
+                    &job_env,
+                    &env_remove,
+                    args.cwd.as_deref(),
+                )?;
+                overlaid.resumed = harness_plan.resume.clone();
+                let (marker_name, marker_value) = overlaid.overlay.marker();
+                job_env.push((
+                    "CODEX_HOME".to_string(),
+                    overlaid.home.display().to_string(),
+                ));
+                job_env.push((marker_name.clone(), marker_value.clone()));
+                env_remove.retain(|name| name != "CODEX_HOME" && name != &marker_name);
+                overlay_env.insert(
+                    "CODEX_HOME".to_string(),
+                    overlaid.home.display().to_string(),
+                );
+                overlay_env.insert(marker_name, marker_value);
+                unit_overlay = Some(overlaid);
+            }
             let built = harness_plan.build(schema.as_ref(), None);
             if unit_control.is_some() {
                 unit_control_prompt = Some(built.prompt.clone());
@@ -1383,15 +1480,27 @@ pub fn run_supervised(
             });
             job_plans.push(harness_plan);
         }
+        let mut diagnostics = lean_delivery.diagnostics;
+        diagnostics.extend(unit_grant.diagnostics());
         let mut calls_plan = lean_io::CallsPlan {
-            diagnostics: lean_delivery.diagnostics,
+            diagnostics,
             codex_home: None,
             codex_resumed_from: None,
         };
         if spec.id == "codex" && jobs.len() > jobs_before {
-            calls_plan.codex_home = jobs
-                .last()
-                .and_then(|job| lean_io::codex_home(&job.env, &job.env_remove, job.cwd.as_deref()));
+            // An overlaid run's rollout is in the real home its `sessions/`
+            // links to, which outlives the overlay.
+            #[cfg(target_os = "linux")]
+            let overlaid_home = unit_overlay
+                .as_ref()
+                .map(|overlaid| overlaid.real_home.clone());
+            #[cfg(not(target_os = "linux"))]
+            let overlaid_home: Option<PathBuf> = None;
+            calls_plan.codex_home = overlaid_home.or_else(|| {
+                jobs.last().and_then(|job| {
+                    lean_io::codex_home(&job.env, &job.env_remove, job.cwd.as_deref())
+                })
+            });
             if let Some(thread) = job_plans.last().and_then(|plan| plan.resume.clone()) {
                 calls_plan.note_codex_resume(&thread);
             }
@@ -1399,6 +1508,9 @@ pub fn run_supervised(
         unit_calls.push(calls_plan);
         control_prompts.push(unit_control_prompt);
         control_app_servers.push(unit_app_server);
+        #[cfg(target_os = "linux")]
+        unit_overlays.push(unit_overlay);
+        unit_overlay_env.push(overlay_env);
     }
     debug_assert_eq!(control_prompts.len(), plan.len());
 
@@ -1777,6 +1889,22 @@ pub fn run_supervised(
     {
         apply_result_identity(result, selected_id);
         lean_io::attach(result, calls_plan);
+    }
+    // Every granted turn has ended (and a controlled one's own app-server has
+    // retired with it): record each thread the run touched in the real home's
+    // thread index, return what Codex wrote at the overlay home's top level,
+    // and remove the overlay.
+    for (result, env) in results.iter_mut().zip(unit_overlay_env) {
+        result.overlay_env = env;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        for (result, overlaid) in results.iter_mut().zip(unit_overlays.iter_mut()) {
+            if let Some(overlaid) = overlaid.take() {
+                result.overlay_timings = Some(overlaid.finish(result.session_id.as_deref()));
+            }
+        }
+        drop(unit_overlays);
     }
     if let Some(report) = fallback_report.as_mut() {
         for (fallthrough, result) in report.fell_through.iter_mut().zip(&results) {
@@ -4581,6 +4709,8 @@ fn planned_result(
         usage_source: None,
         calls: None,
         diagnostics: Vec::new(),
+        overlay_env: std::collections::BTreeMap::new(),
+        overlay_timings: None,
         session_id: None,
         events: None,
         events_source: None,
@@ -4627,6 +4757,8 @@ fn skipped_result(
         usage_source: None,
         calls: None,
         diagnostics: Vec::new(),
+        overlay_env: std::collections::BTreeMap::new(),
+        overlay_timings: None,
         session_id: None,
         events: None,
         events_source: None,
@@ -4988,6 +5120,8 @@ fn executed_result(
         usage_source,
         calls: None,
         diagnostics: Vec::new(),
+        overlay_env: std::collections::BTreeMap::new(),
+        overlay_timings: None,
         session_id,
         events: normalized_events,
         events_source,
@@ -5074,6 +5208,9 @@ struct HarnessPlan {
     model_catalog: Option<PathBuf>,
     /// The lean `tool_set`, carried to [`BuildCtx::tools`].
     tools: Option<Vec<lean::ToolClass>>,
+    /// The run-level allowlist's Claude Code grant, carried to
+    /// [`BuildCtx::allowed_tools`]; `None` for every other harness.
+    allowed_tools: Option<grant::ClaudeGrant>,
     /// The images a [`PromptDelivery::MessageFrame`] carries (claude-code);
     /// empty otherwise — a path-taking harness has them in `extra`.
     images: Vec<lean::ImageInput>,
@@ -5166,6 +5303,7 @@ impl HarnessPlan {
             analytics: self.analytics,
             model_catalog: self.model_catalog.as_deref(),
             tools: self.tools.as_deref(),
+            allowed_tools: self.allowed_tools.as_ref(),
         };
         let argv = harness::argv_with_caller_args(self.spec, &ctx, &self.extra);
         let prompt =
@@ -5675,37 +5813,415 @@ pub(crate) fn parse_env(values: &[String]) -> Result<Vec<(String, String)>, Oneh
         .collect()
 }
 
-/// Refuse a run whose resolved config holds a run-level `allowed_tools` rule
-/// for any selected harness, before anything is spawned. Outside `[sync]`,
-/// `allowed_tools` is the run-level allowlist, which this release does not
-/// apply: running anyway would silently ignore a permission the config asks
-/// for, so the run stops and names it.
-fn refuse_run_level_allowlist(
-    args: &RunRequest,
+/// One unit's run-level allowlist, resolved and planned for its harness.
+/// Each applying variant carries what its delivery needs, so a Codex grant
+/// cannot exist without the real home its overlay links into.
+enum UnitGrant {
+    /// No run-level rule for this unit: the run is exactly as without.
+    None,
+    /// The grant is withheld, and this diagnostic says why.
+    Withheld(lean::Diagnostic),
+    /// No rule is one the harness can express; nothing reaches it.
+    Unexpressible(lean::Diagnostic),
+    /// Claude Code's `--allowedTools` entries. Like every applying variant,
+    /// Linux only: everywhere else the platform withholds the grant.
+    #[cfg(target_os = "linux")]
+    Claude {
+        grant: grant::ClaudeGrant,
+        statement: Option<String>,
+    },
+    /// A Codex grant, applied through an overlay of `real_home`.
+    #[cfg(target_os = "linux")]
+    Codex {
+        grant: grant::CodexGrant,
+        statement: Option<String>,
+        unmapped: Option<lean::Diagnostic>,
+        real_home: PathBuf,
+    },
+}
+
+#[cfg(target_os = "linux")]
+struct CodexOverlayPlan<'a> {
+    rules: &'a str,
+    real_home: &'a std::path::Path,
+}
+
+impl UnitGrant {
+    fn statement(&self) -> Option<&str> {
+        match self {
+            #[cfg(target_os = "linux")]
+            UnitGrant::Claude { statement, .. } | UnitGrant::Codex { statement, .. } => {
+                statement.as_deref()
+            }
+            UnitGrant::None | UnitGrant::Withheld(_) | UnitGrant::Unexpressible(_) => None,
+        }
+    }
+
+    fn claude(&self) -> Option<&grant::ClaudeGrant> {
+        match self {
+            #[cfg(target_os = "linux")]
+            UnitGrant::Claude { grant, .. } => Some(grant),
+            _ => None,
+        }
+    }
+
+    fn diagnostics(&self) -> Vec<lean::Diagnostic> {
+        match self {
+            UnitGrant::Withheld(d) | UnitGrant::Unexpressible(d) => vec![d.clone()],
+            #[cfg(target_os = "linux")]
+            UnitGrant::Codex {
+                unmapped: Some(d), ..
+            } => vec![d.clone()],
+            _ => Vec::new(),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn codex_overlay(&self) -> Option<CodexOverlayPlan<'_>> {
+        match self {
+            UnitGrant::Codex {
+                grant, real_home, ..
+            } => Some(CodexOverlayPlan {
+                rules: grant.rules(),
+                real_home,
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// Resolve and plan the run-level allowlist for one unit, before anything is
+/// spawned. Empty when the config sets none for the unit's selector — then
+/// nothing is read and the plan is empty.
+///
+/// A `$NAME` command resolves against the environment the unit would spawn
+/// with: the harness's own defaults and its mode's, the lean settings', the
+/// config's `env` and the identity's `env_from`, then `--env`, with
+/// `unset_env` removing a name last — the same layering the job gets.
+#[allow(clippy::too_many_arguments)] // llmlint: ignore[suppressions_justified] Each argument is one input of the unit's spawn environment or identity, read at the one call site in the unit loop; a struct would only restate the loop's locals.
+fn plan_unit_grant(
     cfg: &crate::domain::config::FileConfig,
-    selected_ids: &[String],
+    spec: &'static HarnessSpec,
+    selected_id: &str,
+    mode: PermissionMode,
     project_start: &std::path::Path,
-) -> Result<(), OneharnessError> {
-    let Some((id, rules)) = selected_ids.iter().find_map(|id| {
-        let rules = cfg.allowed_tools_for(id);
-        (!rules.is_empty()).then_some((id, rules))
-    }) else {
-        return Ok(());
+    cwd: Option<&std::path::Path>,
+    lean_env: &[(String, String)],
+    cli_env: &[(String, String)],
+    passthrough: &[String],
+) -> Result<UnitGrant, OneharnessError> {
+    let rules = cfg.allowed_tools_for(selected_id);
+    if rules.is_empty() {
+        return Ok(UnitGrant::None);
+    }
+    let mut env: Vec<(String, String)> = spec
+        .default_env
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    if let Some(ms) = spec.mode(mode) {
+        env.extend(ms.env.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+    }
+    env.extend(lean_env.iter().cloned());
+    env.extend(variant_environment(cfg, selected_id, project_start)?);
+    env.extend(cli_env.iter().cloned());
+    let env_remove = cfg
+        .variant_for(selected_id)
+        .map_or_else(Vec::new, |variant| variant.unset_env.clone());
+    let lookup = |name: &str| -> Option<String> {
+        if env_remove.iter().any(|removed| removed == name) {
+            return None;
+        }
+        env.iter()
+            .rev()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.clone())
+            .or_else(|| std::env::var(name).ok())
     };
-    // Only on refusal: read the layers again to name the file the rules are in.
-    let layers = config_io::load_layers(&args.config, args.no_config, project_start)?;
-    let source_file = crate::domain::config::allowed_tools_source(&layers, id)
-        .unwrap_or("the loaded config")
-        .to_string();
-    Err(OneharnessError::RunLevelAllowlistNotApplied {
-        harness: id.clone(),
-        rules: rules
-            .iter()
-            .map(|rule| format!("`{rule}`"))
-            .collect::<Vec<_>>()
-            .join(", "),
-        source_file,
+    let resolved = grant::resolve(rules, mode, &lookup).map_err(|refusal| {
+        OneharnessError::RunAllowlistRefused {
+            harness: selected_id.to_string(),
+            refusal,
+        }
+    })?;
+    let platform_reason = grant::platform_withheld_reason();
+    // Every variant but Codex's is the plan's own; a Codex plan becomes a
+    // grant only with the real home its overlay links into, and is withheld
+    // when there is none.
+    Ok(
+        match grant::plan(spec.id, &resolved, platform_reason.as_deref()) {
+            grant::GrantPlan::None => UnitGrant::None,
+            grant::GrantPlan::Withheld(d) => UnitGrant::Withheld(d),
+            grant::GrantPlan::Unexpressible(d) => UnitGrant::Unexpressible(d),
+            // Off Linux the platform's reason withholds every plan before one
+            // can apply, so these arms are Linux's alone.
+            #[cfg(not(target_os = "linux"))]
+            grant::GrantPlan::Claude { .. } | grant::GrantPlan::Codex { .. } => {
+                let _ = (cwd, passthrough);
+                UnitGrant::Withheld(grant::withheld(
+                    spec.id,
+                    &resolved,
+                    platform_reason.as_deref().unwrap_or_default(),
+                ))
+            }
+            #[cfg(target_os = "linux")]
+            grant::GrantPlan::Claude { grant, statement } => UnitGrant::Claude { grant, statement },
+            #[cfg(target_os = "linux")]
+            grant::GrantPlan::Codex {
+                grant,
+                statement,
+                unmapped,
+            } => {
+                let fallback_cwd;
+                let cwd = match cwd {
+                    Some(cwd) => cwd,
+                    None => {
+                        fallback_cwd = project_start.to_path_buf();
+                        &fallback_cwd
+                    }
+                };
+                let home = lean_io::codex_home(&env, &env_remove, Some(cwd));
+                // Every arg the launch carries that can name a login store:
+                // the identity's own, then the caller's passthrough, which
+                // rides last.
+                let launch_args: Vec<String> = cfg
+                    .args_for(selected_id)
+                    .iter()
+                    .chain(passthrough)
+                    .cloned()
+                    .collect();
+                match codex_overlay_home(home.as_deref(), &launch_args) {
+                    Err(reason) => {
+                        UnitGrant::Withheld(grant::withheld(spec.id, &resolved, &reason))
+                    }
+                    Ok(real_home) => UnitGrant::Codex {
+                        grant,
+                        statement,
+                        unmapped,
+                        real_home: real_home.to_path_buf(),
+                    },
+                }
+            }
+        },
+    )
+}
+
+/// Every `-c` / `--config` override in a Codex argv, in order, as `(key,
+/// value)`: the separate (`-c k=v`, `--config k=v`) and attached (`-ck=v`,
+/// `--config=k=v`) spellings Codex accepts, with whitespace around `=`
+/// trimmed and a quoted TOML string value unquoted.
+#[cfg(target_os = "linux")]
+fn codex_config_overrides(args: &[String]) -> Vec<(String, String)> {
+    let mut overrides = Vec::new();
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        let assignment = match arg.as_str() {
+            "-c" | "--config" => args.next().map(String::as_str),
+            other => other
+                .strip_prefix("--config=")
+                .or_else(|| other.strip_prefix("-c").filter(|rest| !rest.is_empty())),
+        };
+        if let Some((key, value)) = assignment.and_then(|a| a.split_once('=')) {
+            let value = value.trim();
+            let value = value
+                .strip_prefix('"')
+                .and_then(|v| v.strip_suffix('"'))
+                .or_else(|| value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')))
+                .unwrap_or(value);
+            overrides.push((key.trim().to_string(), value.to_string()));
+        }
+    }
+    overrides
+}
+
+/// The real home this Codex run's grant can be applied through an overlay
+/// of, or why it cannot.
+#[cfg(target_os = "linux")]
+fn codex_overlay_home<'a>(
+    home: Option<&'a std::path::Path>,
+    args: &[String],
+) -> Result<&'a std::path::Path, String> {
+    if run_overlay::overlay_root().is_none() {
+        return Err(
+            "there is no per-user state directory (an absolute `$XDG_STATE_HOME`, or \
+             `$HOME`) of oneharness's own to make its overlay in"
+                .to_string(),
+        );
+    }
+    let Some(home) = home.filter(|home| home.is_dir()) else {
+        return Err(format!(
+            "its home{} does not exist, so an overlay has no login or sessions to link to",
+            home.map(|h| format!(" `{}`", h.display()))
+                .unwrap_or_default()
+        ));
+    };
+    // The store the home's own config names. A config that cannot be read or
+    // parsed, or names the store as anything but a string, leaves the store
+    // unknown — and an unknown store may be the keyring, so the grant is
+    // withheld rather than built over a login the overlay might not reach.
+    let config = home.join("config.toml");
+    let configured = match std::fs::read_to_string(&config) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(format!(
+                "its config `{}` could not be read ({error}), so where its login is stored is \
+                 unknown",
+                config.display()
+            ))
+        }
+        Ok(text) => match text.parse::<toml::Table>() {
+            Err(error) => {
+                return Err(format!(
+                    "its config `{}` is not valid TOML ({}), so where its login is stored is \
+                     unknown",
+                    config.display(),
+                    error.message()
+                ))
+            }
+            Ok(table) => match table.get("cli_auth_credentials_store") {
+                None => None,
+                Some(toml::Value::String(store)) => Some(store.clone()),
+                Some(other) => {
+                    return Err(format!(
+                        "its config `{}` names `cli_auth_credentials_store` as {other}, not a \
+                         store, so where its login is stored is unknown",
+                        config.display()
+                    ))
+                }
+            },
+        },
+    };
+    let overridden = codex_config_overrides(args)
+        .into_iter()
+        .rev()
+        .find_map(|(key, value)| (key == "cli_auth_credentials_store").then_some(value));
+    // Only the file store (Codex's default) keeps the login where the
+    // overlay's link reaches; `keyring` and `auto` may keep it in the OS
+    // keyring, keyed by the home's path, and a store this release does not
+    // know could keep it anywhere.
+    match overridden.or(configured).as_deref() {
+        None | Some("file") => Ok(home),
+        Some(store @ ("keyring" | "auto")) => Err(format!(
+            "its login may be stored in the OS keyring (`cli_auth_credentials_store = \"{store}\"`), \
+             which Codex keys by the home's path, so an overlay home cannot reach it"
+        )),
+        Some(store) => Err(format!(
+            "its login store `cli_auth_credentials_store = \"{store}\"` is not one an overlay is \
+             known to reach (only `file` is)"
+        )),
+    }
+}
+
+/// A granted Codex unit's open overlay, with what finishing it needs.
+#[cfg(target_os = "linux")]
+struct UnitOverlay {
+    overlay: RunOverlay,
+    home: PathBuf,
+    real_home: PathBuf,
+    bin: String,
+    /// The unit's environment without the overlay's `CODEX_HOME`, so the
+    /// repair app-server runs on the real home exactly as the identity's
+    /// ungranted turn would.
+    env: Vec<(String, String)>,
+    env_remove: Vec<String>,
+    cwd: Option<PathBuf>,
+    /// A thread this run continued (`--resume` / `--session`), which the
+    /// repair reads too.
+    resumed: Option<String>,
+    build: Duration,
+}
+
+#[cfg(target_os = "linux")]
+impl UnitOverlay {
+    fn launch_args() -> Vec<String> {
+        [
+            "app-server",
+            "-c",
+            "features.plugins=false",
+            "-c",
+            "features.apps=false",
+            "-c",
+            "analytics.enabled=false",
+        ]
+        .map(String::from)
+        .to_vec()
+    }
+
+    /// Record the run's thread in the real home's index, then remove the
+    /// overlay (returning what Codex wrote at its top level). Answers what
+    /// the overlay cost.
+    fn finish(self, session: Option<&str>) -> crate::domain::report::OverlayTimings {
+        let started = Instant::now();
+        let args = Self::launch_args();
+        let launch = HelperLaunch {
+            bin: &self.bin,
+            args: &args,
+            env: &self.env,
+            env_remove: &self.env_remove,
+            cwd: self.cwd.as_deref(),
+        };
+        let mut threads: Vec<String> = session.map(str::to_string).into_iter().collect();
+        if let Some(resumed) = self.resumed.filter(|r| !threads.contains(r)) {
+            threads.push(resumed);
+        }
+        // Sweep first, so a file Codex created is in the real home before the
+        // repair app-server starts there.
+        let build = self.build;
+        let UnitOverlay { overlay, .. } = self;
+        overlay.sweep_now();
+        overlay.repair_threads(&launch, &threads);
+        overlay.finish();
+        crate::domain::report::OverlayTimings {
+            build_ms: millis(build),
+            teardown_ms: millis(started.elapsed()),
+        }
+    }
+}
+
+/// Create a granted Codex unit's overlay: its home linking `real_home`, its
+/// per-run rules, and its own thread index seeded by `bin`.
+#[cfg(target_os = "linux")]
+fn open_codex_overlay(
+    rules: &str,
+    real_home: &std::path::Path,
+    bin: &str,
+    env: &[(String, String)],
+    env_remove: &[String],
+    cwd: Option<&std::path::Path>,
+) -> Result<UnitOverlay, OneharnessError> {
+    let started = Instant::now();
+    let failed = |source: std::io::Error| OneharnessError::RunOverlay { source };
+    let mut overlay = RunOverlay::create().map_err(failed)?;
+    // A link that cannot be made fails here through the same error, dropping
+    // (and so removing) the half-built overlay. The journey
+    // `an_overlay_that_cannot_be_made_stops_the_run_before_anything_spawns`
+    // proves that path from `create`; a filesystem that refuses a symlink
+    // inside a directory oneharness has just made cannot be arranged portably.
+    let home = overlay.codex_home(real_home, rules).map_err(failed)?;
+    let args = UnitOverlay::launch_args();
+    overlay.seed_thread_index(&HelperLaunch {
+        bin,
+        args: &args,
+        env,
+        env_remove,
+        cwd,
+    });
+    Ok(UnitOverlay {
+        overlay,
+        home,
+        real_home: real_home.to_path_buf(),
+        bin: bin.to_string(),
+        env: env.to_vec(),
+        env_remove: env_remove.to_vec(),
+        cwd: cwd.map(std::path::Path::to_path_buf),
+        resumed: None,
+        build: started.elapsed(),
     })
+}
+
+#[cfg(target_os = "linux")]
+fn millis(elapsed: Duration) -> u64 {
+    u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]
@@ -5734,6 +6250,8 @@ mod tests {
             usage_source: None,
             calls: None,
             diagnostics: Vec::new(),
+            overlay_env: std::collections::BTreeMap::new(),
+            overlay_timings: None,
             session_id: None,
             events: None,
             events_source: None,
@@ -5879,6 +6397,7 @@ mod tests {
             analytics: false,
             model_catalog: None,
             tools: None,
+            allowed_tools: None,
             images: Vec::new(),
         }
     }

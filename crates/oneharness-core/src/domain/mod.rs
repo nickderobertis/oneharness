@@ -14,6 +14,8 @@ pub mod dialogue;
 pub mod events;
 pub mod fallback;
 pub mod gate;
+// The run-level allowlist one run applies (`allowed_tools` outside `[sync]`).
+pub mod grant;
 pub mod harness;
 pub mod history;
 pub mod history_index;

@@ -28,3 +28,35 @@ budgets:
     direction: max
     threshold: 1.5
     timeout_seconds: 120
+  # Seconds a run-level allowlist adds to a controlled Codex turn, read from the
+  # telemetry scripts/e2e-control.sh's run-overlay phase writes
+  # (target/e2e-telemetry/run-overlay/codex-turn.json) on its Linux leg.
+  - id: codex-run-overlay-added-seconds
+    description: >-
+      Seconds 2 concurrent granted Codex turns add: the wall-clock seconds the
+      slowest of 2 concurrent `oneharness run --control` Codex turns with a
+      run-scoped allowlist takes, from its oneharness process's start to its
+      exit, minus the same for 2 concurrent turns without the allowlist on the
+      warm pooled app-server. Each granted turn's span covers building its
+      overlay home, cold-starting its own app-server, the turn, retiring the
+      server and removing the home. Workload: one codex-cli on the
+      live-control suite's Linux runner; a scripted model endpoint answers
+      each turn with one call of the granted command, typed as its absolute
+      path with a one-line quoted argument, then `done`. The ungranted turns
+      run first on a pooled server already warm from one earlier lease; then
+      1 granted turn, a batch of 2 granted turns started at once (this host's
+      measured peak of 2 judge turns in flight) and a batch of 20 started at
+      once, each with one run-scoped rule and its own overlay home, over a
+      CODEX_HOME holding config.toml, a file-stored auth.json, a sessions/
+      tree, one state database and one user rules file. The detail reports
+      the ungranted turns' seconds, the added seconds for 1 and for 20
+      concurrent granted turns (reported, not capped), and the slowest
+      granted turn's overlay build, server start, turn and teardown. The
+      target is an estimate. Incomplete telemetry is an error naming what is
+      missing.
+    measure: reported
+    command: ["uv", "run", "--no-project", "python", "run_overlay_budget.py"]
+    unit: seconds
+    direction: max
+    threshold: 5
+    timeout_seconds: 120

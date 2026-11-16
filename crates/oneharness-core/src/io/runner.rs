@@ -757,15 +757,14 @@ where
     // Park stdin in the control handle and open the turn with the prompt frame.
     // A failed hand-off is not fatal: the harness simply never receives the
     // prompt and reports its own error, which is more useful than a panic.
+    //
+    // The frames are queued, not written here: the turn's own writer thread
+    // writes them, so a harness that never drains its stdin blocks only that
+    // thread, and this one still reaches its deadline and cancellation checks
+    // — killing the child is what fails the write.
     if let Some(control) = control {
         if let Some(stdin) = process.take_stdin() {
-            control.handle.begin_turn(stdin);
-            for frame in control.handle.open_frames(&control.prompt) {
-                if let Err(err) = control.handle.write_line(&frame) {
-                    eprintln!("oneharness: warning: could not open the controlled turn: {err}");
-                    break;
-                }
-            }
+            control.handle.open_turn(stdin, &control.prompt);
         }
     }
 

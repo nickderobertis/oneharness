@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.33.1](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.33.0...oneharness-core-v0.33.1) - 2026-11-16
+
+### Fixed
+
+- write an interrupt's redirection before the harness's stdin closes ([#1600](https://github.com/nickderobertis/oneharness/pull/1600))
+
 ## [0.33.0](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.32.1...oneharness-core-v0.33.0) - 2026-11-16
 
 ### Added

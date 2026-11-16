@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.33.0](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.32.1...oneharness-core-v0.33.0) - 2026-11-16
+
+### Added
+
+- *(run)* [**breaking**] apply a config's allowlist to one run alone ([#1626](https://github.com/nickderobertis/oneharness/pull/1626))
+
+### Fixed
+
+- *(e2e)* keep the model-catalog wait proofs true when the wall clock steps ([#1613](https://github.com/nickderobertis/oneharness/pull/1613))
+
 ## [0.32.1](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.32.0...oneharness-core-v0.32.1) - 2026-11-15
 
 ### Fixed

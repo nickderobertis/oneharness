@@ -6,6 +6,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.30.0](https://github.com/nickderobertis/oneharness/compare/v0.29.2...v0.30.0) - 2026-11-16
+
+### Added
+
+- *(run)* [**breaking**] apply a config's allowlist to one run alone ([#1626](https://github.com/nickderobertis/oneharness/pull/1626))
+
+### Fixed
+
+- *(e2e)* keep the model-catalog wait proofs true when the wall clock steps ([#1613](https://github.com/nickderobertis/oneharness/pull/1613))
+
 <!-- llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] A changelog entry records what this release changed, as of this release; it is the migration note a consumer reads when upgrading, not a live copy of the run-level allowlist contract to keep in step. That contract's sources are `domain::grant` (`resolve`, `plan`, `withheld_reason`, `platform_withheld_reason` and `PROVEN_PLATFORM`) and `io::run_overlay`, pinned by `crates/oneharness-e2e/tests/run_allowlist.rs` and `run_allowlist_platform.rs`, and the README's statements of it by `domain::grant`'s README test; the report schema by `sdk_schema` and its checked-in goldens. -->
 
 ### Changed

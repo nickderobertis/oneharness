@@ -6,6 +6,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.30.1](https://github.com/nickderobertis/oneharness/compare/v0.30.0...v0.30.1) - 2026-11-16
+
+### Fixed
+
+- make the SDK scratch leak-gate test pass reliably on macOS ([#1637](https://github.com/nickderobertis/oneharness/pull/1637))
+- *(network-breakdown)* build the Codex measurement namespace on Ubuntu 26.04 and never wait on pasta unbounded ([#1629](https://github.com/nickderobertis/oneharness/pull/1629))
+
 ## [0.30.0](https://github.com/nickderobertis/oneharness/compare/v0.29.2...v0.30.0) - 2026-11-16
 
 ### Added

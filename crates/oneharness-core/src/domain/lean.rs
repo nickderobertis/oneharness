@@ -100,10 +100,13 @@ pub enum Setting {
     Images,
     /// One usage per model call (`RunResult::calls`).
     Calls,
+    /// The run-level allowlist (`allowed_tools` outside `[sync]`), applied to
+    /// one run through its overlay. Added in report schema `0.15`.
+    AllowedTools,
 }
 
 impl Setting {
-    pub const ALL: [Setting; 7] = [
+    pub const ALL: [Setting; 8] = [
         Setting::AutoCompactTokens,
         Setting::CompactNow,
         Setting::ToolSet,
@@ -111,6 +114,7 @@ impl Setting {
         Setting::LoadMcp,
         Setting::Images,
         Setting::Calls,
+        Setting::AllowedTools,
     ];
 
     #[must_use]
@@ -123,6 +127,7 @@ impl Setting {
             Setting::LoadMcp => "load_mcp",
             Setting::Images => "images",
             Setting::Calls => "calls",
+            Setting::AllowedTools => "allowed_tools",
         }
     }
 }
@@ -338,6 +343,22 @@ macro_rules! no_lean_knobs {
         )
     };
     ($harness:expr, $version:expr, $help:expr, $images:expr, $calls:expr) => {
+        no_lean_knobs!(
+            $harness,
+            $version,
+            $help,
+            $images,
+            $calls,
+            none(
+                $harness,
+                $version,
+                Setting::AllowedTools,
+                "withheld: no per-run mechanism is proven against its real CLI to apply the \
+                 allowlist to one run alone and nothing wider",
+            )
+        )
+    };
+    ($harness:expr, $version:expr, $help:expr, $images:expr, $calls:expr, $allowed:expr) => {
         [
             none($harness, $version, Setting::AutoCompactTokens, $help),
             none($harness, $version, Setting::CompactNow, $help),
@@ -346,11 +367,12 @@ macro_rules! no_lean_knobs {
             none($harness, $version, Setting::LoadMcp, $help),
             $images,
             $calls,
+            $allowed,
         ]
     };
 }
 
-const CLAUDE_TABLE: [Translation; 7] = [
+const CLAUDE_TABLE: [Translation; 8] = [
     Translation {
         harness: CLAUDE,
         version: CLAUDE_VERSION,
@@ -456,9 +478,22 @@ const CLAUDE_TABLE: [Translation; 7] = [
         residual: None,
         source: "tests/fixtures/claude-stream-json-turn.jsonl, captured from Claude Code",
     },
+    Translation {
+        harness: CLAUDE,
+        version: CLAUDE_VERSION,
+        setting: Setting::AllowedTools,
+        knobs: &[knob(Knob::Flag("--allowedTools"), Unit::ToolNames)],
+        mapping: "each run-level rule, `$NAME` resolved to its absolute path, on \
+                  `--allowedTools`; under `--mode read-only` the run moves to `--permission-mode \
+                  dontAsk` with `Bash` added to its `--tools` and the read tools allowed beside \
+                  each `Bash(<abs>:*)`; nothing is written",
+        residual: None,
+        source: "spike-command-grant (Claude Code 2.1.323, 167 scripted-model probes) and \
+                 live/control/run_allowlist_live.py's journeys against the installed CLI",
+    },
 ];
 
-const CODEX_TABLE: [Translation; 7] = [
+const CODEX_TABLE: [Translation; 8] = [
     Translation {
         harness: CODEX,
         version: CODEX_VERSION,
@@ -574,12 +609,28 @@ const CODEX_TABLE: [Translation; 7] = [
         source: "tests/fixtures/codex-rollout-token-counts.jsonl, captured from codex 0.159.2: \
                  three calls whose figures sum to the turn's `turn.completed` usage",
     },
+    Translation {
+        harness: CODEX,
+        version: CODEX_VERSION,
+        setting: Setting::AllowedTools,
+        knobs: &[knob(Knob::Env("CODEX_HOME"), Unit::FilePath)],
+        mapping:
+            "a per-run overlay home (`io::run_overlay`) linking every entry of the identity's \
+                  own, whose `rules/` adds one `prefix_rule(pattern=[\"<abs>\"], \
+                  decision=\"allow\")` per rule and whose thread index is its own; removed when \
+                  the run ends. Withheld for a login in the OS keyring and where links need \
+                  privilege (Windows)",
+        residual: None,
+        source: "spike-command-grant (codex-cli 0.159.2, 236 scripted-model probes: only \
+                 `$CODEX_HOME/rules/` is honoured) and live/control/run_allowlist_live.py's \
+                 journeys against the installed CLI",
+    },
 ];
 
 const OPENCODE: &str = "opencode";
 const OPENCODE_VERSION: &str = "1.18.5";
 
-const OPENCODE_TABLE: [Translation; 7] = no_lean_knobs!(
+const OPENCODE_TABLE: [Translation; 8] = no_lean_knobs!(
     OPENCODE,
     OPENCODE_VERSION,
     "`opencode run --help` (1.18.5) names no flag for it",
@@ -609,10 +660,18 @@ const OPENCODE_TABLE: [Translation; 7] = no_lean_knobs!(
                  (1.18.5): each model call is a `step_start`/`step_finish` pair, the \
                  `step_finish` carrying that call's own `tokens` and `cost` (the run's usage is \
                  already their sum, `json:summed-steps`)",
-    }
+    },
+    none(
+        OPENCODE,
+        OPENCODE_VERSION,
+        Setting::AllowedTools,
+        "withheld: spike-command-grant (opencode 1.18.22) found its read-only `--agent plan` lets \
+         a redirection or any executable write the worktree, and a permission override reaches \
+         only the plan agent, not a subagent it delegates to"
+    )
 );
 
-const COPILOT_TABLE: [Translation; 7] = no_lean_knobs!(
+const COPILOT_TABLE: [Translation; 8] = no_lean_knobs!(
     "copilot",
     "1.0.78",
     "`copilot --help` (1.0.78) names no headless flag oneharness has confirmed for it",
@@ -628,7 +687,7 @@ const COPILOT_TABLE: [Translation; 7] = no_lean_knobs!(
     }
 );
 
-const GOOSE_TABLE: [Translation; 7] = no_lean_knobs!(
+const GOOSE_TABLE: [Translation; 8] = no_lean_knobs!(
     "goose",
     "1.44.0",
     "`goose run --help` (1.44.0) names no flag for it",
@@ -640,7 +699,7 @@ const GOOSE_TABLE: [Translation; 7] = no_lean_knobs!(
     )
 );
 
-const QWEN_TABLE: [Translation; 7] = no_lean_knobs!(
+const QWEN_TABLE: [Translation; 8] = no_lean_knobs!(
     "qwen",
     "0.21.0",
     "`qwen --help` (0.21.0) names no flag for it",
@@ -652,7 +711,7 @@ const QWEN_TABLE: [Translation; 7] = no_lean_knobs!(
     )
 );
 
-const CRUSH_TABLE: [Translation; 7] = no_lean_knobs!(
+const CRUSH_TABLE: [Translation; 8] = no_lean_knobs!(
     "crush",
     "0.87.0",
     "`crush run --help` (0.87.0) names no flag for it",
@@ -664,7 +723,7 @@ const CRUSH_TABLE: [Translation; 7] = no_lean_knobs!(
     )
 );
 
-const CURSOR_TABLE: [Translation; 7] = no_lean_knobs!(
+const CURSOR_TABLE: [Translation; 8] = no_lean_knobs!(
     "cursor",
     "2026.07.23-e383d2b",
     "`cursor-agent --help` (2026.07.23-e383d2b) names no flag for it",
@@ -677,7 +736,7 @@ const CURSOR_TABLE: [Translation; 7] = no_lean_knobs!(
 );
 
 /// Every harness's translation of every setting.
-pub const TRANSLATIONS: [[Translation; 7]; 8] = [
+pub const TRANSLATIONS: [[Translation; 8]; 8] = [
     CLAUDE_TABLE,
     CODEX_TABLE,
     OPENCODE_TABLE,
@@ -690,7 +749,7 @@ pub const TRANSLATIONS: [[Translation; 7]; 8] = [
 
 /// What an id the registry does not hold translates to: no knob for anything,
 /// so every setting reads as unsupported rather than as a panic.
-const UNREGISTERED: [Translation; 7] = no_lean_knobs!(
+const UNREGISTERED: [Translation; 8] = no_lean_knobs!(
     "unregistered",
     "-",
     "not a registered harness id",
@@ -1336,7 +1395,7 @@ mod tests {
                     if let Some(release) = release {
                         assert_eq!(release, t.version, "{id} {setting:?}");
                     }
-                    let none = *cell == "—" || *cell == "refused";
+                    let none = *cell == "—" || *cell == "refused" || *cell == "withheld";
                     assert_eq!(none, t.knobs.is_empty(), "{id} {setting:?}: {cell}");
                     assert_eq!(
                         cell.starts_with("partial:"),
@@ -1453,6 +1512,7 @@ mod tests {
                         analytics: false,
                         model_catalog: None,
                         tools: Some(&classes),
+                        allowed_tools: None,
                     });
                     let Knob::Flag(flag) = t.knobs[0].knob else {
                         panic!("claude-code's tool set is a flag")
@@ -1535,6 +1595,7 @@ mod tests {
             analytics: false,
             model_catalog: None,
             tools: None,
+            allowed_tools: None,
         };
         let forked = (spec.build_argv)(&ctx(true, harness::PromptDelivery::Argv));
         for k in translation(CLAUDE, Setting::CompactNow).knobs {

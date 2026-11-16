@@ -115,7 +115,14 @@ export type FallThroughReason =
  * One of the settings this module translates.
  */
 export type Setting =
-  "auto_compact_tokens" | "compact_now" | "tool_set" | "load_skills" | "load_mcp" | "images" | "calls";
+  | "auto_compact_tokens"
+  | "compact_now"
+  | "tool_set"
+  | "load_skills"
+  | "load_mcp"
+  | "images"
+  | "calls"
+  | "allowed_tools";
 /**
  * The normalized, closed set of failure reasons oneharness can classify from a
  * harness's output. It is the single source for the `failure_kind` contract
@@ -642,6 +649,23 @@ export interface RunResult {
   observed_model: string | null;
   output_format: OutputFormat;
   /**
+   * The environment the run's overlay sets on the harness — present only
+   * when a run-level allowlist is applied through one (Codex's per-run
+   * `CODEX_HOME`, and the marker every process of the run carries). Under
+   * `--print-command` the overlay directory is shown as `<run-overlay>`,
+   * since a dry run creates nothing. The directory is removed when the run
+   * ends. Absent when empty. Added in report schema `0.15`.
+   */
+  overlay_env?: {
+    [k: string]: string;
+  } | undefined;
+  /**
+   * What the run's overlay cost, beside its turn: building it before the
+   * harness spawned and tearing it down after. Present only when a run
+   * went through one. Added in report schema `0.15`.
+   */
+  overlay_timings?: OverlayTimings | null | undefined;
+  /**
    * The prompt this result ran, set only on a **batch** run (one harness
    * fanned over N prompts), where each result has its own prompt. `null` on an
    * ordinary run, where the single top-level `prompt` applies to every result.
@@ -777,6 +801,24 @@ export interface Diagnostic {
    */
   message: string;
   setting: Setting;
+  [k: string]: unknown;
+}
+/**
+ * What one run's overlay cost ([`RunResult::overlay_timings`]).
+ */
+export interface OverlayTimings {
+  /**
+   * Milliseconds from creating the overlay to the harness being ready to
+   * spawn on it: its links, its rules and (for an indexed Codex home) its
+   * seeded thread index.
+   */
+  build_ms: number;
+  /**
+   * Milliseconds from the harness's end to the overlay being gone: what
+   * Codex recorded returned to the real home, the real index repaired, and
+   * the directory removed.
+   */
+  teardown_ms: number;
   [k: string]: unknown;
 }
 /**

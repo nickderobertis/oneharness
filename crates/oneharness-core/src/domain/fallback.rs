@@ -962,6 +962,8 @@ mod tests {
             usage_source: Some("json".to_string()),
             calls: None,
             diagnostics: Vec::new(),
+            overlay_env: std::collections::BTreeMap::new(),
+            overlay_timings: None,
             session_id: None,
             events: None,
             events_source: None,

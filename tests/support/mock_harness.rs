@@ -24,6 +24,14 @@
 //!                   holding a newline stays one element), before answering
 //!   MOCK_ECHO_PWD   if set, write `PWD=<the inherited $PWD>` to stdout and exit
 //!                   (used to assert that --cwd keeps $PWD consistent)
+//!   MOCK_CODEX_HELPER_REPLY `error`, `no-result` or `silent`: how the stdio
+//!                   app-server answers `thread/list` / `thread/read`
+//!   MOCK_CODEX_INDEX if set, create `$CODEX_HOME/state_5.sqlite` when absent, as
+//!                   Codex opens its thread index on its first run in a home
+//!   MOCK_HOME_WRITE  `relpath=content;…` written under `$CODEX_HOME` while the
+//!                   harness runs, replacing a top-level link in the way
+//!   MOCK_HOME_SNAPSHOT  if set, what `$CODEX_HOME` holds while the harness
+//!                   runs is appended here as one JSON line per invocation
 //!   MOCK_ENV_FILE   if set, the whole inherited environment is written here
 //!                   as one JSON object before answering
 //!   MOCK_CLAUDE_SESSIONS / MOCK_CODEX_SESSIONS / MOCK_COMPACT_BEGUN  act like
@@ -239,10 +247,15 @@
 //!                              `apps` feature, resolved like `plugins`) and
 //!                              `argv`. With a catalog
 //!                              it reads that file (`catalog_models`, its model
-//!                              count) and fetches nothing (`fetch` null); a
+//!                              count, and `catalog_fetch_id`, the `fetch_id`
+//!                              of the fetch it came from) and fetches nothing
+//!                              (`fetch` null); a
 //!                              missing or empty catalog fails the launch, as it
 //!                              fails Codex. Without one it fetches: `fetch` is
-//!                              `ok` (with `fetched_ms`) after it writes
+//!                              `ok` (with `fetched_ms`, and `fetch_id`: a
+//!                              stamp unique to that fetch, which every model
+//!                              it writes carries as `mock_fetch_id`) after it
+//!                              writes
 //!                              `$CODEX_HOME/models_cache.json` (Codex's
 //!                              default `~/.codex` when CODEX_HOME is unset)
 //!                              stamped with MOCK_CODEX_CACHE_VERSION, else
@@ -726,8 +739,8 @@ fn codex_model_catalog(path: &str, argv: &[String]) {
         let models = std::fs::read_to_string(catalog)
             .ok()
             .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-            .and_then(|value| value["models"].as_array().map(Vec::len))
-            .filter(|count| *count > 0);
+            .and_then(|value| value["models"].as_array().cloned())
+            .filter(|models| !models.is_empty());
         let Some(models) = models else {
             let _ = writeln!(
                 std::io::stderr(),
@@ -735,7 +748,8 @@ fn codex_model_catalog(path: &str, argv: &[String]) {
             );
             std::process::exit(1);
         };
-        line["catalog_models"] = models.into();
+        line["catalog_models"] = models.len().into();
+        line["catalog_fetch_id"] = models[0]["mock_fetch_id"].clone();
     } else {
         if subcommand == "app-server" {
             if let Some(path) = mock_var_os("MOCK_CODEX_CATALOG_STALL") {
@@ -768,8 +782,8 @@ fn codex_model_catalog(path: &str, argv: &[String]) {
                     "etag": "W/\"mock\"",
                     "client_version": version,
                     "models": [
-                        {"slug": "mock-model-a", "display_name": "Mock A"},
-                        {"slug": "mock-model-b", "display_name": "Mock B"},
+                        {"slug": "mock-model-a", "display_name": "Mock A", "mock_fetch_id": fetched_at},
+                        {"slug": "mock-model-b", "display_name": "Mock B", "mock_fetch_id": fetched_at},
                     ],
                 });
                 let corrupt = mock_var("MOCK_CODEX_CACHE_CORRUPT").unwrap_or_default();
@@ -795,6 +809,7 @@ fn codex_model_catalog(path: &str, argv: &[String]) {
                 line["fetched_ms"] = u64::try_from(now.as_millis())
                     .expect("milliseconds fit")
                     .into();
+                line["fetch_id"] = fetched_at.into();
                 "ok".into()
             }
         };
@@ -1978,6 +1993,77 @@ fn exit_shortly() {
 /// turn finishes in under half a second having done nothing. The turn ends only
 /// on the `turn/completed` notification, which this emits once the interrupt
 /// naming both the thread and the turn arrives.
+/// `MOCK_HOME_WRITE`: `relpath=content` entries, `;`-separated, each written
+/// under `$CODEX_HOME` as Codex writes its own files — a top-level link in the
+/// way is replaced (as an atomic rename over it would), and parent
+/// directories are made. How a journey makes a harness create or replace a
+/// file in a run overlay's home.
+fn write_into_home(entries: &str) {
+    let home = std::path::PathBuf::from(std::env::var("CODEX_HOME").unwrap_or_default());
+    for entry in entries.split(';').filter(|e| !e.is_empty()) {
+        let (rel, content) = entry
+            .split_once('=')
+            .expect("MOCK_HOME_WRITE entry is relpath=content");
+        let relative = std::path::Path::new(rel);
+        assert!(
+            !rel.is_empty()
+                && relative
+                    .components()
+                    .all(|part| matches!(part, std::path::Component::Normal(_))),
+            "MOCK_HOME_WRITE path `{rel}` must stay inside $CODEX_HOME: relative, with no `..`"
+        );
+        let path = home.join(rel);
+        let top = home.join(rel.split('/').next().unwrap_or(rel));
+        if std::fs::symlink_metadata(&top).is_ok_and(|m| m.file_type().is_symlink()) {
+            std::fs::remove_file(&top).expect("replace the link in the way");
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("make the entry's directories");
+        }
+        std::fs::write(&path, content).expect("write the entry");
+    }
+}
+
+/// `MOCK_HOME_SNAPSHOT`: append, as one JSON line, what the directory
+/// `$CODEX_HOME` names holds WHILE the harness runs — each entry as
+/// `{"link": <target>}`, `{"file": <contents>}` or `{"dir": {…}}`, recursing
+/// into real directories only. How a journey proves a run overlay's home links
+/// the real one and carries its own rules, though it is gone afterwards.
+fn record_home_snapshot(path: &str) {
+    fn describe(dir: &std::path::Path) -> serde_json::Value {
+        let mut out = serde_json::Map::new();
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let path = entry.path();
+            let value = match std::fs::symlink_metadata(&path) {
+                Ok(meta) if meta.file_type().is_symlink() => serde_json::json!({
+                    "link": std::fs::read_link(&path).unwrap_or_default().display().to_string()
+                }),
+                Ok(meta) if meta.is_dir() => serde_json::json!({ "dir": describe(&path) }),
+                _ => serde_json::json!({
+                    "file": std::fs::read_to_string(&path).unwrap_or_default()
+                }),
+            };
+            out.insert(name, value);
+        }
+        serde_json::Value::Object(out)
+    }
+    let home = std::env::var("CODEX_HOME").unwrap_or_default();
+    let snapshot = serde_json::json!({
+        "home": home,
+        "entries": describe(std::path::Path::new(&home)),
+    });
+    // One line per invocation: a run's helper app-servers snapshot their own
+    // homes beside the turn's, and a journey picks the home it means.
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(file, "{snapshot}");
+    }
+}
+
 fn run_codex_app_server(log_path: &str) -> ! {
     use serde_json::{json, Value};
     let attempt = scripted_attempt();
@@ -2047,6 +2133,33 @@ fn run_codex_app_server(log_path: &str) -> ! {
                 "id": id,
                 "result": open_response("mock-codex-thread", &message),
             })),
+            // What a run overlay's helper app-servers ask: an empty listing to
+            // build a thread index over, and a read of each thread the granted
+            // turn touched. Answered so the exchange ends at once; the frames
+            // are in the log a test reads.
+            Some(helper @ ("thread/list" | "thread/read")) => {
+                // MOCK_CODEX_HELPER_REPLY makes these helper replies misbehave:
+                // `error`, `no-result` (an envelope without one), or `silent`.
+                match mock_var("MOCK_CODEX_HELPER_REPLY").ok().as_deref() {
+                    Some("error") => send(&json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": {"code": -32600, "message": format!("the mock refuses {helper}")},
+                    })),
+                    Some("no-result") => send(&json!({"jsonrpc": "2.0", "id": id})),
+                    Some("silent") => {}
+                    _ if helper == "thread/list" => send(&json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": {"data": [], "nextCursor": null},
+                    })),
+                    _ => send(&json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": {"thread": {"id": message["params"]["threadId"]}},
+                    })),
+                }
+            }
             // Rejoining the thread the client named, exactly as the real
             // app-server does: `ThreadResumeResponse` carries the same required
             // `thread` field `ThreadStartResponse` does, so the client reads the
@@ -2761,6 +2874,33 @@ pub fn run() -> ! {
         }
         let input = serde_json::json!({ "argv": argv, "stdin": stdin });
         let _ = std::fs::write(path, input.to_string());
+    }
+
+    if std::env::var_os("MOCK_CODEX_INDEX").is_some() {
+        // What Codex does on its first run in a home: open its thread index.
+        let home = std::path::PathBuf::from(std::env::var("CODEX_HOME").unwrap_or_default());
+        let index = home.join("state_5.sqlite");
+        if !index.exists() {
+            // Named for the home that built it, so a journey can tell a seeded
+            // copy from an index the turn made itself.
+            let built_in = home.file_name().map(|n| n.to_string_lossy().into_owned());
+            std::fs::write(
+                &index,
+                format!(
+                    "mock codex thread index built in {}",
+                    built_in.unwrap_or_default()
+                ),
+            )
+            .expect("create the thread index");
+        }
+    }
+
+    if let Ok(entries) = std::env::var("MOCK_HOME_WRITE") {
+        write_into_home(&entries);
+    }
+
+    if let Ok(path) = std::env::var("MOCK_HOME_SNAPSHOT") {
+        record_home_snapshot(&path);
     }
 
     if let Ok(path) = std::env::var("MOCK_ENV_FILE") {

@@ -511,9 +511,9 @@ caller rather than being dropped.
 
 | Output | Fields on the document | All | Rust core | Python | TypeScript |
 | --- | --- | --- | --- | --- | --- |
-| `run_report` | `batch`, `bypass_permissions`, `config_files`, `control`, `dry_run`, `fallback`, `fork`, `history_file`, `mock_rules`, `model`, `models`, `oneharness_version`, `permission_mode`, `prompt`, `results`, `resume`, `schema`, `schema_max_retries`, `schema_version`, `session`, `spy_file` | 93 | yes | yes | yes |
-| `run_stream_envelope` | `event`, `harness_id`, `history_dir`, `history_id`, `history_project`, `history_session`, `report`, `type` | 100 | yes | yes | yes |
-| `list_report` | `harnesses`, `schema_version` | 43 | yes | yes | yes |
+| `run_report` | `batch`, `bypass_permissions`, `config_files`, `control`, `dry_run`, `fallback`, `fork`, `history_file`, `mock_rules`, `model`, `models`, `oneharness_version`, `permission_mode`, `prompt`, `results`, `resume`, `schema`, `schema_max_retries`, `schema_version`, `session`, `spy_file` | 97 | yes | yes | yes |
+| `run_stream_envelope` | `event`, `harness_id`, `history_dir`, `history_id`, `history_project`, `history_session`, `report`, `type` | 104 | yes | yes | yes |
+| `list_report` | `harnesses`, `schema_version` | 44 | yes | yes | yes |
 | `detect_report` | `detected`, `schema_version` | 7 | yes | yes | yes |
 | `config_report` | `all`, `allowed_tools`, `auto_compact_tokens`, `bypass`, `config_files`, `env`, `exclude`, `harness`, `harnesses`, `history`, `history_dir`, `history_labels`, `history_pointer_file`, `load_mcp`, `load_skills`, `max_parallel`, `mode`, `model`, `models`, `output_format`, `reasoning`, `require_available`, `run_mode`, `schema_file`, `schema_max_retries`, `schema_version`, `server_overloaded_max_retries`, `stream`, `sync`, `system`, `timeout`, `tool_set` | 52 | yes | yes | yes |
 | `sync_report` | `check`, `config_files`, `exact`, `results`, `schema_version` | 16 | yes | yes | yes |

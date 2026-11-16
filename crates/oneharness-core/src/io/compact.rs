@@ -327,6 +327,7 @@ fn claude(
         analytics: false,
         model_catalog: None,
         tools: None,
+        allowed_tools: None,
     });
     let driven = drive(&argv, launch, &[], |_| Reply::Frames(Vec::new()));
     let read = compact::read_claude(&driven.stdout);
@@ -406,6 +407,7 @@ fn codex(
         analytics: cfg.analytics_for(id),
         model_catalog: None,
         tools: None,
+        allowed_tools: None,
     });
     let mut dialogue = CodexDialogue::new(token, model);
     let mut ended = None;

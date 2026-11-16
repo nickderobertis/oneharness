@@ -700,8 +700,8 @@ require_available = false       # --require-available
 history = false                 # --history / --no-history (opt-in run history)
 history_dir = "~/logs/oh"       # --history-dir (default: platform state dir)
 history_pointer_file = "run/pointers.jsonl"  # --history-pointer-file (see Run history)
-# allowed_tools = ["Read"]      # the run-level allowlist: never synced, and this
-#                               # release refuses a run that sets it (see below)
+# allowed_tools = ["Bash($TOOL)"] # the run-level allowlist: applied to each run
+#                               # alone, never synced (see "The run-level allowlist")
 
 [env]                           # --env, for every harness
 RUST_LOG = "warn"
@@ -791,10 +791,9 @@ edit: it loads, runs, and syncs exactly as before.
 **Outside `[sync]`, `allowed_tools` is the run-level allowlist** — at the top
 level, in `[harness.<id>]`, or in a variant, with the same rule syntax,
 precedence, and `extends` folding, and reported by `oneharness config` with its
-source. `sync` never writes it. **This release does not apply it yet:** a `run`
-whose resolved config holds a run-level rule stops with a usage error before
-anything is spawned, naming the rule and saying this release does not apply a
-run-level allowlist; a later release applies it per run.
+source. `sync` never writes it, and `run` applies it to each run alone (below).
+One config may set both: `sync` writes only `[sync]`'s lists, and each run
+applies only the run-level one.
 
 **`denied_tools`, `hooks` / `[[hooks]]`, and `settings` outside `[sync]` are
 refused.** Every command — `run`, `sync` in every mode, `config`, and the
@@ -802,6 +801,113 @@ library's config load — stops with exit 2 before anything is written or
 spawned, naming the file, each misplaced field, and its `[sync]` spelling. That
 holds in every file of an `extends` chain. There is one config shape and no
 version key: a key such as `config_version` is an unknown field like any other.
+
+#### The run-level allowlist
+
+`oneharness run` applies the run-level `allowed_tools` to that run alone and
+writes it nowhere that outlives the run: not into the worktree, the project, or
+the user's own harness home (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`, …). Each harness
+gets it through per-run flags or a per-run overlay (below), with the
+translation `sync` uses. `denied_tools`, `hooks` and `settings` stay sync-only.
+A config with no run-level allowlist runs exactly as before, whatever `[sync]`
+holds.
+
+```toml
+allowed_tools = ["Bash($DECLINE)"]   # this run may run the executable $DECLINE names
+[env]
+DECLINE = "/opt/judge/bin/decline-ruling"
+[sync]
+allowed_tools = ["Bash(git log:*)"]  # what `sync` writes; never applied to a run
+```
+
+- **A command written `$NAME`** in `Bash(<cmd>)` or `Bash(<cmd>:*)` is resolved
+  to an absolute path before any harness rule is built, from the run's own
+  environment after `env`, `env_from` and `unset_env` apply; every rule a
+  harness receives names only the resolved path. (A rule over a variable's text
+  matches nothing on Claude Code and Codex and any executable on OpenCode.) A
+  variable that is unset or empty, or whose value is not one absolute path, is
+  a usage error (exit 2) naming the rule, before anything spawns.
+- **Under `--mode read-only` it may name only executables:** each rule must be
+  `Bash(<absolute path>)` or `Bash(<absolute path>:*)` (the path may be written
+  `$NAME`). Anything else — a tool name such as `Edit`, `Write` or `Read`, a
+  wildcard, a command prefix of several words, a relative command — is a usage
+  error naming the rule and the mode. The run may then run each named
+  executable, typed as its absolute path as one plain command, with any
+  arguments, and gains nothing else: compound, chained or substituted commands,
+  redirections, any other executable, a reassigned variable or a shadowing
+  function or alias, delegation to a subagent, and every write tool stay
+  refused. The payload form every granting harness admits is **one quoted
+  argument**, multi-line included (double quotes when it holds an apostrophe).
+- **The turn is told the exact spelling.** Wherever a run-level `Bash` rule is
+  applied, in any mode, the turn's system instructions (the harness's own
+  `system` mapping) gain a short statement naming each granted executable by
+  its absolute path and how to type it. A withheld grant adds nothing.
+- **A granted executable runs with full write access** — outside Codex's
+  sandbox, and unrestricted on Claude Code, which has none — because that is
+  what lets it record anything. Grant only an executable that writes nothing but
+  its own record, whatever arguments it is given.
+- **The overlay is the run's alone.** What a harness needs on disk lives in a
+  per-run directory under oneharness's state directory
+  (`$XDG_STATE_HOME/oneharness/run-overlays/`, else
+  `~/.local/state/oneharness/run-overlays/`), locked while the run lives and
+  removed when it ends — on success, a harness failure, a timeout, and
+  SIGINT/SIGTERM. A run killed outright (SIGKILL) leaves its directory with its
+  lock released; the next `oneharness run` stops every process still carrying
+  its marker (`ONEHARNESS_RUN_OVERLAY`), returns what the harness recorded to the
+  real home, and removes it, leaving a live run's overlay alone. No other
+  session — a concurrent or later run without the grant, or the harness CLI run
+  directly — gains it. Sessions, `--session`/`--resume` turns, usage and the
+  history store behave as for the same run without one.
+- **In the report**, a result run through an overlay carries `overlay_env` (what
+  the overlay set on the harness) and `overlay_timings` (`build_ms`,
+  `teardown_ms`); `run --print-command` shows the overlaid argv and
+  `overlay_env` with `<run-overlay>` standing in for the directory, creating
+  nothing. A harness that withholds the grant runs exactly as it would with no
+  run-level allowlist and reports it in `diagnostics` (`setting:
+  "allowed_tools"`, naming the harness and the withheld rules). `oneharness
+  list` reports `supports_run_allowed_tools` per harness, for the platform it
+  runs on.
+- **It applies on Linux only; on macOS, Windows and every other platform every
+  harness withholds it.** Every test against a harness's real CLI under a grant
+  has run on Linux (`just live-run-allowlist` against Claude Code 2.1.323 and
+  codex-cli 0.159.2, the live-control suite's run-overlay phase on its Linux
+  leg, and `spike-command-grant`); none has run elsewhere. So a run off Linux
+  with a run-level allowlist runs exactly as it would with none — same argv,
+  environment and files — and its report carries the withheld diagnostic,
+  naming the harness and the platform; `oneharness list` reports
+  `supports_run_allowed_tools: false` for every harness there. The table below
+  is the Linux behaviour. Rules are still validated first, so a rule refused
+  before spawn is refused on every platform.
+
+| Harness | run-level `allowed_tools` (Linux; every harness withholds it elsewhere) |
+|---|---|
+| Claude Code | **Applied**, on per-run flags; nothing is written. Under `read-only` the run uses `--permission-mode dontAsk` (not `bypassPermissions`) with `--tools Read Grep Glob WebFetch WebSearch Bash` and `--allowedTools` the same read tools plus each `Bash(<absolute path>:*)`, so reads outside the worktree behave as before; in other modes the rules join `--allowedTools`. Type the absolute path. Besides one quoted argument it admits the payload on stdin as a quoted here-document, a here-string, or a `printf`/`echo` pipe (`spike-command-grant`, Claude Code 2.1.323). |
+| Codex | **Applied**, through a per-run `CODEX_HOME` overlay: every entry but `rules/` and the thread index links to the home the run would use (the identity's own, `env_from` honoured), `rules/` links the user's rule files beside one file of the run's `prefix_rule(pattern=["<absolute path>"], decision="allow")` rules, and `--sandbox read-only` is unchanged — a matching plain command runs outside the sandbox, every other command stays sandboxed. Type the absolute path. One quoted argument is the only payload form: every stdin form runs sandboxed. Outside `read-only`, a rule Codex cannot express as a prefix rule is reported and the rest applied. Withheld for a login in the OS keyring (`cli_auth_credentials_store = "keyring"` or `"auto"`; Codex keys it by the home's path), a home that does not exist, and a run with no per-user state directory to hold the overlay (neither an absolute `XDG_STATE_HOME` nor `HOME`; it is never made in the shared temp dir or under the working directory); off Linux every harness withholds it (above). |
+| OpenCode | **Withheld.** Its `read-only` mapping (`--agent plan`) is not a no-mutation guarantee on opencode 1.18.22 — a redirection or an arbitrary executable wrote the worktree under it — and a permission override reaches only the plan agent, not a subagent it delegates to (`spike-command-grant`, 216 probes; `just live-run-allowlist` holds the withheld run equal to an ungranted one on the real CLI). |
+| Copilot | **Withheld.** Its `read-only` denies the shell outright (`--deny-tool shell`, and deny beats allow), so a grant would have to lift that deny and rest on `--allow-tool 'shell(<cmd>)'` matching command text; no test against its real CLI proves that refuses a compound or a redirection. |
+| Cursor | **Withheld.** `cursor-agent` has no per-run command allowlist; its permissions live in config files every session reads (`oneharness sync`'s territory). |
+| Qwen | **Withheld.** Its `read-only` is behavioral (`--approval-mode plan`), so there is no enforced no-mutation posture for a grant to narrow. |
+| Goose | **Withheld.** It has no `read-only` mode and no per-run, per-command allowlist (`GOOSE_MODE` alone). |
+| Crush | **Withheld.** `crush run` cannot gate tools (it auto-approves the session), so a grant has nothing to narrow. |
+
+**Codex's overlay, in detail.** The login stays the real home's: `auth.json`
+is a link, and Codex resolves it and renames a refreshed file over the real
+one, so a refresh in a granted run leaves the real home logged in and current;
+a keyring login is withheld (above). Rollouts, logs, history and every other
+store are written through the links into the real home, SQLite resolving each
+database's link so its `-wal`/`-shm` companions sit beside the real file. A
+file Codex creates or replaces at the home's top level is moved into the real
+home when the run ends. The one store the overlay keeps for itself is the
+thread index (`state_<n>.sqlite`): Codex records each rollout's path as it
+spelled `CODEX_HOME`, and codex-cli 0.159.2 refuses to resume a thread whose
+recorded path no longer exists. So the overlay's index is seeded from one
+Codex builds over an empty home (already backfilled, so the run never rescans
+the real `sessions/` tree), and once the turn ends a short-lived app-server on
+the real home reads the thread, which Codex then indexes under its real path, so
+a granted thread resumes like any other. A granted `--control` turn
+runs on its own app-server, started on its overlay home and retired with the
+run, never the pooled one (a pooled server's rules are its home's); turns
+without a run-level rule keep the pooled server.
 
 #### Migrating from top-level sync settings
 
@@ -837,9 +943,11 @@ model = "claude-sonnet-4-5"
 ```
 
 **A top-level (or per-harness) `allowed_tools` changed meaning.** It no longer
-syncs: it is the run-level allowlist, so it must move to `[sync]
-allowed_tools` (or `[sync.harness.<id>] allowed_tools`) to keep being synced,
-and in this release `run` refuses it until a later release applies it per run.
+syncs: it is the run-level allowlist, which `run` now applies to each run, so
+it must move to `[sync] allowed_tools` (or `[sync.harness.<id>]
+allowed_tools`) to keep being synced. An old synced `Bash(<absolute path>)` rule
+left at the top level now grants every `read-only` run that executable — and
+on Codex runs it outside the read-only sandbox.
 
 **The sync guard** keeps an unmoved file from silently erasing what an earlier
 release synced from it. In every mode, `sync` refuses with exit 2, writing
@@ -2568,13 +2676,13 @@ another identity than `--harness`, is refused (exit 2) as `run` refuses it.
 The translation, from one table in the source (`domain::lean::TRANSLATIONS`,
 which also cites the evidence for each entry):
 
-| Harness (release) | `auto_compact_tokens` | compact now | `tool_set` | `load_skills = false` | `load_mcp = false` | `images` | `calls` |
-|---|---|---|---|---|---|---|---|
-| Claude Code (2.1.316) | `CLAUDE_CODE_AUTO_COMPACT_WINDOW` = N + 33000; below 67000, the 100000 window floor plus `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` = N / 80000 × 100 | `-p /compact --resume ID --fork-session` | `--tools Bash Read` (intersected with read-only's set under `--mode read-only`) | `--disable-slash-commands` | `--strict-mcp-config` | base64 `image` blocks in one stream-json user frame (`--input-format stream-json`) | one `assistant.message.usage` per `message.id` under `--output-format stream-json` |
-| Codex (0.159.2) | `-c model_auto_compact_token_limit=N` | app-server `thread/fork` + `thread/compact/start` | partial: `features.goals`, `features.view_image`, `features.sleep_tool` off, `web_search="disabled"`, and `features.shell_tool` off only for a set naming neither `shell` nor `read` (codex's shell also reads files); `apply_patch`, `request_user_input`, the multi-agent `collaboration` tools and `clock__curr_time` stay loaded (no setting removes them) and the run says so | `-c skills.include_instructions=false` | each configured server overridden `-c mcp_servers.<name>={command="true",enabled=false}`, plus `features.apps=false` | `--image=PATH` | the rollout record's `event_msg token_count info.last_token_usage`, one per event |
-| OpenCode (1.18.5) | — | — | — | — | — | `-f PATH` | one per `step_finish` event (`step_finish.part.tokens`, `part.cost`) of `--format json` |
-| Copilot (1.0.78) | — | — | — | — | — | `--attachment PATH` | — |
-| Goose, Qwen, Crush, Cursor | — | — | — | — | — | refused | — |
+| Harness (release) | `auto_compact_tokens` | compact now | `tool_set` | `load_skills = false` | `load_mcp = false` | `images` | `calls` | run-level `allowed_tools` |
+|---|---|---|---|---|---|---|---|---|
+| Claude Code (2.1.316) | `CLAUDE_CODE_AUTO_COMPACT_WINDOW` = N + 33000; below 67000, the 100000 window floor plus `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` = N / 80000 × 100 | `-p /compact --resume ID --fork-session` | `--tools Bash Read` (intersected with read-only's set under `--mode read-only`) | `--disable-slash-commands` | `--strict-mcp-config` | base64 `image` blocks in one stream-json user frame (`--input-format stream-json`) | one `assistant.message.usage` per `message.id` under `--output-format stream-json` | `--allowedTools` per rule; under read-only `--permission-mode dontAsk`, `--tools` gains `Bash` (Linux; withheld elsewhere) |
+| Codex (0.159.2) | `-c model_auto_compact_token_limit=N` | app-server `thread/fork` + `thread/compact/start` | partial: `features.goals`, `features.view_image`, `features.sleep_tool` off, `web_search="disabled"`, and `features.shell_tool` off only for a set naming neither `shell` nor `read` (codex's shell also reads files); `apply_patch`, `request_user_input`, the multi-agent `collaboration` tools and `clock__curr_time` stay loaded (no setting removes them) and the run says so | `-c skills.include_instructions=false` | each configured server overridden `-c mcp_servers.<name>={command="true",enabled=false}`, plus `features.apps=false` | `--image=PATH` | the rollout record's `event_msg token_count info.last_token_usage`, one per event | a per-run overlay `CODEX_HOME` whose `rules/` adds one `prefix_rule` per rule (Linux; withheld elsewhere) |
+| OpenCode (1.18.5) | — | — | — | — | — | `-f PATH` | one per `step_finish` event (`step_finish.part.tokens`, `part.cost`) of `--format json` | withheld |
+| Copilot (1.0.78) | — | — | — | — | — | `--attachment PATH` | — | withheld |
+| Goose, Qwen, Crush, Cursor | — | — | — | — | — | refused | — | withheld |
 
 How the Claude Code and Codex rows were settled, against the installed
 releases:
@@ -3031,6 +3139,11 @@ Copilot's `edit` is a composed `--allow-tool write --allow-tool read` list (shel
 omitted → auto-denied); `edit`/`auto` for Cursor remain a `permission` config
 concern (`oneharness sync`), not `--mode`.
 
+Under `read-only`, a [run-level `allowed_tools`](#the-run-level-allowlist) can
+permit a short list of named executables and nothing else, on the harnesses
+that enforce it (Claude Code and Codex, on Linux); every other harness, and every
+harness on macOS, Windows or any other platform, withholds it and says so.
+
 Relatedly, a harness can carry a small **default environment** so headless runs
 stay clean — e.g. oneharness sets `QWEN_CODE_SUPPRESS_YOLO_WARNING=1` for Qwen
 Code so its `--yolo`/no-sandbox startup warning doesn't litter `stderr`. These
@@ -3239,6 +3352,8 @@ agnostic; any per-harness script can add a live leg by calling
 ```console
 just live-claude     # one harness (installs the release binary, runs the live check)
 just live-schema     # the structured-output feature (drives claude-code via --schema)
+just live-run-allowlist  # the run-level allowed_tools on the real Claude Code, Codex and OpenCode
+                         # (a scripted model endpoint: no credentials, no model quota)
 just live-all        # every harness + feature in sequence; skips pass, only real failures fail
 ```
 

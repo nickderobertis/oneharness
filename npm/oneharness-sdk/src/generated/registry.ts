@@ -146,6 +146,14 @@ export interface HarnessInfo {
    */
   supports_resume: boolean;
   /**
+   * Whether a run-level `allowed_tools` (outside `[sync]`) is applied to
+   * one run on this harness, through per-run flags or a per-run overlay
+   * that is removed when the run ends. `false`: the harness withholds it,
+   * runs as it would with none, and the run's `diagnostics` say why.
+   * Added in report schema `0.15`.
+   */
+  supports_run_allowed_tools: boolean;
+  /**
    * Whether `load_skills = false` loads no skills list.
    */
   supports_skills_off: boolean;

@@ -363,6 +363,13 @@ live-cursor: _live-install
 live-schema: _live-install
     ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-schema.sh
 
+# Live proof of the run-level `allowed_tools`: Claude Code, Codex `exec` and
+# OpenCode (which withholds it) under `--mode read-only`, each real CLI against
+# a scripted model endpoint (no model quota). Codex's `--control` half runs in
+# `live-control`. See live/control/AGENTS.md.
+live-run-allowlist: _live-install
+    ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" uv run --no-project --python ">=3.10" python live/control/run_allowlist_live.py
+
 # Per-FEATURE live check (not a harness): drive each control-capable harness
 # through `run --control` + a separate `oneharness interrupt` and assert the
 # real turn's work actually stops. Deliberately out of the per-harness suites:

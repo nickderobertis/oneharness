@@ -9,7 +9,8 @@
   "implicitDependencies": [
     "oneharness",
     "install-surface",
-    "e2e-support"
+    "e2e-support",
+    "network-telemetry"
   ],
   "namedInputs": {
     "default": [

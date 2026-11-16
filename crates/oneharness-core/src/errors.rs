@@ -145,20 +145,24 @@ pub enum OneharnessError {
         second: String,
     },
 
+    #[error("could not create the run overlay a run-level allowlist is applied through: {source}")]
+    RunOverlay {
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error(
-        "`allowed_tools` in `{source_file}` sets a run-level allowlist for harness `{harness}` \
-         ({rules}), and this release does not apply a run-level allowlist to a run. Outside \
-         `[sync]`, `allowed_tools` no longer syncs either: move it to `[sync] allowed_tools` \
-         (or `[sync.harness.{harness}] allowed_tools`) to keep syncing it into the harness's \
-         project config, or remove it. Nothing was spawned"
+        "run-level `allowed_tools` rule `{}` for harness `{harness}` cannot be applied: \
+         {}. Nothing was spawned",
+        refusal.rule(),
+        refusal.reason()
     )]
-    RunLevelAllowlistNotApplied {
+    RunAllowlistRefused {
         // llmlint: ignore[invalid_states_unrepresentable] Selection has validated this id before the check; the diagnostic keeps the selector exactly as the caller spelled it.
         harness: String,
-        /// The configured rules, each quoted, as one printable list.
-        rules: String,
-        /// The config file the resolved rules come from.
-        source_file: String,
+        /// Which rule cannot be applied, and why; it names the rule as the
+        /// config spells it.
+        refusal: crate::domain::grant::GrantRefusal,
     },
 
     #[error(

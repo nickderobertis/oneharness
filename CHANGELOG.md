@@ -6,6 +6,54 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.30.0](https://github.com/nickderobertis/oneharness/compare/v0.29.2...v0.30.0) - 2026-11-16
+
+### Added
+
+- *(run)* [**breaking**] apply a config's allowlist to one run alone ([#1626](https://github.com/nickderobertis/oneharness/pull/1626))
+
+### Fixed
+
+- *(e2e)* keep the model-catalog wait proofs true when the wall clock steps ([#1613](https://github.com/nickderobertis/oneharness/pull/1613))
+
+<!-- llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] A changelog entry records what this release changed, as of this release; it is the migration note a consumer reads when upgrading, not a live copy of the run-level allowlist contract to keep in step. That contract's sources are `domain::grant` (`resolve`, `plan`, `withheld_reason`, `platform_withheld_reason` and `PROVEN_PLATFORM`) and `io::run_overlay`, pinned by `crates/oneharness-e2e/tests/run_allowlist.rs` and `run_allowlist_platform.rs`, and the README's statements of it by `domain::grant`'s README test; the report schema by `sdk_schema` and its checked-in goldens. -->
+
+### Changed
+
+- **Breaking:** a top-level, per-harness or per-variant `allowed_tools` — the
+  run-level allowlist since 0.29.0, which `run` refused — is now applied by
+  `oneharness run` to each run alone. It used to be synced into each harness's
+  config file; `sync` still never writes it. **Migration:** move it to
+  `[sync] allowed_tools` (or `[sync.harness.<id>] allowed_tools`) to keep it
+  synced. Until you do, `sync` refuses, writing nothing, rather than remove a
+  rule an earlier release synced from it — and an old synced
+  `Bash(<absolute path>)` rule left at the top level now grants every
+  `read-only` run that executable, on Codex running it outside the read-only
+  sandbox.
+
+### Added
+
+- **`oneharness run` applies the run-level `allowed_tools` to that run alone**,
+  writing it nowhere that outlives the run. A command written `$NAME` resolves
+  to the absolute path the run's environment holds; under `--mode read-only`
+  only `Bash(<absolute path>)` / `Bash(<absolute path>:*)` is accepted, and the
+  run may then run exactly those executables, typed as their absolute paths
+  with one quoted argument, and nothing else. Claude Code takes it on per-run
+  flags (`--permission-mode dontAsk` with `Bash` added to its read-only tools);
+  Codex on a per-run overlay `CODEX_HOME` under
+  `$XDG_STATE_HOME/oneharness/run-overlays/` whose `rules/` adds one
+  `prefix_rule` per rule, removed when the run ends and reclaimed by the next
+  run after a kill. Every other harness withholds it and reports a diagnostic,
+  and off Linux (macOS, Windows), where no real-CLI test has proven it, every
+  harness does. The turn's system instructions name each granted path.
+- **Breaking:** report schema `0.15`: the `allowed_tools` diagnostic `setting`,
+  each result's `overlay_env` and `overlay_timings`, and `list`'s
+  `supports_run_allowed_tools`. `oneharness-core`'s `BuildCtx` gains
+  `allowed_tools`, and `OneharnessError::RunLevelAllowlistNotApplied` is
+  replaced by `RunAllowlistRefused`.
+
+<!-- llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate] -->
+
 ## [0.29.2](https://github.com/nickderobertis/oneharness/compare/v0.29.1...v0.29.2) - 2026-11-15
 
 ### Fixed

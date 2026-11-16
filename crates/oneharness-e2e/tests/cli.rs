@@ -630,7 +630,7 @@ fn every_report_carries_the_shared_schema_version() {
     // so a consumer reads any of them with one number — and a bump must move
     // every surface at once. Pinned literally on purpose: asserting against the
     // constant would pass through a bump nobody intended.
-    let version = "0.14";
+    let version = "0.15";
     let printed = run(
         &[
             "run",
@@ -719,7 +719,7 @@ fn list_describes_every_harness() {
     let output = run(&["list"], &[]);
     assert!(output.status.success());
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.14");
+    assert_eq!(value["schema_version"], "0.15");
     let ids: Vec<&str> = value["harnesses"]
         .as_array()
         .unwrap()
@@ -7951,7 +7951,7 @@ fn a_host_signal_cancels_the_run_and_terminates_a_silent_harness() {
     // The report is still the contract: a cancelled run is a value a consumer
     // reads, not a process that vanished.
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.14");
+    assert_eq!(value["schema_version"], "0.15");
     let result = &value["results"][0];
     assert_eq!(result["status"], "cancelled");
     // A cancellation classifies as nothing either, so the report carries the
@@ -11098,7 +11098,7 @@ fn config_command_shows_values_with_sources() {
         String::from_utf8_lossy(&output.stderr)
     );
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.14");
+    assert_eq!(value["schema_version"], "0.15");
     assert_eq!(value["config_files"].as_array().unwrap().len(), 2);
 
     // The project file wins for model and is named as the source...
@@ -14590,11 +14590,13 @@ fn no_key_selects_another_config_shape() {
 }
 
 #[test]
-fn a_run_level_allowed_tools_is_reported_never_synced_and_refused_by_run() {
+fn a_run_level_allowed_tools_is_reported_never_synced_and_applied_by_run() {
     // Top level (through `extends`), per harness and per variant: `config`
     // reports each where `allowed_tools` has always been reported, with its
-    // file; `sync` writes nothing for any of them; `run` refuses each, naming
-    // the rules and the file, before spawning.
+    // file; `sync` writes nothing for any of them; `run` applies each to the
+    // run alone on Linux (here Claude Code's `--allowedTools`; every
+    // harness's mechanism is pinned in `tests/run_allowlist.rs`) and withholds
+    // it, saying so, everywhere else (`tests/run_allowlist_platform.rs`).
     let fx = ConfigFixture::new("run-level-allowlist", "", "");
     let parent = fx.dir.join("parent.toml");
     std::fs::write(&parent, "allowed_tools = [\"Bash(git log:*)\"]\n").unwrap();
@@ -14644,30 +14646,45 @@ fn a_run_level_allowed_tools_is_reported_never_synced_and_refused_by_run() {
         );
     }
 
-    for (id, rules, source) in [
-        ("claude-code", "`Bash(git log:*)`", &parent_name),
-        ("codex", "`Bash(cargo test:*)`", &child_name),
-        ("claude-code:work", "`Read`, `Edit`", &child_name),
+    for (id, rules) in [
+        ("claude-code", &["Bash(git log:*)"][..]),
+        ("claude-code:work", &["Read", "Edit"][..]),
     ] {
+        let _ = std::fs::remove_file(&argv_file);
         let output = drive_policy_verb(&fx, &config, &["run", "--harness", id], &argv_file);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert_eq!(output.status.code(), Some(2), "{id}: {stderr}");
-        assert!(
-            stderr.contains(&format!(
-                "`allowed_tools` in `{source}` sets a run-level allowlist for harness `{id}` ({rules})"
-            )),
-            "{id}: {stderr}"
-        );
-        assert!(
-            stderr.contains("this release does not apply a run-level allowlist to a run"),
-            "{id}: {stderr}"
-        );
-        assert!(
-            stderr.contains("move it to `[sync] allowed_tools`"),
-            "{id}: {stderr}"
-        );
-        assert!(!argv_file.exists(), "{id}: a harness was spawned");
-        assert!(output.stdout.is_empty(), "{id}: no report on a refusal");
+        assert!(output.status.success(), "{id}: {output:?}");
+        let argv = std::fs::read_to_string(&argv_file).unwrap();
+        let argv: Vec<&str> = argv.lines().collect();
+        let diagnostics: Vec<Value> = json_stdout(&output)["results"][0]["diagnostics"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|d| d["setting"] == "allowed_tools")
+            .cloned()
+            .collect();
+        if cfg!(target_os = "linux") {
+            // The one platform a real-CLI test proves the grant on: applied.
+            let at = argv
+                .iter()
+                .position(|a| *a == "--allowedTools")
+                .unwrap_or_else(|| panic!("{id}: no --allowedTools in {argv:?}"));
+            assert_eq!(&argv[at + 1..at + 1 + rules.len()], rules, "{id}: {argv:?}");
+            assert!(diagnostics.is_empty(), "{id}: {diagnostics:?}");
+        } else {
+            // Elsewhere it is withheld: no grant reaches the argv, and the
+            // report names each withheld rule.
+            assert!(!argv.contains(&"--allowedTools"), "{id}: {argv:?}");
+            assert_eq!(diagnostics.len(), 1, "{id}: {diagnostics:?}");
+            let message = diagnostics[0]["message"].as_str().unwrap();
+            assert!(
+                message.contains("withheld on `claude-code`"),
+                "{id}: {message}"
+            );
+            for rule in rules {
+                assert!(message.contains(&format!("`{rule}`")), "{id}: {message}");
+            }
+        }
+        let _ = std::fs::remove_file(&argv_file);
     }
     assert_eq!(tree_bytes(&fx.dir), before);
 }
@@ -30393,7 +30410,7 @@ fn control_interrupt_aborts_a_live_turn_from_a_separate_process() {
     let output = child.wait_with_output().expect("run did not finish");
     assert!(output.status.success(), "{output:?}");
     let report: Value = serde_json::from_slice(&output.stdout).expect("run report was not JSON");
-    assert_eq!(report["schema_version"], "0.14");
+    assert_eq!(report["schema_version"], "0.15");
     assert_eq!(report["control"]["mechanism"], "claude-control-request");
     assert_eq!(report["control"]["socket"], socket.display().to_string());
     let interrupts = report["control"]["interrupts"].as_array().unwrap();

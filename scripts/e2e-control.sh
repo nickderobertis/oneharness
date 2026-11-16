@@ -115,7 +115,16 @@ have_env() {
 #                 heartbeat stops within DEAD_LEASE_SWEEP_INTERVAL (2 s) plus
 #                 DEAD_LEASE_STOP_DEADLINE (5 s);
 #   pooled-reuse  (Linux) the sustained-reuse workload, then onebudgetspec's
-#                 check over live/control/budgets.yaml.
+#                 check of live/control/budgets.yaml's memory budget;
+#   run-overlay   a controlled turn under a run-level allowlist: the granted
+#                 executable runs, every refusal holds, its overlay home is
+#                 the run's alone (live/control/run_allowlist_live.py
+#                 --codex-path control, against a scripted model endpoint, so
+#                 it needs no Codex login; Linux only, where the grant
+#                 applies), then the budget workload
+#                 and onebudgetspec's check of codex-run-overlay-added-seconds.
+# OH_CONTROL_ONLY=run-overlay runs the run-overlay phase alone: it needs no
+# Codex login, only the installed codex.
 # OH_CONTROL_ONLY=pooled runs these alone (the gate's journeys drive them with
 # the mock harness standing for codex).
 
@@ -317,9 +326,55 @@ oh_pooled_reuse() {
   uv sync --project "$OH_REPO_ROOT/python" --frozen --no-install-workspace --quiet ||
     fail "pooled-reuse: could not install onebudgetspec (uv sync); run 'just bootstrap', then rerun"
   (cd "$OH_REPO_ROOT/live/control" &&
-    uv run --project "$OH_REPO_ROOT/python" --frozen --no-sync onebudgetspec check budgets.yaml) ||
+    uv run --project "$OH_REPO_ROOT/python" --frozen --no-sync onebudgetspec check budgets.yaml \
+      --id codex-shared-server-rss-growth) ||
     fail "pooled-reuse: the shared app-server memory budget (live/control/budgets.yaml) failed; its readings are above"
 }
+
+oh_run_overlay() {
+  _oh_phase run-overlay
+  case "$(uname -s)" in
+    Linux*) ;;
+    *)
+      # Off Linux every harness withholds the run-level allowlist
+      # (grant::platform_withheld_reason); run_allowlist_platform.rs proves that.
+      note "  SKIP run-overlay: the run-level allowlist is withheld off Linux; not run on $(uname -s)"
+      return 0
+      ;;
+  esac
+  # The real codex first on PATH, past the suite's measuring shim: the shim
+  # runs each launch in its own network namespace, whose loopback is not the
+  # scripted endpoint's, so codex never reached it ("Reconnecting... waiting
+  # for network"). This phase's traffic is loopback alone, not the internet
+  # spend the network budgets measure (as in oh_resume_stall_enforce).
+  local codex path
+  codex="$(_oh_unshimmed codex)" || codex="$(command -v codex)" ||
+    fail "run-overlay: codex is not on PATH; install it (npm install -g @openai/codex)"
+  path="$(dirname "$codex"):$PATH"
+  # llmlint: ignore[e2e_not_mocked] The model is the one thing replaced: each CLI's permission check, sandbox and execution are the real installed codex, which is what this phase proves, and its acceptance bar names a scripted model endpoint in place of the paid provider (the spike-command-grant method), so a refusal settles by the decision Codex records rather than by a model's choice.
+  PATH="$path" ONEHARNESS_BIN="$BIN" uv run --no-project --python ">=3.10" python "$OH_REPO_ROOT/live/control/run_allowlist_live.py" \
+    --harness codex --codex-path control ||
+    fail "run-overlay: a granted controlled Codex turn broke a guarantee; each failed check is above"
+  # llmlint: ignore[e2e_not_mocked] The budget's stated workload is a scripted model endpoint answering each turn with one call of the granted command: what it times is what a grant adds around a turn, which a real model's own seconds, orders of magnitude longer and varying, would bury.
+  PATH="$path" ONEHARNESS_BIN="$BIN" uv run --no-project --python ">=3.10" python "$OH_REPO_ROOT/live/control/run_allowlist_live.py" \
+    --budget-telemetry "$OH_REPO_ROOT/target/e2e-telemetry/run-overlay/codex-turn.json" ||
+    fail "run-overlay: the budget workload failed; its error is above"
+  # llmlint: ignore[work_goes_through_command_surface] The same frozen sync pooled-reuse runs before its onebudgetspec check, for the same reason: the live-control CI leg reaches this phase without `just bootstrap`.
+  uv sync --project "$OH_REPO_ROOT/python" --frozen --no-install-workspace --quiet ||
+    fail "run-overlay: could not install onebudgetspec (uv sync); run 'just bootstrap', then rerun"
+  (cd "$OH_REPO_ROOT/live/control" &&
+    uv run --project "$OH_REPO_ROOT/python" --frozen --no-sync onebudgetspec check budgets.yaml \
+      --id codex-run-overlay-added-seconds) ||
+    fail "run-overlay: the granted-turn budget (live/control/budgets.yaml) failed; its figures are above"
+}
+
+if [ "${OH_CONTROL_ONLY:-}" = run-overlay ]; then
+  command -v codex >/dev/null 2>&1 || skip "run-overlay: no codex on PATH"
+  note "» codex: run-overlay — a granted controlled turn runs its executable alone, on its own overlay home"
+  oh_run_overlay
+  note "OH_CONTROL_ONLY=run-overlay: the run-overlay phase ran; no other phase was run"
+  exit 0
+fi
 
 if printf '%s\n' "${CONTROLLABLE[@]}" | grep -q '^codex'; then
   if have_env "Codex auth (shared app-server phases)" CODEX_E2E_AUTH OPENAI_API_KEY; then
@@ -332,6 +387,12 @@ if printf '%s\n' "${CONTROLLABLE[@]}" | grep -q '^codex'; then
     oh_pooled_kill
     note "» codex: pooled-reuse — a shared server serving sequential leases keeps no per-dispatch memory"
     oh_pooled_reuse
+  fi
+  # Not under OH_CONTROL_ONLY=pooled: the gate's journeys run that selection
+  # with a harness double standing for codex, and this phase drives the real CLI.
+  if [ "${OH_CONTROL_ONLY:-}" != pooled ] && command -v codex >/dev/null 2>&1; then
+    note "» codex: run-overlay — a granted controlled turn runs its executable alone, on its own overlay home"
+    oh_run_overlay
   fi
 fi
 if [ "${OH_CONTROL_ONLY:-}" = pooled ]; then

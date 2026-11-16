@@ -66,7 +66,7 @@ fn render_text(report: &ListReport) -> String {
             rewrite = h.mock_rewrite.unwrap_or("none"),
         ));
         out.push_str(&format!(
-            "  auto_compact {compact} · compact_now {now} · tool_set {tools} · skills_off {skills} · mcp_off {mcp} · images {images} · call_usage {calls}\n",
+            "  auto_compact {compact} · compact_now {now} · tool_set {tools} · skills_off {skills} · mcp_off {mcp} · images {images} · call_usage {calls} · run_allowed_tools {run_allow}\n",
             compact = yes_no(h.supports_auto_compact),
             now = yes_no(h.supports_compact_now),
             tools = yes_no(h.supports_tool_set),
@@ -74,6 +74,7 @@ fn render_text(report: &ListReport) -> String {
             mcp = yes_no(h.supports_mcp_off),
             images = yes_no(h.supports_images),
             calls = yes_no(h.supports_call_usage),
+            run_allow = yes_no(h.supports_run_allowed_tools),
         ));
         for v in &h.variants {
             out.push_str(&format!(

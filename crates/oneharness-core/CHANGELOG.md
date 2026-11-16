@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.33.2](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.33.1...oneharness-core-v0.33.2) - 2026-11-16
+
+### Fixed
+
+- make a pooled-session sweep reclaim every server it is asked to stop ([#1628](https://github.com/nickderobertis/oneharness/pull/1628))
+
 ## [0.33.1](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.33.0...oneharness-core-v0.33.1) - 2026-11-16
 
 ### Fixed

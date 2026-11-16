@@ -320,17 +320,7 @@ impl Dialogue {
         let id = self.take_id();
         self.handshake_id = id;
         match self.shape {
-            ControlShape::CodexAppServer => vec![request(
-                id,
-                "initialize",
-                json!({
-                    "clientInfo": {
-                        "name": "oneharness",
-                        "title": "oneharness",
-                        "version": env!("CARGO_PKG_VERSION"),
-                    }
-                }),
-            )],
+            ControlShape::CodexAppServer => vec![codex_initialize(id)],
             // ACP's `initialize` announces what the *client* can do. oneharness
             // reads and writes files itself, so it advertises neither: a server
             // that believes otherwise would wait on a filesystem request nobody
@@ -755,7 +745,7 @@ impl Dialogue {
                             None => ("thread/start", self.thread_start_params()),
                         };
                         DialogueStep::Send(vec![
-                            notification("initialized", json!({})),
+                            codex_initialized(),
                             request(open_id, method, params),
                         ])
                     }
@@ -1072,7 +1062,35 @@ fn is_codex_approval(method: &str) -> bool {
     )
 }
 
-fn request(id: u64, method: &str, params: Value) -> String {
+/// The Codex app-server `initialize` request, as one newline-terminated
+/// frame. The one spelling of oneharness's side of the handshake: a driven
+/// turn opens with it, and so does every other conversation oneharness holds
+/// with a Codex app-server.
+#[must_use]
+pub(crate) fn codex_initialize(id: u64) -> String {
+    request(
+        id,
+        "initialize",
+        json!({
+            "clientInfo": {
+                "name": "oneharness",
+                "title": "oneharness",
+                "version": env!("CARGO_PKG_VERSION"),
+            }
+        }),
+    )
+}
+
+/// The `initialized` notification that completes the Codex handshake once
+/// the server has answered [`codex_initialize`].
+#[must_use]
+pub(crate) fn codex_initialized() -> String {
+    notification("initialized", json!({}))
+}
+
+/// One JSON-RPC request frame, newline-terminated.
+#[must_use]
+pub(crate) fn request(id: u64, method: &str, params: Value) -> String {
     line(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))
 }
 

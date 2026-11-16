@@ -193,13 +193,29 @@ test("every scratch directory made under the leak gate names its run", async () 
  * environment, so any swept directory it found unmarked counted as its own
  * leak. So every swept name must hold the churner's marker while it exists.
  *
+ * Nothing orders a listing inside any one cycle, whose directory stands for
+ * microseconds, so how many of them the watch catches is the scheduler's to
+ * decide, and on a contended runner it can be none. What makes the watch prove
+ * something is the churner's last directory: it is announced on stdout and
+ * held until a listing begun after that announcement has run, so every watch
+ * lists at least one live, swept directory of the churner's, however late its
+ * listings are scheduled.
+ *
  * @param refuse a directory tag whose every rename off the sweep is refused
  *   until a directory with the second tag is placed, injected at the churner's
  *   `fs` boundary by `scratch-refusal.fixture.ts`
+ * @param listOnlyAfterChurn hold the first listing until the churner has
+ *   announced its last directory or exited, the latest a scheduler can put it
  */
 async function watchSiblingChurn(
 	cycles: number,
-	refuse?: { tag: string; until: string },
+	{
+		refuse,
+		listOnlyAfterChurn = false,
+	}: {
+		refuse?: { tag: string; until: string };
+		listOnlyAfterChurn?: boolean;
+	} = {},
 ) {
 	const root = await scratch("observed");
 	const token = "4242.node-churn";
@@ -219,13 +235,28 @@ async function watchSiblingChurn(
 				OH_SCRATCH_REFUSE_TAG: refuse?.tag,
 				OH_SCRATCH_REFUSE_UNTIL_TAG: refuse?.until,
 			},
-			stdio: ["ignore", "ignore", "pipe"],
+			stdio: ["pipe", "pipe", "pipe"],
 		},
 	);
 	let said = "";
 	churner.stderr.on("data", (chunk) => {
 		said += chunk;
 	});
+	let heard = "";
+	let leakPlaced = false;
+	const announced = new Promise<void>((done) =>
+		churner.stdout.on("data", (chunk) => {
+			heard += chunk;
+			// Its one line names the directory it placed last.
+			if (heard.includes("\n")) {
+				leakPlaced = true;
+				done();
+			}
+		}),
+	);
+	// A churner that ended before reading its release closed the pipe; the
+	// release had nothing left to do.
+	churner.stdin.on("error", () => {});
 	const exited = new Promise<number | null>((done) =>
 		churner.on("close", done),
 	);
@@ -233,9 +264,13 @@ async function watchSiblingChurn(
 	void exited.then(() => {
 		running = false;
 	});
+	if (listOnlyAfterChurn) await Promise.race([announced, exited]);
 	let seen = 0;
 	const unmarked: string[] = [];
 	while (running) {
+		// Read before listing: once the leak is announced, this listing is sure
+		// to include it, since the churner holds it until released below.
+		const release = leakPlaced;
 		for (const name of readdirSync(root)) {
 			if (!name.startsWith(PREFIX)) continue;
 			seen++;
@@ -248,11 +283,12 @@ async function watchSiblingChurn(
 			// failed read is the one that was read.
 			if (marker !== token && existsSync(directory)) unmarked.push(name);
 		}
+		if (release) churner.stdin.end();
 		await new Promise((next) => setImmediate(next));
 	}
 	const status = await exited;
 	const left = readdirSync(root).filter((name) => name !== RUN_MARKER);
-	return { root, token, status, said, seen, unmarked, left };
+	return { root, token, status, said, seen, unmarked, left, heard };
 }
 
 /**
@@ -269,6 +305,7 @@ function expectOnlyTheMarkedLeak(
 	const [leaked, ...beside] = watch.left;
 	expect(beside, watch.said).toEqual([]);
 	expect(leaked).toStartWith(`${PREFIX}leaked-`);
+	expect(watch.heard.trim(), watch.said).toBe(resolve(watch.root, `${leaked}`));
 	expect(
 		readFileSync(resolve(watch.root, `${leaked}`, RUN_MARKER), "utf8"),
 	).toBe(watch.token);
@@ -291,13 +328,26 @@ test(
 		// with it beside its one real leak. Held for the next removal, it is
 		// given back once the hold ends, and never unmarked meanwhile.
 		const watch = await watchSiblingChurn(8, {
-			tag: "churn-async-3",
-			until: "churn-async-4",
+			refuse: { tag: "churn-async-3", until: "churn-async-4" },
 		});
 		// The refusal reached the retirement, or this proves nothing.
 		expect(watch.said).toMatch(
 			/scratch: left \S+churn-async-3-\S+ in place[^\n]*EPERM/u,
 		);
+		expectOnlyTheMarkedLeak(watch);
+	},
+	SLOW_FIXTURE_CASE_TIMEOUT_MS,
+);
+
+test(
+	"a sibling gate whose listings all come after the churn still watches a live directory",
+	async () => {
+		// The macOS CI failure this guards: on a contended runner every listing
+		// fell outside the few microseconds each churned directory stands, and
+		// after the churner had exited, so the watch saw nothing at all and
+		// proved nothing about markers. Holding the first listing until the
+		// churn is over is the latest the scheduler can put it.
+		const watch = await watchSiblingChurn(8, { listOnlyAfterChurn: true });
 		expectOnlyTheMarkedLeak(watch);
 	},
 	SLOW_FIXTURE_CASE_TIMEOUT_MS,

@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Drift gate for the codex app-server contracts oneharness parses: the
 # `account/rateLimits/read` payload `oneharness usage` reads, and the
-# `thread/tokenUsage/updated` notification a controlled turn's usage is read off.
+# `thread/tokenUsage/updated` notification a controlled turn's usage is read off;
+# and for the two requests a granted run's overlay sends (`thread/list`, which
+# builds its own thread index, and `thread/read`, which records the run's thread
+# in the real home's), whose params and method names are held here too.
 #
 # The codex app-server is marked experimental, so the wire shape can move. Unlike
 # Claude Code, codex *generates* its own schema from the installed binary, which
@@ -77,5 +80,41 @@ check_snapshot v2/ThreadTokenUsageUpdatedNotification.json tests/fixtures/codex-
   "thread token-usage notification" \
   "Dialogue::absorb_codex_token_usage (crates/oneharness-core/src/domain/dialogue.rs)" \
   "a controlled codex turn that reports no usage"
+
+check_snapshot v2/ThreadListParams.json tests/fixtures/codex-thread-list-params.schema.json \
+  "thread/list request" "RunOverlay::seed_thread_index (crates/oneharness-core/src/io/run_overlay.rs)" \
+  "a granted Codex run whose overlay builds no thread index of its own"
+check_snapshot v2/ThreadReadParams.json tests/fixtures/codex-thread-read-params.schema.json \
+  "thread/read request" "RunOverlay::repair_threads (crates/oneharness-core/src/io/run_overlay.rs)" \
+  "a granted Codex thread left out of the real home's index"
+
+# Each method the overlay sends must still be one codex accepts. A catalog that
+# is gone is named as gone, and one grep cannot read keeps grep's own error, so
+# neither reads as a method codex dropped.
+requests="$out/ClientRequest.json"
+if [[ ! -f "$requests" ]]; then
+  echo "check-codex-usage-schema: codex $(codex --version) no longer emits ClientRequest.json." >&2
+  echo "  The request catalog moved or was renamed; find it under the generated schema dir and update" >&2
+  echo "  this script's method check for crates/oneharness-core/src/io/run_overlay.rs." >&2
+  exit 1
+fi
+for method in thread/list thread/read; do
+  found=0
+  grep -qF "\"$method\"" "$requests" || found=$?
+  case "$found" in
+    0) ;;
+    1)
+      echo "check-codex-usage-schema: codex $(codex --version) no longer accepts the \`$method\` request (ClientRequest.json)." >&2
+      echo "  It was renamed or removed; find its replacement under the generated schema dir and update" >&2
+      echo "  crates/oneharness-core/src/io/run_overlay.rs, its schema snapshot and this script." >&2
+      exit 1
+      ;;
+    *)
+      echo "check-codex-usage-schema: could not read $requests (grep exited $found; its error is above)." >&2
+      echo "  Check the generated schema dir is readable, then re-run this script." >&2
+      exit 1
+      ;;
+  esac
+done
 
 echo "check-codex-usage-schema: ok"

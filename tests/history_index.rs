@@ -198,6 +198,8 @@ fn finished_result(prompt_text: &str) -> report::RunResult {
         usage_source: None,
         calls: None,
         diagnostics: Vec::new(),
+        overlay_env: std::collections::BTreeMap::new(),
+        overlay_timings: None,
         session_id: None,
         events: None,
         events_source: None,

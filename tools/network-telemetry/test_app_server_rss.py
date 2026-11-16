@@ -33,6 +33,8 @@ def check(reuse: Path) -> subprocess.CompletedProcess[str]:
             "onebudgetspec",
             "check",
             "budgets.yaml",
+            "--id",
+            "codex-shared-server-rss-growth",
         ],
         cwd=CONTROL,
         env={

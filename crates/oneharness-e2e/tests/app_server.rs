@@ -3338,12 +3338,63 @@ fn as_library_caller(pool: &Pool) -> (MutexGuard<'static, ()>, Vec<String>) {
 
 /// Stop the servers a library caller's released sessions left lingering: it
 /// hosts no sweeper, so the next pool operation is what reclaims them — here,
-/// a sweep once their linger has passed.
+/// one sweep once their linger has passed, after which every server the pool
+/// recorded is gone. A server still running fails the journey with each
+/// entry's record and lease files, which say whether the sweep found it still
+/// leased, still inside its linger, or stopped it and missed.
 fn reclaim_lingering_servers() {
     use oneharness_core::io::server_pool;
     std::thread::sleep(Duration::from_millis(LINGER_MS + 200));
     let root = server_pool::resolve_root(None).unwrap();
+    let recorded: Vec<u32> = pool_entries(&root)
+        .iter()
+        .filter_map(|entry| std::fs::read_to_string(entry.join("server.json")).ok())
+        .filter_map(|text| serde_json::from_str::<Value>(&text).ok())
+        .filter_map(|record| record["pid"].as_u64())
+        .filter_map(|pid| u32::try_from(pid).ok())
+        .collect();
     server_pool::sweep(&root, Duration::from_millis(LINGER_MS)).unwrap();
+    let running: Vec<u32> = recorded.into_iter().filter(|&pid| alive(pid)).collect();
+    assert!(
+        running.is_empty(),
+        "the sweep left the servers {running:?} running; the pool after it, at epoch ms {}:\n{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.as_millis()),
+        pool_files(&root)
+    );
+}
+
+fn pool_entries(root: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| path.is_dir())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Every entry's `server.json` and lease files under the pool root `root`,
+/// each named by its path, for a failure message.
+fn pool_files(root: &Path) -> String {
+    let mut files = Vec::new();
+    for entry in pool_entries(root) {
+        files.push(entry.join("server.json"));
+        if let Ok(leases) = std::fs::read_dir(entry.join("leases")) {
+            files.extend(leases.flatten().map(|lease| lease.path()));
+        }
+    }
+    files
+        .iter()
+        .map(|file| match std::fs::read_to_string(file) {
+            Ok(text) => format!("{}:\n{text}", file.display()),
+            Err(err) => format!("{}: {err}", file.display()),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// A library caller's pooled session — oneharness-core's `PooledSession`, the
@@ -3619,7 +3670,6 @@ fn a_library_pooled_session_s_commands_are_stopped_when_its_server_is_found_dead
         "another dispatch's command was stopped"
     );
     keeper.release();
-    let servers = [session.record().pid.get(), neighbour.record().pid.get()];
     session.release();
     neighbour.release();
     assert!(
@@ -3627,9 +3677,6 @@ fn a_library_pooled_session_s_commands_are_stopped_when_its_server_is_found_dead
         "a released session's command still runs"
     );
     reclaim_lingering_servers();
-    for server in servers {
-        assert!(!alive(server), "the swept server {server} is still running");
-    }
 }
 
 /// Frames for a dispatch's thread that arrive before the reply naming the

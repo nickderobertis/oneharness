@@ -617,7 +617,7 @@ pub fn acquire(
         idle_since_ms: None,
         ..record.clone()
     };
-    write_record(&entry, &cleared)?;
+    write_record(&entry, &cleared, None)?;
 
     Ok(ServerLease {
         entry,
@@ -635,7 +635,10 @@ pub fn acquire(
 /// which is why a `SIGKILL`ed holder cannot leak a server.
 pub(crate) fn reconcile(entry: &Path, linger: Duration) -> io::Result<Option<ServerRecord>> {
     reap_finished();
-    let recorded = read_record(entry);
+    let (recorded, idle_since_uptime_ms) = match read_stored(entry) {
+        Some(stored) => (Some(stored.record), stored.idle_since_uptime_ms),
+        None => (None, None),
+    };
     let leases = entry.join(LEASE_DIR);
     let mut live_leases = 0usize;
     if let Ok(entries) = fs::read_dir(&leases) {
@@ -689,7 +692,7 @@ pub(crate) fn reconcile(entry: &Path, linger: Duration) -> io::Result<Option<Ser
     if live_leases > 0 {
         record.idle_since = None;
         record.idle_since_ms = None;
-        write_record(entry, &record)?;
+        write_record(entry, &record, None)?;
         return Ok(Some(record));
     }
 
@@ -698,12 +701,19 @@ pub(crate) fn reconcile(entry: &Path, linger: Duration) -> io::Result<Option<Ser
     // zero linger reclaims immediately while a real one keeps the process warm.
     let now = epoch_secs();
     let now_ms = epoch_millis();
+    let now_uptime_ms = uptime_millis();
     let since_ms = record
         .idle_since_ms
         .or(record.idle_since.map(|secs| secs.saturating_mul(1000)))
         .unwrap_or(now_ms);
+    // The uptime stamp measures only the idleness the record says is under way.
+    let was_idle = record.idle_since_ms.is_some() || record.idle_since.is_some();
+    let idle_for = idle_for_ms(
+        (since_ms, now_ms),
+        idle_since_uptime_ms.filter(|_| was_idle).zip(now_uptime_ms),
+    );
     let linger = record.linger_ms.map_or(linger, Duration::from_millis);
-    if u128::from(now_ms.saturating_sub(since_ms)) >= linger.as_millis() {
+    if u128::from(idle_for) >= linger.as_millis() {
         if record.marker.is_some() {
             crate::io::app_server::stop_server(entry, &record);
             reap_spawned(record.pid.get());
@@ -716,7 +726,7 @@ pub(crate) fn reconcile(entry: &Path, linger: Duration) -> io::Result<Option<Ser
     if record.idle_since.is_none() {
         record.idle_since = Some(now);
         record.idle_since_ms = Some(now_ms);
-        write_record(entry, &record)?;
+        write_record(entry, &record, now_uptime_ms)?;
     }
     Ok(Some(record))
 }
@@ -801,7 +811,7 @@ fn start(entry: &Path, plan: &LaunchPlan, linger: Duration) -> io::Result<Server
             .is_some()
             .then(|| u64::try_from(linger.as_millis()).unwrap_or(u64::MAX)),
     };
-    write_record(entry, &record)?;
+    write_record(entry, &record, None)?;
     Ok(record)
 }
 
@@ -1338,12 +1348,44 @@ fn kill(pid: Pid) {
 }
 
 pub(crate) fn read_record(entry: &Path) -> Option<ServerRecord> {
+    read_stored(entry).map(|stored| stored.record)
+}
+
+/// What `server.json` holds: the published [`ServerRecord`], plus the instant
+/// the entry went idle on [`uptime_millis`]'s clock.
+///
+/// The linger is a duration, and the wall clock the record's `idle_since_ms`
+/// is stamped on can step — NTP, or a virtual machine's guest clock catching
+/// up with its host — so a linger measured on it alone ends late after a step
+/// back and early after one forward. The uptime stamp is the one the linger is
+/// measured on; it lives beside the record rather than in it because the
+/// record's fields are a published struct a new field would break. A release
+/// that predates it ignores it, and rewrites the file without it, which is
+/// what makes a stamp it did not write unable to outlive the idleness it
+/// measured: such an entry falls back to the wall clock.
+#[derive(Serialize, Deserialize)]
+struct StoredRecord {
+    #[serde(flatten)]
+    record: ServerRecord,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    idle_since_uptime_ms: Option<u64>,
+}
+
+fn read_stored(entry: &Path) -> Option<StoredRecord> {
     let text = fs::read_to_string(entry.join(SERVER_FILE)).ok()?;
     serde_json::from_str(&text).ok()
 }
 
-fn write_record(entry: &Path, record: &ServerRecord) -> io::Result<()> {
-    let mut text = serde_json::to_string_pretty(record)
+fn write_record(
+    entry: &Path,
+    record: &ServerRecord,
+    idle_since_uptime_ms: Option<u64>,
+) -> io::Result<()> {
+    let stored = StoredRecord {
+        record: record.clone(),
+        idle_since_uptime_ms,
+    };
+    let mut text = serde_json::to_string_pretty(&stored)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     text.push('\n');
     let tmp = entry.join("server.json.tmp");
@@ -1357,6 +1399,57 @@ fn lease_id() -> String {
         std::process::id(),
         uuid::Uuid::now_v7().simple()
     )
+}
+
+/// How long an entry has been idle, in milliseconds: on the uptime clock when
+/// both its stamp and the current reading are known (`(since, now)`), else on
+/// the wall clock (`wall`, the same pair in epoch milliseconds). An uptime
+/// stamp later than now was taken before a reboot, and is no measure of this
+/// boot's idleness.
+fn idle_for_ms(wall: (u64, u64), uptime: Option<(u64, u64)>) -> u64 {
+    match uptime {
+        Some((since, now)) if since <= now => now - since,
+        _ => wall.1.saturating_sub(wall.0),
+    }
+}
+
+/// Milliseconds on a system-wide clock that the wall clock's steps do not
+/// move and that keeps counting while the machine sleeps, so a linger spans a
+/// suspend as it does on the wall clock: `CLOCK_BOOTTIME` on Linux and
+/// Android, `CLOCK_MONOTONIC` (which counts sleep there) on the other Unixes,
+/// `GetTickCount64` on Windows. Every process on the machine reads the same
+/// clock, which is what lets one process measure a linger another stamped.
+/// `None` when it cannot be read; the linger then falls back to the wall clock.
+fn uptime_millis() -> Option<u64> {
+    #[cfg(unix)]
+    {
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        let clock = libc::CLOCK_BOOTTIME;
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        let clock = libc::CLOCK_MONOTONIC;
+        let mut now = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        // llmlint: ignore[changed_behavior_has_e2e] `clock_gettime` fails only for a clock id the kernel does not know, and both ids here exist on every kernel this crate builds for; the fallback it would take is the wall-clock measure every release before this one used.
+        // SAFETY: `now` is a live, writable timespec for the call to fill.
+        if unsafe { libc::clock_gettime(clock, &mut now) } != 0 {
+            return None;
+        }
+        let secs = u64::try_from(now.tv_sec).ok()?;
+        let nanos = u64::try_from(now.tv_nsec).ok()?;
+        secs.checked_mul(1000)?.checked_add(nanos / 1_000_000)
+    }
+    #[cfg(windows)]
+    {
+        // llmlint: ignore[changed_behavior_has_e2e] The pool's integration suite (`tests/server_pool.rs`) is Unix-only as a whole — its stand-in server is `sleep` and it stages holders through libc — so no journey can drive a Windows sweep. `GetTickCount64` cannot fail, and the unit test `the_linger_is_measured_on_the_uptime_clock_when_it_has_both_readings`, which runs on every platform CI builds, proves this reading advances with real time; the linger arithmetic over it is the same code the Unix journeys prove.
+        // SAFETY: `GetTickCount64` takes nothing and only reads a counter.
+        Some(unsafe { windows_sys::Win32::System::SystemInformation::GetTickCount64() })
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        None
+    }
 }
 
 fn epoch_millis() -> u64 {
@@ -1405,6 +1498,24 @@ mod tests {
     use super::*;
     use crate::domain::control::ServerTransport;
     use crate::io::scratch::ScratchDir;
+
+    /// The linger is measured on the uptime clock whenever both of its readings
+    /// are known, whatever the wall clock did between them; without one, or
+    /// with a stamp later than now (taken before a reboot), on the wall clock.
+    #[test]
+    fn the_linger_is_measured_on_the_uptime_clock_when_it_has_both_readings() {
+        // The wall clock stepped back 10 s: it reads idle for no time at all.
+        let stepped = (20_000, 10_500);
+        assert_eq!(idle_for_ms(stepped, Some((1_000, 1_500))), 500);
+        assert_eq!(idle_for_ms(stepped, None), 0);
+        assert_eq!(idle_for_ms((10_000, 10_500), Some((9_000, 1_500))), 500);
+        // A real clock on every platform, the Windows one included: it reads,
+        // and it advances with the time that passes.
+        let before = uptime_millis().expect("this platform's uptime clock is unreadable");
+        std::thread::sleep(Duration::from_millis(60));
+        let after = uptime_millis().expect("this platform's uptime clock is unreadable");
+        assert!(after >= before + 40, "{before} -> {after}");
+    }
 
     /// A long-lived supervisor reaps servers without end, so only the newest
     /// [`EXITED_KEPT`] statuses are kept: an older one reads as unknown, the

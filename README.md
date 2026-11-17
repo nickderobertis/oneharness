@@ -723,6 +723,7 @@ unset_env = ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]
 [harness.codex]
 plugins = true                  # codex only: keep Codex plugins on (default off)
 apps = true                     # codex only: keep ChatGPT apps/connectors on (default off)
+skip_git_repo_check = true      # codex only: `exec` turns run outside a git repo (default false)
 analytics = true                # codex only: let Codex send analytics (default off)
 shared_model_catalog = false    # codex only: Codex fetches its own catalog per launch (default true)
 model_catalog_refresh_seconds = 600  # codex only: shared catalog's age limit (default 3600)
@@ -1194,6 +1195,18 @@ over harness, a later layer or `extends` child over an earlier one, apart from
 `args`), is refused under any other harness, and shows in `oneharness config`.
 The usage probe and the catalog refresh below always run with apps off.
 
+**Codex's git-repository check can be skipped for one-shot turns.** Codex
+refuses a working directory that is neither a git repository nor trusted unless
+it is given `--skip-git-repo-check`, and `codex app-server` rejects that flag —
+so passing it in `args`, which reach both launch modes, breaks every
+`--control` turn. Set `skip_git_repo_check = true` under `[harness.codex]` or
+one `[harness.codex.variant.<name>]` instead: `codex exec` and `codex exec
+resume` then carry `--skip-git-repo-check`, while a controlled turn's
+app-server argv, the pooled server's launch and its pool key stay exactly as
+they were, so dispatches differing only in this setting share one server. It
+resolves like `plugins` (variant over harness, apart from `args`), defaults to
+`false`, is refused under any other harness, and shows in `oneharness config`.
+
 **Codex's model catalog is shared, and its analytics are off, by default.**
 Codex fetches its whole model catalog (about 623 KB measured) on every process
 start, ignoring the cache it writes, and `codex exec` uploads analytics — product
@@ -1240,7 +1253,8 @@ No orchestrated run reads either. So:
   run never fails over its catalog. An executable whose `--version` names no
   Codex version, or a launch with no Codex home, gets no shared catalog.
 - `oneharness config` shows the resolved `shared_model_catalog`,
-  `model_catalog_refresh_seconds`, `analytics` and `apps` for each codex harness
+  `model_catalog_refresh_seconds`, `analytics`, `apps` and
+  `skip_git_repo_check` for each codex harness
   and variant; `--print-command` shows the catalog flag with a
   `<shared model catalog>` placeholder, since a dry run cannot ask the
   executable for the version the path is keyed by.
@@ -2185,8 +2199,9 @@ connection). A run's report names the server in `control.app_server`
 executable's resolved path and its `--version` output, a digest of the server's
 launch environment, every process-level argument (the `-c` settings above —
 plugins, apps, analytics and the shared model catalog — and the config `args`),
-and the resolved `plugins`. Dispatches differing only in thread-level settings, or
-in a variable outside the server's environment, share one server.
+and the resolved `plugins`. Dispatches differing only in thread-level settings,
+in `skip_git_repo_check` (an `exec`-only flag), or in a variable outside the
+server's environment, share one server.
 
 **The server's environment is scrubbed**, because a server's own environment
 reaches every thread's commands, whichever dispatch they belong to. It is

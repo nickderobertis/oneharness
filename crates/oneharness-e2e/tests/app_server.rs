@@ -5434,6 +5434,7 @@ fn a_dispatch_without_a_startup_fetch_setting_gets_a_server_of_its_own() {
     }
 }
 
+// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run --control` through the real pool; only codex is the repository's subprocess double, held live so a second dispatch can be shown joining the first one's server, which the gate cannot do with real Codex. Real Codex's refusal of `--skip-git-repo-check` under `app-server` is why the flag must stay off that argv, and the double records every argv the pool launched it with, which is what this asserts.
 /// `skip_git_repo_check = true`, at harness or variant level, never reaches
 /// `codex app-server` (which refuses the flag): of two configs differing only
 /// in it, the one resolving it true joins the server the other started, under
@@ -5490,6 +5491,7 @@ fn skip_git_repo_check_leaves_the_pooled_server_and_its_key_alone() {
         assert!(!flagged(&launches[0]["argv"]), "{config}: {launches:?}");
     }
 }
+// llmlint: ignore-end[e2e_not_mocked]
 
 /// The repository root, for the journeys that run its scripts.
 fn repo_root() -> PathBuf {

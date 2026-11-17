@@ -43441,27 +43441,48 @@ fn skip_git_repo_check_reaches_codex_exec_and_exec_resume_only_when_it_resolves_
     // The dry run's `codex exec` and `codex exec resume` argv carry
     // `--skip-git-repo-check` exactly when the identity resolves the setting
     // true: set at harness level, at variant level where the variant has its
-    // own `args`, and a variant's `false` beating its harness's `true`.
+    // own `args`, a variant's `false` beating its harness's `true`, and the
+    // project layer beating the user layer either way while a project layer
+    // without the key keeps the user's. `list`'s example codex command
+    // follows the harness-level value.
     let config = "[harness.codex]\nskip_git_repo_check = true\n\
                   [harness.codex.variant.own-args]\nargs = [\"--variant-arg\"]\n\
                   [harness.codex.variant.checked]\nskip_git_repo_check = false\n";
     let variant_only = "[harness.codex.variant.scratch]\nskip_git_repo_check = true\n";
-    let cases: [(&str, &str, &str, bool); 7] = [
-        ("unset", "", "codex", false),
+    let on = "[harness.codex]\nskip_git_repo_check = true\n";
+    let off = "[harness.codex]\nskip_git_repo_check = false\n";
+    let cases: [(&str, &str, &str, &str, bool); 11] = [
+        ("unset", "", "", "codex", false),
+        ("explicit-false", "", off, "codex", false),
+        ("harness", "", config, "codex", true),
+        ("variant-own-args", "", config, "codex:own-args", true),
+        ("variant-false", "", config, "codex:checked", false),
+        ("variant-true", "", variant_only, "codex:scratch", true),
+        ("variant-only-base", "", variant_only, "codex", false),
+        ("user-on-project-off", on, off, "codex", false),
+        ("user-off-project-on", off, on, "codex", true),
         (
-            "explicit-false",
-            "[harness.codex]\nskip_git_repo_check = false\n",
+            "user-on-project-silent",
+            on,
+            "[harness.codex]\nmodel = \"m\"\n",
             "codex",
+            true,
+        ),
+        (
+            "user-variant-on-project-variant-off",
+            "[harness.codex.variant.scratch]\nskip_git_repo_check = true\n",
+            "[harness.codex.variant.scratch]\nskip_git_repo_check = false\n",
+            "codex:scratch",
             false,
         ),
-        ("harness", config, "codex", true),
-        ("variant-own-args", config, "codex:own-args", true),
-        ("variant-false", config, "codex:checked", false),
-        ("variant-true", variant_only, "codex:scratch", true),
-        ("variant-only-base", variant_only, "codex", false),
     ];
-    for (tag, project, harness, want) in cases {
-        let fx = ConfigFixture::new(&format!("skip-git-{tag}"), project, "");
+    let flags = |argv: &[String]| {
+        argv.iter()
+            .filter(|a| *a == "--skip-git-repo-check")
+            .count()
+    };
+    for (tag, user, project, harness, want) in cases {
+        let fx = ConfigFixture::new(&format!("skip-git-{tag}"), project, user);
         let cwd = fx.cwd();
         for resume in [None, Some("th-1")] {
             let mut args = vec![
@@ -43487,15 +43508,32 @@ fn skip_git_repo_check_reaches_codex_exec_and_exec_resume_only_when_it_resolves_
             };
             assert_eq!(argv[1..=head.len()], *head, "{tag}: {argv:?}");
             assert_eq!(
-                argv.iter()
-                    .filter(|a| *a == "--skip-git-repo-check")
-                    .count(),
+                flags(&argv),
                 usize::from(want),
                 "{tag} {resume:?}: {argv:?}"
             );
             if harness == "codex:own-args" {
                 assert!(argv.contains(&"--variant-arg".to_string()), "{argv:?}");
             }
+        }
+        if harness == "codex" {
+            let output = run_with_config_in(
+                Some(std::path::Path::new(&cwd)),
+                &["list", "--compact"],
+                &[],
+                &fx.user_config(),
+            );
+            assert!(output.status.success(), "{tag}: {output:?}");
+            let listed = json_stdout(&output);
+            let codex = listed["harnesses"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|item| item["id"] == "codex")
+                .unwrap();
+            let example: Vec<String> =
+                serde_json::from_value(codex["example_command"].clone()).unwrap();
+            assert_eq!(flags(&example), usize::from(want), "{tag}: {example:?}");
         }
     }
 }

@@ -43352,6 +43352,7 @@ fn a_later_config_layer_overrides_the_codex_launch_keys_in_both_directions() {
 fn a_codex_launch_key_under_another_harness_is_refused_at_load() {
     for (key, value) in [
         ("apps", "true"),
+        ("skip_git_repo_check", "true"),
         ("shared_model_catalog", "false"),
         ("model_catalog_refresh_seconds", "60"),
         ("analytics", "true"),
@@ -43383,7 +43384,8 @@ fn the_config_report_shows_each_resolved_codex_launch_key() {
     let fx = ConfigFixture::new(
         "catalog-config-report",
         "[harness.codex]\nmodel_catalog_refresh_seconds = 600\nanalytics = true\n\
-         [harness.codex.variant.lean]\nshared_model_catalog = false\n\
+         skip_git_repo_check = true\n\
+         [harness.codex.variant.lean]\nshared_model_catalog = false\nskip_git_repo_check = false\n\
          [harness.codex.variant.plain]\nmodel = \"m\"\n",
         "",
     );
@@ -43403,13 +43405,99 @@ fn the_config_report_shows_each_resolved_codex_launch_key() {
     assert_eq!(codex["analytics"]["value"], true);
     assert_eq!(codex["apps"]["value"], false);
     assert_eq!(codex["apps"]["source"], "default");
+    assert_eq!(codex["skip_git_repo_check"]["value"], true);
+    assert_eq!(resolved(source(&codex["skip_git_repo_check"])), project);
     let lean = &codex["variant"]["lean"];
     assert_eq!(lean["shared_model_catalog"]["value"], false);
     assert_eq!(lean["model_catalog_refresh_seconds"]["value"], 600);
     assert_eq!(lean["analytics"]["value"], true);
+    assert_eq!(lean["skip_git_repo_check"]["value"], false);
+    assert_eq!(resolved(source(&lean["skip_git_repo_check"])), project);
     let plain = &codex["variant"]["plain"];
     assert_eq!(plain["shared_model_catalog"]["value"], true);
     assert_eq!(plain["analytics"]["value"], true);
+    assert_eq!(plain["skip_git_repo_check"]["value"], true);
+    assert_eq!(resolved(source(&plain["skip_git_repo_check"])), project);
+    let claude = &report["harness"]["claude-code"];
+    assert!(claude.get("skip_git_repo_check").is_none(), "{claude}");
+    let unset = ConfigFixture::new(
+        "catalog-config-report-unset",
+        "[harness.codex]\nmodel = \"m\"\n",
+        "",
+    );
+    let output = run_with_config(
+        &["config", "--cwd", &unset.cwd()],
+        &[],
+        &unset.user_config(),
+    );
+    assert!(output.status.success(), "{output:?}");
+    let codex = &json_stdout(&output)["harness"]["codex"];
+    assert_eq!(codex["skip_git_repo_check"]["value"], false);
+    assert_eq!(codex["skip_git_repo_check"]["source"], "default");
+}
+
+#[test]
+fn skip_git_repo_check_reaches_codex_exec_and_exec_resume_only_when_it_resolves_true() {
+    // The dry run's `codex exec` and `codex exec resume` argv carry
+    // `--skip-git-repo-check` exactly when the identity resolves the setting
+    // true: set at harness level, at variant level where the variant has its
+    // own `args`, and a variant's `false` beating its harness's `true`.
+    let config = "[harness.codex]\nskip_git_repo_check = true\n\
+                  [harness.codex.variant.own-args]\nargs = [\"--variant-arg\"]\n\
+                  [harness.codex.variant.checked]\nskip_git_repo_check = false\n";
+    let variant_only = "[harness.codex.variant.scratch]\nskip_git_repo_check = true\n";
+    let cases: [(&str, &str, &str, bool); 7] = [
+        ("unset", "", "codex", false),
+        (
+            "explicit-false",
+            "[harness.codex]\nskip_git_repo_check = false\n",
+            "codex",
+            false,
+        ),
+        ("harness", config, "codex", true),
+        ("variant-own-args", config, "codex:own-args", true),
+        ("variant-false", config, "codex:checked", false),
+        ("variant-true", variant_only, "codex:scratch", true),
+        ("variant-only-base", variant_only, "codex", false),
+    ];
+    for (tag, project, harness, want) in cases {
+        let fx = ConfigFixture::new(&format!("skip-git-{tag}"), project, "");
+        let cwd = fx.cwd();
+        for resume in [None, Some("th-1")] {
+            let mut args = vec![
+                "run",
+                "--cwd",
+                &cwd,
+                "--harness",
+                harness,
+                "--prompt",
+                "p",
+                "--print-command",
+            ];
+            if let Some(thread) = resume {
+                args.extend(["--resume", thread]);
+            }
+            let output = run_with_config(&args, &[], &fx.user_config());
+            assert!(output.status.success(), "{tag} {resume:?}: {output:?}");
+            let argv = command_of(&json_stdout(&output), 0);
+            let head: &[&str] = if resume.is_some() {
+                &["exec", "resume"]
+            } else {
+                &["exec"]
+            };
+            assert_eq!(argv[1..=head.len()], *head, "{tag}: {argv:?}");
+            assert_eq!(
+                argv.iter()
+                    .filter(|a| *a == "--skip-git-repo-check")
+                    .count(),
+                usize::from(want),
+                "{tag} {resume:?}: {argv:?}"
+            );
+            if harness == "codex:own-args" {
+                assert!(argv.contains(&"--variant-arg".to_string()), "{argv:?}");
+            }
+        }
+    }
 }
 
 /// The records of `burst`'s launches, asserting each read the one shared

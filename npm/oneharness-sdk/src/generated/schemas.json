@@ -18259,6 +18259,17 @@
               }
             ]
           },
+          "skip_git_repo_check": {
+            "description": "The resolved `skip_git_repo_check` (`false` by default), present only\nfor `codex`.",
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Field"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "variant": {
             "type": "object",
             "additionalProperties": {
@@ -18589,6 +18600,17 @@
           },
           "shared_model_catalog": {
             "description": "The `shared_model_catalog` a launch of this variant resolves to: the\nvariant's own, else its harness's, else `true`. Present only for `codex`.",
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Field"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "skip_git_repo_check": {
+            "description": "The `skip_git_repo_check` a launch of this variant resolves to: the\nvariant's own, else its harness's, else `false`. Present only for\n`codex`.",
             "anyOf": [
               {
                 "$ref": "#/$defs/Field"

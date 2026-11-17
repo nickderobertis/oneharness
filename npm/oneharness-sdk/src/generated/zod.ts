@@ -569,6 +569,7 @@ export const HarnessReportSchema: z.ZodType<HarnessReport> = z.looseObject({
   plugins: z.union([z.lazy(() => FieldSchema), z.null()]).optional(),
   reasoning: z.lazy(() => Field3Schema).refine((value) => value !== undefined, { message: "Required" }),
   shared_model_catalog: z.union([z.lazy(() => FieldSchema), z.null()]).optional(),
+  skip_git_repo_check: z.union([z.lazy(() => FieldSchema), z.null()]).optional(),
   variant: z
     .record(
       z.string(),
@@ -3795,6 +3796,7 @@ export const VariantReportSchema: z.ZodType<VariantReport> = z.looseObject({
   plugins: z.union([z.lazy(() => FieldSchema), z.null()]).optional(),
   reasoning: z.lazy(() => Field3Schema).refine((value) => value !== undefined, { message: "Required" }),
   shared_model_catalog: z.union([z.lazy(() => FieldSchema), z.null()]).optional(),
+  skip_git_repo_check: z.union([z.lazy(() => FieldSchema), z.null()]).optional(),
   unset_env: z.lazy(() => Field2Schema).refine((value) => value !== undefined, { message: "Required" }),
 });
 

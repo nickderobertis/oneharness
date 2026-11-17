@@ -1544,6 +1544,7 @@ mod control_mode_parity {
             delivery,
             plugins: false,
             apps: false,
+            skip_git_repo_check: false,
             analytics: false,
             model_catalog: None,
             tools: None,

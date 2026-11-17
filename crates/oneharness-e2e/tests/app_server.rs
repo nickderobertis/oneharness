@@ -5434,6 +5434,63 @@ fn a_dispatch_without_a_startup_fetch_setting_gets_a_server_of_its_own() {
     }
 }
 
+/// `skip_git_repo_check = true`, at harness or variant level, never reaches
+/// `codex app-server` (which refuses the flag): of two configs differing only
+/// in it, the one resolving it true joins the server the other started, under
+/// the same pool key, and neither the controlled turn's argv nor the server's
+/// launch carries the flag.
+#[test]
+fn skip_git_repo_check_leaves_the_pooled_server_and_its_key_alone() {
+    for (table, harness) in [
+        ("[harness.codex]", "codex"),
+        ("[harness.codex.variant.scratch]", "codex:scratch"),
+    ] {
+        let off = format!("{table}\nskip_git_repo_check = false\n");
+        let config = format!("{table}\nskip_git_repo_check = true\n");
+        let pool = catalog_pool("pool-skip-git");
+        let release = pool.file("release");
+        let without = pool.spawn(pool.command_with_config(
+            "skip-a",
+            &off,
+            &["--harness", harness],
+            &[("MOCK_CODEX_HOLD_UNTIL", &release)],
+        ));
+        let shared = pool.await_live_turns(1);
+        let (output, with) =
+            pool.run(pool.command_with_config("skip-b", &config, &["--harness", harness], &[]));
+        succeeded(&output, &with);
+        std::fs::write(&release, b"").unwrap();
+        let (output, without) = Pool::finish(without);
+        succeeded(&output, &without);
+        assert_eq!(reported_server(&with), shared, "{config}");
+        assert_eq!(
+            with["control"]["app_server"]["pool_key"], without["control"]["app_server"]["pool_key"],
+            "{config}"
+        );
+        let flagged = |argv: &Value| {
+            argv.as_array()
+                .unwrap()
+                .iter()
+                .any(|a| a == "--skip-git-repo-check")
+        };
+        for report in [&with, &without] {
+            let command = &result(report)["command"];
+            assert!(
+                command
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|a| a == "app-server"),
+                "{command}"
+            );
+            assert!(!flagged(command), "{config}: {command}");
+        }
+        let launches = server_launches(&pool);
+        assert_eq!(launches.len(), 1, "{config}: {launches:?}");
+        assert!(!flagged(&launches[0]["argv"]), "{config}: {launches:?}");
+    }
+}
+
 /// The repository root, for the journeys that run its scripts.
 fn repo_root() -> PathBuf {
     std::fs::canonicalize(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")).unwrap()

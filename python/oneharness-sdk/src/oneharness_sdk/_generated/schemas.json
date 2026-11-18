@@ -631,6 +631,17 @@
             ],
             "description": "The resolved `shared_model_catalog` (`true` by default), present only\nfor `codex`."
           },
+          "skip_git_repo_check": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Field"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The resolved `skip_git_repo_check` (`false` by default), present only\nfor `codex`."
+          },
           "variant": {
             "additionalProperties": {
               "$ref": "#/$defs/VariantReport"
@@ -969,6 +980,17 @@
               }
             ],
             "description": "The `shared_model_catalog` a launch of this variant resolves to: the\nvariant's own, else its harness's, else `true`. Present only for `codex`."
+          },
+          "skip_git_repo_check": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Field"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The `skip_git_repo_check` a launch of this variant resolves to: the\nvariant's own, else its harness's, else `false`. Present only for\n`codex`."
           },
           "unset_env": {
             "$ref": "#/$defs/Field2"

@@ -187,6 +187,10 @@
         "value": false,
         "source": "default"
       },
+      "skip_git_repo_check": {
+        "value": false,
+        "source": "default"
+      },
       "shared_model_catalog": {
         "value": true,
         "source": "default"
@@ -231,6 +235,10 @@
             "source": "<dir>/single.toml"
           },
           "apps": {
+            "value": false,
+            "source": "default"
+          },
+          "skip_git_repo_check": {
             "value": false,
             "source": "default"
           },

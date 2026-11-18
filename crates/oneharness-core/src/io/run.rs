@@ -1274,6 +1274,7 @@ pub fn run_supervised(
             },
             plugins: cfg.plugins_for(selected_id),
             apps: cfg.apps_for(selected_id),
+            skip_git_repo_check: cfg.skip_git_repo_check_for(selected_id),
             analytics: cfg.analytics_for(selected_id),
             model_catalog: None,
         };
@@ -5200,6 +5201,10 @@ struct HarnessPlan {
     /// The identity's resolved `apps` opt-in ([`FileConfig::apps_for`]),
     /// carried apart from `extra` like `plugins`.
     apps: bool,
+    /// The identity's resolved `skip_git_repo_check`
+    /// ([`FileConfig::skip_git_repo_check_for`]), carried apart from `extra`
+    /// like `plugins`.
+    skip_git_repo_check: bool,
     /// The identity's resolved `analytics` ([`FileConfig::analytics_for`]),
     /// carried apart from `extra` like `plugins`.
     analytics: bool,
@@ -5300,6 +5305,7 @@ impl HarnessPlan {
             delivery: self.delivery,
             plugins: self.plugins,
             apps: self.apps,
+            skip_git_repo_check: self.skip_git_repo_check,
             analytics: self.analytics,
             model_catalog: self.model_catalog.as_deref(),
             tools: self.tools.as_deref(),
@@ -6394,6 +6400,7 @@ mod tests {
             delivery: PromptDelivery::Argv,
             plugins: false,
             apps: false,
+            skip_git_repo_check: false,
             analytics: false,
             model_catalog: None,
             tools: None,

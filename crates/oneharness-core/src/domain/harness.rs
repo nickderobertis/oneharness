@@ -84,6 +84,14 @@ pub struct BuildCtx<'a> {
     /// ahead of the caller's args so a caller's own enable still wins; `true`
     /// adds no apps flag at all.
     pub apps: bool,
+    /// Whether the run skips the harness's git-repository check (the resolved
+    /// `skip_git_repo_check` config key,
+    /// [`crate::domain::config::FileConfig::skip_git_repo_check_for`]). Only
+    /// codex reads it, and only for `exec` and `exec resume`: `true` adds
+    /// `--skip-git-repo-check` there. A control-stream run's `app-server`
+    /// argv never carries it — `codex app-server` rejects the flag, and its
+    /// absence keeps the pooled server's launch and pool key unchanged.
+    pub skip_git_repo_check: bool,
     /// Whether the run lets the harness send analytics (the resolved
     /// `analytics` config key, [`crate::domain::config::FileConfig::analytics_for`]).
     /// Only codex reads it: `false` adds `-c analytics.enabled=false` beside the
@@ -1932,6 +1940,9 @@ fn argv_codex(c: &BuildCtx) -> Vec<String> {
         a.push("resume".into());
     }
     a.extend(codex_launch_settings(c));
+    if c.skip_git_repo_check {
+        a.push("--skip-git-repo-check".into());
+    }
     // The sandbox is the real control surface under `exec` (approval downgrades
     // to `never`). `Default` keeps the exec default (read-only). `Edit` is not a
     // supported mode for codex, so it is never reached. Bypass is one flag both
@@ -2499,6 +2510,7 @@ mod tests {
             delivery: PromptDelivery::Argv,
             plugins: false,
             apps: false,
+            skip_git_repo_check: false,
             analytics: false,
             model_catalog: None,
             tools: None,
@@ -3082,6 +3094,7 @@ mod tests {
             delivery: PromptDelivery::Argv,
             plugins: false,
             apps: false,
+            skip_git_repo_check: false,
             analytics: false,
             model_catalog: None,
             tools: None,
@@ -3168,6 +3181,7 @@ mod tests {
             delivery: PromptDelivery::Argv,
             plugins: false,
             apps: false,
+            skip_git_repo_check: false,
             analytics: false,
             model_catalog: None,
             tools: None,
@@ -3764,6 +3778,55 @@ mod tests {
                 (other.build_argv)(&base_ctx(other)),
                 (other.build_argv)(&BuildCtx {
                     apps: true,
+                    ..base_ctx(other)
+                }),
+                "{}",
+                other.id
+            );
+        }
+    }
+
+    #[test]
+    fn codex_skips_the_git_check_on_exec_turns_only_and_only_when_asked() {
+        // Asked for, `--skip-git-repo-check` is added to a fresh `exec` and an
+        // `exec resume` and nothing else moves; an app-server launch, which
+        // Codex refuses the flag on, is identical either way, as is every
+        // other harness's argv.
+        let spec = by_id("codex").unwrap();
+        let launches: [(Option<&str>, PromptDelivery, bool); 4] = [
+            (None, PromptDelivery::Argv, true),
+            (Some("th-1"), PromptDelivery::Argv, true),
+            (Some("th-1"), PromptDelivery::Stdin, true),
+            (None, PromptDelivery::ControlStream, false),
+        ];
+        for (resume, delivery, carries) in launches {
+            let off = BuildCtx {
+                resume,
+                delivery,
+                ..base_ctx(spec)
+            };
+            let without = (spec.build_argv)(&off);
+            let with = (spec.build_argv)(&BuildCtx {
+                skip_git_repo_check: true,
+                ..off
+            });
+            assert!(!without.iter().any(|t| t == "--skip-git-repo-check"));
+            let rest: Vec<&String> = with
+                .iter()
+                .filter(|t| *t != "--skip-git-repo-check")
+                .collect();
+            assert_eq!(rest, without.iter().collect::<Vec<_>>(), "{with:?}");
+            assert_eq!(
+                with.len() - rest.len(),
+                usize::from(carries),
+                "{resume:?} {delivery:?}: {with:?}"
+            );
+        }
+        for other in all().iter().filter(|spec| spec.id != "codex") {
+            assert_eq!(
+                (other.build_argv)(&base_ctx(other)),
+                (other.build_argv)(&BuildCtx {
+                    skip_git_repo_check: true,
                     ..base_ctx(other)
                 }),
                 "{}",

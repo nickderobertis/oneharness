@@ -515,7 +515,7 @@ caller rather than being dropped.
 | `run_stream_envelope` | `event`, `harness_id`, `history_dir`, `history_id`, `history_project`, `history_session`, `report`, `type` | 104 | yes | yes | yes |
 | `list_report` | `harnesses`, `schema_version` | 44 | yes | yes | yes |
 | `detect_report` | `detected`, `schema_version` | 7 | yes | yes | yes |
-| `config_report` | `all`, `allowed_tools`, `auto_compact_tokens`, `bypass`, `config_files`, `env`, `exclude`, `harness`, `harnesses`, `history`, `history_dir`, `history_labels`, `history_pointer_file`, `load_mcp`, `load_skills`, `max_parallel`, `mode`, `model`, `models`, `output_format`, `reasoning`, `require_available`, `run_mode`, `schema_file`, `schema_max_retries`, `schema_version`, `server_overloaded_max_retries`, `stream`, `sync`, `system`, `timeout`, `tool_set` | 52 | yes | yes | yes |
+| `config_report` | `all`, `allowed_tools`, `auto_compact_tokens`, `bypass`, `config_files`, `env`, `exclude`, `harness`, `harnesses`, `history`, `history_dir`, `history_labels`, `history_pointer_file`, `load_mcp`, `load_skills`, `max_parallel`, `mode`, `model`, `models`, `output_format`, `reasoning`, `require_available`, `run_mode`, `schema_file`, `schema_max_retries`, `schema_version`, `server_overloaded_max_retries`, `stream`, `sync`, `system`, `timeout`, `tool_set` | 53 | yes | yes | yes |
 | `sync_report` | `check`, `config_files`, `exact`, `results`, `schema_version` | 16 | yes | yes | yes |
 | `usage_report` | `identities`, `observed_at`, `schema_version` | 42 | yes | yes | yes |
 | `interrupt_response` | `error`, `mechanism`, `ok`, `reason`, `redirected`, `v` | 6 | yes | yes | yes |

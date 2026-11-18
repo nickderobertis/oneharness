@@ -175,6 +175,11 @@ export interface HarnessReport {
    * for `codex`.
    */
   shared_model_catalog?: Field | null | undefined;
+  /**
+   * The resolved `skip_git_repo_check` (`false` by default), present only
+   * for `codex`.
+   */
+  skip_git_repo_check?: Field | null | undefined;
   variant: {
     [k: string]: VariantReport;
   };
@@ -235,6 +240,12 @@ export interface VariantReport {
    * variant's own, else its harness's, else `true`. Present only for `codex`.
    */
   shared_model_catalog?: Field | null | undefined;
+  /**
+   * The `skip_git_repo_check` a launch of this variant resolves to: the
+   * variant's own, else its harness's, else `false`. Present only for
+   * `codex`.
+   */
+  skip_git_repo_check?: Field | null | undefined;
   unset_env: Field2;
   [k: string]: unknown;
 }

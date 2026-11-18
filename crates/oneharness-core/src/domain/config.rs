@@ -286,6 +286,14 @@ pub struct HarnessConfig {
     /// apps MCP server and downloads its tool list (~580 KB) on every session.
     /// Resolved apart from `args`, like `plugins`. See [`FileConfig::apps_for`].
     pub apps: Option<bool>,
+    /// Start Codex's one-shot turns with `--skip-git-repo-check` (`codex`
+    /// only), so `codex exec` and `codex exec resume` run in a directory that
+    /// is neither a git repository nor trusted. Unset means `false`. Never
+    /// reaches `codex app-server`, which refuses the flag, so it leaves every
+    /// controlled turn's argv and the pooled server's launch and pool key as
+    /// they were. Resolved apart from `args`, like `plugins`. See
+    /// [`FileConfig::skip_git_repo_check_for`].
+    pub skip_git_repo_check: Option<bool>,
     /// Share one Codex model catalog per Codex home and Codex version across
     /// launches (`codex` only). Unset means on: oneharness keeps the catalog
     /// file and starts Codex with `-c model_catalog_json=<it>`, so a launch
@@ -435,6 +443,8 @@ pub struct VariantConfig {
     pub plugins: Option<bool>,
     /// This variant's apps opt-in, beating its harness's `apps`.
     pub apps: Option<bool>,
+    /// This variant's `skip_git_repo_check`, beating its harness's.
+    pub skip_git_repo_check: Option<bool>,
     /// This variant's `shared_model_catalog`, beating its harness's.
     pub shared_model_catalog: Option<bool>,
     /// This variant's `model_catalog_refresh_seconds`, beating its harness's.
@@ -689,6 +699,7 @@ pub const DEFAULT_MODEL_CATALOG_REFRESH_SECONDS: NonZeroU64 = match NonZeroU64::
 fn codex_launch_keys_set(
     plugins: Option<bool>,
     apps: Option<bool>,
+    skip_git_repo_check: Option<bool>,
     shared_model_catalog: Option<bool>,
     model_catalog_refresh_seconds: Option<NonZeroU64>,
     analytics: Option<bool>,
@@ -697,6 +708,7 @@ fn codex_launch_keys_set(
     [
         ("plugins", plugins.is_some()),
         ("apps", apps.is_some()),
+        ("skip_git_repo_check", skip_git_repo_check.is_some()),
         ("shared_model_catalog", shared_model_catalog.is_some()),
         (
             "model_catalog_refresh_seconds",
@@ -720,6 +732,7 @@ fn refuse_codex_launch_keys_elsewhere(id: &str, h: &HarnessConfig) -> Result<(),
         codex_launch_keys_set(
             h.plugins,
             h.apps,
+            h.skip_git_repo_check,
             h.shared_model_catalog,
             h.model_catalog_refresh_seconds,
             h.analytics,
@@ -733,6 +746,7 @@ fn refuse_codex_launch_keys_elsewhere(id: &str, h: &HarnessConfig) -> Result<(),
             codex_launch_keys_set(
                 v.plugins,
                 v.apps,
+                v.skip_git_repo_check,
                 v.shared_model_catalog,
                 v.model_catalog_refresh_seconds,
                 v.analytics,
@@ -1163,6 +1177,7 @@ pub fn merge(base: FileConfig, over: FileConfig) -> FileConfig {
             args: o.args.or(entry.args.take()),
             plugins: o.plugins.or(entry.plugins.take()),
             apps: o.apps.or(entry.apps.take()),
+            skip_git_repo_check: o.skip_git_repo_check.or(entry.skip_git_repo_check.take()),
             shared_model_catalog: o.shared_model_catalog.or(entry.shared_model_catalog.take()),
             model_catalog_refresh_seconds: o
                 .model_catalog_refresh_seconds
@@ -1263,6 +1278,7 @@ fn merge_variant_maps(
             args: o.args.or(e.args.take()),
             plugins: o.plugins.or(e.plugins.take()),
             apps: o.apps.or(e.apps.take()),
+            skip_git_repo_check: o.skip_git_repo_check.or(e.skip_git_repo_check.take()),
             shared_model_catalog: o.shared_model_catalog.or(e.shared_model_catalog.take()),
             model_catalog_refresh_seconds: o
                 .model_catalog_refresh_seconds
@@ -1364,6 +1380,18 @@ impl FileConfig {
         self.variant_for(id)
             .and_then(|variant| variant.apps)
             .or_else(|| self.harness.get(base).and_then(|h| h.apps))
+            .unwrap_or(false)
+    }
+
+    /// Whether a launch of `id` (`codex` or `codex:<variant>`) skips Codex's
+    /// git-repository check on its `exec` turns: the variant's
+    /// `skip_git_repo_check`, else the harness's, else `false`. Read apart
+    /// from [`Self::args_for`], like [`Self::plugins_for`].
+    pub fn skip_git_repo_check_for(&self, id: &str) -> bool {
+        let (base, _) = self.split_harness_id(id);
+        self.variant_for(id)
+            .and_then(|variant| variant.skip_git_repo_check)
+            .or_else(|| self.harness.get(base).and_then(|h| h.skip_git_repo_check))
             .unwrap_or(false)
     }
 
@@ -1702,6 +1730,10 @@ pub struct HarnessReport {
     /// `codex`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub apps: Option<Field<bool>>,
+    /// The resolved `skip_git_repo_check` (`false` by default), present only
+    /// for `codex`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skip_git_repo_check: Option<Field<bool>>,
     /// The resolved `shared_model_catalog` (`true` by default), present only
     /// for `codex`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1737,6 +1769,11 @@ pub struct VariantReport {
     /// own, else its harness's, else `false`. Present only for `codex`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub apps: Option<Field<bool>>,
+    /// The `skip_git_repo_check` a launch of this variant resolves to: the
+    /// variant's own, else its harness's, else `false`. Present only for
+    /// `codex`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skip_git_repo_check: Option<Field<bool>>,
     /// The `shared_model_catalog` a launch of this variant resolves to: the
     /// variant's own, else its harness's, else `true`. Present only for `codex`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1936,6 +1973,7 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
         let takes_codex_launch_keys = harness::has_plugins_toggle(id);
         let harness_plugins = pick(layers, |c| section(c).and_then(|h| h.plugins));
         let harness_apps = pick(layers, |c| section(c).and_then(|h| h.apps));
+        let harness_skip_git = pick(layers, |c| section(c).and_then(|h| h.skip_git_repo_check));
         let harness_catalog = pick(layers, |c| section(c).and_then(|h| h.shared_model_catalog));
         let harness_refresh = pick(layers, |c| {
             section(c).and_then(|h| h.model_catalog_refresh_seconds.map(NonZeroU64::get))
@@ -1990,6 +2028,10 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
                         pick(layers, |c| variant(c).and_then(|v| v.apps))
                             .or_inherited(&harness_apps, false)
                     }),
+                    skip_git_repo_check: takes_codex_launch_keys.then(|| {
+                        pick(layers, |c| variant(c).and_then(|v| v.skip_git_repo_check))
+                            .or_inherited(&harness_skip_git, false)
+                    }),
                     shared_model_catalog: takes_codex_launch_keys.then(|| {
                         pick(layers, |c| variant(c).and_then(|v| v.shared_model_catalog))
                             .or_inherited(&harness_catalog, true)
@@ -2029,6 +2071,8 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
                 args: pick(layers, |c| section(c).and_then(|h| h.args)),
                 plugins: takes_codex_launch_keys.then(|| harness_plugins.or_default(false)),
                 apps: takes_codex_launch_keys.then(|| harness_apps.or_default(false)),
+                skip_git_repo_check: takes_codex_launch_keys
+                    .then(|| harness_skip_git.or_default(false)),
                 shared_model_catalog: takes_codex_launch_keys
                     .then(|| harness_catalog.or_default(true)),
                 model_catalog_refresh_seconds: takes_codex_launch_keys.then(|| {
@@ -3058,10 +3102,16 @@ args = ["--variant-arg"]
     /// the key, its default, and two non-default spellings with what each
     /// resolves to (`model_catalog_refresh_seconds` is not a bool).
     type Resolver = fn(&FileConfig, &str) -> String;
-    const CODEX_LAUNCH_KEYS: [(&str, &str, [&str; 2], Resolver); 5] = [
+    const CODEX_LAUNCH_KEYS: [(&str, &str, [&str; 2], Resolver); 6] = [
         ("apps", "false", ["true", "false"], |c, id| {
             c.apps_for(id).to_string()
         }),
+        (
+            "skip_git_repo_check",
+            "false",
+            ["true", "false"],
+            |c, id| c.skip_git_repo_check_for(id).to_string(),
+        ),
         (
             "shared_model_catalog",
             "true",
@@ -3224,9 +3274,11 @@ args = ["--variant-arg"]
         let report = explain(&layers(
             "[harness.codex]\nshared_model_catalog = false\nmodel_catalog_refresh_seconds = 60\n\
              analytics = true\napps = true\napp_server = \"per-dispatch\"\n\
+             skip_git_repo_check = true\n\
              [harness.claude-code]\nmodel = \"m\"\n",
             "[harness.codex.variant.own]\nshared_model_catalog = true\n\
              model_catalog_refresh_seconds = 120\nanalytics = false\napp_server = \"shared\"\n\
+             skip_git_repo_check = false\n\
              [harness.codex.variant.inherit]\nmodel = \"m\"\n",
         ));
         let from = |source: &str| Some(source.to_string());
@@ -3246,6 +3298,18 @@ args = ["--variant-arg"]
             Some((Some(true), from("/user.toml")))
         );
         assert_eq!(field(&codex.apps), Some((Some(true), from("/user.toml"))));
+        assert_eq!(
+            field(&codex.skip_git_repo_check),
+            Some((Some(true), from("/user.toml")))
+        );
+        assert_eq!(
+            field(&codex.variant["inherit"].skip_git_repo_check),
+            Some((Some(true), from("/user.toml")))
+        );
+        assert_eq!(
+            field(&codex.variant["own"].skip_git_repo_check),
+            Some((Some(false), from("/project.toml")))
+        );
         assert_eq!(
             field(&codex.variant["inherit"].apps),
             Some((Some(true), from("/user.toml")))
@@ -3293,6 +3357,7 @@ args = ["--variant-arg"]
         let claude = serde_json::to_value(&report.harness["claude-code"]).unwrap();
         for key in [
             "apps",
+            "skip_git_repo_check",
             "shared_model_catalog",
             "model_catalog_refresh_seconds",
             "analytics",
@@ -3313,6 +3378,11 @@ args = ["--variant-arg"]
             assert_eq!(codex["analytics"]["value"], false, "{codex}");
             assert_eq!(codex["analytics"]["source"], DEFAULT_SOURCE, "{codex}");
             assert_eq!(codex["apps"]["value"], false, "{codex}");
+            assert_eq!(codex["skip_git_repo_check"]["value"], false, "{codex}");
+            assert_eq!(
+                codex["skip_git_repo_check"]["source"], DEFAULT_SOURCE,
+                "{codex}"
+            );
             assert_eq!(codex["app_server"]["value"], "shared", "{codex}");
             assert_eq!(codex["app_server"]["source"], DEFAULT_SOURCE, "{codex}");
         }

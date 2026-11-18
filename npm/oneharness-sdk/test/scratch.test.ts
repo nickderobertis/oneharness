@@ -537,9 +537,15 @@ test("a rename refused for a moment succeeds within its patience", async () => {
 	// Windows refuses a rename while a sibling's gate holds a handle inside,
 	// and only for as long as it holds it. A blocker removed while the rename
 	// is retrying stands in for that read ending: by a timer for the awaited
-	// rename, and by another process for the one that blocks this thread.
+	// rename, and by another process for the one that blocks this thread. The
+	// blocker leaves by one atomic rename before it is removed: removed in
+	// place it is an empty directory for a moment, which a unix rename
+	// replaces, and its removal then takes the moved directory with it.
 	const awaited = await blockedRename("rename-recovers-async", "awaited");
-	setTimeout(() => rmSync(awaited.to, { recursive: true }), 100);
+	setTimeout(() => {
+		renameSync(awaited.to, `${awaited.to}.aside`);
+		rmSync(`${awaited.to}.aside`, { recursive: true });
+	}, 100);
 	await renamePatiently(awaited.from, awaited.to, 10_000);
 	expect(existsSync(awaited.from)).toBe(false);
 	expect(readFileSync(resolve(awaited.to, "content"), "utf8")).toBe("awaited");
@@ -547,7 +553,8 @@ test("a rename refused for a moment succeeds within its patience", async () => {
 	const blocking = await blockedRename("rename-recovers-sync", "blocking");
 	const remover = spawn(process.execPath, [
 		"-e",
-		`setTimeout(() => require("node:fs").rmSync(${JSON.stringify(blocking.to)}, { recursive: true }), 100)`,
+		`const fs = require("node:fs"), to = ${JSON.stringify(blocking.to)};
+		setTimeout(() => { fs.renameSync(to, to + ".aside"); fs.rmSync(to + ".aside", { recursive: true }); }, 100)`,
 	]);
 	const removed = new Promise((done) => remover.on("exit", done));
 	renameSyncPatiently(blocking.from, blocking.to, 10_000);

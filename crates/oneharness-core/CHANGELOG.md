@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.0](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.33.2...oneharness-core-v0.34.0) - 2026-11-18
+
+### Added
+
+- *(codex)* [**breaking**] skip Codex's git-repository check on exec turns when a config asks ([#1658](https://github.com/nickderobertis/oneharness/pull/1658))
+
 ## [0.33.2](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.33.1...oneharness-core-v0.33.2) - 2026-11-16
 
 ### Fixed

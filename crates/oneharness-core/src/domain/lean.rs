@@ -1213,6 +1213,21 @@ pub fn claude_tools_flag() -> &'static str {
     }
 }
 
+/// The flag that makes Claude Code stream each model call's `message_delta`,
+/// whose usage is the call's final `output_tokens`: the table's `calls` knob
+/// that is a flag, which every stream-json run carries.
+#[must_use]
+pub fn claude_partial_messages_flag() -> &'static str {
+    translation(CLAUDE, Setting::Calls)
+        .knobs
+        .iter()
+        .find_map(|k| match k.knob {
+            Knob::Flag(flag) => Some(flag),
+            _ => None,
+        })
+        .unwrap_or("--include-partial-messages")
+}
+
 /// The flag Claude Code takes the run's system-text file on: appended by
 /// default; under `replace_system` the table's replacing flag.
 #[must_use]
@@ -1532,14 +1547,15 @@ pub fn claude_stream_calls(stdout: &str) -> Option<Vec<Usage>> {
             _ => {}
         }
     }
-    for (id, output) in finals {
-        if let Some(call) = by_id.get_mut(&id) {
-            call.output_tokens = Some(output);
+    let mut settled: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for (id, output) in &finals {
+        if let Some(call) = by_id.get_mut(id) {
+            call.output_tokens = Some(*output);
         }
     }
+    settled.extend(finals.keys().map(String::as_str));
     // An iteration names no message: it is the latest call, without a
     // streamed final figure, whose input and cache figures are its own.
-    let mut settled: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for iteration in &iterations {
         let Some(output) = tokens(iteration, "output_tokens") else {
             continue;

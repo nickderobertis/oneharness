@@ -3869,6 +3869,13 @@ struct StreamedCall<'a> {
 
 impl StreamedCall<'_> {
     fn lines(&self) -> Vec<String> {
+        self.lines_on("null")
+    }
+
+    /// The call's lines on one stream: `parent` is the JSON
+    /// `parent_tool_use_id`, `null` for the main thread, a tool id for the
+    /// subagent that tool started.
+    fn lines_on(&self, parent: &str) -> Vec<String> {
         let Self {
             id,
             content,
@@ -3885,7 +3892,7 @@ impl StreamedCall<'_> {
         };
         let stream = |event: String| {
             format!(
-                r#"{{"type":"stream_event","event":{event},"session_id":"s-calls","parent_tool_use_id":null}}"#
+                r#"{{"type":"stream_event","event":{event},"session_id":"s-calls","parent_tool_use_id":{parent}}}"#
             )
         };
         vec![
@@ -3898,7 +3905,7 @@ impl StreamedCall<'_> {
                     .to_string(),
             ),
             format!(
-                r#"{{"type":"assistant","message":{{"id":"{id}","role":"assistant","content":[{content}],"usage":{}}},"parent_tool_use_id":null,"session_id":"s-calls"}}"#,
+                r#"{{"type":"assistant","message":{{"id":"{id}","role":"assistant","content":[{content}],"usage":{}}},"parent_tool_use_id":{parent},"session_id":"s-calls"}}"#,
                 usage(*placeholder)
             ),
             stream(format!(
@@ -3919,12 +3926,23 @@ impl StreamedCall<'_> {
 /// `result` event whose `usage` totals the calls' final figures and whose
 /// `usage.iterations` lists only the last call (as Claude Code 2.1.330 does).
 fn claude_streamed_turn(calls: &[StreamedCall], extra: &str) -> String {
-    let sum = |f: fn(&StreamedCall) -> u64| calls.iter().map(f).sum::<u64>();
-    let last = calls.last().expect("a turn makes a call");
-    let mut lines =
-        vec![r#"{"type":"system","subtype":"init","session_id":"s-calls"}"#.to_string()];
+    let mut lines = vec![CLAUDE_INIT.to_string()];
     lines.extend(calls.iter().flat_map(StreamedCall::lines));
-    lines.push(format!(
+    lines.push(claude_result(
+        calls,
+        calls.last().expect("a turn makes a call"),
+        extra,
+    ));
+    lines.join("\n")
+}
+
+const CLAUDE_INIT: &str = r#"{"type":"system","subtype":"init","session_id":"s-calls"}"#;
+
+/// The `result` event totalling `calls`, its `usage.iterations` listing
+/// `last` alone.
+fn claude_result(calls: &[StreamedCall], last: &StreamedCall, extra: &str) -> String {
+    let sum = |f: fn(&StreamedCall) -> u64| calls.iter().map(f).sum::<u64>();
+    format!(
         r#"{{"type":"result","subtype":"success","is_error":false,"result":"the answer","session_id":"s-calls","usage":{{"input_tokens":{},"cache_read_input_tokens":{},"cache_creation_input_tokens":{},"output_tokens":{},"iterations":[{{"input_tokens":{},"cache_read_input_tokens":{},"cache_creation_input_tokens":{},"output_tokens":{},"type":"message"}}]}}{extra}}}"#,
         sum(|c| c.input),
         sum(|c| c.read),
@@ -3934,8 +3952,7 @@ fn claude_streamed_turn(calls: &[StreamedCall], extra: &str) -> String {
         last.read,
         last.write,
         last.output,
-    ));
-    lines.join("\n")
+    )
 }
 
 fn call_figures(result: &Value) -> Vec<(u64, u64, u64, u64)> {
@@ -4064,6 +4081,53 @@ fn claude_calls_report_each_calls_final_output_tokens() {
         "the last call is settled; the earlier keeps the only figure streamed: {result}"
     );
     assert_eq!(result["usage"]["output_tokens"], 756, "{result}");
+
+    // A subagent's call streams inside the main thread's: each
+    // `message_delta` ends the message its own stream started.
+    let main = StreamedCall {
+        id: "msg_main",
+        content: r#"{"type":"text","text":"the answer"}"#,
+        input: 2,
+        read: 9_000,
+        write: 50,
+        placeholder: 2,
+        output: 300,
+    };
+    let sub = StreamedCall {
+        id: "msg_sub",
+        content: r#"{"type":"text","text":"found it"}"#,
+        input: 7,
+        read: 4_000,
+        write: 10,
+        placeholder: 1,
+        output: 25,
+    };
+    let (m, t) = (main.lines(), sub.lines_on(r#""toolu_task""#));
+    let mut interleaved = vec![CLAUDE_INIT.to_string(), m[0].clone()];
+    interleaved.extend(t.iter().cloned());
+    interleaved.extend(m[1..].iter().cloned());
+    interleaved.push(claude_result(&[], &main, ""));
+    let out = oh(&args, &[("MOCK_STDOUT", &interleaved.join("\n"))], None);
+    let result = json(&out)["results"][0].clone();
+    assert_eq!(
+        call_figures(&result),
+        vec![sub.expected(), main.expected()],
+        "each call's own final figure, in the order its `assistant` event came: {result}"
+    );
+
+    // An iteration whose figures are no streamed call's settles none: the
+    // call keeps the only figure it carried rather than borrowing another's.
+    let unstreamed: Vec<String> = main
+        .lines()
+        .into_iter()
+        .filter(|line| !line.starts_with(r#"{"type":"stream_event""#))
+        .collect();
+    let mut unmatched = vec![CLAUDE_INIT.to_string()];
+    unmatched.extend(unstreamed);
+    unmatched.push(claude_result(std::slice::from_ref(&sub), &sub, ""));
+    let out = oh(&args, &[("MOCK_STDOUT", &unmatched.join("\n"))], None);
+    let result = json(&out)["results"][0].clone();
+    assert_eq!(call_figures(&result), vec![(2, 2, 9_000, 50)], "{result}");
 }
 // llmlint: ignore-end[e2e_not_mocked]
 

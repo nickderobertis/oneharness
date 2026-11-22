@@ -1937,7 +1937,7 @@ fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
     // Code 2.1.330, captured). It is what makes every `calls` entry exact.
     if c.output_format == OutputFormat::StreamJson {
         a.push("--verbose".into());
-        a.push("--include-partial-messages".into());
+        a.push(lean::claude_partial_messages_flag().into());
     }
     // Native structured output: `--json-schema <inline>` makes Claude Code return
     // the conforming value under `structured_output` — the result document's
@@ -3516,14 +3516,20 @@ mod tests {
             "stream-json needs --verbose: {stream:?}"
         );
         assert!(
-            stream.iter().any(|t| t == "--include-partial-messages"),
-            "stream-json streams each call's final usage: {stream:?}"
+            stream
+                .iter()
+                .any(|t| t == lean::claude_partial_messages_flag()),
+            "stream-json streams each call's final usage, on the `calls` row's flag: {stream:?}"
+        );
+        assert_eq!(
+            lean::claude_partial_messages_flag(),
+            "--include-partial-messages"
         );
         let json = (spec.build_argv)(&base_ctx(spec));
         assert!(
             !json
                 .iter()
-                .any(|t| t == "--verbose" || t == "--include-partial-messages"),
+                .any(|t| t == "--verbose" || t == lean::claude_partial_messages_flag()),
             "default json must not add --verbose: {json:?}"
         );
     }

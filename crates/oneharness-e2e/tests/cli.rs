@@ -15897,6 +15897,7 @@ fn schema_retry_loop_recovers_on_a_later_attempt() {
     assert_eq!(result["structured"]["age"], 36);
 }
 
+// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run` and its overload and schema retry loops end to end; only codex is replaced, by the repository's own subprocess double (oneharness-mock-harness) at the `--bin` seam, because a real account cannot be made to overload, then answer invalidly, then validly on demand. Real codex 0.159.2's `--output-schema` turns are the runs the codex `schema` row of `lean::TRANSLATIONS` cites as its source.
 #[test]
 fn codex_overload_and_schema_retries_have_separate_budgets_and_keep_schema_delivery() {
     let schema = temp_file("schema-overload", PERSON_SCHEMA);
@@ -15955,6 +15956,7 @@ fn codex_overload_and_schema_retries_have_separate_budgets_and_keep_schema_deliv
         "the overload retry dropped schema delivery: {final_argv}"
     );
 }
+// llmlint: ignore-end[e2e_not_mocked]
 
 #[test]
 fn codex_exhausted_overload_budget_does_not_spend_the_schema_budget() {
@@ -22502,6 +22504,7 @@ fn resumed_and_batch_turns_keep_exact_off_argv_delivery() {
     }
 }
 
+// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run` and its schema re-ask end to end for every adapter; only each harness's process is replaced, by the repository's own subprocess double (oneharness-mock-harness) at the `--bin` seam, because no paid harness can be made to answer invalidly then validly on demand and the gate cannot spend model calls. Each real CLI's schema run is held by the structured journey of scripts/e2e-lib.sh's long-prompt enforcement, which every `live-*` suite runs.
 #[test]
 fn structured_retries_keep_system_and_exact_feedback_off_argv() {
     use oneharness_core::domain::structured::{self, Schema};
@@ -22585,6 +22588,7 @@ fn structured_retries_keep_system_and_exact_feedback_off_argv() {
         }
     }
 }
+// llmlint: ignore-end[e2e_not_mocked]
 
 // ---------------------------------------------------------------------------
 // Fallback run mode (`--run-mode fallback`): drive the selected harnesses in

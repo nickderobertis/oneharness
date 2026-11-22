@@ -1613,6 +1613,7 @@ fn codex_with_only_rules_it_cannot_express_runs_as_without_and_names_them() {
 /// whichever order the filesystem lists them in.
 const NESTED_SIBLINGS: [&str; 6] = ["b", "c", "d", "e", "f", "g"];
 
+// llmlint: ignore-block[e2e_not_mocked] The same `--bin` seam as the block above `mock()`: the real built `oneharness` runs and merges the overlay home back; only codex is the repository's mock harness, scripting its home writes (MOCK_HOME_WRITE) because a real Codex cannot be made to replace a linked directory with a file on demand, and live/control/run_allowlist_live.py holds the overlay to the real Codex.
 /// A granted run whose Codex creates a directory, replaces a linked file and
 /// replaces a linked directory with a file: the first two reach the real home,
 /// the third is refused naming both paths, and the run is whole. The same
@@ -1701,6 +1702,7 @@ fn assert_teardown_returns_what_codex_wrote(world: &World, state: &Path) {
         root.display()
     );
 }
+// llmlint: ignore-end[e2e_not_mocked]
 
 #[cfg(unix)]
 #[test]

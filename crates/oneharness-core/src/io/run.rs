@@ -42,7 +42,9 @@ use crate::domain::dialogue::{Dialogue, DialogueConfig, DialogueResume};
 use crate::domain::events::ActionEvent;
 use crate::domain::fallback::{self, RunMode};
 use crate::domain::grant;
-use crate::domain::harness::{self, BuildCtx, HarnessIdentity, HarnessSpec, PromptDelivery};
+use crate::domain::harness::{
+    self, BuildCtx, HarnessIdentity, HarnessSpec, NativeSchemaArg, PromptDelivery, SystemFile,
+};
 use crate::domain::http::{self, HttpShape};
 use crate::domain::lean;
 use crate::domain::mock::{self, MockDelivery};
@@ -520,13 +522,24 @@ fn create_private_prompt_file(path: &std::path::Path) -> std::io::Result<std::fs
     }
 }
 
+/// What one unit's inputs ask of [`plan_input`]: its system text and whether
+/// that text replaces the harness's own prompt, and its schema with the
+/// native path chosen for it (`None` keeps the schema on the prompt).
+struct UnitInput<'a> {
+    system: Option<&'a str>,
+    replace_system: bool,
+    schema: Option<&'a Schema>,
+    native_schema: Option<NativeSchema>,
+}
+
 /// Apply the registry's delivery route to every input, including dry runs.
 /// Control owns its transport: the assembled text rides its initial turn.
+/// It is what sets [`HarnessPlan::system_file`] and
+/// [`HarnessPlan::schema_route`], each with the payload its route reads.
 fn plan_input(
     plan: &mut HarnessPlan,
     spec: &HarnessSpec,
-    system: Option<&str>,
-    schema: Option<&Schema>,
+    input: &UnitInput<'_>,
     index: usize,
     temp_files: &mut TempPromptFiles,
     dry_run: bool,
@@ -534,8 +547,12 @@ fn plan_input(
     let li = &spec.large_input;
     // A replacing knob reads a file on every harness that has one, so a
     // replace run materializes the text even where it would otherwise fold.
-    if let Some(text) = system.filter(|_| li.system_file_flag.is_some() || plan.replace_system) {
-        plan.system_file = Some(if dry_run {
+    let replace = input.replace_system;
+    if let Some(text) = input
+        .system
+        .filter(|_| li.system_file_flag.is_some() || replace)
+    {
+        let path = if dry_run {
             // Symbolic only: dry runs neither create files nor launch a child.
             "<private-system-prompt-file>".to_string()
         } else {
@@ -543,19 +560,25 @@ fn plan_input(
                 .write(spec.id, index, text)?
                 .display()
                 .to_string()
+        };
+        plan.system_file = Some(if replace {
+            PlannedSystemFile::Replace(path)
+        } else {
+            PlannedSystemFile::Append(path)
         });
     }
-    let file_schema = plan.native && spec.native_schema.is_some_and(NativeSchema::takes_file);
-    if let Some(sch) = schema.filter(|_| file_schema) {
-        plan.schema_file = Some(if dry_run {
+    plan.schema_route = match (input.schema, input.native_schema) {
+        (Some(sch), Some(native)) if native.takes_file() => SchemaRoute::File(if dry_run {
             "<private-schema-file>".to_string()
         } else {
             temp_files
                 .write(&format!("{}-schema", spec.id), index, sch.as_text())?
                 .display()
                 .to_string()
-        });
-    }
+        }),
+        (Some(_), Some(_)) => SchemaRoute::Inline,
+        _ => SchemaRoute::Prompt,
+    };
     if li.prompt_stdin && plan.delivery == PromptDelivery::Argv {
         plan.delivery = PromptDelivery::Stdin;
     }
@@ -1159,7 +1182,6 @@ pub fn run_supervised(
         let native_schema = spec
             .native_schema
             .filter(|n| schema.as_ref().is_some_and(|sch| n.accepts(sch)));
-        let native = native_schema.is_some();
         let image_frame = !images.is_empty() && lean::images_ride_stdin_frame(spec.id);
         let output_format = if image_frame {
             // A stream-json input frame is read only beside stream-json output,
@@ -1283,12 +1305,11 @@ pub fn run_supervised(
             fork,
             mode,
             output_format,
-            native,
+            // Both routes are set by `plan_input`, with the payload each reads.
+            schema_route: SchemaRoute::Prompt,
             base_prompt: unit_prompt.to_string(),
             extra,
             system_file: None,
-            replace_system: unit_replace_system,
-            schema_file: None,
             // Every candidate of a controlled run, not just the session anchor:
             // the one that ends up serving opens its turn over the control
             // channel, and which one that is, is decided while the chain runs.
@@ -1350,11 +1371,16 @@ pub fn run_supervised(
         // The unit's own system text: the run's, plus the grant's statement
         // where a rule is applied, so a materialized system file carries both.
         let unit_system = harness_plan.system.clone();
+        let unit_input = UnitInput {
+            system: unit_system.as_deref(),
+            replace_system: unit_replace_system,
+            schema: schema.as_ref(),
+            native_schema,
+        };
         plan_input(
             &mut harness_plan,
             spec,
-            unit_system.as_deref(),
-            schema.as_ref(),
+            &unit_input,
             jobs.len(),
             &mut temp_files,
             true,
@@ -1431,8 +1457,7 @@ pub fn run_supervised(
             plan_input(
                 &mut harness_plan,
                 spec,
-                unit_system.as_deref(),
-                schema.as_ref(),
+                &unit_input,
                 job_index,
                 &mut temp_files,
                 false,
@@ -1451,11 +1476,7 @@ pub fn run_supervised(
                 job_env.extend(ms.env.iter().map(|(k, v)| (k.to_string(), v.to_string())));
             }
             job_env.extend(lean_delivery.env.iter().cloned());
-            if let Some(path) = harness_plan
-                .system_file
-                .as_deref()
-                .filter(|_| harness_plan.replace_system)
-            {
+            if let Some(PlannedSystemFile::Replace(path)) = &harness_plan.system_file {
                 job_env.extend(lean::replace_system_env(spec.id, path));
             }
             job_env.extend(variant_environment(cfg, selected_id, &project_start)?);
@@ -5306,23 +5327,18 @@ struct HarnessPlan {
     fork: bool,
     mode: PermissionMode,
     output_format: OutputFormat,
-    /// The harness takes the schema through a native flag (so the prompt is left
-    /// alone); otherwise the schema instruction is appended to the prompt.
-    native: bool,
+    /// How a schema run's schema reaches the harness: its native flag, inline
+    /// or from the file it reads (so the prompt is left alone), or else the
+    /// schema instruction appended to the prompt.
+    schema_route: SchemaRoute,
     base_prompt: String,
     /// Config `args` + CLI passthrough, appended verbatim after the built argv.
     extra: Vec<String>,
-    /// Native system-file path (Claude Code, or any harness's replacing knob),
-    /// materialized before spawning or symbolic for a dry run. Absent for
-    /// folded systems or no supplied system.
-    system_file: Option<String>,
-    /// The run's system text replaces the harness's own system prompt
-    /// (`replace_system`), through the replacing knob its lean table names:
-    /// set only for a harness that has one, so the text is never folded in.
-    replace_system: bool,
-    /// The schema file a file-taking native schema flag reads (codex's
-    /// `--output-schema`), materialized like `system_file`.
-    schema_file: Option<String>,
+    /// Native system file (Claude Code's appended one, or any harness's
+    /// replacing knob under `replace_system`), materialized before spawning or
+    /// symbolic for a dry run. Absent for folded systems or no supplied system;
+    /// a [`PlannedSystemFile::Replace`] is never also folded into the prompt.
+    system_file: Option<PlannedSystemFile>,
     /// How the user prompt reaches the harness. [`PromptDelivery::Stdin`] (a
     /// prompt on a stdin-capable harness) makes `build` omit the
     /// positional and return the assembled prompt as [`BuiltCommand::stdin`];
@@ -5356,6 +5372,37 @@ struct HarnessPlan {
     images: Vec<lean::ImageInput>,
 }
 
+/// The planned file a unit's system text rides ([`HarnessPlan::system_file`]),
+/// the owned twin of [`SystemFile`]: one value, so a replace run always names
+/// the file its replacing knob reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PlannedSystemFile {
+    /// Appended to the harness's own system prompt.
+    Append(String),
+    /// Replaces the harness's own system prompt, on its replacing knob.
+    Replace(String),
+}
+
+impl PlannedSystemFile {
+    fn as_ctx(&self) -> SystemFile<'_> {
+        match self {
+            PlannedSystemFile::Append(path) => SystemFile::Append(path),
+            PlannedSystemFile::Replace(path) => SystemFile::Replace(path),
+        }
+    }
+}
+
+/// How a schema run's schema reaches the harness ([`HarnessPlan::schema_route`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SchemaRoute {
+    /// The schema instruction appended to the prompt (no native path).
+    Prompt,
+    /// Inline on the harness's native flag (Claude Code's `--json-schema`).
+    Inline,
+    /// The file the harness's native flag reads (codex's `--output-schema`).
+    File(String),
+}
+
 /// The result of building one attempt: the argv to spawn and, when the prompt is
 /// delivered off the argv, the bytes to pipe to stdin.
 struct BuiltCommand {
@@ -5371,7 +5418,8 @@ impl HarnessPlan {
     /// Whether the system text is folded into the user prompt: for a harness
     /// whose system rides the prompt, unless it rides a replacing knob.
     fn folds_system(&self) -> bool {
-        self.spec.large_input.system_rides_prompt && !self.replace_system
+        self.spec.large_input.system_rides_prompt
+            && !matches!(self.system_file, Some(PlannedSystemFile::Replace(_)))
     }
 
     /// Build the argv (and any stdin payload) for one attempt. `schema` drives
@@ -5401,7 +5449,7 @@ impl HarnessPlan {
             // must keep the prompt argument newline-free so it can still be passed
             // to a `.bat`/`.cmd` harness shim on Windows (Rust's std rejects an
             // argument with `\n`/`\r` there — see `structured::prompt_instruction`).
-            if !self.native {
+            if self.schema_route == SchemaRoute::Prompt {
                 prompt.push(' ');
                 prompt.push_str(&structured::prompt_instruction(sch.as_text()));
             }
@@ -5437,14 +5485,12 @@ impl HarnessPlan {
             fork: self.fork,
             mode: self.mode,
             output_format: self.output_format,
-            schema: if self.native {
-                schema.map(Schema::as_text)
-            } else {
-                None
+            schema: match (&self.schema_route, schema) {
+                (SchemaRoute::Inline, Some(sch)) => Some(NativeSchemaArg::Inline(sch.as_text())),
+                (SchemaRoute::File(path), Some(_)) => Some(NativeSchemaArg::File(path)),
+                _ => None,
             },
-            system_file: self.system_file.as_deref(),
-            replace_system: self.replace_system,
-            schema_file: self.schema_file.as_deref(),
+            system_file: self.system_file.as_ref().map(PlannedSystemFile::as_ctx),
             delivery: self.delivery,
             plugins: self.plugins,
             apps: self.apps,
@@ -6535,12 +6581,10 @@ mod tests {
             fork: false,
             mode: PermissionMode::Bypass,
             output_format: OutputFormat::Text,
-            native: false,
+            schema_route: SchemaRoute::Prompt,
             base_prompt: "p".into(),
             extra: Vec::new(),
             system_file: None,
-            replace_system: false,
-            schema_file: None,
             delivery: PromptDelivery::Argv,
             plugins: false,
             apps: false,
@@ -6581,7 +6625,13 @@ mod tests {
                 plan.spec = spec;
                 plan.base_prompt = prompt;
                 let mut temps = TempPromptFiles::default();
-                plan_input(&mut plan, spec, Some("system"), None, 0, &mut temps, true).unwrap();
+                let input = UnitInput {
+                    system: Some("system"),
+                    replace_system: false,
+                    schema: None,
+                    native_schema: None,
+                };
+                plan_input(&mut plan, spec, &input, 0, &mut temps, true).unwrap();
                 assert!(plan.delivery.is_stdin_blob());
                 assert_eq!(
                     plan.system_file.is_some(),
@@ -6620,7 +6670,7 @@ mod tests {
         // Native (claude) retry: schema rides the flag, feedback rides the prompt.
         let mut native = crush_plan();
         native.spec = harness::by_id("claude-code").unwrap();
-        native.native = true;
+        native.schema_route = SchemaRoute::Inline;
         native.output_format = OutputFormat::Json;
         let argv = native
             .build(Some(&schema), Some(("multi\nline", &["e".to_string()])))

@@ -1608,13 +1608,25 @@ fn codex_with_only_rules_it_cannot_express_runs_as_without_and_names_them() {
     assert!(world.overlays().is_empty());
 }
 
+/// The siblings Codex writes beside a nested entry that cannot be returned,
+/// enough of them that a merge stopping at the blocked one would strand some
+/// whichever order the filesystem lists them in.
+const NESTED_SIBLINGS: [&str; 6] = ["b", "c", "d", "e", "f", "g"];
+
 /// A granted run whose Codex creates a directory, replaces a linked file and
 /// replaces a linked directory with a file: the first two reach the real home,
-/// the third is refused naming both paths, and the run is whole.
+/// the third is refused naming both paths, and the run is whole. The same
+/// refusal nested inside a directory Codex replaced does not stop the merge:
+/// every sibling beside it still reaches the real home.
 #[cfg(unix)]
 fn assert_teardown_returns_what_codex_wrote(world: &World, state: &Path) {
     std::fs::create_dir_all(world.path("codex-home/blocked")).unwrap();
     std::fs::write(world.path("codex-home/blocked/kept"), "k").unwrap();
+    std::fs::create_dir_all(world.path("codex-home/nested/a-dir")).unwrap();
+    std::fs::write(world.path("codex-home/nested/a-dir/kept"), "k").unwrap();
+    let nested: String = std::iter::once("nested/a-dir=file;".to_string())
+        .chain(NESTED_SIBLINGS.iter().map(|n| format!("nested/{n}={n};")))
+        .collect();
     let tool = world.tool();
     let config = world.config(&format!("allowed_tools = [\"Bash({tool})\"]\n"));
     let state = state.display().to_string();
@@ -1633,8 +1645,10 @@ fn assert_teardown_returns_what_codex_wrote(world: &World, state: &Path) {
             ("XDG_STATE_HOME", state.as_str()),
             (
                 "MOCK_HOME_WRITE",
-                "made/deep/f=c;config.toml=model = \"n\"\n;blocked=file;\
-                 rules/default.rules=prefix_rule(pattern=[\"ls\"], decision=\"allow\")\n",
+                &format!(
+                    "made/deep/f=c;config.toml=model = \"n\"\n;blocked=file;{nested}\
+                     rules/default.rules=prefix_rule(pattern=[\"ls\"], decision=\"allow\")\n"
+                ),
             ),
         ],
     );
@@ -1662,6 +1676,17 @@ fn assert_teardown_returns_what_codex_wrote(world: &World, state: &Path) {
         std::fs::read_to_string(world.path("codex-home/blocked/kept")).unwrap(),
         "k"
     );
+    assert_eq!(
+        std::fs::read_to_string(world.path("codex-home/nested/a-dir/kept")).unwrap(),
+        "k"
+    );
+    for n in NESTED_SIBLINGS {
+        assert_eq!(
+            std::fs::read_to_string(world.path(&format!("codex-home/nested/{n}"))).ok(),
+            Some(n.to_string()),
+            "a sibling of the blocked entry was stranded in the overlay"
+        );
+    }
     // A rules file Codex wrote (an approval it saved) is the user's now; the
     // run's own rules file never leaves the overlay.
     assert_eq!(

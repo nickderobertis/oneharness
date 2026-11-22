@@ -1541,8 +1541,6 @@ mod control_mode_parity {
             output_format: spec.output_format,
             schema: None,
             system_file: None,
-            replace_system: false,
-            schema_file: None,
             delivery,
             plugins: false,
             apps: false,

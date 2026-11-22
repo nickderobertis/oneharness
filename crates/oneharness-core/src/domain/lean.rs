@@ -189,8 +189,6 @@ pub enum Unit {
     Operation,
     /// Per-call token counts.
     UsageRecord,
-    /// Text taken verbatim.
-    Text,
     /// A JSON Schema document, inline.
     InlineJson,
     /// The structured value the harness returns for a schema.
@@ -560,14 +558,9 @@ const CLAUDE_TABLE: [Translation; 10] = [
         harness: CLAUDE,
         version: CLAUDE_SYSTEM_VERSION,
         setting: Setting::ReplaceSystem,
-        knobs: &[
-            knob(Knob::Flag("--system-prompt-file"), Unit::FilePath),
-            knob(Knob::Flag("--system-prompt"), Unit::Text),
-        ],
+        knobs: &[knob(Knob::Flag("--system-prompt-file"), Unit::FilePath)],
         mapping: "the run's system text, in the private temp file it already rides, on \
-                  `--system-prompt-file` in place of `--append-system-prompt-file` (inline \
-                  `--system-prompt` in place of `--append-system-prompt` where the text rides the \
-                  argv)",
+                  `--system-prompt-file` in place of `--append-system-prompt-file`",
         residual: None,
         source:
             "`claude --help` (2.1.329) `--system-prompt <prompt>` \"System prompt to use for the \
@@ -1203,17 +1196,20 @@ pub fn claude_tools_flag() -> &'static str {
     }
 }
 
-/// The flags Claude Code takes the run's system text on: `(file, inline)`.
-/// Appended by default; under `replace_system` the table's replacing flags.
+/// The flag Claude Code takes the run's system-text file on: appended by
+/// default; under `replace_system` the table's replacing flag.
 #[must_use]
-pub fn claude_system_flags(replace: bool) -> (&'static str, &'static str) {
+pub fn claude_system_file_flag(replace: bool) -> &'static str {
     if !replace {
-        return ("--append-system-prompt-file", "--append-system-prompt");
+        return "--append-system-prompt-file";
     }
-    let knobs = translation(CLAUDE, Setting::ReplaceSystem).knobs;
-    match (knobs.first().map(|k| k.knob), knobs.get(1).map(|k| k.knob)) {
-        (Some(Knob::Flag(file)), Some(Knob::Flag(inline))) => (file, inline),
-        _ => ("--system-prompt-file", "--system-prompt"),
+    match translation(CLAUDE, Setting::ReplaceSystem)
+        .knobs
+        .first()
+        .map(|k| k.knob)
+    {
+        Some(Knob::Flag(file)) => file,
+        _ => "--system-prompt-file",
     }
 }
 
@@ -1724,9 +1720,11 @@ mod tests {
                 mode: PermissionMode::Default,
                 output_format: spec.output_format,
                 schema: None,
-                system_file: Some("/sys"),
-                replace_system: t.supported(),
-                schema_file: None,
+                system_file: Some(if t.supported() {
+                    harness::SystemFile::Replace("/sys")
+                } else {
+                    harness::SystemFile::Append("/sys")
+                }),
                 delivery: harness::PromptDelivery::Stdin,
                 plugins: true,
                 apps: true,
@@ -1837,8 +1835,6 @@ mod tests {
                         output_format: spec.output_format,
                         schema: None,
                         system_file: None,
-                        replace_system: false,
-                        schema_file: None,
                         delivery: harness::PromptDelivery::Argv,
                         plugins: false,
                         apps: false,
@@ -1923,8 +1919,6 @@ mod tests {
             output_format: crate::domain::report::OutputFormat::StreamJson,
             schema: None,
             system_file: None,
-            replace_system: false,
-            schema_file: None,
             delivery,
             plugins: false,
             apps: false,

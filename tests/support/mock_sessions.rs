@@ -24,6 +24,10 @@
 //!                   `agent_message` is element n-1 (the last one repeats),
 //!                   in place of the `context: [...]` answer — a structured
 //!                   run's attempts, each recorded with the captured calls.
+//!   MOCK_CODEX_UNRECORDED_ATTEMPTS  with MOCK_CODEX_ANSWERS, a comma-separated
+//!                   list of 1-based `exec` turns that write no rollout record,
+//!                   as when an earlier attempt's record is gone by the time
+//!                   the run reads it.
 //!   MOCK_COMPACT_LOG      with MOCK_CODEX_SESSIONS, every request the stdio
 //!                   `app-server` receives is appended here, one per line.
 //!   MOCK_COMPACT_FAIL     with either, the compaction fails as that harness
@@ -392,8 +396,18 @@ fn codex_exec(argv: &[String]) -> ! {
     })
     .to_string()];
     lines.extend(CODEX_TOKEN_COUNTS.lines().map(str::to_string));
-    append(&path, &lines);
-    let text = scripted_codex_answer()
+    let scripted = scripted_codex_answer();
+    let unrecorded = scripted.as_ref().is_some_and(|(attempt, _)| {
+        std::env::var("MOCK_CODEX_UNRECORDED_ATTEMPTS")
+            .unwrap_or_default()
+            .split(',')
+            .any(|n| n.trim() == attempt.to_string())
+    });
+    if !unrecorded {
+        append(&path, &lines);
+    }
+    let text = scripted
+        .map(|(_, answer)| answer)
         .unwrap_or_else(|| format!("context: [{}]", codex_context(&path).join(", ")));
     say(&[
         serde_json::json!({"type":"thread.started","thread_id":thread}).to_string(),
@@ -403,15 +417,20 @@ fn codex_exec(argv: &[String]) -> ! {
     ]);
 }
 
-/// This turn's MOCK_CODEX_ANSWERS entry, counted by MOCK_ATTEMPT_FILE.
-fn scripted_codex_answer() -> Option<String> {
+/// This turn's 1-based attempt and its MOCK_CODEX_ANSWERS entry, counted by
+/// MOCK_ATTEMPT_FILE.
+fn scripted_codex_answer() -> Option<(u32, String)> {
     let answers: Vec<String> = serde_json::from_str(&std::env::var("MOCK_CODEX_ANSWERS").ok()?)
         .expect("MOCK_CODEX_ANSWERS is a JSON array of strings");
     let attempt = super::scripted_attempt().expect("MOCK_CODEX_ANSWERS needs MOCK_ATTEMPT_FILE");
     let at = usize::try_from(attempt)
         .unwrap_or(usize::MAX)
         .saturating_sub(1);
-    answers.get(at).or(answers.last()).cloned()
+    answers
+        .get(at)
+        .or(answers.last())
+        .cloned()
+        .map(|answer| (attempt, answer))
 }
 
 /// The captured fork compaction's server lines, retargeted at `fork`.

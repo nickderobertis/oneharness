@@ -3772,6 +3772,175 @@ fn codex_takes_a_strict_schema_natively_with_and_without_an_image() {
 }
 // llmlint: ignore-end[e2e_not_mocked]
 
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its structured-output loop run; only the harness process (codex) is the mock harness, a session double recording the captured rollout token counts (`tests/fixtures/codex-rollout-token-counts.jsonl`), held to its real CLI by the 0.159.2 runs the `schema` row cites (module doc).
+/// A re-asked codex run whose earlier attempt's rollout record is gone by the
+/// time the run reads it still lists the final attempt's calls, and says
+/// nothing is missing: only the final attempt's absence is the run's to report.
+#[test]
+fn a_codex_re_ask_whose_earlier_rollout_is_gone_lists_the_final_attempts_calls() {
+    let scratch = ScratchDir::new("lean-codex-gone-rollout").unwrap();
+    let schema = scratch.join("person.json");
+    std::fs::write(&schema, PERSON).unwrap();
+    let schema = schema.display().to_string();
+    let b = bin("codex");
+    let home_env = format!("CODEX_HOME={}", scratch.join("home").display());
+    let counter = scratch.join("attempts.count");
+    let out = oh(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "who is this?",
+            "--schema",
+            &schema,
+            "--bin",
+            &b,
+            "--mode",
+            "bypass",
+            "--env",
+            &home_env,
+            "--env",
+            "MOCK_CODEX_SESSIONS=1",
+        ],
+        &[
+            ("MOCK_ATTEMPT_FILE", counter.to_str().unwrap()),
+            (
+                "MOCK_CODEX_ANSWERS",
+                r#"["{\"name\":\"Ada\"}","{\"name\":\"Ada\",\"age\":36}"]"#,
+            ),
+            ("MOCK_CODEX_UNRECORDED_ATTEMPTS", "1"),
+        ],
+        None,
+    );
+    assert!(out.status.success(), "{out:?}");
+    let result = json(&out)["results"][0].clone();
+    assert_eq!(result["schema_attempts"], 2, "{result}");
+    assert_eq!(result["structured"]["age"], 36, "{result}");
+    let inputs: Vec<u64> = input_and_output_tokens(&result)
+        .into_iter()
+        .map(|(input, _)| input)
+        .collect();
+    assert_eq!(
+        inputs,
+        vec![13_006, 13_101, 13_180],
+        "the final attempt's calls alone: {result}"
+    );
+    assert!(diagnostics_for(&result, "calls").is_empty(), "{result}");
+}
+// llmlint: ignore-end[e2e_not_mocked]
+
+/// One OpenCode `run --format json` turn answering `text` in one step, in the
+/// shape of `tests/fixtures/opencode_run.jsonl`'s `text` and `step_finish`
+/// events (composed: no real re-asked OpenCode capture is in the repository).
+fn opencode_turn(text: &str, input: u64, output: u64) -> String {
+    [
+        serde_json::json!({"type": "text", "sessionID": "ses_1", "part": {"type": "text", "text": text}}),
+        serde_json::json!({"type": "step_finish", "sessionID": "ses_1", "part": {"type": "step-finish", "reason": "stop", "tokens": {"input": input, "output": output}, "cost": 0.01}}),
+    ]
+    .map(|event| event.to_string())
+    .join("\n")
+}
+
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its structured-output loop run; only the harness process (opencode) is the mock harness, replaying events in the shape of the real capture `tests/fixtures/opencode_run.jsonl`, held to its real CLI by `live-opencode` (module doc).
+/// A re-asked OpenCode schema run lists every attempt's calls, in order, both
+/// alone and as the candidate a fallback chain runs once the one before it
+/// could not start.
+#[test]
+fn a_re_asked_opencode_run_lists_every_attempts_calls_alone_and_in_a_fallback_chain() {
+    let scratch = ScratchDir::new("lean-opencode-retry-calls").unwrap();
+    let schema = scratch.join("person.json");
+    std::fs::write(&schema, PERSON).unwrap();
+    let schema = schema.display().to_string();
+    let (first, second) = (
+        opencode_turn(r#"{"name":"Ada"}"#, 11, 3),
+        opencode_turn(r#"{"name":"Ada","age":36}"#, 13, 5),
+    );
+    let o = bin("opencode");
+    let missing = format!("goose={}", scratch.join("no-such-goose").display());
+    for chain in [false, true] {
+        let counter = scratch.join(format!("{chain}.count"));
+        let mut args = vec!["run", "--prompt", "who is this?", "--schema", &schema];
+        if chain {
+            args.extend(["--harness", "goose,opencode", "--bin", &missing]);
+        } else {
+            args.extend(["--harness", "opencode"]);
+        }
+        args.extend(["--bin", &o, "--mode", "bypass"]);
+        let out = oh(
+            &args,
+            &[
+                ("MOCK_ATTEMPT_FILE", counter.to_str().unwrap()),
+                ("MOCK_STDOUT_1", &first),
+                ("MOCK_STDOUT_2", &second),
+            ],
+            None,
+        );
+        assert!(out.status.success(), "chain={chain}: {out:?}");
+        let report = json(&out);
+        let results = report["results"].as_array().unwrap();
+        let result = results.last().unwrap();
+        assert_eq!(result["harness"], "opencode", "{report}");
+        if chain {
+            assert_eq!(report["fallback"]["ran"], "opencode", "{report}");
+            assert_eq!(report["fallback"]["fell_through"][0]["harness"], "goose");
+        }
+        assert_eq!(result["schema_attempts"], 2, "chain={chain}: {result}");
+        assert_eq!(result["structured"]["age"], 36, "chain={chain}: {result}");
+        assert_eq!(
+            input_and_output_tokens(result),
+            vec![(11, 3), (13, 5)],
+            "chain={chain}: both attempts' calls, in order: {result}"
+        );
+        assert!(diagnostics_for(result, "calls").is_empty(), "{result}");
+    }
+}
+// llmlint: ignore-end[e2e_not_mocked]
+
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its translation run; only the harness process (claude-code, goose) is the mock harness, held to its real CLI by the request captures the `replace_system` rows cite (module doc).
+/// `replace_system` with no system text is a no-op: Claude Code is handed no
+/// system flag at all, and a harness with no replacing knob runs rather than
+/// being refused, since there is no text it would have to replace.
+#[test]
+fn replace_system_without_system_text_changes_nothing() {
+    let scratch = ScratchDir::new("lean-replace-no-text").unwrap();
+    for id in ["claude-code", "goose"] {
+        let log = scratch.join(format!("{id}.jsonl"));
+        let log_env = format!("MOCK_INVOCATION_LOG={}", log.display());
+        let b = bin(id);
+        let out = oh(
+            &[
+                "run",
+                "--harness",
+                id,
+                "--prompt",
+                "status?",
+                "--replace-system",
+                "--bin",
+                &b,
+                "--mode",
+                "bypass",
+                "--env",
+                &log_env,
+            ],
+            &[],
+            None,
+        );
+        assert!(out.status.success(), "{id}: {out:?}");
+        let result = json(&out)["results"][0].clone();
+        assert_eq!(result["status"], "ok", "{id}: {result}");
+        assert!(result["failure_kind"].is_null(), "{id}: {result}");
+        let calls = invocations(&log);
+        assert_eq!(calls.len(), 1, "{id} ran once");
+        let argv = strings(&calls[0]["argv"]);
+        assert!(
+            !argv.iter().any(|a| a.contains("system-prompt")),
+            "{id}: {argv:?}"
+        );
+    }
+}
+// llmlint: ignore-end[e2e_not_mocked]
+
 // llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its structured-output loop run; only the harness process (codex) is the mock harness, held to its real CLI by the 0.159.2 refusals the `schema` row cites (module doc).
 /// A schema strict mode would refuse keeps codex on the prompt path it took
 /// before: no `--output-schema`, the instruction in the prompt.

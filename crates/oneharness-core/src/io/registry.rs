@@ -229,8 +229,6 @@ fn describe(spec: &'static harness::HarnessSpec, cfg: &FileConfig) -> HarnessInf
         output_format: spec.output_format,
         schema: None,
         system_file: None,
-        replace_system: false,
-        schema_file: None,
         delivery: harness::PromptDelivery::Argv,
         plugins: cfg.plugins_for(spec.id),
         apps: cfg.apps_for(spec.id),

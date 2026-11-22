@@ -32,7 +32,7 @@ use serde_json::{json, Value};
 
 #[path = "../../../tests/profile-scratch/profile_scratch.rs"]
 mod profile_scratch;
-use profile_scratch::profile_redirect;
+use profile_scratch::{profile_redirect, PROFILE_PATTERN};
 
 /// The shared server's linger every journey runs under (milliseconds).
 const LINGER_MS: u64 = 1000;
@@ -6757,7 +6757,14 @@ if [ "$#" -eq 3 ] && [ "$1" = "-n" ] && [ "$2" = "1" ] && [ "${3##*/}" = "heartb
 fi
 exec "$real" "$@""#,
     );
-    let out = suite.run(&[]);
+    // pooled-kill SIGKILLs an instrumented `oneharness`, and the pool's stop
+    // deadline can end its app-server mid-exit, while the runtime merges its
+    // pooled profile. That merge torn leaves a corrupt `.profraw` in the
+    // target directory, failing the coverage merge; this journey is about the
+    // script's verdict, so its process tree profiles into the pool's scratch,
+    // as every killed mock's does.
+    let profile = suite.pool.path("profiles").join(PROFILE_PATTERN);
+    let out = suite.run(&[("LLVM_PROFILE_FILE", &profile.display().to_string())]);
     let said = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "{said}");
     assert!(

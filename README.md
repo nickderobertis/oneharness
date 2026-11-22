@@ -1702,11 +1702,11 @@ ways, chosen per harness:
     Native means all of: the root is `type: object`; every object node has
     `additionalProperties: false` and lists every property in `required`;
     every node states a `type` (or is a `$ref` or an `anyOf`); and every
-    keyword is one of `$schema`, `$ref`, `$defs`, `definitions`, `title`,
-    `description`, `type`, `properties`, `required`, `additionalProperties`,
-    `patternProperties`, `items`, `anyOf`, `enum`, `const`, `pattern`,
-    `minLength`, `maxLength`, `minimum`, `maximum`, `exclusiveMinimum`,
-    `exclusiveMaximum`, `multipleOf`, `minItems`, `maxItems`. Any other schema —
+    keyword is in the probed whitelist, `STRICT_KEYWORDS` in
+    [`crates/oneharness-core/src/domain/structured.rs`](crates/oneharness-core/src/domain/structured.rs)
+    (its one source: the annotations, the structural keywords, `anyOf`,
+    `$ref`/`$defs`, a typed `enum`/`const`, and the string, numeric and array
+    bounds). Any other schema —
     an optional property, `allOf`, `oneOf`, `not`, `if`, `format`, an untyped
     `enum`/`const`, a non-object root — keeps the prompt-based path below,
     exactly as before.

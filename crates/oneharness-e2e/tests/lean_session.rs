@@ -4153,9 +4153,9 @@ fn claude_result_iterations(iterations: &str) -> String {
 /// non-string `parent_tool_use_id`, one with no `message_start` before it on
 /// its stream, one whose `output_tokens` is no number, a `stream_event` with
 /// no event, and `usage.iterations` entries that are no object or carry no
-/// output. And when calls share input and cache figures, a streamed final
-/// beats the `result` event's iteration, which settles the latest call
-/// without one.
+/// output. And when calls share input and cache figures, the `result`
+/// event's iteration is the latest one's: it settles that call unless the
+/// call streamed its final, and never passes to an earlier call.
 #[test]
 fn claude_calls_keep_their_figures_through_a_malformed_or_ambiguous_stream() {
     let b = bin("claude-code");
@@ -4241,8 +4241,9 @@ fn claude_calls_keep_their_figures_through_a_malformed_or_ambiguous_stream() {
         "the latest matching call is settled"
     );
 
-    // The later twin streamed its final: the iteration, though it matches
-    // both and disagrees, does not overwrite it and settles the earlier.
+    // The later twin streamed its final: the iteration is the later call's,
+    // so it neither overwrites that final nor passes to the earlier twin,
+    // which keeps its placeholder.
     let (early, late) = (twin("msg_early", 77), twin("msg_late", 50));
     let mut lines = vec![CLAUDE_INIT.to_string()];
     lines.extend(unstreamed(early.lines()));
@@ -4250,8 +4251,8 @@ fn claude_calls_keep_their_figures_through_a_malformed_or_ambiguous_stream() {
     lines.push(claude_result_iterations(iteration));
     assert_eq!(
         call_figures(&run(lines)),
-        vec![early.expected(), late.expected()],
-        "a streamed final beats the iteration"
+        vec![(3, 2, 5_000, 70), late.expected()],
+        "a streamed final beats the iteration, which no earlier call borrows"
     );
 }
 // llmlint: ignore-end[e2e_not_mocked]

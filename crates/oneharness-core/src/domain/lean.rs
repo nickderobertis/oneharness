@@ -1453,7 +1453,9 @@ pub fn claude_image_frame(prompt: &str, images: &[ImageInput]) -> String {
 /// `--include-partial-messages`, matched to its message by the
 /// `message_start` before it on the same `parent_tool_use_id`), else the
 /// `result` event's `usage.iterations` entry whose input and cache figures
-/// are the call's (Claude Code lists only the last call there). Only a call
+/// are the call's (Claude Code lists only the last call there). An iteration
+/// belongs to the latest call with its figures; if that call streamed its
+/// final, the iteration is spent without changing any call. Only a call
 /// neither carries keeps the `assistant` event's own figure, which is
 /// `message_start`'s placeholder. `None` when the stream carries no assistant
 /// usage.
@@ -1551,21 +1553,22 @@ pub fn claude_stream_calls(stdout: &str) -> Option<Vec<Usage>> {
             _ => {}
         }
     }
-    let mut settled: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for (id, output) in &finals {
         if let Some(call) = by_id.get_mut(id) {
             call.output_tokens = Some(*output);
         }
     }
-    settled.extend(finals.keys().map(String::as_str));
-    // An iteration names no message: it is the latest call, without a
-    // streamed final figure, whose input and cache figures are its own.
+    // An iteration names no message: it is the latest call, not already
+    // claimed by an earlier iteration, whose input and cache figures are its
+    // own. A call with a streamed final keeps it, and the iteration is spent
+    // on it rather than passed to an earlier call with the same figures.
+    let mut claimed: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for iteration in &iterations {
         let Some(output) = tokens(iteration, "output_tokens") else {
             continue;
         };
         let matched = order.iter().rev().find(|id| {
-            !settled.contains(id.as_str())
+            !claimed.contains(id.as_str())
                 && by_id.get(id.as_str()).is_some_and(|call| {
                     call.input_tokens == tokens(iteration, "input_tokens")
                         && call.cache_read_tokens == tokens(iteration, "cache_read_input_tokens")
@@ -1573,11 +1576,15 @@ pub fn claude_stream_calls(stdout: &str) -> Option<Vec<Usage>> {
                             == tokens(iteration, "cache_creation_input_tokens")
                 })
         });
-        if let Some(id) = matched {
-            settled.insert(id.as_str());
-            if let Some(call) = by_id.get_mut(id.as_str()) {
-                call.output_tokens = Some(output);
-            }
+        let Some(id) = matched else {
+            continue;
+        };
+        claimed.insert(id.as_str());
+        if finals.contains_key(id) {
+            continue;
+        }
+        if let Some(call) = by_id.get_mut(id.as_str()) {
+            call.output_tokens = Some(output);
         }
     }
     (!order.is_empty()).then(|| order.iter().filter_map(|id| by_id.remove(id)).collect())

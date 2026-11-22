@@ -98,6 +98,12 @@
 //!                   or replacing, its path and contents) before control starts,
 //!                   without reading stdin a controlled turn holds open.
 //!   MOCK_CRUSH_HTTP_LOG serves the Crush Unix HTTP protocol and logs requests.
+//!   MOCK_CRUSH_STORE  act like crush's session store in DIR: a `run` records its
+//!                   turn there with MOCK_CRUSH_REPLY as the whole reply (stdout
+//!                   stays MOCK_STDOUT, so a test can cut it short), and
+//!                   `session list --json` / `session show <id> --json` print it
+//!                   as crush does. MOCK_CRUSH_STORE_READ=fail makes every
+//!                   `session` read fail as an unopenable store does.
 //!   MOCK_DELIVERY_FILE appends delivery JSON before normal scripted output.
 //!   MOCK_CAPTURE_DELIVERY records stdin and the native Claude system file as JSON.
 //!   MOCK_ECHO_STDIN if set, read ALL of stdin and write it verbatim to stdout,
@@ -1336,6 +1342,96 @@ fn export_opencode_session(store: &str, sid: Option<&str>) -> ! {
         }
         Err(_) => {
             let _ = writeln!(std::io::stderr(), "Session not found: {sid}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Where the mock crush store keeps one session's `session show --json` document.
+fn crush_session_path(store: &str, sid: &str) -> std::path::PathBuf {
+    assert!(
+        !sid.is_empty() && sid.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'),
+        "mock harness: `{sid}` is not a crush session id"
+    );
+    std::path::Path::new(store).join(format!("{sid}.json"))
+}
+
+/// Record one `crush run` turn the way crush's store does: the session it
+/// continues (`--session`) or a new one created now, gaining the prompt as a
+/// user message and the whole reply as an assistant message — whatever the run
+/// then prints.
+fn record_crush_turn(store: &str, argv: &[String], reply: &str) {
+    std::fs::create_dir_all(store).expect("create the mock crush session store");
+    let list_path = std::path::Path::new(store).join("sessions.json");
+    let mut list: Vec<serde_json::Value> = std::fs::read_to_string(&list_path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default();
+    let sid = arg_value_after(argv, "--session").map_or_else(
+        || {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos());
+            let sid = format!("mock-{nanos}-{}", std::process::id());
+            let created = oneharness_core::domain::history::format_rfc3339(
+                i64::try_from(epoch_ms() / 1_000).expect("seconds fit"),
+            );
+            list.push(serde_json::json!({"id": sid, "uuid": sid, "title": "mock",
+                "created": created, "modified": created}));
+            sid
+        },
+        str::to_string,
+    );
+    let path = crush_session_path(store, &sid);
+    let mut session = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .unwrap_or_else(|| serde_json::json!({"meta": {"uuid": sid}, "messages": []}));
+    // llmlint: ignore[contracts_have_one_source_or_a_drift_gate] This is the shape crush v0.87.0 and v0.102.0 print for `session show --json` (messages[].role, messages[].parts[] of type text with `text`), read from their `internal/cmd/session.go`. Real crush is its drift alarm: `just live-crush` checks the reply the real CLI returns, and a reader that no longer finds the reply there leaves the run's text as stdout and says so in `text_source`.
+    let turn = [
+        serde_json::json!({"role": "user", "parts": [{"type": "text",
+            "text": argv.last().cloned().unwrap_or_default()}]}),
+        serde_json::json!({"role": "assistant", "parts": [{"type": "text", "text": reply},
+            {"type": "finish", "reason": "end_turn"}]}),
+    ];
+    session["messages"]
+        .as_array_mut()
+        .expect("the mock crush session holds a message list")
+        .extend(turn);
+    std::fs::write(path, session.to_string()).expect("write the mock crush session");
+    std::fs::write(list_path, serde_json::Value::from(list).to_string())
+        .expect("write the mock crush session list");
+}
+
+/// `crush session list --json` / `crush session show <id> --json` against the
+/// mock store, or crush's refusal when it cannot open it
+/// (`MOCK_CRUSH_STORE_READ=fail`).
+fn answer_crush_session(store: &str, argv: &[String]) -> ! {
+    if std::env::var("MOCK_CRUSH_STORE_READ").as_deref() == Ok("fail") {
+        let _ = writeln!(
+            std::io::stderr(),
+            "Error: failed to connect to database: unable to open database file"
+        );
+        std::process::exit(1);
+    }
+    let path = match argv.get(1).map(String::as_str) {
+        Some("list") => std::path::Path::new(store).join("sessions.json"),
+        Some("show") => crush_session_path(store, argv.get(2).map_or("", String::as_str)),
+        other => {
+            let _ = writeln!(
+                std::io::stderr(),
+                "Error: unknown session command {other:?}"
+            );
+            std::process::exit(1);
+        }
+    };
+    match std::fs::read_to_string(path) {
+        Ok(document) => {
+            println!("{document}");
+            std::process::exit(0);
+        }
+        Err(_) => {
+            let _ = writeln!(std::io::stderr(), "Error: session not found");
             std::process::exit(1);
         }
     }
@@ -2935,6 +3031,18 @@ pub fn run() -> ! {
     #[cfg(unix)]
     if let Ok(log) = std::env::var("MOCK_CRUSH_HTTP_LOG") {
         run_crush_http_server(&log, &argv);
+    }
+
+    if let Ok(store) = std::env::var("MOCK_CRUSH_STORE") {
+        match argv.first().map(String::as_str) {
+            Some("session") => answer_crush_session(&store, &argv),
+            Some("run") => {
+                if let Ok(reply) = std::env::var("MOCK_CRUSH_REPLY") {
+                    record_crush_turn(&store, &argv, &reply);
+                }
+            }
+            _ => {}
+        }
     }
 
     if let Ok(path) = std::env::var("MOCK_INPUT_FILE") {

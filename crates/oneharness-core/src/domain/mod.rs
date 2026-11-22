@@ -10,6 +10,9 @@ pub mod capability;
 pub mod compact;
 pub mod config;
 pub mod control;
+// Reading a `crush run` reply its stdout cut short back from crush's session
+// store. Internal: only `io::crush_store` reads it.
+pub(crate) mod crush_store;
 pub mod dialogue;
 pub mod events;
 pub mod fallback;

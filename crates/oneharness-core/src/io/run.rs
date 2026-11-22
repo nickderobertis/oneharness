@@ -62,6 +62,7 @@ use crate::errors::{OneharnessError, RunModeOrigin};
 use crate::io::cancel::{self, CancelToken};
 use crate::io::config as config_io;
 use crate::io::control as control_io;
+use crate::io::crush_store as crush_store_io;
 use crate::io::detect::{self, BinOverrides};
 use crate::io::history::{self, HistoryWriter};
 use crate::io::hooks::{self as hooks_io, HookSnapshot, Scope};
@@ -1126,6 +1127,10 @@ pub fn run_supervised(
     // return path below). Never populated under --print-command (nothing spawns).
     let mut temp_files = TempPromptFiles::default();
     let mut unit_calls: Vec<lean_io::CallsPlan> = Vec::with_capacity(units.len());
+    // Per unit beside it: the store a plain `crush run` writes its turn to, read
+    // back once the run ends in case crush's stdout cut the reply short.
+    let mut unit_crush_stores: Vec<Option<crush_store_io::CrushStore>> =
+        Vec::with_capacity(units.len());
     // Per unit beside it: the overlay a granted Codex unit runs through (with
     // what repairing the real home's thread index needs once the turn ends),
     // and the environment the overlay sets, which the result reports.
@@ -1588,6 +1593,12 @@ pub fn run_supervised(
             }
         }
         unit_calls.push(calls_plan);
+        unit_crush_stores.push(
+            (spec.id == "crush" && unit_control.is_none() && jobs.len() > jobs_before)
+                .then(|| jobs.last())
+                .flatten()
+                .and_then(|job| crush_store_io::CrushStore::for_job(job, runner::epoch_millis())),
+        );
         control_prompts.push(unit_control_prompt);
         control_app_servers.push(unit_app_server);
         #[cfg(target_os = "linux")]
@@ -1978,12 +1989,18 @@ pub fn run_supervised(
             .collect();
         (results, None, begun)
     };
-    for (index, ((result, (_, selected_id, _, _)), calls_plan)) in results
+    for (index, (((result, (spec, selected_id, _, _)), calls_plan), crush_store)) in results
         .iter_mut()
         .zip(&units)
         .zip(unit_calls.iter_mut())
+        .zip(&unit_crush_stores)
         .enumerate()
     {
+        if let Some(store) = crush_store {
+            if crush_store_io::recover(result, store) {
+                revalidate_recovered(result, spec, schema.as_ref());
+            }
+        }
         apply_result_identity(result, selected_id);
         calls_plan.earlier_attempts = earlier_attempts.get(index).cloned().unwrap_or_default();
         lean_io::attach(result, calls_plan);
@@ -5049,6 +5066,19 @@ fn validate_images(
         }
     }
     Ok(())
+}
+
+/// Re-check a schema run's answer after its `text` was read back from the
+/// harness's own store: the check `executed_result` made read the stdout that
+/// was cut short.
+fn revalidate_recovered(result: &mut RunResult, spec: &HarnessSpec, schema: Option<&Schema>) {
+    let (Some(schema), Some(answer)) = (schema, result.text.as_deref()) else {
+        return;
+    };
+    let check = structured::check(schema, spec.native_schema, answer, &result.stdout);
+    result.schema_valid = Some(check.is_valid());
+    result.schema_error = (!check.is_valid()).then(|| check.errors.join("; "));
+    result.structured = check.value;
 }
 
 fn failure_dialect(spec: &HarnessSpec) -> signals::FailureDialect {

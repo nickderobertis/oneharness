@@ -1469,6 +1469,22 @@ invalidating earlier ones):
   is then `null` too.** A consumer that needs certainty reads the guaranteed
   `stdout` — when `text` is `null`, `stdout` is the fallback that always carries
   the harness's real output.
+
+  **Crush's text can come from its session store.** `crush run` prints its
+  reply as it streams and can exit before printing the last deltas (crush
+  v0.102.0 races its printer against the agent finishing), so its stdout can be
+  only the start of the reply. After an `ok` plain (not `--control`) crush run,
+  oneharness reads the run's turn back from crush's own store (`crush session
+  show <id> --json`, against the run's cwd and `--data-dir`, i.e.
+  `<data-dir>/crush.db`): the run's `--session` when it continued one, else the
+  one session crush created since the run began. When stdout is a strict prefix
+  of that turn's assistant text, `text` is the stored reply and `text_source` is
+  `crush-session`; otherwise `text` is stdout's and `text_source` is `raw`. When
+  the store cannot be read it is `raw:crush-session-unavailable`, and when the
+  run's session cannot be told apart (another session created in the same store
+  meanwhile, or `--continue`) it is `raw:crush-session-unidentified`; both keep
+  stdout's text and say why on stderr. `stdout` itself is always what crush
+  printed.
 - `usage` / `usage_source` — `{ input_tokens, output_tokens, cache_read_tokens,
   cache_write_tokens, cost_usd }`, each field independently `null` when the harness
   doesn't report it (cost is commonly absent on subscription auth). The `usage`

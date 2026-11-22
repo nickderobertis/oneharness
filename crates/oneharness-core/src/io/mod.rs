@@ -8,6 +8,9 @@ pub mod cancel;
 pub mod compact;
 pub mod config;
 pub mod control;
+// Spawning crush's own session-store reader after a `crush run`; internal to
+// the run driver.
+pub(crate) mod crush_store;
 pub mod detect;
 pub mod history;
 pub mod hooks;

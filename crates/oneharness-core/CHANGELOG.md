@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.0](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.34.0...oneharness-core-v0.35.0) - 2026-11-22
+
+### Added
+
+- *(run)* [**breaking**] replace the harness's system prompt, take images with a schema on Claude Code, give Codex a native schema ([#1661](https://github.com/nickderobertis/oneharness/pull/1661))
+
 ## [0.34.0](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.33.2...oneharness-core-v0.34.0) - 2026-11-18
 
 ### Added

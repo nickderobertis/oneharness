@@ -3507,8 +3507,10 @@ fn replace_system_on_a_controlled_codex_or_qwen_turn_is_a_usage_error() {
 /// open), and `--timeout` bounds the run so a hang fails here, not the suite.
 #[test]
 fn replace_system_on_a_controlled_claude_turn_rides_the_replacing_flag() {
-    let scratch = ScratchDir::new("lean-replace-control-claude").unwrap();
-    let store = scratch.join("store").display().to_string();
+    // Under /tmp with a short tag: the store's control socket is an address,
+    // and macOS's `$TMPDIR` overruns its 104-byte `sun_path` before a name.
+    let scratch = ScratchDir::under(Path::new("/tmp"), "lrcc").unwrap();
+    let store = scratch.join("s").display().to_string();
     let record = scratch.join("system.json");
     let b = bin("claude-code");
     let out = oh(

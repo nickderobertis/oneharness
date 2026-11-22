@@ -24,7 +24,7 @@ pub const UNAVAILABLE_SOURCE: &str = "raw:crush-session-unavailable";
 /// told apart in the store.
 pub const UNIDENTIFIED_SOURCE: &str = "raw:crush-session-unidentified";
 
-// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] These flag spellings and their meaning (`-s/--session` names the session, `-C/--continue` the most recent one, `-D/--data-dir`, `-c/--cwd` and `-H/--host` choose the store) are `crush run --help`'s in v0.87.0 and crush's `internal/cmd/run.go` and `root.go` at v0.102.0; crush publishes no machine-readable flag list to generate them from. Drift fails safe: a flag crush adds later is skipped as a positional, and a session or store crush stops naming this way leaves the run's session unidentified or its store unreadable, so `text` stays stdout's and `text_source` says so — never another run's reply, because the store's reply is taken only when stdout is its strict prefix. `just live-crush` (ci.yml's `check` job, on every pull request that changes crates/**) reads a real run back through these argvs.
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] These flag spellings and their meaning (`-s/--session` names the session, `-C/--continue` the most recent one, `-D/--data-dir` and `-c/--cwd` choose the store; `-H/--host` takes a value but `crush session` opens the store from those two alone, per `sessionSetup` in `internal/cmd/session.go` at both releases) are `crush run --help`'s in v0.87.0 and crush's `internal/cmd/run.go` and `root.go` at v0.102.0; crush publishes no machine-readable flag list to generate them from. Drift fails safe: a flag crush adds later is skipped as a positional, and a session or store crush stops naming this way leaves the run's session unidentified or its store unreadable, so `text` stays stdout's and `text_source` says so — never another run's reply, because the store's reply is taken only when stdout is its strict prefix. `just live-crush` (ci.yml's `check` job, on every pull request that changes crates/**) reads a real run back through these argvs.
 /// `crush run` flags that take a value, so the parser skips the value too.
 const VALUED_FLAGS: &[&str] = &[
     "-m",
@@ -42,7 +42,8 @@ const VALUED_FLAGS: &[&str] = &[
 ];
 
 /// A flag that chooses which store a `crush` command opens. `crush session`
-/// takes each of them, so the store read is the one the run wrote to.
+/// takes each of them, so the store read is the one the run wrote to. (`-H`
+/// picks a server, not a store: `crush session` never reads it.)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoreFlag {
     /// The flag as the run spelled it (`-D` or `--data-dir`, …).
@@ -52,7 +53,7 @@ pub struct StoreFlag {
 
 impl StoreFlag {
     fn of(flag: &str, value: String) -> Option<Self> {
-        ["-D", "--data-dir", "-c", "--cwd", "-H", "--host"]
+        ["-D", "--data-dir", "-c", "--cwd"]
             .into_iter()
             .find(|known| *known == flag)
             .map(|flag| Self { flag, value })

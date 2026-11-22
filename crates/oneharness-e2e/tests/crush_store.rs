@@ -556,3 +556,96 @@ fn a_re_asked_schema_run_holds_a_session_per_attempt_and_keeps_its_last_stdout()
     assert_eq!(result["text_source"], "raw:crush-session-unidentified");
     assert_eq!(result["schema_valid"], false);
 }
+
+#[test]
+fn every_spelling_of_a_store_flag_reads_the_store_the_run_wrote() {
+    // (crush args after the run's own, where the turn is stored) — a flag past
+    // crush's own `--` is prompt text to crush, so the default store holds it.
+    let cases: [(&[&str], &str); 5] = [
+        (&["-D", "{elsewhere}"], "elsewhere"),
+        (&["--data-dir={elsewhere}"], "elsewhere"),
+        (&["-c", "{project}"], "project/.crush"),
+        (&["--cwd={project}"], "project/.crush"),
+        (&["--", "--data-dir", "{elsewhere}"], "store"),
+    ];
+    for (crush_args, stored_under) in cases {
+        let dir = scratch("spelling");
+        std::fs::create_dir_all(dir.join("project")).unwrap();
+        let fill = |arg: &str| {
+            arg.replace("{elsewhere}", &dir.join("elsewhere").display().to_string())
+                .replace("{project}", &dir.join("project").display().to_string())
+        };
+        let crush_args: Vec<String> = crush_args.iter().map(|a| fill(a)).collect();
+        let mut args = vec!["--"];
+        args.extend(crush_args.iter().map(String::as_str));
+        let (result, output) = run_crush(
+            &dir,
+            &args,
+            &[("MOCK_STDOUT", CUT), ("MOCK_CRUSH_REPLY", REPLY)],
+        );
+        assert_eq!(
+            listed_sessions(&dir.join(stored_under)).len(),
+            1,
+            "{crush_args:?}"
+        );
+        assert_eq!(result["text"], REPLY, "{crush_args:?}: {output:?}");
+        assert_eq!(result["text_source"], "crush-session", "{crush_args:?}");
+    }
+}
+
+#[test]
+fn every_spelling_of_a_named_session_reads_that_session_back() {
+    for spelling in ["-s", "--session="] {
+        let dir = scratch("session-spelling");
+        let store = dir.join("store");
+        run_crush(
+            &dir,
+            &[],
+            &[("MOCK_STDOUT", "first\n"), ("MOCK_CRUSH_REPLY", "first")],
+        );
+        let sid = listed_sessions(&store)[0]["uuid"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        run_crush(
+            &dir,
+            &[],
+            &[("MOCK_STDOUT", "other\n"), ("MOCK_CRUSH_REPLY", "other")],
+        );
+        let named: Vec<String> = if spelling == "-s" {
+            vec!["-s".into(), sid.clone()]
+        } else {
+            vec![format!("--session={sid}")]
+        };
+        let mut args = vec!["--"];
+        args.extend(named.iter().map(String::as_str));
+        let (result, _) = run_crush(
+            &dir,
+            &args,
+            &[("MOCK_STDOUT", CUT), ("MOCK_CRUSH_REPLY", REPLY)],
+        );
+        assert_eq!(result["text"], REPLY, "{spelling}");
+        assert_eq!(result["text_source"], "crush-session", "{spelling}");
+    }
+}
+
+#[test]
+fn a_store_read_that_fails_without_a_word_is_named_by_its_exit_code() {
+    let dir = scratch("silent-fail");
+    let (result, output) = run_crush(
+        &dir,
+        &[],
+        &[
+            ("MOCK_STDOUT", CUT),
+            ("MOCK_CRUSH_REPLY", REPLY),
+            ("MOCK_CRUSH_STORE_READ", "silent-fail"),
+        ],
+    );
+    assert_eq!(result["text"], "ONEHARNESS-LIVE-3");
+    assert_eq!(result["text_source"], "raw:crush-session-unavailable");
+    assert!(
+        stderr(&output).contains("exited 1 without a word"),
+        "{}",
+        stderr(&output)
+    );
+}

@@ -9,7 +9,8 @@ use crate::domain::report::{RunResult, Status};
 use crate::io::runner::{self, Job};
 
 /// Long enough for crush to open and migrate its store; it answers in well
-/// under a second. A reader that hangs past it is a store read that failed:
+/// under a second. A reader that hangs past it, or that cannot be spawned, is
+/// a store read that failed:
 /// `runner::run_job` ends it at this deadline as it ends any job, and the run
 /// keeps stdout's text as for any unreadable store. No journey drives a hung
 /// reader: proving the bound end to end would hold the suite for the whole
@@ -58,13 +59,19 @@ impl CrushStore {
         if capture.status == Status::Ok {
             return Ok(capture.stdout);
         }
+        // A runner error is the deadline or a failed spawn (see
+        // `STORE_READ_TIMEOUT` for why no journey drives either); otherwise
+        // crush's own stderr says why, or, when it said nothing, its exit code.
         let why = capture
             .error
             .or_else(|| {
                 let stderr = capture.stderr.trim();
                 (!stderr.is_empty()).then(|| stderr.to_string())
             })
-            .unwrap_or_else(|| format!("exit code {:?}", capture.exit_code));
+            .unwrap_or_else(|| match capture.exit_code {
+                Some(code) => format!("exited {code} without a word"),
+                None => "ended without an exit code".to_string(),
+            });
         Err(StoreMiss::Unreadable(format!("`crush {shown}`: {why}")))
     }
 

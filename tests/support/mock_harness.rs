@@ -107,7 +107,8 @@
 //!                   as crush does. MOCK_CRUSH_STORE_READ=fail makes every
 //!                   `session` read fail as an unopenable store does; =malformed
 //!                   prints the document cut off mid-JSON; =bad-id / =bad-time
-//!                   list one session whose id or creation time is invalid.
+//!                   list one session whose id or creation time is invalid;
+//!                   =silent-fail exits 1 with nothing on stderr.
 //!                   `-c`/`--cwd` moves the store to `<cwd>/.crush`.
 //!   MOCK_DELIVERY_FILE appends delivery JSON before normal scripted output.
 //!   MOCK_CAPTURE_DELIVERY records stdin and the native Claude system file as JSON.
@@ -1353,6 +1354,24 @@ fn export_opencode_session(store: &str, sid: Option<&str>) -> ! {
 }
 
 // llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] The session list and `session show --json` documents below are crush v0.87.0's real shape, captured byte for byte in tests/fixtures/crush-0.87.0-session-*.json, which the engine's reader is unit-tested against; the mock writes those same fields for the turns a test scripts. The producer is gated live: ci.yml's `check` job runs `just live-crush` against the real installed crush on every pull request that changes crates/**, and scripts/e2e-crush.sh fails it when a real run cannot be read back from the store.
+/// The value of a crush flag in either spelling (`--flag value` or
+/// `--flag=value`, long or short), as crush reads it: nothing past a `--`.
+fn crush_flag(argv: &[String], names: [&str; 2]) -> Option<String> {
+    let flags = argv
+        .iter()
+        .position(|arg| arg == "--")
+        .map_or(argv, |end| &argv[..end]);
+    flags.iter().enumerate().find_map(|(at, arg)| {
+        names.iter().find_map(|name| {
+            if arg == name {
+                flags.get(at + 1).cloned()
+            } else {
+                arg.strip_prefix(&format!("{name}=")).map(str::to_string)
+            }
+        })
+    })
+}
+
 /// Where the mock crush store keeps one session's `session show --json` document.
 fn crush_session_path(store: &str, sid: &str) -> std::path::PathBuf {
     assert!(
@@ -1373,7 +1392,7 @@ fn record_crush_turn(store: &str, argv: &[String], reply: &str) {
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok())
         .unwrap_or_default();
-    let sid = arg_value_after(argv, "--session").map_or_else(
+    let sid = crush_flag(argv, ["--session", "-s"]).map_or_else(
         || {
             let nanos = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1386,7 +1405,7 @@ fn record_crush_turn(store: &str, argv: &[String], reply: &str) {
                 "created": created, "modified": created}));
             sid
         },
-        str::to_string,
+        |sid| sid,
     );
     let path = crush_session_path(store, &sid);
     let mut session = std::fs::read_to_string(&path)
@@ -1433,6 +1452,9 @@ fn record_crush_turn(store: &str, argv: &[String], reply: &str) {
 /// id crush never mints (`=bad-id`) or a creation time that is no instant
 /// (`=bad-time`).
 fn answer_crush_session(store: &str, argv: &[String]) -> ! {
+    if std::env::var("MOCK_CRUSH_STORE_READ").as_deref() == Ok("silent-fail") {
+        std::process::exit(1);
+    }
     if std::env::var("MOCK_CRUSH_STORE_READ").as_deref() == Ok("fail") {
         let _ = writeln!(
             std::io::stderr(),
@@ -3095,18 +3117,14 @@ pub fn run() -> ! {
     if let Ok(store) = std::env::var("MOCK_CRUSH_STORE") {
         // A `-D`/`--data-dir` moves the store, as it does crush's, and so does
         // `-c`/`--cwd`, to `<cwd>/.crush`, crush's default data directory.
-        let store = arg_value_after(&argv, "--data-dir")
-            .or_else(|| arg_value_after(&argv, "-D"))
-            .map(str::to_string)
+        let store = crush_flag(&argv, ["--data-dir", "-D"])
             .or_else(|| {
-                arg_value_after(&argv, "--cwd")
-                    .or_else(|| arg_value_after(&argv, "-c"))
-                    .map(|cwd| {
-                        std::path::Path::new(cwd)
-                            .join(".crush")
-                            .display()
-                            .to_string()
-                    })
+                crush_flag(&argv, ["--cwd", "-c"]).map(|cwd| {
+                    std::path::Path::new(&cwd)
+                        .join(".crush")
+                        .display()
+                        .to_string()
+                })
             })
             .unwrap_or(store);
         match argv.first().map(String::as_str) {

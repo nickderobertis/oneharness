@@ -20,6 +20,8 @@ oh_qwen_live_setup
 # Not from the checkout: qwen would load its AGENTS.md files into the turn.
 oh_echo_without_context qwen
 oh_context_free_enforce qwen
+# No turn may recall another's: oh_qwen_live_setup turns qwen's auto-memory off.
+oh_memory_free_enforce qwen
 
 # Large prompt + system (issue #1115): oneharness pipes a >128 KiB prompt to
 # qwen's stdin (`-p` omitted), with the system prepended — so it never trips the

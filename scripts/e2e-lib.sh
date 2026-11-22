@@ -234,13 +234,30 @@ oh_native_path() {
 
 # Qwen's request timeout is 120 seconds; leave a retry room inside the suite's
 # outer deadline, and retain request timing when that deadline kills the CLI.
+#
+# It also turns off qwen's managed auto-memory for every qwen launch the suite
+# makes, through a system settings file (QWEN_CODE_SYSTEM_SETTINGS_PATH; qwen
+# has no environment switch for it). After each headless turn, qwen 0.28 runs
+# a memory-extraction pass into the user-global ~/.qwen/memories, and every
+# later turn recalls it, whatever its cwd, so one phase's prompt steers the
+# next: an events turn replays an earlier phase's command instead of printing
+# its own marker.
+# oh_memory_free_enforce holds real qwen to this.
+OH_QWEN_NO_MEMORY_SETTINGS='{"memory":{"enableManagedAutoMemory":false,"enableManagedAutoDream":false}}'
 oh_qwen_live_setup() {
-  local trace
+  local trace settings
   export OH_TIMEOUT="${OH_TIMEOUT:-300}"
   # llmlint: ignore[changed_behavior_has_e2e] The real Qwen live job proves preload installation; failed/empty conversion needs a cygpath double because real cygpath cannot produce those results on demand. The real setup rejects both before launching Node, covered by check-qwen-request-trace.mjs.
   trace="$(oh_native_path "$OH_REPO_ROOT/scripts/qwen-request-trace.cjs")" && [ -n "$trace" ] ||
     fail "qwen: could not convert $OH_REPO_ROOT/scripts/qwen-request-trace.cjs to a native path; check cygpath on this host"
   export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--require=\"$trace\""
+  settings="$OH_REPO_ROOT/target/e2e-qwen/system-settings.json"
+  if ! mkdir -p "${settings%/*}" || ! printf '%s\n' "$OH_QWEN_NO_MEMORY_SETTINGS" >"$settings"; then
+    fail "qwen: could not write its memory-off system settings to $settings; check that $OH_REPO_ROOT/target is writable"
+  fi
+  settings="$(oh_native_path "$settings")" && [ -n "$settings" ] ||
+    fail "qwen: could not convert its system settings path to a native path; check cygpath on this host"
+  export QWEN_CODE_SYSTEM_SETTINGS_PATH="$settings"
 }
 
 # Per-harness preparation of the enforcement scratch dir, run after it's created
@@ -1055,6 +1072,85 @@ oh_context_free_enforce() {
   [ "$status" -eq 0 ] || exit "$status"
   # llmlint: ignore[tool_output_is_signal] This one line is the phase's verdict, the way every sibling oh_* phase in this library ends in PASS: a live run is read (and cited as proof) by that line, and a phase that said nothing on success would be indistinguishable from one that never ran.
   note "PASS: $id context-free turn sends none of the checkout's or the machine's context, and a checkout turn sends both"
+}
+
+# Live drift alarm for oh_qwen_live_setup's memory-off settings, against the
+# real qwen and no model: scripts/chat-capture-endpoint.py on loopback records
+# what each turn sends, as in oh_context_free_enforce. Under a HOME whose
+# user-global memory holds a canary, a turn without the settings must send it,
+# or this phase proves nothing about recall; a turn with them must not.
+#   $1 harness id
+oh_memory_free_enforce() {
+  _oh_phase
+  local id="$1" real py sandbox pid="" port canary requests status=0
+  [ -n "${QWEN_CODE_SYSTEM_SETTINGS_PATH:-}" ] ||
+    fail "$id: QWEN_CODE_SYSTEM_SETTINGS_PATH is unset, so this phase has no memory-off settings to hold $id to; run oh_qwen_live_setup first"
+  # The real binary, past the measuring shim, as oh_context_free_enforce says.
+  real="$(_oh_unshimmed "$id")" || real="$(command -v "$id")" ||
+    skip "$id is not on PATH; install it (the live-$id workflow does) to run this phase"
+  py="$(command -v python3 || command -v python)" ||
+    skip "neither python3 nor python is on PATH; the capture endpoint is a Python script"
+  sandbox="$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX")" ||
+    fail "$id: could not create a scratch directory under ${TMPDIR:-/tmp}; check that it exists and is writable, or set TMPDIR to one that is"
+  requests="$sandbox/endpoint/requests.txt"
+  mkdir -p "$sandbox/endpoint" "$sandbox/ambient/.qwen/memories" "$sandbox/work" ||
+    _oh_stall_abort "$sandbox" "$pid" "$id: could not create the phase's directories under $sandbox; check that the host temp dir is writable"
+  canary="ONEHARNESS-MEMORY-$RANDOM$RANDOM"
+  # The shape qwen's own extraction writes: an index line, and the memory file
+  # it links, with its frontmatter.
+  {
+    printf -- '- [Codename](user.md) — the user codename is %s\n' "$canary" >"$sandbox/ambient/.qwen/memories/MEMORY.md" &&
+      printf -- '---\nname: Codename\ndescription: the user codename is %s\ntype: user\n---\nThe user codename is %s.\n' \
+        "$canary" "$canary" >"$sandbox/ambient/.qwen/memories/user.md"
+  } || _oh_stall_abort "$sandbox" "$pid" "$id: could not seed the memory canary under $sandbox/ambient/.qwen/memories; check that the host temp dir is writable"
+  local started_ok=0
+  # llmlint: ignore-block[e2e_not_mocked] What this phase observes is the request qwen sends its model, so a recorder must stand where the model is, for the endpoint's start and both turns sent to it; the real model is driven by the paid turns e2e-qwen.sh runs under the same settings.
+  _oh_endpoint_start chat-capture-endpoint.py "$py" "$sandbox/endpoint" "$sandbox/endpoint.log" || started_ok=$?
+  pid="$_OH_ENDPOINT_PID"
+  if [ "$started_ok" -ne 0 ]; then
+    sed 's/^/    /' "$sandbox/endpoint.log" >&2 || true
+    _oh_stall_abort "$sandbox" "$pid" "$id: the capture endpoint never reported its port (its output, with the stack it hung in, is above); run \`$py scripts/chat-capture-endpoint.py <an empty dir>\` by hand to see why it cannot start"
+  fi
+  port="$(_oh_port_in "$sandbox/endpoint/port")" ||
+    _oh_stall_abort "$sandbox" "$pid" "$id: the capture endpoint's port file does not hold one TCP port; run \`$py scripts/chat-capture-endpoint.py <an empty dir>\` by hand to see what it wrote"
+  local home="$sandbox/ambient" base="http://127.0.0.1:$port/v1" key=sk-oneharness-local-only
+  local work
+  work="$(oh_native_path "$sandbox/work")" && [ -n "$work" ] ||
+    _oh_stall_abort "$sandbox" "$pid" "$id: could not convert $sandbox/work to a native path; check cygpath on this host"
+  (
+    unset DASHSCOPE_API_KEY XDG_CONFIG_HOME QWEN_HOME QWEN_RUNTIME_DIR QWEN_CODE_MEMORY_BASE_DIR
+    (
+      unset QWEN_CODE_SYSTEM_SETTINGS_PATH
+      HOME="$home" OPENAI_BASE_URL="$base" OPENAI_API_KEY="$key" OPENAI_MODEL=oneharness-capture \
+        oh_run "$id" "$(oh_prompt "$(oh_marker)")" --bin "$id=$real" --cwd "$work"
+    )
+    if ! grep -qF -- "$canary" "$requests" 2>/dev/null; then
+      fail "$id: a turn with its memory on did not send the user-global memory canary to the endpoint ($requests shows what it sent), so this phase cannot tell memory-off from a qwen that no longer recalls; check where this $id now keeps its auto-memory and update oh_qwen_live_setup to match"
+    fi
+    rm -f "$requests" || fail "$id: could not clear $requests between the two turns; check that the host temp dir is writable"
+    HOME="$home" OPENAI_BASE_URL="$base" OPENAI_API_KEY="$key" OPENAI_MODEL=oneharness-capture \
+      oh_run "$id" "$(oh_prompt "$(oh_marker)")" --bin "$id=$real" --cwd "$work"
+    if [ ! -s "$requests" ]; then
+      sed 's/^/    /' "$sandbox/endpoint.log" >&2 || true
+      fail "$id: the memory-off turn sent nothing to the endpoint, so nothing was proven about what it recalls; read the endpoint's output above"
+    fi
+    local recalled=0
+    grep -qF -- "$canary" "$requests" || recalled=$?
+    case "$recalled" in
+      0) fail "$id: under oh_qwen_live_setup's settings ($QWEN_CODE_SYSTEM_SETTINGS_PATH) the turn still sent the user-global memory canary to the model; find this $id's current switch for its managed auto-memory and set it in OH_QWEN_NO_MEMORY_SETTINGS" ;;
+      1) ;;
+      *) fail "$id: could not read $requests (grep exited $recalled), so the memory-off turn proved nothing; check that the host temp dir is readable" ;;
+    esac
+  ) </dev/null >"$sandbox/turns.log" 2>&1 &
+  # llmlint: ignore-end[e2e_not_mocked]
+  wait "$!" || status=$?
+  if [ "$status" -ne 0 ]; then
+    sed 's/^/    /' "$sandbox/turns.log" >&2 || true
+  fi
+  _oh_stall_cleanup "$sandbox" "$pid"
+  [ "$status" -eq 0 ] || exit "$status"
+  # llmlint: ignore[tool_output_is_signal] This one line is the phase's verdict, the way every sibling oh_* phase in this library ends in PASS: a live run is read (and cited as proof) by that line, and a phase that said nothing on success would be indistinguishable from one that never ran.
+  note "PASS: $id under the suite's settings recalls none of its user-global memory, and a turn with memory on recalls it"
 }
 
 # A multi-line `--system` must reach claude's model request whole. On Windows

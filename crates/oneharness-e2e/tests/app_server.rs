@@ -6734,6 +6734,39 @@ exec "$real" "$@""#,
 }
 // llmlint: ignore-end[e2e_not_mocked]
 
+// llmlint: ignore-block[e2e_not_mocked] The subject is scripts/e2e-control.sh's own pooled-kill verdict, run for real over the built oneharness and oneharness-core's pool; the `tail` wrapper is fault injection, not a mock — it reproduces the misread macOS's tail gave on a heartbeat appended to while it read (CI run 44994218254 returned two beats as one last line), which no host can be made to race deterministically within the gate. Only codex is the repository's subprocess double, as in every ControlSuite journey.
+/// pooled-kill reads the heartbeat's last line as one whole beat even while
+/// the heartbeat appends to it: a reader of the file's end that returns two
+/// beats as its last line — macOS's `tail -n 1` once did, mid-append — does
+/// not fail a pool that stopped the heartbeat in time.
+#[test]
+fn the_control_suite_s_pooled_kill_reads_one_whole_beat_while_the_heartbeat_appends() {
+    let suite = ControlSuite::new("pool-suite-tail");
+    // `tail` first on PATH: asked for the heartbeat's last line, it answers
+    // with its last two, as the mid-append misread did; anything else is the
+    // real `tail`.
+    suite.tool(
+        "tail",
+        r#"real=""
+for candidate in $(type -ap tail); do
+  [ "$candidate" -ef "$0" ] || { real="$candidate"; break; }
+done
+[ -n "$real" ] || { echo "tail shim: no real tail on PATH" >&2; exit 1; }
+if [ "$#" -eq 3 ] && [ "$1" = "-n" ] && [ "$2" = "1" ] && [ "${3##*/}" = "heartbeat" ]; then
+  exec "$real" -n 2 "$3"
+fi
+exec "$real" "$@""#,
+    );
+    let out = suite.run(&[]);
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{said}");
+    assert!(
+        said.contains("ok: the killed dispatch's heartbeat stopped"),
+        "pooled-kill did not pass: {said}"
+    );
+}
+// llmlint: ignore-end[e2e_not_mocked]
+
 // llmlint: ignore-block[e2e_not_mocked] The subject is scripts/e2e-control.sh's own pooled-kill verdict, run for real over the built oneharness and oneharness-core's pool; the `codex` wrapper is fault injection, not a mock — it execs the repository's codex double unchanged and only, once an app-server it launched has exited, sends SIGTERM to the commands that server recorded, as the network recorder's measuring namespace does to every process in it on the CI legs with pasta, because that namespace cannot be built on every host the gate runs on. Only codex is the repository's subprocess double, as in every ControlSuite journey.
 /// A heartbeat the pool never stops, ended by something else as its server
 /// stops — the network recorder's measuring namespace ends every process in

@@ -1562,7 +1562,7 @@ invalidating earlier ones):
   |---------|------------|-----------------|
   | `opencode` | `json` (default) | `json:opencode-parts` |
   | `cursor` | `stream-json` (default) | `stream-json:cursor-tool-calls` |
-  | `claude-code` | `--events` → `stream-json` (adds the required `--verbose`) | `stream-json:content-blocks` |
+  | `claude-code` | `--events` → `stream-json` (adds the required `--verbose`, and `--include-partial-messages` for per-call usage) | `stream-json:content-blocks` |
   | `codex` | `exec --json` (default; `--events` needs no upgrade) | `json:codex-items` |
   | `qwen` | `--events` → `--output-format stream-json` | `stream-json:content-blocks` |
   | `goose`, `crush`, `copilot` | no machine-readable transcript headlessly | — (null) |
@@ -2716,6 +2716,22 @@ harness's own stream or session record; the run's `usage` total is unchanged.
 Where the harness exposes no per-call figures it is absent and `diagnostics`
 says why.
 
+On Claude Code (`--output-format stream-json`) a call's input and cache
+figures are its `assistant` event's, and its `output_tokens` is the call's
+final figure: the `message_delta` stream event that ends the call. Claude Code
+streams that event only under `--include-partial-messages`, so every
+stream-json run passes it; the `assistant` event's own `output_tokens` is
+`message_start`'s placeholder (a few tokens), not the call's output. A stream
+without `message_delta` events settles only the call the `result` event's
+`usage.iterations` lists (the last); any earlier call keeps the placeholder.
+The flag grows the raw `stdout` by one `stream_event` line per streamed chunk
+of each call's output, in proportion to the tokens the run generates: 65 to
+80 bytes per output token in the captured runs (9,847 bytes for 151 tokens on
+2.1.330; 38,519 for 504 in `tests/fixtures/claude-stream-json-turn.jsonl`), so
+about 80 KB per 1,000 output tokens. `text`, `usage` and `events` are
+unaffected: they are read from the `result` and `assistant` events, never the
+partial lines.
+
 **`oneharness compact --session NAME [--session-dir DIR] [--harness ID]`**
 compacts a named session now (library: `oneharness_core::io::compact::
 compact_session`). It compacts a **fork** of the session and rebinds the name
@@ -2734,7 +2750,7 @@ which also cites the evidence for each entry):
 
 | Harness (release) | `auto_compact_tokens` | compact now | `tool_set` | `load_skills = false` | `load_mcp = false` | `images` | `calls` | run-level `allowed_tools` | `replace_system` | `schema` |
 |---|---|---|---|---|---|---|---|---|---|---|
-| Claude Code (2.1.316) | `CLAUDE_CODE_AUTO_COMPACT_WINDOW` = N + 33000; below 67000, the 100000 window floor plus `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` = N / 80000 × 100 | `-p /compact --resume ID --fork-session` | `--tools Bash Read` (intersected with read-only's set under `--mode read-only`) | `--disable-slash-commands` | `--strict-mcp-config` | base64 `image` blocks in one stream-json user frame (`--input-format stream-json`) | one `assistant.message.usage` per `message.id` under `--output-format stream-json` | `--allowedTools` per rule; under read-only `--permission-mode dontAsk`, `--tools` gains `Bash` (Linux; withheld elsewhere) | `--system-prompt-file FILE` in place of `--append-system-prompt-file` (2.1.329) | `--json-schema`; the stream-json `result` event's `structured_output`, with `calls`; only an explicit `json`/`text` reads the `json` result's `structured_output`, without `calls`, and is refused beside images (2.1.329) |
+| Claude Code (2.1.316) | `CLAUDE_CODE_AUTO_COMPACT_WINDOW` = N + 33000; below 67000, the 100000 window floor plus `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` = N / 80000 × 100 | `-p /compact --resume ID --fork-session` | `--tools Bash Read` (intersected with read-only's set under `--mode read-only`) | `--disable-slash-commands` | `--strict-mcp-config` | base64 `image` blocks in one stream-json user frame (`--input-format stream-json`) | one `assistant.message.usage` per `message.id` under `--output-format stream-json`, which adds `--include-partial-messages`: each call's `output_tokens` is its `message_delta`'s final figure (2.1.330) | `--allowedTools` per rule; under read-only `--permission-mode dontAsk`, `--tools` gains `Bash` (Linux; withheld elsewhere) | `--system-prompt-file FILE` in place of `--append-system-prompt-file` (2.1.329) | `--json-schema`; the stream-json `result` event's `structured_output`, with `calls`; only an explicit `json`/`text` reads the `json` result's `structured_output`, without `calls`, and is refused beside images (2.1.329) |
 | Codex (0.159.2) | `-c model_auto_compact_token_limit=N` | app-server `thread/fork` + `thread/compact/start` | partial: `features.goals`, `features.view_image`, `features.sleep_tool` off, `web_search="disabled"`, and `features.shell_tool` off only for a set naming neither `shell` nor `read` (codex's shell also reads files); `apply_patch`, `request_user_input`, the multi-agent `collaboration` tools and `clock__curr_time` stay loaded (no setting removes them) and the run says so | `-c skills.include_instructions=false` | each configured server overridden `-c mcp_servers.<name>={command="true",enabled=false}`, plus `features.apps=false` | `--image=PATH` | the rollout record's `event_msg token_count info.last_token_usage`, one per event | a per-run overlay `CODEX_HOME` whose `rules/` adds one `prefix_rule` per rule (Linux; withheld elsewhere) | `-c model_instructions_file="FILE"`, not folded into the prompt; usage error under `--control` | `--output-schema FILE` for a schema strict mode accepts (else prompt-based); the final `agent_message` |
 | OpenCode (1.18.5) | — | — | — | — | — | `-f PATH` | one per `step_finish` event (`step_finish.part.tokens`, `part.cost`) of `--format json` | withheld | refused | prompt-based |
 | Copilot (1.0.78) | — | — | — | — | — | `--attachment PATH` | — | withheld | refused | prompt-based |

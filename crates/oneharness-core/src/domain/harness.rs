@@ -1930,8 +1930,14 @@ fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
     // content-block transcript oneharness normalizes into `events` (the default
     // single-document `json` result carries no transcript). Sourced from the CLI's
     // own error, not guessed.
+    // `--include-partial-messages` streams each model call's `message_delta`,
+    // the only stream event carrying that call's final `output_tokens`: the
+    // `assistant` events repeat `message_start`'s placeholder figure, and the
+    // `result` event's `usage.iterations` holds only the last call (Claude
+    // Code 2.1.330, captured). It is what makes every `calls` entry exact.
     if c.output_format == OutputFormat::StreamJson {
         a.push("--verbose".into());
+        a.push("--include-partial-messages".into());
     }
     // Native structured output: `--json-schema <inline>` makes Claude Code return
     // the conforming value under `structured_output` — the result document's
@@ -3509,9 +3515,15 @@ mod tests {
             stream.iter().any(|t| t == "--verbose"),
             "stream-json needs --verbose: {stream:?}"
         );
+        assert!(
+            stream.iter().any(|t| t == "--include-partial-messages"),
+            "stream-json streams each call's final usage: {stream:?}"
+        );
         let json = (spec.build_argv)(&base_ctx(spec));
         assert!(
-            !json.iter().any(|t| t == "--verbose"),
+            !json
+                .iter()
+                .any(|t| t == "--verbose" || t == "--include-partial-messages"),
             "default json must not add --verbose: {json:?}"
         );
     }

@@ -1016,6 +1016,14 @@ fn calls_list_one_usage_per_model_call_where_the_harness_records_them() {
                 assert_eq!(inputs, vec![10, 8], "two calls, in order");
                 assert_eq!(calls[0]["cache_write_tokens"], 34_280);
                 assert_eq!(calls[1]["cache_read_tokens"], 47_969);
+                assert_eq!(
+                    calls
+                        .iter()
+                        .map(|c| c["output_tokens"].as_u64().unwrap())
+                        .collect::<Vec<_>>(),
+                    vec![371, 133],
+                    "each call's final figure, from its message_delta"
+                );
             }
             "codex" => {
                 assert_eq!(
@@ -3841,6 +3849,313 @@ fn claude_takes_an_image_and_a_schema_together_and_re_asks_an_invalid_answer() {
     );
     assert_eq!(result["structured"]["name"], "Ada");
     assert_eq!(invocations(&log).len(), 2);
+}
+// llmlint: ignore-end[e2e_not_mocked]
+
+/// One Claude Code model call as `--include-partial-messages` streams it
+/// (2.1.330, captured in `tests/fixtures/claude-stream-json-turn.jsonl`): a
+/// `message_start` whose usage holds a placeholder `output_tokens`, a token
+/// delta, the `assistant` event repeating that placeholder, then the
+/// `message_delta` carrying the call's final figure.
+struct StreamedCall<'a> {
+    id: &'a str,
+    content: &'a str,
+    input: u64,
+    read: u64,
+    write: u64,
+    placeholder: u64,
+    output: u64,
+}
+
+impl StreamedCall<'_> {
+    fn lines(&self) -> Vec<String> {
+        let Self {
+            id,
+            content,
+            input,
+            read,
+            write,
+            placeholder,
+            output,
+        } = self;
+        let usage = |out: u64| {
+            format!(
+                r#"{{"input_tokens":{input},"cache_read_input_tokens":{read},"cache_creation_input_tokens":{write},"output_tokens":{out}}}"#
+            )
+        };
+        let stream = |event: String| {
+            format!(
+                r#"{{"type":"stream_event","event":{event},"session_id":"s-calls","parent_tool_use_id":null}}"#
+            )
+        };
+        vec![
+            stream(format!(
+                r#"{{"type":"message_start","message":{{"id":"{id}","type":"message","role":"assistant","content":[],"usage":{}}}}}"#,
+                usage(*placeholder)
+            )),
+            stream(
+                r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"PARTIAL-DELTA"}}"#
+                    .to_string(),
+            ),
+            format!(
+                r#"{{"type":"assistant","message":{{"id":"{id}","role":"assistant","content":[{content}],"usage":{}}},"parent_tool_use_id":null,"session_id":"s-calls"}}"#,
+                usage(*placeholder)
+            ),
+            stream(format!(
+                r#"{{"type":"message_delta","delta":{{"stop_reason":"end_turn"}},"usage":{}}}"#,
+                usage(*output)
+            )),
+        ]
+    }
+
+    /// The figures `calls` must report for this call: its own input and
+    /// cache figures, and its final output.
+    fn expected(&self) -> (u64, u64, u64, u64) {
+        (self.input, self.output, self.read, self.write)
+    }
+}
+
+/// One stream-json attempt: an init event, `calls` as streamed, then the
+/// `result` event whose `usage` totals the calls' final figures and whose
+/// `usage.iterations` lists only the last call (as Claude Code 2.1.330 does).
+fn claude_streamed_turn(calls: &[StreamedCall], extra: &str) -> String {
+    let sum = |f: fn(&StreamedCall) -> u64| calls.iter().map(f).sum::<u64>();
+    let last = calls.last().expect("a turn makes a call");
+    let mut lines =
+        vec![r#"{"type":"system","subtype":"init","session_id":"s-calls"}"#.to_string()];
+    lines.extend(calls.iter().flat_map(StreamedCall::lines));
+    lines.push(format!(
+        r#"{{"type":"result","subtype":"success","is_error":false,"result":"the answer","session_id":"s-calls","usage":{{"input_tokens":{},"cache_read_input_tokens":{},"cache_creation_input_tokens":{},"output_tokens":{},"iterations":[{{"input_tokens":{},"cache_read_input_tokens":{},"cache_creation_input_tokens":{},"output_tokens":{},"type":"message"}}]}}{extra}}}"#,
+        sum(|c| c.input),
+        sum(|c| c.read),
+        sum(|c| c.write),
+        sum(|c| c.output),
+        last.input,
+        last.read,
+        last.write,
+        last.output,
+    ));
+    lines.join("\n")
+}
+
+fn call_figures(result: &Value) -> Vec<(u64, u64, u64, u64)> {
+    result["calls"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no calls: {result}"))
+        .iter()
+        .map(|c| {
+            let n = |key: &str| c[key].as_u64().unwrap_or_else(|| panic!("{key}: {c}"));
+            (
+                n("input_tokens"),
+                n("output_tokens"),
+                n("cache_read_tokens"),
+                n("cache_write_tokens"),
+            )
+        })
+        .collect()
+}
+
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its translation run; only the harness process (claude-code) is the mock harness, replaying the partial-message stream shape of the captured turn the `calls` row cites (module doc).
+/// A Claude Code stream-json run asks for partial messages, and each `calls`
+/// entry reports its call's final `output_tokens` from the `message_delta`
+/// that ends it, not the placeholder `message_start` and the `assistant`
+/// event carry; input and cache figures, the run's total `usage`, its `text`
+/// and its `events` are what they were, the partial stream lines adding none.
+/// A stream without partial messages still settles its last call from the
+/// `result` event's `usage.iterations`.
+#[test]
+fn claude_calls_report_each_calls_final_output_tokens() {
+    let scratch = ScratchDir::new("lean-claude-final-output").unwrap();
+    let call = StreamedCall {
+        id: "msg_only",
+        content: r#"{"type":"text","text":"the answer"}"#,
+        input: 2,
+        read: 3_071,
+        write: 8_808,
+        placeholder: 2,
+        output: 716,
+    };
+    let b = bin("claude-code");
+    let log = scratch.join("one.jsonl");
+    let args = [
+        "run",
+        "--harness",
+        "claude-code",
+        "--prompt",
+        "check the print",
+        "--bin",
+        &b,
+        "--output-format",
+        "stream-json",
+    ];
+    let out = oh(
+        &args,
+        &[
+            ("MOCK_INVOCATION_LOG", log.to_str().unwrap()),
+            (
+                "MOCK_STDOUT",
+                &claude_streamed_turn(std::slice::from_ref(&call), ""),
+            ),
+        ],
+        None,
+    );
+    assert!(out.status.success(), "{out:?}");
+    let result = json(&out)["results"][0].clone();
+    let argv = strings(&invocations(&log)[0]["argv"]);
+    assert!(
+        argv.iter().any(|a| a == "--include-partial-messages"),
+        "{argv:?}"
+    );
+    assert_eq!(call_figures(&result), vec![call.expected()], "{result}");
+    assert_eq!(
+        result["usage"],
+        serde_json::json!({
+            "input_tokens": 2,
+            "output_tokens": 716,
+            "cache_read_tokens": 3_071,
+            "cache_write_tokens": 8_808,
+            "cost_usd": null,
+        }),
+        "the run's total is the result event's: {result}"
+    );
+    assert_eq!(result["text"], "the answer");
+    let events = result["events"].as_array().unwrap();
+    assert_eq!(events.len(), 1, "no event from a partial line: {events:?}");
+    assert_eq!(events[0]["kind"], "message");
+    assert_eq!(events[0]["output"], "the answer");
+    let mut beside_stdout = result.clone();
+    beside_stdout["stdout"] = Value::Null;
+    assert!(
+        !beside_stdout.to_string().contains("PARTIAL-DELTA"),
+        "only the raw stdout carries the partial lines: {beside_stdout}"
+    );
+
+    // Without partial messages (a caller's own argv, an older release) the
+    // stream carries no `message_delta`: the `result` event's iteration,
+    // which names the last call only, still settles that call.
+    let tool = StreamedCall {
+        id: "msg_tool",
+        content: r#"{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}"#,
+        input: 2,
+        read: 3_071,
+        write: 8_808,
+        placeholder: 2,
+        output: 716,
+    };
+    let answer = StreamedCall {
+        id: "msg_answer",
+        content: r#"{"type":"text","text":"the answer"}"#,
+        input: 2,
+        read: 11_879,
+        write: 120,
+        placeholder: 1,
+        output: 40,
+    };
+    let unstreamed: String = claude_streamed_turn(&[tool, answer], "")
+        .lines()
+        .filter(|line| !line.starts_with(r#"{"type":"stream_event""#))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let out = oh(&args, &[("MOCK_STDOUT", &unstreamed)], None);
+    let result = json(&out)["results"][0].clone();
+    assert_eq!(
+        call_figures(&result),
+        vec![(2, 2, 3_071, 8_808), (2, 40, 11_879, 120)],
+        "the last call is settled; the earlier keeps the only figure streamed: {result}"
+    );
+    assert_eq!(result["usage"]["output_tokens"], 756, "{result}");
+}
+// llmlint: ignore-end[e2e_not_mocked]
+
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its structured-output loop run; only the harness process (claude-code) is the mock harness, replaying the partial-message stream shape of the captured turn the `calls` row cites (module doc).
+/// A schema run re-asked on Claude Code lists every attempt's calls, each
+/// with its final `output_tokens`: a first attempt of two calls (a tool call,
+/// then an invalid `StructuredOutput` answer) and a valid re-ask of one.
+#[test]
+fn claude_schema_re_ask_reports_each_calls_final_output_tokens() {
+    let scratch = ScratchDir::new("lean-claude-re-ask-output").unwrap();
+    let schema = scratch.join("person.json");
+    std::fs::write(&schema, PERSON).unwrap();
+    let schema = schema.display().to_string();
+    let attempt_one = [
+        StreamedCall {
+            id: "msg_a1",
+            content: r#"{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"note.txt"}}"#,
+            input: 2,
+            read: 3_071,
+            write: 8_808,
+            placeholder: 2,
+            output: 716,
+        },
+        StreamedCall {
+            id: "msg_a2",
+            content: r#"{"type":"tool_use","id":"t2","name":"StructuredOutput","input":{"name":"Ada"}}"#,
+            input: 4,
+            read: 11_879,
+            write: 900,
+            placeholder: 3,
+            output: 61,
+        },
+    ];
+    let attempt_two = [StreamedCall {
+        id: "msg_b1",
+        content: r#"{"type":"tool_use","id":"t3","name":"StructuredOutput","input":{"name":"Ada","age":36}}"#,
+        input: 6,
+        read: 12_779,
+        write: 300,
+        placeholder: 1,
+        output: 88,
+    }];
+    let invalid = claude_streamed_turn(&attempt_one, r#","structured_output":{"name":"Ada"}"#);
+    let valid = claude_streamed_turn(
+        &attempt_two,
+        r#","structured_output":{"name":"Ada","age":36}"#,
+    );
+    let counter = scratch.join("attempts.count");
+    let b = bin("claude-code");
+    let out = oh(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "who is this?",
+            "--schema",
+            &schema,
+            "--bin",
+            &b,
+        ],
+        &[
+            ("MOCK_ATTEMPT_FILE", counter.to_str().unwrap()),
+            ("MOCK_STDOUT_1", &invalid),
+            ("MOCK_STDOUT_2", &valid),
+        ],
+        None,
+    );
+    assert!(out.status.success(), "{out:?}");
+    let result = json(&out)["results"][0].clone();
+    assert_eq!(result["schema_attempts"], 2, "{result}");
+    assert_eq!(result["structured"]["age"], 36, "{result}");
+    assert_eq!(
+        call_figures(&result),
+        attempt_one
+            .iter()
+            .chain(&attempt_two)
+            .map(StreamedCall::expected)
+            .collect::<Vec<_>>(),
+        "every attempt's calls, oldest first, each with its final output: {result}"
+    );
+    assert_eq!(
+        result["usage"],
+        serde_json::json!({
+            "input_tokens": 6,
+            "output_tokens": 88,
+            "cache_read_tokens": 12_779,
+            "cache_write_tokens": 300,
+            "cost_usd": null,
+        }),
+        "the run's total is the final attempt's result event, as before: {result}"
+    );
 }
 // llmlint: ignore-end[e2e_not_mocked]
 

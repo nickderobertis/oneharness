@@ -1482,8 +1482,10 @@ invalidating earlier ones):
   `crush-session`; otherwise `text` is stdout's and `text_source` is `raw`. When
   the store cannot be read it is `raw:crush-session-unavailable`, and when the
   run's session cannot be told apart (another session created in the same store
-  meanwhile, or `--continue`) it is `raw:crush-session-unidentified`; both keep
-  stdout's text and say why on stderr. `stdout` itself is always what crush
+  meanwhile — a parallel run or batch in the same directory, or a `--schema`
+  re-ask, which is a fresh `crush run` — or `--continue`) it is
+  `raw:crush-session-unidentified`; both keep stdout's text and say why on
+  stderr. `stdout` itself is always what crush
   printed.
 - `usage` / `usage_source` — `{ input_tokens, output_tokens, cache_read_tokens,
   cache_write_tokens, cost_usd }`, each field independently `null` when the harness

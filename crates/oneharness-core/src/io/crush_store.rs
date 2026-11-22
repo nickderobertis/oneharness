@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::domain::crush_store::{self, RunStore, StoreMiss};
+use crate::domain::crush_store::{self, RunStore, SessionChoice, SessionId, StoreMiss};
 use crate::domain::report::{RunResult, Status};
 use crate::io::runner::{self, Job};
 
@@ -65,13 +65,13 @@ impl CrushStore {
     /// The reply of this run's turn, as the store holds it.
     fn stored_reply(&self) -> Result<String, StoreMiss> {
         let session = match &self.store.session {
-            Some(session) => session.clone(),
-            None if self.store.continued => {
+            SessionChoice::Named(session) => SessionId::new(session)?,
+            SessionChoice::Continued => {
                 return Err(StoreMiss::Unidentified(
                     "`--continue` names no session".to_string(),
                 ))
             }
-            None => crush_store::created_session(
+            SessionChoice::Created => crush_store::created_session(
                 &self.read(crush_store::list_argv(&self.bin, &self.store))?,
                 self.since_ms,
             )?,

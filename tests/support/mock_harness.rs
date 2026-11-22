@@ -36,7 +36,7 @@
 //!                   before answering: `argv`, all of `stdin`, `env` (each
 //!                   variable MOCK_RECORD_ENV names, comma-separated), and
 //!                   `files`, the contents of every file an argument (or the
-//!                   value after an argument's `=`, unquoted) or a recorded
+//!                   value after an argument's `=`, TOML-decoded) or a recorded
 //!                   variable names while the harness runs — so a journey sees
 //!                   every attempt of a re-asked run, and a private temp file
 //!                   the run removes afterwards. Composes with
@@ -475,9 +475,7 @@ fn record_invocation(path: &str, argv: &[String]) {
     let named = argv
         .iter()
         .flat_map(|arg| {
-            let value = arg
-                .split_once('=')
-                .map(|(_, v)| v.trim_matches('"').to_string());
+            let value = arg.split_once('=').map(|(_, v)| toml_string_or_raw(v));
             std::iter::once(arg.clone()).chain(value)
         })
         .chain(recorded.iter().map(|(_, value)| value.clone()));
@@ -742,10 +740,7 @@ fn codex_model_catalog_arg(argv: &[String]) -> Option<String> {
         .filter(|pair| pair[0] == "-c")
         .filter_map(|pair| pair[1].strip_prefix("model_catalog_json="))
         .next_back()?;
-    let parsed = toml::from_str::<toml::Table>(&format!("value = {value}"))
-        .ok()
-        .and_then(|table| table.get("value")?.as_str().map(str::to_string));
-    if let Some(path) = parsed {
+    if let Some(path) = toml_string(value) {
         return Some(path);
     }
     if value.starts_with(['"', '\'']) {
@@ -754,6 +749,21 @@ fn codex_model_catalog_arg(argv: &[String]) -> Option<String> {
         ));
     }
     Some(value.to_string())
+}
+
+/// `value` decoded as a TOML string, as Codex reads a `-c key=<value>`: a
+/// literal `'…'` (what oneharness writes for a path with a backslash, so every
+/// Windows path) or a basic `"…"`; `None` when it is no TOML string.
+fn toml_string(value: &str) -> Option<String> {
+    toml::from_str::<toml::Table>(&format!("value = {value}"))
+        .ok()
+        .and_then(|table| table.get("value")?.as_str().map(str::to_string))
+}
+
+/// An argument's `=` value as the path it may name: its TOML string where it
+/// is one, else the raw text (a flag's `--x=<path>`).
+fn toml_string_or_raw(value: &str) -> String {
+    toml_string(value).unwrap_or_else(|| value.to_string())
 }
 
 fn epoch_ms() -> u64 {

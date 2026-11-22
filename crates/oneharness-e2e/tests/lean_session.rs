@@ -3264,6 +3264,34 @@ fn after<'a>(argv: &'a [String], flag: &str) -> Option<&'a str> {
 
 const REPLACEMENT: &str = "You are the print supervisor. Answer in one line.";
 
+/// The path a codex `-c key=<value>` override carries, decoded as the TOML
+/// value it is (and as Codex and the mock harness read it): a path with a
+/// backslash renders as a literal `'…'` string, which no JSON parse reads.
+fn toml_string(value: &str) -> String {
+    toml::from_str::<toml::Table>(&format!("value = {value}"))
+        .ok()
+        .and_then(|t| t.get("value")?.as_str().map(str::to_string))
+        .unwrap_or_else(|| panic!("`{value}` is no TOML string"))
+}
+
+/// A Windows scratch path (backslashes, a drive colon) and a POSIX one both
+/// reach codex's override as a TOML string decoding back to that very path,
+/// so the journey below reads the file the product named on every platform.
+#[test]
+fn a_codex_replacement_path_decodes_as_toml_on_every_platform_shape() {
+    for path in [
+        r"C:\Users\runner\AppData\Local\Temp\oh-sys.md",
+        "/tmp/oh-sys.md",
+    ] {
+        let args = oneharness_core::domain::lean::replace_system_args("codex", path);
+        assert_eq!(args[0], "-c", "{args:?}");
+        let value = args[1]
+            .strip_prefix("model_instructions_file=")
+            .unwrap_or_else(|| panic!("{args:?}"));
+        assert_eq!(toml_string(value), path, "{args:?}");
+    }
+}
+
 // llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its translation run; only the harness process (each adapter) is the mock harness, held to its real CLI by the request captures the `replace_system` table rows cite (module doc).
 /// `replace_system` reaches each harness as its translation row records, the
 /// text only ever on the replacing knob: Claude Code's `--system-prompt-file`,
@@ -3340,8 +3368,7 @@ fn replace_system_reaches_each_harness_on_its_replacing_knob_or_refuses_it() {
                             .flatten()
                     })
                     .unwrap_or_else(|| panic!("{argv:?}"));
-                // A TOML basic string, which a JSON string parse reads alike.
-                serde_json::from_str::<String>(value).expect("a quoted path")
+                toml_string(value)
             }
             "qwen" => calls[0]["env"]["QWEN_SYSTEM_MD"]
                 .as_str()
@@ -3355,6 +3382,55 @@ fn replace_system_reaches_each_harness_on_its_replacing_knob_or_refuses_it() {
             "{id}: the private file outlived the run"
         );
     }
+}
+// llmlint: ignore-end[e2e_not_mocked]
+
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its translation run; only the harness process (codex) is the mock harness, held to its real CLI by the request captures the `replace_system` rows cite (module doc).
+/// A replacement file under a directory whose name holds a backslash (every
+/// Windows temp path) reaches codex as a TOML literal `'…'` string, and the
+/// harness reads that very file. Unix only, where a backslash may name a
+/// directory; on Windows the journey above meets the same shape natively.
+#[cfg(unix)]
+#[test]
+fn a_codex_replacement_under_a_backslash_temp_dir_is_read_from_its_literal_string() {
+    let scratch = ScratchDir::new("lean-replace-backslash").unwrap();
+    let tmp = scratch.join("win\\shaped");
+    std::fs::create_dir(&tmp).unwrap();
+    let log = scratch.join("codex.jsonl");
+    let log_env = format!("MOCK_INVOCATION_LOG={}", log.display());
+    let b = bin("codex");
+    let tmp_env = tmp.display().to_string();
+    let out = oh(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "status?",
+            "--system",
+            REPLACEMENT,
+            "--replace-system",
+            "--bin",
+            &b,
+            "--mode",
+            "bypass",
+            "--env",
+            &log_env,
+        ],
+        &[("TMPDIR", &tmp_env)],
+        None,
+    );
+    assert!(out.status.success(), "{out:?}");
+    let calls = invocations(&log);
+    let argv = strings(&calls[0]["argv"]);
+    let value = argv
+        .iter()
+        .find_map(|a| a.strip_prefix("model_instructions_file="))
+        .unwrap_or_else(|| panic!("{argv:?}"));
+    assert!(value.starts_with('\''), "a literal string: {value}");
+    let path = toml_string(value);
+    assert!(path.starts_with(&tmp_env), "{path} is not under {tmp_env}");
+    assert_eq!(delivered_file(&calls[0], &path), REPLACEMENT);
 }
 // llmlint: ignore-end[e2e_not_mocked]
 

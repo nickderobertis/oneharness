@@ -22396,11 +22396,15 @@ fn delivery_recorded(path: &Path) -> bool {
     })
 }
 
+/// The turns the mock was delivered, one per harness invocation that ran one.
+/// Crush's session-store read after a run (`crush session list|show --json`)
+/// is an invocation too, but delivers no turn, so it is left out.
 fn read_delivery(path: &Path) -> Vec<Value> {
     std::fs::read_to_string(path)
         .unwrap()
         .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .filter(|record| record["argv"][0] != "session")
         .collect()
 }
 

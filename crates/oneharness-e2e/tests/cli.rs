@@ -270,6 +270,7 @@ const ENV_OVERRIDE_VARS: &[&str] = &[
     "ONEHARNESS_TOOL_SET",
     "ONEHARNESS_LOAD_SKILLS",
     "ONEHARNESS_LOAD_MCP",
+    "ONEHARNESS_REPLACE_SYSTEM",
     "ONEHARNESS_OUTPUT_FORMAT",
     "ONEHARNESS_SCHEMA_FILE",
     "ONEHARNESS_SCHEMA_MAX_RETRIES",
@@ -630,7 +631,7 @@ fn every_report_carries_the_shared_schema_version() {
     // so a consumer reads any of them with one number — and a bump must move
     // every surface at once. Pinned literally on purpose: asserting against the
     // constant would pass through a bump nobody intended.
-    let version = "0.15";
+    let version = "0.16";
     let printed = run(
         &[
             "run",
@@ -719,7 +720,7 @@ fn list_describes_every_harness() {
     let output = run(&["list"], &[]);
     assert!(output.status.success());
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.15");
+    assert_eq!(value["schema_version"], "0.16");
     let ids: Vec<&str> = value["harnesses"]
         .as_array()
         .unwrap()
@@ -7951,7 +7952,7 @@ fn a_host_signal_cancels_the_run_and_terminates_a_silent_harness() {
     // The report is still the contract: a cancelled run is a value a consumer
     // reads, not a process that vanished.
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.15");
+    assert_eq!(value["schema_version"], "0.16");
     let result = &value["results"][0];
     assert_eq!(result["status"], "cancelled");
     // A cancellation classifies as nothing either, so the report carries the
@@ -11098,7 +11099,7 @@ fn config_command_shows_values_with_sources() {
         String::from_utf8_lossy(&output.stderr)
     );
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.15");
+    assert_eq!(value["schema_version"], "0.16");
     assert_eq!(value["config_files"].as_array().unwrap().len(), 2);
 
     // The project file wins for model and is named as the source...
@@ -15896,6 +15897,7 @@ fn schema_retry_loop_recovers_on_a_later_attempt() {
     assert_eq!(result["structured"]["age"], 36);
 }
 
+// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run` and its overload and schema retry loops end to end; only codex is replaced, by the repository's own subprocess double (oneharness-mock-harness) at the `--bin` seam, because a real account cannot be made to overload, then answer invalidly, then validly on demand. Real codex 0.159.2's `--output-schema` turns are the runs the codex `schema` row of `lean::TRANSLATIONS` cites as its source.
 #[test]
 fn codex_overload_and_schema_retries_have_separate_budgets_and_keep_schema_delivery() {
     let schema = temp_file("schema-overload", PERSON_SCHEMA);
@@ -15941,13 +15943,20 @@ fn codex_overload_and_schema_retries_have_separate_budgets_and_keep_schema_deliv
     assert_eq!(value["results"][0]["schema_attempts"], 3);
     assert_eq!(std::fs::read_to_string(counter).unwrap(), "3");
     let final_argv = std::fs::read_to_string(argv_file).unwrap();
+    // A strict schema rides codex's `--output-schema` on every attempt, the
+    // overload retry's included.
+    let records = read_delivery(&delivery_log);
+    assert_eq!(records.len(), 3);
     assert!(
-        read_delivery(&delivery_log)
+        records.iter().all(|r| r["argv"]
+            .as_array()
+            .unwrap()
             .iter()
-            .all(|r| r["stdin"].as_str().unwrap().contains("JSON Schema")),
+            .any(|a| a == "--output-schema")),
         "the overload retry dropped schema delivery: {final_argv}"
     );
 }
+// llmlint: ignore-end[e2e_not_mocked]
 
 #[test]
 fn codex_exhausted_overload_budget_does_not_spend_the_schema_budget() {
@@ -22495,6 +22504,7 @@ fn resumed_and_batch_turns_keep_exact_off_argv_delivery() {
     }
 }
 
+// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run` and its schema re-ask end to end for every adapter; only each harness's process is replaced, by the repository's own subprocess double (oneharness-mock-harness) at the `--bin` seam, because no paid harness can be made to answer invalidly then validly on demand and the gate cannot spend model calls. Each real CLI's schema run is held by the structured journey of scripts/e2e-lib.sh's long-prompt enforcement, which every `live-*` suite runs.
 #[test]
 fn structured_retries_keep_system_and_exact_feedback_off_argv() {
     use oneharness_core::domain::structured::{self, Schema};
@@ -22556,7 +22566,12 @@ fn structured_retries_keep_system_and_exact_feedback_off_argv() {
         let records = read_delivery(&log);
         assert_eq!(records.len(), 2);
         let mut prompt = user.to_string();
-        if spec.native_schema.is_none() {
+        // This schema is not one strict mode accepts, so codex takes it in
+        // the prompt; only a native path that accepts it leaves the prompt be.
+        if !spec
+            .native_schema
+            .is_some_and(|native| native.accepts(&schema))
+        {
             prompt.push(' ');
             prompt.push_str(&structured::prompt_instruction(schema.as_text()));
         }
@@ -22573,6 +22588,7 @@ fn structured_retries_keep_system_and_exact_feedback_off_argv() {
         }
     }
 }
+// llmlint: ignore-end[e2e_not_mocked]
 
 // ---------------------------------------------------------------------------
 // Fallback run mode (`--run-mode fallback`): drive the selected harnesses in
@@ -30410,7 +30426,7 @@ fn control_interrupt_aborts_a_live_turn_from_a_separate_process() {
     let output = child.wait_with_output().expect("run did not finish");
     assert!(output.status.success(), "{output:?}");
     let report: Value = serde_json::from_slice(&output.stdout).expect("run report was not JSON");
-    assert_eq!(report["schema_version"], "0.15");
+    assert_eq!(report["schema_version"], "0.16");
     assert_eq!(report["control"]["mechanism"], "claude-control-request");
     assert_eq!(report["control"]["socket"], socket.display().to_string());
     let interrupts = report["control"]["interrupts"].as_array().unwrap();

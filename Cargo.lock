@@ -688,6 +688,7 @@ dependencies = [
  "oneharness",
  "oneharness-core 0.34.0",
  "serde_json",
+ "toml",
  "uuid",
 ]
 

@@ -379,10 +379,11 @@ boundary every surface (the CLI, the SDKs, an embedder) drives.
   instruction text, the shared `check` used by both the loop and the report — is
   in `domain::structured`. Like every normalized signal, the structured value is
   **never fabricated**: no extractable JSON is "invalid", not a guess. Codex's
-  native `--output-schema` is deliberately *not* wired yet (file-based + ignored
-  once tools run, https://github.com/openai/codex/issues/15451); adding it is one
-  registry line plus a `build_argv` arm (the pointer comments at the codex
-  registry entry and `structured::NativeSchema` say exactly what to change). The
+  native `--output-schema` takes only a schema `Schema::is_openai_strict`
+  accepts (codex sends it as a *strict* response format, which the API refuses
+  for anything else); every other codex schema stays prompt-based, chosen before
+  the run, never as a retry. A file-taking native flag gets its schema written
+  by `plan_input`, beside the system file. The
   *per-feature* live e2e (`scripts/e2e-schema.sh` / `just live-schema` /
   `e2e-schema.yml`, helper `oh_schema_enforce`) drives real claude-code through
   `--schema` and asserts a schema-valid round-trip — the drift alarm for the

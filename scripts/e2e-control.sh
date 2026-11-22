@@ -388,12 +388,17 @@ oh_pooled_kill() {
   while :; do
     sleep 0.2
     waited=$((waited + 1))
-    stamp="$(tail -n 1 "$beat")" || fail "pooled-kill: cannot read the heartbeat file $beat"
+    # The last COMPLETE line, read by its number: `wc -l` counts only lines
+    # whose newline has landed, and the file is only appended to, so that line
+    # is whole and stays put while the heartbeat writes on. `tail -n 1` read
+    # the file's end mid-append instead, and on macOS it once returned two
+    # beats as one line.
+    lines="$(beats)" || exit 1
+    stamp="$(sed -n "$((lines))p" "$beat")" || fail "pooled-kill: cannot read the heartbeat file $beat"
     [[ "$stamp" =~ ^[0-9]+$ ]] ||
       fail "pooled-kill: the heartbeat's last line is not an epoch second: '$stamp' in $beat"
     [ "$stamp" -le "$limit" ] ||
       fail "pooled-kill: the killed dispatch's heartbeat kept beating $((stamp - killed_at)) s after the kill, past DEAD_LEASE_SWEEP_INTERVAL + DEAD_LEASE_STOP_DEADLINE (${bound} s)"
-    lines="$(beats)" || exit 1
     if [ "$lines" != "$last" ]; then
       quiet=0
       last="$lines"

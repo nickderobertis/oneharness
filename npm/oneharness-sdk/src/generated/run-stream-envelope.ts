@@ -122,7 +122,9 @@ export type Setting =
   | "load_mcp"
   | "images"
   | "calls"
-  | "allowed_tools";
+  | "allowed_tools"
+  | "replace_system"
+  | "schema";
 /**
  * The normalized, closed set of failure reasons oneharness can classify from a
  * harness's output. It is the single source for the `failure_kind` contract

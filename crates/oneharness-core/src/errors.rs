@@ -290,6 +290,12 @@ pub enum OneharnessError {
         reason: String,
     },
 
+    #[error("`replace_system` cannot be combined with {conflict}: {reason}")]
+    ReplaceSystemConflict {
+        conflict: &'static str,
+        reason: String,
+    },
+
     #[error("session `{name}` is not in the session store (`{path}`), so there is nothing to compact; a session is created by `oneharness run --session {name}`")]
     CompactSessionUnknown { name: String, path: String },
 

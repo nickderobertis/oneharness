@@ -491,6 +491,7 @@ const RUN_BINDINGS: &[OptionBinding] = &[
     bind("toolSet", FlagKind::Repeated("--tool-set")),
     bind("noSkills", FlagKind::Switch("--no-skills")),
     bind("noMcp", FlagKind::Switch("--no-mcp")),
+    bind("replaceSystem", FlagKind::Switch("--replace-system")),
     bind("images", FlagKind::Repeated("--image")),
     bind("cwd", FlagKind::Value("--cwd")),
     bind("env", FlagKind::KeyValue("--env")),

@@ -42,7 +42,9 @@ use crate::domain::dialogue::{Dialogue, DialogueConfig, DialogueResume};
 use crate::domain::events::ActionEvent;
 use crate::domain::fallback::{self, RunMode};
 use crate::domain::grant;
-use crate::domain::harness::{self, BuildCtx, HarnessIdentity, HarnessSpec, PromptDelivery};
+use crate::domain::harness::{
+    self, BuildCtx, HarnessIdentity, HarnessSpec, NativeSchemaArg, PromptDelivery, SystemFile,
+};
 use crate::domain::http::{self, HttpShape};
 use crate::domain::lean;
 use crate::domain::mock::{self, MockDelivery};
@@ -54,7 +56,7 @@ use crate::domain::report::{
 use crate::domain::select::select_specs;
 use crate::domain::session::{self, SessionPlan, SessionRecord};
 use crate::domain::signals::Usage;
-use crate::domain::structured::{self, Schema};
+use crate::domain::structured::{self, NativeSchema, Schema};
 use crate::domain::{events, normalize, signals};
 use crate::errors::{OneharnessError, RunModeOrigin};
 use crate::io::cancel::{self, CancelToken};
@@ -305,6 +307,14 @@ pub struct RunRequest {
     pub load_skills: Option<bool>,
     /// `Some(false)` loads no MCP server or MCP tool. `None` defers to config.
     pub load_mcp: Option<bool>,
+    /// `Some(true)` makes the run's system text replace each harness's own
+    /// system prompt instead of being appended to it; `Some(false)` appends
+    /// whatever config says. `None` defers to config `replace_system` /
+    /// `ONEHARNESS_REPLACE_SYSTEM`. Without system text it changes nothing. A
+    /// harness with no replacing knob is refused for such a run as
+    /// [`crate::domain::signals::FailureKind::UnsupportedInput`], never handed
+    /// the text to append.
+    pub replace_system: Option<bool>,
     /// Image files attached to the prompt as images the model sees. A missing
     /// or unreadable file is refused before any harness starts; a harness
     /// without image input is refused for this run as
@@ -512,28 +522,63 @@ fn create_private_prompt_file(path: &std::path::Path) -> std::io::Result<std::fs
     }
 }
 
+/// What one unit's inputs ask of [`plan_input`]: its system text and whether
+/// that text replaces the harness's own prompt, and its schema with the
+/// native path chosen for it (`None` keeps the schema on the prompt).
+struct UnitInput<'a> {
+    system: Option<&'a str>,
+    replace_system: bool,
+    schema: Option<&'a Schema>,
+    native_schema: Option<NativeSchema>,
+}
+
 /// Apply the registry's delivery route to every input, including dry runs.
 /// Control owns its transport: the assembled text rides its initial turn.
+/// It is what sets [`HarnessPlan::system_file`] and
+/// [`HarnessPlan::schema_route`], each with the payload its route reads.
 fn plan_input(
     plan: &mut HarnessPlan,
     spec: &HarnessSpec,
-    system: Option<&str>,
+    input: &UnitInput<'_>,
     index: usize,
     temp_files: &mut TempPromptFiles,
     dry_run: bool,
 ) -> Result<(), OneharnessError> {
     let li = &spec.large_input;
-    if system.is_some() && li.system_file_flag.is_some() {
-        plan.system_file = Some(if dry_run {
+    // A replacing knob reads a file on every harness that has one, so a
+    // replace run materializes the text even where it would otherwise fold.
+    let replace = input.replace_system;
+    if let Some(text) = input
+        .system
+        .filter(|_| li.system_file_flag.is_some() || replace)
+    {
+        let path = if dry_run {
             // Symbolic only: dry runs neither create files nor launch a child.
             "<private-system-prompt-file>".to_string()
         } else {
             temp_files
-                .write(spec.id, index, system.unwrap_or_default())?
+                .write(spec.id, index, text)?
                 .display()
                 .to_string()
+        };
+        plan.system_file = Some(if replace {
+            PlannedSystemFile::Replace(path)
+        } else {
+            PlannedSystemFile::Append(path)
         });
     }
+    plan.schema_route = match (input.schema, input.native_schema) {
+        (Some(sch), Some(native)) if native.takes_file() => SchemaRoute::File(if dry_run {
+            "<private-schema-file>".to_string()
+        } else {
+            temp_files
+                .write(&format!("{}-schema", spec.id), index, sch.as_text())?
+                .display()
+                .to_string()
+        }),
+        (Some(_), Some(_)) => SchemaRoute::Inline,
+        _ => SchemaRoute::Prompt,
+    };
     if li.prompt_stdin && plan.delivery == PromptDelivery::Argv {
         plan.delivery = PromptDelivery::Stdin;
     }
@@ -770,6 +815,12 @@ pub fn run_supervised(
     // to catch the same shape first.
     let explicit_format = args.output_format.or(cfg.output_format);
     let mode = resolve_mode(args, cfg);
+    // Whether the run asks to replace, decided from the request's shape before
+    // its system text is read (a `--system-file -` read waits for stdin): the
+    // text is present exactly when one of its three sources is.
+    let replace_requested =
+        (args.system.is_some() || args.system_file.is_some() || cfg.system.is_some())
+            && args.replace_system.or(cfg.replace_system).unwrap_or(false);
     let control_shape = validate_control(
         args,
         &specs,
@@ -780,6 +831,7 @@ pub fn run_supervised(
         run_mode,
         stream,
         mode,
+        replace_requested,
     )?;
     // A model fan-out multiplies the run into several (harness, model) units, so —
     // like a batch — it refuses every single-unit shape up front (loud usage
@@ -878,7 +930,7 @@ pub fn run_supervised(
         load_mcp: args.load_mcp.or(cfg.load_mcp),
     };
     let images = lean_io::read_images(&args.images)?;
-    validate_images(&images, &specs, explicit_format, schema.is_some())?;
+    validate_images(&images, &specs, explicit_format)?;
     if !args.permit_prompts {
         for id in hang_prone_ids {
             let protection = if requested_timeout == Some(0) {
@@ -950,6 +1002,10 @@ pub fn run_supervised(
     // argv-limit escape hatch, mirroring `--prompt-file`), then config `system`.
     let system_text: Option<String> = resolve_system(args)?.or_else(|| cfg.system.clone());
     let system = system_text.as_deref();
+    // Only the run's own system text replaces anything: a grant's statement
+    // alone (added per unit below) never stands in for a harness's prompt.
+    let replace_system =
+        system.is_some() && args.replace_system.or(cfg.replace_system).unwrap_or(false);
     let require_available =
         args.require_available || cfg.require_available.unwrap_or(false) || undriven_chain_of_one;
 
@@ -1127,19 +1183,25 @@ pub fn run_supervised(
                     }
                 })
             });
-        // A native-schema harness must receive its schema as JSON; force the
-        // format so the conforming value lands where we read it (Claude Code's
-        // `structured_output`, which needs `--output-format json`).
-        let native = schema.is_some() && spec.native_schema.is_some();
+        // A schema rides the harness's native knob when it has one that takes
+        // this schema (codex's only a strict-mode one); otherwise the prompt.
+        let native_schema = spec
+            .native_schema
+            .filter(|n| schema.as_ref().is_some_and(|sch| n.accepts(sch)));
         let image_frame = !images.is_empty() && lean::images_ride_stdin_frame(spec.id);
-        let output_format = if native {
-            OutputFormat::Json
-        } else if image_frame {
-            // A stream-json input frame is read only beside stream-json output.
+        let output_format = if image_frame {
+            // A stream-json input frame is read only beside stream-json output,
+            // where Claude Code's `structured_output` rides the `result` event.
             OutputFormat::StreamJson
+        } else if native_schema == Some(NativeSchema::ClaudeJsonSchema) {
+            // Without images Claude Code's `structured_output` is read from the
+            // single result document, so the format is forced to `json`.
+            OutputFormat::Json
         } else {
             chosen_format
         };
+        let unit_replace_system =
+            replace_system && lean::supports(spec.id, lean::Setting::ReplaceSystem);
         if let Some(telemetry) = telemetry_spec {
             if output_format != telemetry.format {
                 return Err(OneharnessError::HistoryTelemetryFormat {
@@ -1249,7 +1311,8 @@ pub fn run_supervised(
             fork,
             mode,
             output_format,
-            native,
+            // Both routes are set by `plan_input`, with the payload each reads.
+            schema_route: SchemaRoute::Prompt,
             base_prompt: unit_prompt.to_string(),
             extra,
             system_file: None,
@@ -1314,10 +1377,16 @@ pub fn run_supervised(
         // The unit's own system text: the run's, plus the grant's statement
         // where a rule is applied, so a materialized system file carries both.
         let unit_system = harness_plan.system.clone();
+        let unit_input = UnitInput {
+            system: unit_system.as_deref(),
+            replace_system: unit_replace_system,
+            schema: schema.as_ref(),
+            native_schema,
+        };
         plan_input(
             &mut harness_plan,
             spec,
-            unit_system.as_deref(),
+            &unit_input,
             jobs.len(),
             &mut temp_files,
             true,
@@ -1361,9 +1430,10 @@ pub fn run_supervised(
                 result_prompt,
                 unit_model.clone(),
             ))));
-        } else if !images.is_empty() && !lean::supports(spec.id, lean::Setting::Images) {
+        } else if let Some(setting) = unsupported_input(&images, replace_system, spec.id) {
             plan.push(Plan::Ready(Box::new(unsupported_input_result(
                 spec,
+                setting,
                 &resolved.bin,
                 harness_plan.build(schema.as_ref(), None).argv,
                 output_format,
@@ -1393,7 +1463,7 @@ pub fn run_supervised(
             plan_input(
                 &mut harness_plan,
                 spec,
-                unit_system.as_deref(),
+                &unit_input,
                 job_index,
                 &mut temp_files,
                 false,
@@ -1412,6 +1482,9 @@ pub fn run_supervised(
                 job_env.extend(ms.env.iter().map(|(k, v)| (k.to_string(), v.to_string())));
             }
             job_env.extend(lean_delivery.env.iter().cloned());
+            if let Some(PlannedSystemFile::Replace(path)) = &harness_plan.system_file {
+                job_env.extend(lean::replace_system_env(spec.id, path));
+            }
             job_env.extend(variant_environment(cfg, selected_id, &project_start)?);
             job_env.extend(cli_env.iter().cloned());
             let env_remove = cfg
@@ -1487,6 +1560,7 @@ pub fn run_supervised(
             diagnostics,
             codex_home: None,
             codex_resumed_from: None,
+            earlier_attempts: Vec::new(),
         };
         if spec.id == "codex" && jobs.len() > jobs_before {
             // An overlaid run's rollout is in the real home its `sessions/`
@@ -1586,6 +1660,10 @@ pub fn run_supervised(
     // spawns so the pointer file (if any) names the run as it begins: the
     // sequential driver mints per candidate as the chain reaches it, and each
     // buffered branch mints per plan entry before its first spawn.
+    // The stdout of every attempt a schema re-ask replaced, per result in
+    // result order: their model calls are part of the result's `calls`.
+    // Empty on the branches that never re-ask (streamed, controlled).
+    let mut earlier_attempts: Vec<Vec<String>> = Vec::new();
     let (mut results, mut fallback_report, begun_history): (
         Vec<RunResult>,
         Option<FallbackReport>,
@@ -1752,7 +1830,7 @@ pub fn run_supervised(
         // Sequential fallback: run the priority chain until one harness runs.
         // The workspace-restoring mock finish happens below, after every spawn
         // this branch does is complete.
-        let (results, fb, begun) = run_fallback(
+        let (results, fb, begun, earlier) = run_fallback(
             plan,
             &jobs,
             &job_plans,
@@ -1768,6 +1846,7 @@ pub fn run_supervised(
             &mut event_sink,
             spawn,
         );
+        earlier_attempts = earlier;
         (results, Some(fb), begun)
     } else {
         let max_parallel = args
@@ -1853,6 +1932,13 @@ pub fn run_supervised(
             )
         };
 
+        earlier_attempts = plan
+            .iter()
+            .map(|entry| match entry {
+                Plan::Ready(_) => Vec::new(),
+                Plan::Pending { job_index, .. } => earlier_stdouts(&outcomes[*job_index]),
+            })
+            .collect();
         let results: Vec<RunResult> = plan
             .into_iter()
             .map(|entry| match entry {
@@ -1885,10 +1971,14 @@ pub fn run_supervised(
             .collect();
         (results, None, begun)
     };
-    for ((result, (_, selected_id, _, _)), calls_plan) in
-        results.iter_mut().zip(&units).zip(&unit_calls)
+    for (index, ((result, (_, selected_id, _, _)), calls_plan)) in results
+        .iter_mut()
+        .zip(&units)
+        .zip(unit_calls.iter_mut())
+        .enumerate()
     {
         apply_result_identity(result, selected_id);
+        calls_plan.earlier_attempts = earlier_attempts.get(index).cloned().unwrap_or_default();
         lean_io::attach(result, calls_plan);
     }
     // Every granted turn has ended (and a controlled one's own app-server has
@@ -3558,6 +3648,7 @@ fn validate_control(
     run_mode: RunMode,
     stream: bool,
     mode: PermissionMode,
+    replace_system: bool,
 ) -> Result<Option<ControlShape>, OneharnessError> {
     if !args.control {
         return Ok(None);
@@ -3681,6 +3772,10 @@ fn validate_control(
             }
         }
     }
+    // A launch-time replacing knob on a controlled turn is a request fact too,
+    // so it is refused after each candidate's control surface (qwen has none,
+    // and says so first) and ahead of the platform check below.
+    validate_replace_system(replace_system, specs)?;
     let shape = specs
         .first()
         .and_then(|spec| spec.control)
@@ -4511,9 +4606,15 @@ fn run_fallback(
     default_prompt: &str,
     sink: &mut Option<&mut dyn EventSink>,
     spawn: SpawnControls<'_>,
-) -> (Vec<RunResult>, FallbackReport, Vec<BegunHistory>) {
+) -> (
+    Vec<RunResult>,
+    FallbackReport,
+    Vec<BegunHistory>,
+    Vec<Vec<String>>,
+) {
     let mut results: Vec<RunResult> = Vec::new();
     let mut history: Vec<BegunHistory> = Vec::new();
+    let mut earlier: Vec<Vec<String>> = Vec::new();
     let mut fallback_report = FallbackReport {
         ran: None,
         fell_through: Vec::new(),
@@ -4531,8 +4632,8 @@ fn run_fallback(
                 spawn.cancel,
             )
         });
-        let result = match entry {
-            Plan::Ready(result) => *result,
+        let (result, replaced) = match entry {
+            Plan::Ready(result) => (*result, Vec::new()),
             Plan::Pending {
                 spec,
                 bin,
@@ -4549,7 +4650,8 @@ fn run_fallback(
                     spawn,
                 );
                 let command = jobs[job_index].argv.clone();
-                executed_result(
+                let replaced = earlier_stdouts(&outcome);
+                let result = executed_result(
                     spec,
                     bin,
                     command,
@@ -4559,11 +4661,13 @@ fn run_fallback(
                     outcome.attempts,
                     prompt,
                     model,
-                )
+                );
+                (result, replaced)
             }
         };
         let keep_going = fallback_step(&result, multi_model, &mut fallback_report);
         results.push(result);
+        earlier.push(replaced);
         history.push(BegunHistory {
             run_id,
             persisted_event_indexes: BTreeSet::new(),
@@ -4572,7 +4676,16 @@ fn run_fallback(
             break;
         }
     }
-    (results, fallback_report, history)
+    (results, fallback_report, history, earlier)
+}
+
+/// The stdout of each attempt `outcome`'s re-asks replaced, oldest first.
+fn earlier_stdouts(outcome: &Outcome) -> Vec<String> {
+    outcome
+        .earlier
+        .iter()
+        .map(|capture| capture.stdout.clone())
+        .collect()
 }
 
 /// Apply the fallback verdict to one finished candidate: record why it fell
@@ -4818,40 +4931,99 @@ fn unprovisioned_result(
     .with_work_evidence()
 }
 
-/// A candidate refused because the run attaches images and it has no image
-/// input: classified `unsupported_input` and not run, so a fallback chain
-/// moves on rather than answering without the picture.
+/// The request input harness `id` cannot take, when there is one: images on a
+/// harness with no image input, or a `replace_system` run on one with no
+/// replacing knob (`replace` is already false without system text).
+fn unsupported_input(
+    images: &[lean::ImageInput],
+    replace: bool,
+    id: &str,
+) -> Option<lean::Setting> {
+    [
+        (!images.is_empty(), lean::Setting::Images),
+        (replace, lean::Setting::ReplaceSystem),
+    ]
+    .into_iter()
+    .find(|(asked, setting)| *asked && !lean::supports(id, *setting))
+    .map(|(_, setting)| setting)
+}
+
+/// A candidate refused because the run asks for an input it cannot take —
+/// images it has no image input for, or a system prompt it cannot replace:
+/// classified `unsupported_input` and not run, so a fallback chain moves on
+/// rather than answering without the picture, or with the text appended.
 fn unsupported_input_result(
     spec: &HarnessSpec,
+    setting: lean::Setting,
     bin: &str,
     command: Vec<String>,
     output_format: OutputFormat,
     prompt: Option<String>,
     model: Option<String>,
 ) -> RunResult {
-    let t = lean::translation(spec.id, lean::Setting::Images);
+    let t = lean::translation(spec.id, setting);
+    let error = match setting {
+        lean::Setting::ReplaceSystem => format!(
+            "`{}` {} has no knob that replaces its own system prompt, so a run with \
+             `replace_system` was not sent to it ({}); harness not run.",
+            spec.id, t.version, t.source
+        ),
+        _ => format!(
+            "`{}` {} has no image input, so a run with `images` was not sent to it ({}); \
+             harness not run.",
+            spec.id, t.version, t.source
+        ),
+    };
     RunResult {
         available: true,
         status: Status::Skipped,
         failure_kind: Some(signals::FailureKind::UnsupportedInput),
-        // llmlint: ignore[invalid_states_unrepresentable] `failure_kind_source` is an open serialized string by contract (see its field doc); this is the images refusal's one producer, pinned by the e2e journey that reads it.
-        failure_kind_source: Some("request:images".to_string()),
-        error: Some(format!(
-            "`{}` {} has no image input, so a run with `images` was not sent to it ({}); \
-             harness not run.",
-            spec.id, t.version, t.source
-        )),
+        // llmlint: ignore[invalid_states_unrepresentable] `failure_kind_source` is an open serialized string by contract (see its field doc); this is the unsupported-input refusal's one producer (`request:images` or `request:replace_system`), pinned by the e2e journeys that read it.
+        failure_kind_source: Some(format!("request:{}", setting.as_str())),
+        error: Some(error),
         ..skipped_result(spec, bin, command, output_format, prompt, model)
     }
     .with_work_evidence()
 }
 
+/// Refuse a `replace_system` run on `--control` for a harness whose replacing
+/// knob is set at launch (codex's `-c`): a controlled turn runs on a server
+/// started without the run's text. Claude Code's controlled turn is an
+/// ordinary `-p` launch, so its flag applies. Qwen, which also replaces at
+/// launch, has no turn control at all and is refused before this check.
+///
+/// Called from `validate_control`, so only for a controlled run, and ahead of
+/// its platform check: the conflict reads the same on every machine.
+fn validate_replace_system(
+    replace: bool,
+    specs: &[&'static HarnessSpec],
+) -> Result<(), OneharnessError> {
+    if !replace {
+        return Ok(());
+    }
+    match specs
+        .iter()
+        .find(|s| s.id != "claude-code" && lean::supports(s.id, lean::Setting::ReplaceSystem))
+    {
+        Some(spec) => Err(OneharnessError::ReplaceSystemConflict {
+            conflict: "--control",
+            reason: format!(
+                "`{}` replaces its system prompt only at launch, and a controlled turn runs on a \
+                 server started without this run's text",
+                spec.id
+            ),
+        }),
+        None => Ok(()),
+    }
+}
+
 /// Refuse the request shapes an image cannot ride, before anything spawns.
+/// A schema rides beside images on every harness: Claude Code reads its
+/// `structured_output` from the stream-json `result` event.
 fn validate_images(
     images: &[lean::ImageInput],
     specs: &[&'static HarnessSpec],
     explicit_format: Option<OutputFormat>,
-    schema: bool,
 ) -> Result<(), OneharnessError> {
     if images.is_empty() {
         return Ok(());
@@ -4865,16 +5037,6 @@ fn validate_images(
                      beside `--output-format stream-json`, not `{}`",
                     spec.id,
                     format.as_str()
-                ),
-            });
-        }
-        if schema && spec.native_schema.is_some() {
-            return Err(OneharnessError::ImagesConflict {
-                conflict: "--schema",
-                reason: format!(
-                    "`{}` takes a schema natively under `--output-format json`, and images \
-                     only under stream-json",
-                    spec.id
                 ),
             });
         }
@@ -5179,15 +5341,18 @@ struct HarnessPlan {
     fork: bool,
     mode: PermissionMode,
     output_format: OutputFormat,
-    /// The harness takes the schema through a native flag (so the prompt is left
-    /// alone); otherwise the schema instruction is appended to the prompt.
-    native: bool,
+    /// How a schema run's schema reaches the harness: its native flag, inline
+    /// or from the file it reads (so the prompt is left alone), or else the
+    /// schema instruction appended to the prompt.
+    schema_route: SchemaRoute,
     base_prompt: String,
     /// Config `args` + CLI passthrough, appended verbatim after the built argv.
     extra: Vec<String>,
-    /// Native system-file path (Claude Code), materialized before spawning or
-    /// symbolic for a dry run. Absent for folded systems or no supplied system.
-    system_file: Option<String>,
+    /// Native system file (Claude Code's appended one, or any harness's
+    /// replacing knob under `replace_system`), materialized before spawning or
+    /// symbolic for a dry run. Absent for folded systems or no supplied system;
+    /// a [`PlannedSystemFile::Replace`] is never also folded into the prompt.
+    system_file: Option<PlannedSystemFile>,
     /// How the user prompt reaches the harness. [`PromptDelivery::Stdin`] (a
     /// prompt on a stdin-capable harness) makes `build` omit the
     /// positional and return the assembled prompt as [`BuiltCommand::stdin`];
@@ -5221,6 +5386,37 @@ struct HarnessPlan {
     images: Vec<lean::ImageInput>,
 }
 
+/// The planned file a unit's system text rides ([`HarnessPlan::system_file`]),
+/// the owned twin of [`SystemFile`]: one value, so a replace run always names
+/// the file its replacing knob reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PlannedSystemFile {
+    /// Appended to the harness's own system prompt.
+    Append(String),
+    /// Replaces the harness's own system prompt, on its replacing knob.
+    Replace(String),
+}
+
+impl PlannedSystemFile {
+    fn as_ctx(&self) -> SystemFile<'_> {
+        match self {
+            PlannedSystemFile::Append(path) => SystemFile::Append(path),
+            PlannedSystemFile::Replace(path) => SystemFile::Replace(path),
+        }
+    }
+}
+
+/// How a schema run's schema reaches the harness ([`HarnessPlan::schema_route`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SchemaRoute {
+    /// The schema instruction appended to the prompt (no native path).
+    Prompt,
+    /// Inline on the harness's native flag (Claude Code's `--json-schema`).
+    Inline,
+    /// The file the harness's native flag reads (codex's `--output-schema`).
+    File(String),
+}
+
 /// The result of building one attempt: the argv to spawn and, when the prompt is
 /// delivered off the argv, the bytes to pipe to stdin.
 struct BuiltCommand {
@@ -5233,6 +5429,13 @@ struct BuiltCommand {
 }
 
 impl HarnessPlan {
+    /// Whether the system text is folded into the user prompt: for a harness
+    /// whose system rides the prompt, unless it rides a replacing knob.
+    fn folds_system(&self) -> bool {
+        self.spec.large_input.system_rides_prompt
+            && !matches!(self.system_file, Some(PlannedSystemFile::Replace(_)))
+    }
+
     /// Build the argv (and any stdin payload) for one attempt. `schema` drives
     /// structured output: non-native harnesses get the schema instruction appended
     /// to the prompt, native ones get it on the flag. `feedback` (the prior answer
@@ -5260,7 +5463,7 @@ impl HarnessPlan {
             // must keep the prompt argument newline-free so it can still be passed
             // to a `.bat`/`.cmd` harness shim on Windows (Rust's std rejects an
             // argument with `\n`/`\r` there — see `structured::prompt_instruction`).
-            if !self.native {
+            if self.schema_route == SchemaRoute::Prompt {
                 prompt.push(' ');
                 prompt.push_str(&structured::prompt_instruction(sch.as_text()));
             }
@@ -5279,7 +5482,7 @@ impl HarnessPlan {
         let stdin = if self.delivery.is_message_frame() {
             Some(lean::claude_image_frame(&prompt, &self.images))
         } else if self.delivery.is_stdin_blob() {
-            Some(if self.spec.large_input.system_rides_prompt {
+            Some(if self.folds_system() {
                 harness::prompt_with_system_text(self.system.as_deref(), &prompt)
             } else {
                 prompt.clone()
@@ -5296,12 +5499,12 @@ impl HarnessPlan {
             fork: self.fork,
             mode: self.mode,
             output_format: self.output_format,
-            schema: if self.native {
-                schema.map(Schema::as_text)
-            } else {
-                None
+            schema: match (&self.schema_route, schema) {
+                (SchemaRoute::Inline, Some(sch)) => Some(NativeSchemaArg::Inline(sch.as_text())),
+                (SchemaRoute::File(path), Some(_)) => Some(NativeSchemaArg::File(path)),
+                _ => None,
             },
-            system_file: self.system_file.as_deref(),
+            system_file: self.system_file.as_ref().map(PlannedSystemFile::as_ctx),
             delivery: self.delivery,
             plugins: self.plugins,
             apps: self.apps,
@@ -5312,12 +5515,11 @@ impl HarnessPlan {
             allowed_tools: self.allowed_tools.as_ref(),
         };
         let argv = harness::argv_with_caller_args(self.spec, &ctx, &self.extra);
-        let prompt =
-            if self.delivery.is_control_stream() && self.spec.large_input.system_rides_prompt {
-                harness::prompt_with_system_text(self.system.as_deref(), &prompt)
-            } else {
-                prompt
-            };
+        let prompt = if self.delivery.is_control_stream() && self.folds_system() {
+            harness::prompt_with_system_text(self.system.as_deref(), &prompt)
+        } else {
+            prompt
+        };
         BuiltCommand {
             argv,
             stdin,
@@ -6393,7 +6595,7 @@ mod tests {
             fork: false,
             mode: PermissionMode::Bypass,
             output_format: OutputFormat::Text,
-            native: false,
+            schema_route: SchemaRoute::Prompt,
             base_prompt: "p".into(),
             extra: Vec::new(),
             system_file: None,
@@ -6437,7 +6639,13 @@ mod tests {
                 plan.spec = spec;
                 plan.base_prompt = prompt;
                 let mut temps = TempPromptFiles::default();
-                plan_input(&mut plan, spec, Some("system"), 0, &mut temps, true).unwrap();
+                let input = UnitInput {
+                    system: Some("system"),
+                    replace_system: false,
+                    schema: None,
+                    native_schema: None,
+                };
+                plan_input(&mut plan, spec, &input, 0, &mut temps, true).unwrap();
                 assert!(plan.delivery.is_stdin_blob());
                 assert_eq!(
                     plan.system_file.is_some(),
@@ -6476,7 +6684,7 @@ mod tests {
         // Native (claude) retry: schema rides the flag, feedback rides the prompt.
         let mut native = crush_plan();
         native.spec = harness::by_id("claude-code").unwrap();
-        native.native = true;
+        native.schema_route = SchemaRoute::Inline;
         native.output_format = OutputFormat::Json;
         let argv = native
             .build(Some(&schema), Some(("multi\nline", &["e".to_string()])))
@@ -7015,11 +7223,46 @@ mod tests {
             RunMode::Parallel,
             false,
             PermissionMode::Default,
+            false,
         );
         assert!(
             matches!(
                 refused,
                 Err(OneharnessError::ImagesConflict {
+                    conflict: "--control",
+                    ..
+                })
+            ),
+            "{refused:?}"
+        );
+    }
+
+    #[test]
+    fn a_controlled_codex_replace_system_run_is_refused_as_a_request_fact_on_every_platform() {
+        // Like the image refusal above: decided ahead of the platform check, so
+        // a platform without unix sockets names `replace_system`, not the socket.
+        let args = RunRequest {
+            control: true,
+            session: Some("s".to_string()),
+            ..run_args()
+        };
+        let specs = [harness::by_id("codex").unwrap()];
+        let refused = validate_control(
+            &args,
+            &specs,
+            None,
+            false,
+            false,
+            false,
+            RunMode::Parallel,
+            false,
+            PermissionMode::Default,
+            true,
+        );
+        assert!(
+            matches!(
+                refused,
+                Err(OneharnessError::ReplaceSystemConflict {
                     conflict: "--control",
                     ..
                 })

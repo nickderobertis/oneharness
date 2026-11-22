@@ -42,6 +42,7 @@ class _RunOptionsOptional(TypedDict, total=False):
     print_command: bool
     prompt_files: Sequence[str]
     reasoning: str
+    replace_system: bool
     require_available: bool
     resume: str
     run_mode: str

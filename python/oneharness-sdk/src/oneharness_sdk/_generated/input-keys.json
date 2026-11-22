@@ -147,6 +147,7 @@
     "prompt": "prompt",
     "prompt_files": "promptFiles",
     "reasoning": "reasoning",
+    "replace_system": "replaceSystem",
     "require_available": "requireAvailable",
     "resume": "resume",
     "run_mode": "runMode",

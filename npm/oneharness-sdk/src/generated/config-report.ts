@@ -81,6 +81,7 @@ export interface ConfigReport {
   models: Field21;
   output_format: Field7;
   reasoning: Field31;
+  replace_system: Field;
   require_available: Field;
   run_mode: Field10;
   schema_file: Field3;

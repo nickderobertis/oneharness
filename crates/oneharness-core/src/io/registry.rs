@@ -90,9 +90,11 @@ pub struct HarnessInfo {
     /// headless behavior. Modes not listed are unsupported for the harness.
     pub modes: Vec<ModeInfo>,
     /// Whether `run --schema` is delivered through a native structured-output
-    /// flag for this harness (Claude Code's `--json-schema`). `false` means the
+    /// flag for this harness (Claude Code's `--json-schema`, codex's
+    /// `--output-schema` for a schema strict mode accepts). `false` means the
     /// portable prompt-based path is used — structured output works either way;
-    /// oneharness always validates and retries.
+    /// oneharness always validates and retries. Read from the lean table's
+    /// `schema` entry.
     pub supports_native_schema: bool,
     /// Whether `run --reasoning <effort>` can be delivered on the argv for this
     /// harness (Claude Code's `--effort`, Codex's `model_reasoning_effort`).
@@ -147,6 +149,11 @@ pub struct HarnessInfo {
     /// runs as it would with none, and the run's `diagnostics` say why.
     /// Added in report schema `0.15`.
     pub supports_run_allowed_tools: bool,
+    /// Whether `replace_system` replaces this harness's own system prompt
+    /// with the run's system text. `false`: a run asking for it is refused for
+    /// this harness (`unsupported_input`), never handed the text to append.
+    /// Added in report schema `0.16`.
+    pub supports_replace_system: bool,
     /// The argv oneharness would build, with placeholders, so the adapter's
     /// shape is visible without running anything.
     pub example_command: Vec<String>,
@@ -251,7 +258,7 @@ fn describe(spec: &'static harness::HarnessSpec, cfg: &FileConfig) -> HarnessInf
                 headless: m.headless,
             })
             .collect(),
-        supports_native_schema: spec.native_schema.is_some(),
+        supports_native_schema: lean::supports(spec.id, Setting::Schema),
         supports_reasoning: spec.reasoning.is_some(),
         sync_file: sync.map(|s| s.file),
         supports_allowed_tools: sync.is_some_and(SyncSpec::carries_allowed_tools),
@@ -271,6 +278,7 @@ fn describe(spec: &'static harness::HarnessSpec, cfg: &FileConfig) -> HarnessInf
         // Withheld by every harness where the grant is unproven (all but Linux).
         supports_run_allowed_tools: lean::supports(spec.id, Setting::AllowedTools)
             && crate::domain::grant::platform_withheld_reason().is_none(),
+        supports_replace_system: lean::supports(spec.id, Setting::ReplaceSystem),
         example_command: (spec.build_argv)(&ctx),
         variants: cfg
             .harness

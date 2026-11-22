@@ -414,10 +414,7 @@ fn move_into(from: &Path, to: &Path) -> io::Result<()> {
     }
     let to_dir = to_meta.as_ref().is_some_and(fs::Metadata::is_dir);
     if from_dir && to_dir {
-        for entry in fs::read_dir(from)? {
-            let entry = entry?;
-            move_into(&entry.path(), &to.join(entry.file_name()))?;
-        }
+        move_entries(from, to)?;
         return fs::remove_dir_all(from);
     }
     if to_dir {
@@ -428,10 +425,7 @@ fn move_into(from: &Path, to: &Path) -> io::Result<()> {
     }
     if from_dir {
         fs::create_dir(to)?;
-        for entry in fs::read_dir(from)? {
-            let entry = entry?;
-            move_into(&entry.path(), &to.join(entry.file_name()))?;
-        }
+        move_entries(from, to)?;
         return fs::remove_dir_all(from);
     }
     if to_meta.is_some() {
@@ -443,6 +437,25 @@ fn move_into(from: &Path, to: &Path) -> io::Result<()> {
         fs::copy(from, to)?;
     }
     fs::remove_file(from)
+}
+
+/// [`move_into`] each entry of the directory `from` into `to`, in name order
+/// so the outcome does not depend on how a filesystem lists a directory. An
+/// entry that cannot be returned (a link where the real home keeps a
+/// directory) does not stop its siblings: every other entry is still moved,
+/// and the first error is reported once they are.
+fn move_entries(from: &Path, to: &Path) -> io::Result<()> {
+    let mut names: Vec<_> = fs::read_dir(from)?
+        .map(|entry| entry.map(|e| e.file_name()))
+        .collect::<io::Result<_>>()?;
+    names.sort();
+    let mut first_error = None;
+    for name in names {
+        if let Err(error) = move_into(&from.join(&name), &to.join(&name)) {
+            first_error.get_or_insert(error);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
 }
 
 /// Whether `name` is part of Codex's thread index (`state_<n>.sqlite` and its
@@ -1031,6 +1044,34 @@ mod tests {
             assert_eq!(fs::read_link(&returned).unwrap(), outside.join("file"));
             assert_eq!(fs::read_to_string(outside.join("file")).unwrap(), "f");
         }
+    }
+
+    /// An entry that cannot be returned — a link where the real home keeps a
+    /// directory — sorts first here, so a merge that stopped at it would leave
+    /// every later sibling in the overlay; each one still reaches the real
+    /// home, and the blocked one is reported.
+    #[test]
+    fn an_entry_that_cannot_be_returned_does_not_strand_its_siblings() {
+        let root = ScratchDir::new("run-overlay-test-blocked").unwrap();
+        let (from, to) = (root.join("from"), root.join("to"));
+        fs::create_dir_all(to.join("a-dir")).unwrap();
+        fs::write(to.join("a-dir").join("own"), "o").unwrap();
+        fs::create_dir_all(&from).unwrap();
+        symlink(&root.join("elsewhere"), &from.join("a-dir")).unwrap();
+        fs::write(from.join("b-file"), "b").unwrap();
+        symlink(&root.join("target"), &from.join("c-link")).unwrap();
+
+        let error = move_into(&from, &to).expect_err("the blocked entry is reported");
+        assert!(error.to_string().contains("in the way"), "{error}");
+        assert_eq!(fs::read_to_string(to.join("b-file")).unwrap(), "b");
+        assert_eq!(
+            fs::read_link(to.join("c-link")).unwrap(),
+            root.join("target")
+        );
+        assert_eq!(
+            fs::read_to_string(to.join("a-dir").join("own")).unwrap(),
+            "o"
+        );
     }
 
     #[test]

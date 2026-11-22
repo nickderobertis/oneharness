@@ -138,6 +138,7 @@ POPULATED: dict[str, Any] = {
     "noHistory": False,
     "noMcp": True,
     "noSkills": True,
+    "replaceSystem": True,
     "outputDir": "/nowhere/out",
     "outputFormat": "json",
     "passthrough": ["--verbose"],
@@ -1153,6 +1154,8 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
                 "tool_set": ["shell", "read"],
                 "no_skills": True,
                 "no_mcp": True,
+                "system": "You are the print supervisor.",
+                "replace_system": True,
                 "env": {"MOCK_ARGV_FILE": str(argv_file)},
                 "bins": {"claude-code": str(MOCK)},
             }
@@ -1162,6 +1165,8 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(argv[at : at + 3], ["--tools", "Bash", "Read"])
         self.assertIn("--disable-slash-commands", argv)
         self.assertIn("--strict-mcp-config", argv)
+        self.assertIn("--system-prompt-file", argv)
+        self.assertNotIn("--append-system-prompt-file", argv)
 
         store, home = str(root / "store"), str(root / "home")
         env = {"CLAUDE_CONFIG_DIR": home, "MOCK_CLAUDE_SESSIONS": "1"}

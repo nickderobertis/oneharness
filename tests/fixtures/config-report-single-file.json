@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.15",
+  "schema_version": "0.16",
   "config_files": [
     "<dir>/base.toml",
     "<dir>/single.toml",
@@ -60,6 +60,10 @@
     "source": null
   },
   "load_mcp": {
+    "value": null,
+    "source": null
+  },
+  "replace_system": {
     "value": null,
     "source": null
   },

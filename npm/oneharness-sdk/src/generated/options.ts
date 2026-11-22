@@ -157,6 +157,13 @@ export interface RunOptions {
   promptFiles?: readonly string[] | undefined;
   reasoning?: string | undefined;
   /**
+   * Make the system text replace each harness's own system prompt instead
+   * of being appended to it (Claude Code `--system-prompt-file`, Codex
+   * `model_instructions_file`, Qwen `QWEN_SYSTEM_MD`). A harness with no
+   * replacing knob is refused for the run (`unsupported_input`).
+   */
+  replaceSystem?: boolean | undefined;
+  /**
    * Treat a not-installed harness as a failure.
    */
   requireAvailable?: boolean | undefined;

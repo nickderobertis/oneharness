@@ -32,6 +32,15 @@
 //!                   harness runs, replacing a top-level link in the way
 //!   MOCK_HOME_SNAPSHOT  if set, what `$CODEX_HOME` holds while the harness
 //!                   runs is appended here as one JSON line per invocation
+//!   MOCK_INVOCATION_LOG  if set, one JSON line per invocation is APPENDED here
+//!                   before answering: `argv`, all of `stdin`, `env` (each
+//!                   variable MOCK_RECORD_ENV names, comma-separated), and
+//!                   `files`, the contents of every file an argument (or the
+//!                   value after an argument's `=`, TOML-decoded) or a recorded
+//!                   variable names while the harness runs — so a journey sees
+//!                   every attempt of a re-asked run, and a private temp file
+//!                   the run removes afterwards. Composes with
+//!                   MOCK_CODEX_SESSIONS, which reads the same stdin.
 //!   MOCK_ENV_FILE   if set, the whole inherited environment is written here
 //!                   as one JSON object before answering
 //!   MOCK_CLAUDE_SESSIONS / MOCK_CODEX_SESSIONS / MOCK_COMPACT_BEGUN  act like
@@ -85,7 +94,9 @@
 //!                     MOCK_OPENCODE_EXPORT=fail makes `export` refuse the session,
 //!                     =malformed print it cut off mid-JSON; MOCK_OPENCODE_SESSION_ID
 //!                     replaces the id a turn's events name (empty: none at all).
-//!   MOCK_SYSTEM_FILE_RECORD records the native system file before control starts.
+//!   MOCK_SYSTEM_FILE_RECORD records the native system file (its flag, appending
+//!                   or replacing, its path and contents) before control starts,
+//!                   without reading stdin a controlled turn holds open.
 //!   MOCK_CRUSH_HTTP_LOG serves the Crush Unix HTTP protocol and logs requests.
 //!   MOCK_DELIVERY_FILE appends delivery JSON before normal scripted output.
 //!   MOCK_CAPTURE_DELIVERY records stdin and the native Claude system file as JSON.
@@ -436,6 +447,59 @@ const EXTRA_REQUEST_GRACE: std::time::Duration = std::time::Duration::from_milli
 /// deadline the delay becomes.
 const MAX_REPLY_DELAY_MS: u64 = 600_000;
 
+/// All of stdin, read once: MOCK_INVOCATION_LOG records it and a session
+/// double answers from it, so whichever asks first reads the pipe.
+pub(crate) fn stdin_once() -> String {
+    static STDIN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    STDIN
+        .get_or_init(|| {
+            let mut text = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)
+                .expect("mock harness: stdin is UTF-8");
+            text
+        })
+        .clone()
+}
+
+fn record_invocation(path: &str, argv: &[String]) {
+    let recorded: Vec<(String, String)> = std::env::var("MOCK_RECORD_ENV")
+        .unwrap_or_default()
+        .split(',')
+        .filter(|name| !name.is_empty())
+        .filter_map(|name| {
+            std::env::var(name)
+                .ok()
+                .map(|value| (name.to_string(), value))
+        })
+        .collect();
+    let named = argv
+        .iter()
+        .flat_map(|arg| {
+            let value = arg.split_once('=').map(|(_, v)| toml_string_or_raw(v));
+            std::iter::once(arg.clone()).chain(value)
+        })
+        .chain(recorded.iter().map(|(_, value)| value.clone()));
+    let files: serde_json::Map<String, serde_json::Value> = named
+        .filter(|candidate| std::path::Path::new(candidate).is_file())
+        .filter_map(|candidate| {
+            let text = std::fs::read_to_string(&candidate).ok()?;
+            Some((candidate, serde_json::Value::String(text)))
+        })
+        .collect();
+    let env: serde_json::Map<String, serde_json::Value> = recorded
+        .into_iter()
+        .map(|(name, value)| (name, serde_json::Value::String(value)))
+        .collect();
+    let line = serde_json::json!({"argv": argv, "stdin": stdin_once(), "env": env, "files": files});
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .expect("open MOCK_INVOCATION_LOG");
+    file.write_all(format!("{line}\n").as_bytes())
+        .expect("write MOCK_INVOCATION_LOG");
+}
+
 /// Per-attempt scripting: with MOCK_ATTEMPT_FILE set, read the prior count,
 /// increment it, write it back, and return this invocation's 1-based attempt
 /// number — so a test can answer the same caller differently on its second
@@ -676,10 +740,7 @@ fn codex_model_catalog_arg(argv: &[String]) -> Option<String> {
         .filter(|pair| pair[0] == "-c")
         .filter_map(|pair| pair[1].strip_prefix("model_catalog_json="))
         .next_back()?;
-    let parsed = toml::from_str::<toml::Table>(&format!("value = {value}"))
-        .ok()
-        .and_then(|table| table.get("value")?.as_str().map(str::to_string));
-    if let Some(path) = parsed {
+    if let Some(path) = toml_string(value) {
         return Some(path);
     }
     if value.starts_with(['"', '\'']) {
@@ -688,6 +749,21 @@ fn codex_model_catalog_arg(argv: &[String]) -> Option<String> {
         ));
     }
     Some(value.to_string())
+}
+
+/// `value` decoded as a TOML string, as Codex reads a `-c key=<value>`: a
+/// literal `'…'` (what oneharness writes for a path with a backslash, so every
+/// Windows path) or a basic `"…"`; `None` when it is no TOML string.
+fn toml_string(value: &str) -> Option<String> {
+    toml::from_str::<toml::Table>(&format!("value = {value}"))
+        .ok()
+        .and_then(|table| table.get("value")?.as_str().map(str::to_string))
+}
+
+/// An argument's `=` value as the path it may name: its TOML string where it
+/// is one, else the raw text (a flag's `--x=<path>`).
+fn toml_string_or_raw(value: &str) -> String {
+    toml_string(value).unwrap_or_else(|| value.to_string())
 }
 
 fn epoch_ms() -> u64 {
@@ -2847,12 +2923,12 @@ pub fn run() -> ! {
     if let Ok(record) = std::env::var("MOCK_SYSTEM_FILE_RECORD") {
         let path = argv
             .windows(2)
-            .find(|w| w[0] == "--append-system-prompt-file")
+            .find(|w| w[0] == "--append-system-prompt-file" || w[0] == "--system-prompt-file")
             .expect("native system file flag");
         let contents = std::fs::read_to_string(&path[1]).expect("native system file contents");
         std::fs::write(
             record,
-            serde_json::json!({"path": path[1], "contents": contents}).to_string(),
+            serde_json::json!({"flag": path[0], "path": path[1], "contents": contents}).to_string(),
         )
         .expect("record native system delivery");
     }
@@ -2914,6 +2990,10 @@ pub fn run() -> ! {
 
     if let Ok(path) = mock_var("MOCK_CODEX_PLUGINS_LOG") {
         record_codex_plugins(&path, &argv);
+    }
+
+    if let Ok(path) = mock_var("MOCK_INVOCATION_LOG") {
+        record_invocation(&path, &argv);
     }
 
     sessions::run_if_requested(&argv);

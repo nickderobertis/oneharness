@@ -928,6 +928,12 @@
         "unless": null
       },
       {
+        "flag": "--replace-system",
+        "kind": "switch",
+        "option": "replaceSystem",
+        "unless": null
+      },
+      {
         "flag": "--image",
         "kind": "repeated",
         "option": "images",
@@ -1256,6 +1262,12 @@
         "flag": "--no-mcp",
         "kind": "switch",
         "option": "noMcp",
+        "unless": null
+      },
+      {
+        "flag": "--replace-system",
+        "kind": "switch",
+        "option": "replaceSystem",
         "unless": null
       },
       {

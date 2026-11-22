@@ -4154,8 +4154,9 @@ fn claude_result_iterations(iterations: &str) -> String {
 /// its stream, one whose `output_tokens` is no number, a `stream_event` with
 /// no event, and `usage.iterations` entries that are no object or carry no
 /// output. And when calls share input and cache figures, the `result`
-/// event's iteration is the latest one's: it settles that call unless the
-/// call streamed its final, and never passes to an earlier call.
+/// event's last iteration is the latest one's (an earlier iteration the
+/// call before): it settles that call unless the call streamed its final,
+/// and never passes to an earlier call.
 #[test]
 fn claude_calls_keep_their_figures_through_a_malformed_or_ambiguous_stream() {
     let b = bin("claude-code");
@@ -4239,6 +4240,23 @@ fn claude_calls_keep_their_figures_through_a_malformed_or_ambiguous_stream() {
         call_figures(&run(lines)),
         vec![(3, 2, 5_000, 70), late.expected()],
         "the latest matching call is settled"
+    );
+
+    // Two iterations, oldest first, both matching both unstreamed twins:
+    // each settles its own call, the later the last, and neither overwrites
+    // a call the other settled.
+    let (early, late) = (twin("msg_early", 60), twin("msg_late", 77));
+    let mut lines = vec![CLAUDE_INIT.to_string()];
+    lines.extend(unstreamed(early.lines()));
+    lines.extend(unstreamed(late.lines()));
+    lines.push(claude_result_iterations(&format!(
+        "{},{iteration}",
+        iteration.replace(r#""output_tokens":77"#, r#""output_tokens":60"#)
+    )));
+    assert_eq!(
+        call_figures(&run(lines)),
+        vec![early.expected(), late.expected()],
+        "each iteration settles a distinct call, in order"
     );
 
     // The later twin streamed its final: the iteration is the later call's,

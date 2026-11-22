@@ -1454,7 +1454,8 @@ pub fn claude_image_frame(prompt: &str, images: &[ImageInput]) -> String {
 /// `message_start` before it on the same `parent_tool_use_id`), else the
 /// `result` event's `usage.iterations` entry whose input and cache figures
 /// are the call's (Claude Code lists only the last call there). An iteration
-/// belongs to the latest call with its figures; if that call streamed its
+/// belongs to the latest call with its figures that no later iteration
+/// claimed; if that call streamed its
 /// final, the iteration is spent without changing any call. Only a call
 /// neither carries keeps the `assistant` event's own figure, which is
 /// `message_start`'s placeholder. `None` when the stream carries no assistant
@@ -1558,12 +1559,13 @@ pub fn claude_stream_calls(stdout: &str) -> Option<Vec<Usage>> {
             call.output_tokens = Some(*output);
         }
     }
-    // An iteration names no message: it is the latest call, not already
-    // claimed by an earlier iteration, whose input and cache figures are its
-    // own. A call with a streamed final keeps it, and the iteration is spent
-    // on it rather than passed to an earlier call with the same figures.
+    // An iteration names no message: walking them newest first, each is the
+    // latest call, not already claimed by a later iteration, whose input and
+    // cache figures are its own. A call with a streamed final keeps it, and
+    // the iteration is spent on it rather than passed to an earlier call with
+    // the same figures.
     let mut claimed: std::collections::HashSet<&str> = std::collections::HashSet::new();
-    for iteration in &iterations {
+    for iteration in iterations.iter().rev() {
         let Some(output) = tokens(iteration, "output_tokens") else {
             continue;
         };

@@ -3941,49 +3941,119 @@ fn replace_system_without_system_text_changes_nothing() {
 }
 // llmlint: ignore-end[e2e_not_mocked]
 
-// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its structured-output loop run; only the harness process (codex) is the mock harness, held to its real CLI by the 0.159.2 refusals the `schema` row cites (module doc).
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its structured-output loop run; only the harness process (codex) is the mock harness, a session double recording the captured rollout token counts (`tests/fixtures/codex-rollout-token-counts.jsonl`), held to its real CLI by the 0.159.2 refusals the `schema` row cites (module doc).
 /// A schema strict mode would refuse keeps codex on the prompt path it took
-/// before: no `--output-schema`, the instruction in the prompt.
+/// before: no `--output-schema`, the instruction in the prompt, an invalid
+/// answer re-asked with every attempt's calls listed, and a still-invalid one
+/// reported as a schema failure. One shape per refusal the probe saw: an
+/// optional property, and `oneOf`.
 #[test]
 fn codex_keeps_a_schema_strict_mode_refuses_on_the_prompt_path() {
     let scratch = ScratchDir::new("lean-codex-loose-schema").unwrap();
-    let schema = scratch.join("loose.json");
-    std::fs::write(
-        &schema,
-        r#"{"type":"object","properties":{"name":{"type":"string"},"age":{"type":"integer"}},"required":["name"]}"#,
-    )
-    .unwrap();
-    let schema = schema.display().to_string();
-    let log = scratch.join("loose.jsonl");
     let b = bin("codex");
-    let answer =
-        r#"{"type":"item.completed","item":{"type":"agent_message","text":"{\"name\":\"Ada\"}"}}"#;
-    let out = oh(
-        &[
-            "run",
-            "--harness",
-            "codex",
-            "--prompt",
-            "who is this?",
-            "--schema",
-            &schema,
-            "--bin",
-            &b,
-        ],
-        &[
-            ("MOCK_INVOCATION_LOG", log.to_str().unwrap()),
-            ("MOCK_STDOUT", answer),
-        ],
-        None,
-    );
-    assert!(out.status.success(), "{out:?}");
-    assert_eq!(json(&out)["results"][0]["schema_valid"], true);
-    let calls = invocations(&log);
-    let argv = strings(&calls[0]["argv"]);
-    assert!(!argv.iter().any(|a| a == "--output-schema"), "{argv:?}");
-    assert!(calls[0]["stdin"]
-        .as_str()
-        .unwrap()
-        .contains(PROMPT_SCHEMA_INSTRUCTION));
+    let loose = [
+        (
+            "optional",
+            r#"{"type":"object","properties":{"name":{"type":"string"},"age":{"type":"integer"}},"required":["name"]}"#,
+        ),
+        (
+            "one-of",
+            r#"{"type":"object","properties":{"name":{"type":"string"},"age":{"oneOf":[{"type":"integer"},{"type":"null"}]}},"required":["name","age"],"additionalProperties":false}"#,
+        ),
+    ];
+    for (tag, text) in loose {
+        let schema = scratch.join(format!("{tag}.json"));
+        std::fs::write(&schema, text).unwrap();
+        let schema = schema.display().to_string();
+        let home_env = format!(
+            "CODEX_HOME={}",
+            scratch.join(format!("{tag}-home")).display()
+        );
+        let run = |answers: &str, attempt: &str, log: Option<&Path>| {
+            let counter = scratch.join(format!("{tag}-{attempt}.count"));
+            let mut env = vec![
+                ("MOCK_ATTEMPT_FILE", counter.to_str().unwrap().to_string()),
+                ("MOCK_CODEX_ANSWERS", answers.to_string()),
+            ];
+            if let Some(log) = log {
+                env.push(("MOCK_INVOCATION_LOG", log.to_str().unwrap().to_string()));
+            }
+            let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            oh(
+                &[
+                    "run",
+                    "--harness",
+                    "codex",
+                    "--prompt",
+                    "who is this?",
+                    "--schema",
+                    &schema,
+                    "--schema-max-retries",
+                    "1",
+                    "--bin",
+                    &b,
+                    "--mode",
+                    "bypass",
+                    "--env",
+                    &home_env,
+                    "--env",
+                    "MOCK_CODEX_SESSIONS=1",
+                ],
+                &env,
+                None,
+            )
+        };
+
+        let log = scratch.join(format!("{tag}.jsonl"));
+        let out = run(
+            r#"["{\"age\":36}","{\"name\":\"Ada\",\"age\":36}"]"#,
+            "reask",
+            Some(&log),
+        );
+        assert!(out.status.success(), "{tag}: {out:?}");
+        let result = json(&out)["results"][0].clone();
+        assert_eq!(result["structured"]["name"], "Ada", "{tag}: {result}");
+        assert_eq!(result["schema_valid"], true, "{tag}");
+        assert!(result["schema_error"].is_null(), "{tag}");
+        assert_eq!(result["schema_attempts"], 2, "{tag}");
+        let inputs: Vec<u64> = input_and_output_tokens(&result)
+            .into_iter()
+            .map(|(input, _)| input)
+            .collect();
+        assert_eq!(
+            inputs,
+            vec![13_006, 13_101, 13_180, 13_006, 13_101, 13_180],
+            "{tag}: each turn's recorded calls, both attempts, in order"
+        );
+        let calls = invocations(&log);
+        assert_eq!(calls.len(), 2, "{tag}");
+        for call in &calls {
+            let argv = strings(&call["argv"]);
+            assert!(
+                !argv.iter().any(|a| a == "--output-schema"),
+                "{tag}: {argv:?}"
+            );
+            assert!(
+                call["stdin"]
+                    .as_str()
+                    .unwrap()
+                    .contains(PROMPT_SCHEMA_INSTRUCTION),
+                "{tag}: {call}"
+            );
+        }
+
+        let out = run(r#"["{\"age\":36}"]"#, "exhausted", None);
+        assert_eq!(out.status.code(), Some(1), "{tag}: {out:?}");
+        let result = json(&out)["results"][0].clone();
+        assert_eq!(result["schema_valid"], false, "{tag}: {result}");
+        assert_eq!(result["schema_attempts"], 2, "{tag}");
+        assert!(
+            result["schema_error"]
+                .as_str()
+                .unwrap()
+                .contains("\"name\""),
+            "{tag}: names the violation: {result}"
+        );
+    }
 }
 // llmlint: ignore-end[e2e_not_mocked]

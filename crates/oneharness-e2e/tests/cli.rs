@@ -15850,8 +15850,10 @@ fn schema_native_claude_reads_structured_output_field() {
         "native schema flag missing: {command:?}"
     );
     assert!(
-        command.windows(2).any(|w| w == ["--output-format", "json"]),
-        "native schema forces json output: {command:?}"
+        command
+            .windows(2)
+            .any(|w| w == ["--output-format", "stream-json"]),
+        "a native schema run stays on stream-json: {command:?}"
     );
     // Native delivery does NOT augment the prompt.
     assert!(

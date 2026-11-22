@@ -1935,8 +1935,8 @@ fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
     }
     // Native structured output: `--json-schema <inline>` makes Claude Code return
     // the conforming value under `structured_output` — the result document's
-    // under `--output-format json`, the `result` event's under stream-json (an
-    // image run). Only set when a schema run selected this adapter.
+    // under `--output-format json` (an explicit non-stream format), else the
+    // `result` event's under stream-json. Only set when a schema run selected this adapter.
     if let Some(NativeSchemaArg::Inline(schema)) = c.schema {
         a.push("--json-schema".into());
         a.push(schema.into());

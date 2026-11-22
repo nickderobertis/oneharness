@@ -1194,9 +1194,16 @@ pub fn run_supervised(
             // where Claude Code's `structured_output` rides the `result` event.
             OutputFormat::StreamJson
         } else if native_schema == Some(NativeSchema::ClaudeJsonSchema) {
-            // Without images Claude Code's `structured_output` is read from the
-            // single result document, so the format is forced to `json`.
-            OutputFormat::Json
+            // Claude Code's `structured_output` rides the stream-json `result`
+            // event, beside the per-call usage only stream-json reports, so a
+            // schema run stays on stream-json unless the caller explicitly
+            // asked for another format; that one reads the single `json`
+            // result document instead, and lists no `calls`.
+            if explicit_format.is_some_and(|f| f != OutputFormat::StreamJson) {
+                OutputFormat::Json
+            } else {
+                OutputFormat::StreamJson
+            }
         } else {
             chosen_format
         };

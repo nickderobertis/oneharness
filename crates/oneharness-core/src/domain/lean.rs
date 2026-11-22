@@ -580,16 +580,21 @@ const CLAUDE_TABLE: [Translation; 10] = [
                 Unit::StructuredValue,
             ),
         ],
-        mapping: "`--json-schema <schema>` for every schema. Without images the run reads \
-                  `--output-format json` and the value is the result document's \
-                  `structured_output`; with images it stays on stream-json in and out (the image \
-                  frame needs it) and the value is the stream's `result` event's \
-                  `structured_output`. A re-ask is a fresh run on the same path",
+        mapping: "`--json-schema <schema>` for every schema. With `--output-format` unset or \
+                  `stream-json` the run is `--output-format stream-json` (with images, \
+                  stream-json in too), the value is the stream's `result` event's \
+                  `structured_output`, and `calls` lists every model call's usage. Only an \
+                  explicit other format runs `--output-format json`: the value is the result \
+                  document's `structured_output` and no `calls` is reported; beside images that \
+                  is refused. A re-ask is a fresh run on the same path",
         residual: None,
         source:
             "`claude --help` (2.1.329) `--json-schema <schema>`; a real 2.1.329 run with a PNG \
                  in its stream-json frame and `--json-schema` answered through its \
-                 `StructuredOutput` tool, its `result` event carrying `structured_output`",
+                 `StructuredOutput` tool, its `result` event carrying `structured_output`; a real \
+                 2.1.330 run with no image under `--output-format stream-json --verbose \
+                 --json-schema`, its `result` event carrying `structured_output` beside one \
+                 `assistant.message.usage` per `message.id`",
     },
 ];
 

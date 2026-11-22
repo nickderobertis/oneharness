@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.32.1](https://github.com/nickderobertis/oneharness/compare/v0.32.0...v0.32.1) - 2026-11-22
+
+### Fixed
+
+- *(run)* report per-call usage on every Claude Code schema run, with or without images ([#1664](https://github.com/nickderobertis/oneharness/pull/1664))
+
 ## [0.32.0](https://github.com/nickderobertis/oneharness/compare/v0.31.0...v0.32.0) - 2026-11-22
 
 ### Added

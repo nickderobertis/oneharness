@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.1](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.35.0...oneharness-core-v0.35.1) - 2026-11-22
+
+### Fixed
+
+- *(run)* report per-call usage on every Claude Code schema run, with or without images ([#1664](https://github.com/nickderobertis/oneharness/pull/1664))
+
 ## [0.35.0](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.34.0...oneharness-core-v0.35.0) - 2026-11-22
 
 ### Added

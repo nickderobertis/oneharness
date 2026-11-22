@@ -4131,6 +4131,131 @@ fn claude_calls_report_each_calls_final_output_tokens() {
 }
 // llmlint: ignore-end[e2e_not_mocked]
 
+/// `lines` without the partial-message stream events, as a run without
+/// `--include-partial-messages` emits them.
+fn unstreamed(lines: Vec<String>) -> Vec<String> {
+    lines
+        .into_iter()
+        .filter(|line| !line.starts_with(r#"{"type":"stream_event""#))
+        .collect()
+}
+
+/// A `result` event totalling nothing whose `usage.iterations` is `iterations`
+/// verbatim.
+fn claude_result_iterations(iterations: &str) -> String {
+    format!(
+        r#"{{"type":"result","subtype":"success","is_error":false,"result":"the answer","session_id":"s-calls","usage":{{"input_tokens":0,"output_tokens":0,"iterations":[{iterations}]}}}}"#
+    )
+}
+
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its translation run; only the harness process (claude-code) is the mock harness, replaying the partial-message stream shape of the captured turn the `calls` row cites (module doc), here corrupted or made ambiguous.
+/// Malformed stream lines never move a call's figures: a `message_delta` on a
+/// non-string `parent_tool_use_id`, one with no `message_start` before it on
+/// its stream, one whose `output_tokens` is no number, a `stream_event` with
+/// no event, and `usage.iterations` entries that are no object or carry no
+/// output. And when calls share input and cache figures, a streamed final
+/// beats the `result` event's iteration, which settles the latest call
+/// without one.
+#[test]
+fn claude_calls_keep_their_figures_through_a_malformed_or_ambiguous_stream() {
+    let b = bin("claude-code");
+    let args = [
+        "run",
+        "--harness",
+        "claude-code",
+        "--prompt",
+        "check the print",
+        "--bin",
+        &b,
+        "--output-format",
+        "stream-json",
+    ];
+    let run = |lines: Vec<String>| {
+        let out = oh(&args, &[("MOCK_STDOUT", &lines.join("\n"))], None);
+        assert!(out.status.success(), "{out:?}");
+        json(&out)["results"][0].clone()
+    };
+    let first = StreamedCall {
+        id: "msg_first",
+        content: r#"{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}"#,
+        input: 2,
+        read: 3_071,
+        write: 8_808,
+        placeholder: 2,
+        output: 300,
+    };
+    let second = StreamedCall {
+        id: "msg_second",
+        content: r#"{"type":"text","text":"the answer"}"#,
+        input: 4,
+        read: 11_879,
+        write: 120,
+        placeholder: 1,
+        output: 40,
+    };
+    let delta = |parent: &str, output: &str| {
+        format!(
+            r#"{{"type":"stream_event","event":{{"type":"message_delta","delta":{{}},"usage":{{"output_tokens":{output}}}}},"session_id":"s-calls","parent_tool_use_id":{parent}}}"#
+        )
+    };
+    let mut lines = vec![CLAUDE_INIT.to_string()];
+    lines.extend(first.lines());
+    lines.push(delta("42", "9999"));
+    lines.push(delta(r#"{"id":"t1"}"#, "9998"));
+    lines.push(delta(r#""toolu_orphan""#, "5555"));
+    lines
+        .push(r#"{"type":"stream_event","session_id":"s-calls","parent_tool_use_id":null}"#.into());
+    let mut second_lines = second.lines();
+    let end = second_lines.pop().expect("a message_delta ends the call");
+    second_lines.push(end.replace(r#""output_tokens":40"#, r#""output_tokens":"many""#));
+    lines.extend(second_lines);
+    lines.push(claude_result_iterations(
+        r#""junk",{"type":"message"},{"input_tokens":4,"cache_read_input_tokens":11879,"cache_creation_input_tokens":120,"output_tokens":40}"#,
+    ));
+    assert_eq!(
+        call_figures(&run(lines)),
+        vec![first.expected(), second.expected()],
+        "the first call keeps its streamed final, the second takes the iteration's"
+    );
+
+    // Two calls with the same input and cache figures, neither streamed: the
+    // iteration settles the later; the earlier keeps its placeholder.
+    let twin = |id: &'static str, output: u64| StreamedCall {
+        id,
+        content: r#"{"type":"text","text":"the answer"}"#,
+        input: 3,
+        read: 5_000,
+        write: 70,
+        placeholder: 2,
+        output,
+    };
+    let iteration = r#"{"input_tokens":3,"cache_read_input_tokens":5000,"cache_creation_input_tokens":70,"output_tokens":77}"#;
+    let (early, late) = (twin("msg_early", 77), twin("msg_late", 77));
+    let mut lines = vec![CLAUDE_INIT.to_string()];
+    lines.extend(unstreamed(early.lines()));
+    lines.extend(unstreamed(late.lines()));
+    lines.push(claude_result_iterations(iteration));
+    assert_eq!(
+        call_figures(&run(lines)),
+        vec![(3, 2, 5_000, 70), late.expected()],
+        "the latest matching call is settled"
+    );
+
+    // The later twin streamed its final: the iteration, though it matches
+    // both and disagrees, does not overwrite it and settles the earlier.
+    let (early, late) = (twin("msg_early", 77), twin("msg_late", 50));
+    let mut lines = vec![CLAUDE_INIT.to_string()];
+    lines.extend(unstreamed(early.lines()));
+    lines.extend(late.lines());
+    lines.push(claude_result_iterations(iteration));
+    assert_eq!(
+        call_figures(&run(lines)),
+        vec![early.expected(), late.expected()],
+        "a streamed final beats the iteration"
+    );
+}
+// llmlint: ignore-end[e2e_not_mocked]
+
 // llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its structured-output loop run; only the harness process (claude-code) is the mock harness, replaying the partial-message stream shape of the captured turn the `calls` row cites (module doc).
 /// A schema run re-asked on Claude Code lists every attempt's calls, each
 /// with its final `output_tokens`: a first attempt of two calls (a tool call,

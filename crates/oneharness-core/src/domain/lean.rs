@@ -1490,10 +1490,14 @@ pub fn claude_stream_calls(stdout: &str) -> Option<Vec<Usage>> {
         };
         match value.get("type").and_then(Value::as_str) {
             Some("stream_event") => {
-                let stream = value
-                    .get("parent_tool_use_id")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
+                // Absent or null is the main thread, a string a subagent's
+                // tool; any other value names no stream, so the event is
+                // ignored rather than taken for the main thread's.
+                let stream = match value.get("parent_tool_use_id") {
+                    None | Some(Value::Null) => None,
+                    Some(Value::String(tool)) => Some(tool.clone()),
+                    Some(_) => continue,
+                };
                 let Some(inner) = value.get("event") else {
                     continue;
                 };

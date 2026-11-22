@@ -470,3 +470,89 @@ fn a_schema_answer_read_back_from_the_store_is_validated_again() {
         .as_str()
         .is_some_and(|e| !e.is_empty()));
 }
+
+#[test]
+fn a_run_given_crushs_cwd_is_read_back_from_that_directorys_store() {
+    let dir = scratch("cwd");
+    let project = dir.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let project_arg = project.display().to_string();
+    let (result, _) = run_crush(
+        &dir,
+        &["--", "--cwd", &project_arg],
+        &[("MOCK_STDOUT", CUT), ("MOCK_CRUSH_REPLY", REPLY)],
+    );
+    // `--cwd` moves crush's default store to `<cwd>/.crush`; the read followed it.
+    assert_eq!(listed_sessions(&project.join(".crush")).len(), 1);
+    assert_eq!(result["text"], REPLY);
+    assert_eq!(result["text_source"], "crush-session");
+}
+
+#[test]
+fn a_listed_session_id_crush_never_mints_is_an_unavailable_store() {
+    let dir = scratch("bad-id");
+    let (result, output) = run_crush(
+        &dir,
+        &[],
+        &[
+            ("MOCK_STDOUT", CUT),
+            ("MOCK_CRUSH_REPLY", REPLY),
+            ("MOCK_CRUSH_STORE_READ", "bad-id"),
+        ],
+    );
+    assert_eq!(result["text"], "ONEHARNESS-LIVE-3");
+    assert_eq!(result["text_source"], "raw:crush-session-unavailable");
+    assert!(
+        stderr(&output).contains("is not a crush session id"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn a_listed_creation_time_that_is_no_instant_is_an_unavailable_store() {
+    let dir = scratch("bad-time");
+    let (result, output) = run_crush(
+        &dir,
+        &[],
+        &[
+            ("MOCK_STDOUT", CUT),
+            ("MOCK_CRUSH_REPLY", REPLY),
+            ("MOCK_CRUSH_STORE_READ", "bad-time"),
+        ],
+    );
+    assert_eq!(result["text"], "ONEHARNESS-LIVE-3");
+    assert_eq!(result["text_source"], "raw:crush-session-unavailable");
+    assert!(
+        stderr(&output).contains("`yesterday` is not an RFC 3339 instant"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn a_re_asked_schema_run_holds_a_session_per_attempt_and_keeps_its_last_stdout() {
+    let dir = scratch("schema-reask");
+    let schema = dir.join("schema.json");
+    std::fs::write(
+        &schema,
+        r#"{"type":"object","required":["ok"],"properties":{"ok":{"type":"boolean"}}}"#,
+    )
+    .unwrap();
+    let schema_arg = schema.display().to_string();
+    // Each re-ask is a fresh `crush run`, so the run's attempts leave one
+    // session each and none of them is the run's alone.
+    let (result, output) = run_crush(
+        &dir,
+        &["--schema", &schema_arg, "--schema-max-retries", "1"],
+        &[
+            ("MOCK_STDOUT", "{\"ok\":\n"),
+            ("MOCK_CRUSH_REPLY", r#"{"ok":true}"#),
+        ],
+    );
+    assert_eq!(listed_sessions(&dir.join("store")).len(), 2);
+    assert_eq!(result["schema_attempts"], 2, "{output:?}");
+    assert_eq!(result["text"], "{\"ok\":");
+    assert_eq!(result["text_source"], "raw:crush-session-unidentified");
+    assert_eq!(result["schema_valid"], false);
+}

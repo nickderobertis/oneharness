@@ -19,20 +19,20 @@ oh_assert_echoed crush "$marker"
 
 # The run's text is read back from crush's own session store when crush exits
 # before printing its last deltas, so the store reader is held to the real CLI
-# here: the marker must be in `.text`, and the store must have been read.
-note "» session store: the run must be readable back from crush's store"
-case "$(oh_field '.results[0].text_source')" in
+# here: the store must have been read, and the marker must be in `.text`.
+source_read="$(oh_field '.results[0].text_source')"
+case "$source_read" in
   raw | crush-session) ;;
   *)
     oh_dump
-    fail "crush: text_source=$(oh_field '.results[0].text_source') — oneharness could not read the run back from crush's session store; compare \`crush session list --json\` / \`crush session show <id> --json\` with domain::crush_store and re-capture tests/fixtures/crush-*-session-*.json"
+    fail "crush: text_source=$source_read — oneharness could not read the run back from crush's session store; compare \`crush session list --json\` / \`crush session show <id> --json\` with domain::crush_store and re-capture tests/fixtures/crush-*-session-*.json"
     ;;
 esac
 if ! printf '%s' "$OH_REPORT" | jq -e --arg m "$marker" '(.results[0].text // "") | contains($m)' >/dev/null; then
   oh_dump
-  fail "crush: the marker is absent from .text (only in stdout) — the reply was cut short and not recovered from the session store"
+  fail "crush: the marker is absent from .text (only in stdout), so the cut reply was not recovered — run \`crush session show <id> --json\` in the run's cwd and check its last assistant message against domain::crush_store::turn_reply"
 fi
-note "PASS: crush session store read back"
+note "PASS: crush session store read back (text_source=$source_read)"
 
 # Large prompt + system (issue #1115): oneharness pipes a >128 KiB prompt to
 # `crush run`'s stdin (positional omitted), with the system prepended — so it

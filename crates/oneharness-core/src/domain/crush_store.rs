@@ -66,7 +66,7 @@ pub enum SessionChoice {
     #[default]
     Created,
     /// The session `--session` named.
-    Named(String),
+    Named(SessionId),
     /// `--continue`: the most recent session, which the run names nowhere.
     Continued,
 }
@@ -80,11 +80,13 @@ pub struct RunStore {
 
 /// Read the store-selecting flags off a `crush run` argv (`argv[0]` is the
 /// binary). An argv that is not a `run` names nothing.
-#[must_use]
-pub fn run_store(argv: &[String]) -> RunStore {
+///
+/// # Errors
+/// [`StoreMiss::Unreadable`] when `--session` names no valid session id.
+pub fn run_store(argv: &[String]) -> Result<RunStore, StoreMiss> {
     let mut store = RunStore::default();
     if argv.get(1).map(String::as_str) != Some("run") {
-        return store;
+        return Ok(store);
     }
     let mut args = argv[2..].iter();
     while let Some(arg) = args.next() {
@@ -106,12 +108,12 @@ pub fn run_store(argv: &[String]) -> RunStore {
             break;
         };
         if matches!(flag, "-s" | "--session") {
-            store.session = SessionChoice::Named(value);
+            store.session = SessionChoice::Named(SessionId::new(&value)?);
         } else if let Some(store_flag) = StoreFlag::of(flag, value) {
             store.flags.push(store_flag);
         }
     }
-    store
+    Ok(store)
 }
 
 fn with_store_flags(mut argv: Vec<String>, store: &RunStore) -> Vec<String> {
@@ -161,13 +163,25 @@ impl SessionId {
     }
 }
 
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] Crush publishes no schema for `session list|show --json` to generate these from. They read the fields of crush v0.87.0's real output, captured byte for byte in tests/fixtures/crush-0.87.0-session-*.json and unit-tested below, and the producer is gated live: ci.yml's `check` job runs `just live-crush` against the real installed crush on every pull request that changes crates/**, and scripts/e2e-crush.sh fails it when the run cannot be read back from the store.
 /// One row of `crush session list --json`.
 #[derive(Debug, Deserialize)]
 struct ListedSession {
-    uuid: String,
+    #[serde(deserialize_with = "session_id")]
+    uuid: SessionId,
     /// Crush stores `created_at` in whole seconds and prints it as RFC 3339.
     #[serde(deserialize_with = "epoch_millis")]
     created: i64,
+}
+
+fn session_id<'de, D: Deserializer<'de>>(deserializer: D) -> Result<SessionId, D::Error> {
+    let text = String::deserialize(deserializer)?;
+    SessionId::new(&text).map_err(|_| {
+        serde::de::Error::custom(format!(
+            "`{}` is not a crush session id",
+            text.escape_debug()
+        ))
+    })
 }
 
 fn epoch_millis<'de, D: Deserializer<'de>>(deserializer: D) -> Result<i64, D::Error> {
@@ -203,7 +217,7 @@ pub fn created_session(list_json: &str, since_ms: i64) -> Result<SessionId, Stor
         .into_iter()
         .filter(|session| session.created >= since_second);
     match (created.next(), created.next()) {
-        (Some(session), None) => SessionId::new(&session.uuid),
+        (Some(session), None) => Ok(session.uuid),
         (None, _) => Err(StoreMiss::Unidentified(
             "the store lists no session created since the run began".to_string(),
         )),
@@ -278,6 +292,7 @@ pub fn turn_reply(show_json: &str) -> Result<String, StoreMiss> {
         })
         .collect())
 }
+// llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 
 /// The reply a run reports: the store's when stdout carried only its start.
 /// Anything else — the same text, or a store reply stdout does not begin —
@@ -314,9 +329,10 @@ mod tests {
             "/data",
             "--cwd=/work",
             "hello",
-        ]));
-        assert_eq!(store.session, SessionChoice::Named("abc".to_string()));
+        ]))
+        .unwrap();
         let id = SessionId::new("abc").unwrap();
+        assert_eq!(store.session, SessionChoice::Named(id.clone()));
         assert_eq!(
             show_argv("crush", &id, &store),
             argv(&["crush", "session", "show", "abc", "--json", "-D", "/data", "--cwd", "/work"])
@@ -331,15 +347,19 @@ mod tests {
     fn run_store_names_nothing_for_another_verb_or_past_a_separator() {
         assert_eq!(
             run_store(&argv(&["crush", "session", "-s", "x"])),
-            RunStore::default()
+            Ok(RunStore::default())
         );
-        let store = run_store(&argv(&["crush", "run", "-C", "--", "-s", "x"]));
+        let store = run_store(&argv(&["crush", "run", "-C", "--", "-s", "x"])).unwrap();
         assert_eq!(store.session, SessionChoice::Continued);
         // A valued flag with nothing after it ends the parse rather than panicking.
         assert_eq!(
-            run_store(&argv(&["crush", "run", "-s"])).session,
+            run_store(&argv(&["crush", "run", "-s"])).unwrap().session,
             SessionChoice::Created
         );
+        assert!(matches!(
+            run_store(&argv(&["crush", "run", "--session="])),
+            Err(StoreMiss::Unreadable(_))
+        ));
     }
 
     #[test]

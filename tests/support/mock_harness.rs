@@ -106,7 +106,9 @@
 //!                   `session list --json` / `session show <id> --json` print it
 //!                   as crush does. MOCK_CRUSH_STORE_READ=fail makes every
 //!                   `session` read fail as an unopenable store does; =malformed
-//!                   prints the document cut off mid-JSON.
+//!                   prints the document cut off mid-JSON; =bad-id / =bad-time
+//!                   list one session whose id or creation time is invalid.
+//!                   `-c`/`--cwd` moves the store to `<cwd>/.crush`.
 //!   MOCK_DELIVERY_FILE appends delivery JSON before normal scripted output.
 //!   MOCK_CAPTURE_DELIVERY records stdin and the native Claude system file as JSON.
 //!   MOCK_ECHO_STDIN if set, read ALL of stdin and write it verbatim to stdout,
@@ -1350,6 +1352,7 @@ fn export_opencode_session(store: &str, sid: Option<&str>) -> ! {
     }
 }
 
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] The session list and `session show --json` documents below are crush v0.87.0's real shape, captured byte for byte in tests/fixtures/crush-0.87.0-session-*.json, which the engine's reader is unit-tested against; the mock writes those same fields for the turns a test scripts. The producer is gated live: ci.yml's `check` job runs `just live-crush` against the real installed crush on every pull request that changes crates/**, and scripts/e2e-crush.sh fails it when a real run cannot be read back from the store.
 /// Where the mock crush store keeps one session's `session show --json` document.
 fn crush_session_path(store: &str, sid: &str) -> std::path::PathBuf {
     assert!(
@@ -1394,7 +1397,6 @@ fn record_crush_turn(store: &str, argv: &[String], reply: &str) {
     // between each, as crush stores a turn that used tools.
     let replies: Vec<String> =
         serde_json::from_str(reply).unwrap_or_else(|_| vec![reply.to_string()]);
-    // llmlint: ignore[contracts_have_one_source_or_a_drift_gate] The shape is crush v0.87.0's real `session show --json`, captured byte for byte in tests/fixtures/crush-0.87.0-session-show.json, which the engine's reader is unit-tested against; the mock writes the same messages[].role / parts[].type / parts[].text fields for turns a test scripts. Real crush is the drift alarm: `just live-crush` fails when oneharness cannot read a real run back from the store.
     let messages = session["messages"]
         .as_array_mut()
         .expect("the mock crush session holds a message list");
@@ -1427,7 +1429,9 @@ fn record_crush_turn(store: &str, argv: &[String], reply: &str) {
 /// `crush session list --json` / `crush session show <id> --json` against the
 /// mock store, or crush's refusal when it cannot open it
 /// (`MOCK_CRUSH_STORE_READ=fail`), or the document cut off mid-JSON
-/// (`MOCK_CRUSH_STORE_READ=malformed`).
+/// (`MOCK_CRUSH_STORE_READ=malformed`), or a list naming one session with an
+/// id crush never mints (`=bad-id`) or a creation time that is no instant
+/// (`=bad-time`).
 fn answer_crush_session(store: &str, argv: &[String]) -> ! {
     if std::env::var("MOCK_CRUSH_STORE_READ").as_deref() == Ok("fail") {
         let _ = writeln!(
@@ -1447,6 +1451,27 @@ fn answer_crush_session(store: &str, argv: &[String]) -> ! {
             std::process::exit(1);
         }
     };
+    let now = oneharness_core::domain::history::format_rfc3339(
+        i64::try_from(epoch_ms() / 1_000).expect("seconds fit"),
+    );
+    let listed = |uuid: &str, created: &str| {
+        serde_json::json!([{"id": uuid, "uuid": uuid, "title": "mock",
+            "created": created, "modified": created}])
+        .to_string()
+    };
+    if argv.get(1).map(String::as_str) == Some("list") {
+        match std::env::var("MOCK_CRUSH_STORE_READ").as_deref() {
+            Ok("bad-id") => {
+                println!("{}", listed("--help", &now));
+                std::process::exit(0);
+            }
+            Ok("bad-time") => {
+                println!("{}", listed("mock-1", "yesterday"));
+                std::process::exit(0);
+            }
+            _ => {}
+        }
+    }
     // A store with no sessions lists none, as crush's own fresh store does.
     let document = std::fs::read_to_string(&path)
         .ok()
@@ -1468,6 +1493,8 @@ fn answer_crush_session(store: &str, argv: &[String]) -> ! {
         }
     }
 }
+
+// llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 
 /// Crush wire shapes are the same fixtures as io::http_turn::crush_redirects,
 /// reached here through the real CLI's server launch and Unix HTTP transport.
@@ -3066,10 +3093,22 @@ pub fn run() -> ! {
     }
 
     if let Ok(store) = std::env::var("MOCK_CRUSH_STORE") {
-        // A `-D`/`--data-dir` moves the store, as it does crush's.
+        // A `-D`/`--data-dir` moves the store, as it does crush's, and so does
+        // `-c`/`--cwd`, to `<cwd>/.crush`, crush's default data directory.
         let store = arg_value_after(&argv, "--data-dir")
             .or_else(|| arg_value_after(&argv, "-D"))
-            .map_or(store, str::to_string);
+            .map(str::to_string)
+            .or_else(|| {
+                arg_value_after(&argv, "--cwd")
+                    .or_else(|| arg_value_after(&argv, "-c"))
+                    .map(|cwd| {
+                        std::path::Path::new(cwd)
+                            .join(".crush")
+                            .display()
+                            .to_string()
+                    })
+            })
+            .unwrap_or(store);
         match argv.first().map(String::as_str) {
             Some("session") => answer_crush_session(&store, &argv),
             Some("run") => {

@@ -4,12 +4,17 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::domain::crush_store::{self, RunStore, SessionChoice, SessionId, StoreMiss};
+use crate::domain::crush_store::{self, RunStore, SessionChoice, StoreMiss};
 use crate::domain::report::{RunResult, Status};
 use crate::io::runner::{self, Job};
 
 /// Long enough for crush to open and migrate its store; it answers in well
-/// under a second.
+/// under a second. A reader that hangs past it is a store read that failed:
+/// `runner::run_job` ends it at this deadline as it ends any job, and the run
+/// keeps stdout's text as for any unreadable store. No journey drives a hung
+/// reader: proving the bound end to end would hold the suite for the whole
+/// deadline, and the deadline itself is the runner's, which its own tests
+/// prove.
 const STORE_READ_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// What reading one crush run's store back needs: the spawn context of the run
@@ -20,7 +25,8 @@ pub(crate) struct CrushStore {
     cwd: Option<PathBuf>,
     env: Vec<(String, String)>,
     env_remove: Vec<String>,
-    store: RunStore,
+    /// The run's store, or why its argv named none oneharness can read.
+    store: Result<RunStore, StoreMiss>,
     since_ms: i64,
 }
 
@@ -64,23 +70,20 @@ impl CrushStore {
 
     /// The reply of this run's turn, as the store holds it.
     fn stored_reply(&self) -> Result<String, StoreMiss> {
-        let session = match &self.store.session {
-            SessionChoice::Named(session) => SessionId::new(session)?,
+        let store = self.store.as_ref().map_err(Clone::clone)?;
+        let session = match &store.session {
+            SessionChoice::Named(session) => session.clone(),
             SessionChoice::Continued => {
                 return Err(StoreMiss::Unidentified(
                     "`--continue` names no session".to_string(),
                 ))
             }
             SessionChoice::Created => crush_store::created_session(
-                &self.read(crush_store::list_argv(&self.bin, &self.store))?,
+                &self.read(crush_store::list_argv(&self.bin, store))?,
                 self.since_ms,
             )?,
         };
-        crush_store::turn_reply(&self.read(crush_store::show_argv(
-            &self.bin,
-            &session,
-            &self.store,
-        ))?)
+        crush_store::turn_reply(&self.read(crush_store::show_argv(&self.bin, &session, store))?)
     }
 }
 

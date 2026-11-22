@@ -3499,12 +3499,63 @@ fn replace_system_on_a_controlled_codex_or_qwen_turn_is_a_usage_error() {
     }
 }
 
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary runs; only the harness process (claude-code) would be the mock harness, and the refusal comes before it is ever spawned.
+/// Where the platform has no unix domain sockets, the same controlled
+/// `replace_system` request is refused before anything spawns, with the
+/// documented platform reason, a usage exit and no report — never run as an
+/// uncontrolled turn, and never with the text appended instead.
+#[cfg(not(unix))]
+#[test]
+fn replace_system_on_a_controlled_claude_turn_is_refused_without_unix_sockets() {
+    let scratch = ScratchDir::new("lrcc-nosock").unwrap();
+    let store = scratch.join("s").display().to_string();
+    let record = scratch.join("system.json");
+    let b = bin("claude-code");
+    let out = oh(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--system",
+            REPLACEMENT,
+            "--replace-system",
+            "--control",
+            "--session",
+            "s",
+            "--session-dir",
+            &store,
+            "--bin",
+            &b,
+            "--mode",
+            "bypass",
+            "--timeout",
+            "30",
+        ],
+        &[("MOCK_SYSTEM_FILE_RECORD", record.to_str().unwrap())],
+        None,
+    );
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(out.stdout.is_empty(), "{out:?}");
+    assert!(
+        stderr(&out)
+            .contains("--control needs a unix domain socket, which this platform does not provide"),
+        "{out:?}"
+    );
+    assert!(!record.exists(), "the harness was never spawned");
+}
+// llmlint: ignore-end[e2e_not_mocked]
+
 // llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its translation run; only the harness process (claude-code) is the mock harness, held to its real CLI by the 2.1.329 capture the `replace_system` row cites (module doc).
 /// Claude Code's controlled turn is an ordinary `-p` launch, so a
 /// `replace_system` run on `--control` is accepted there and its process
 /// receives the text on the replacing flag, never the appending one. The
 /// system file is recorded without reading stdin (a controlled turn holds it
 /// open), and `--timeout` bounds the run so a hang fails here, not the suite.
+/// Unix only: where there are no unix sockets the same request is refused,
+/// which the `not(unix)` journey below holds.
+#[cfg(unix)]
 #[test]
 fn replace_system_on_a_controlled_claude_turn_rides_the_replacing_flag() {
     // Under /tmp with a short tag: the store's control socket is an address,

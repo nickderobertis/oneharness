@@ -4976,9 +4976,10 @@ fn unsupported_input_result(
 }
 
 /// Refuse a `replace_system` run on `--control` for a harness whose replacing
-/// knob is set at launch (codex's `-c`, qwen's environment): a controlled
-/// turn runs on a server started without the run's text. Claude Code's
-/// controlled turn is an ordinary `-p` launch, so its flag applies.
+/// knob is set at launch (codex's `-c`): a controlled turn runs on a server
+/// started without the run's text. Claude Code's controlled turn is an
+/// ordinary `-p` launch, so its flag applies. Qwen, which also replaces at
+/// launch, has no turn control at all and is refused before this check.
 fn validate_replace_system(
     replace: bool,
     control: bool,

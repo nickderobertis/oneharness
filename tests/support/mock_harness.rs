@@ -94,7 +94,9 @@
 //!                     MOCK_OPENCODE_EXPORT=fail makes `export` refuse the session,
 //!                     =malformed print it cut off mid-JSON; MOCK_OPENCODE_SESSION_ID
 //!                     replaces the id a turn's events name (empty: none at all).
-//!   MOCK_SYSTEM_FILE_RECORD records the native system file before control starts.
+//!   MOCK_SYSTEM_FILE_RECORD records the native system file (its flag, appending
+//!                   or replacing, its path and contents) before control starts,
+//!                   without reading stdin a controlled turn holds open.
 //!   MOCK_CRUSH_HTTP_LOG serves the Crush Unix HTTP protocol and logs requests.
 //!   MOCK_DELIVERY_FILE appends delivery JSON before normal scripted output.
 //!   MOCK_CAPTURE_DELIVERY records stdin and the native Claude system file as JSON.
@@ -2911,12 +2913,12 @@ pub fn run() -> ! {
     if let Ok(record) = std::env::var("MOCK_SYSTEM_FILE_RECORD") {
         let path = argv
             .windows(2)
-            .find(|w| w[0] == "--append-system-prompt-file")
+            .find(|w| w[0] == "--append-system-prompt-file" || w[0] == "--system-prompt-file")
             .expect("native system file flag");
         let contents = std::fs::read_to_string(&path[1]).expect("native system file contents");
         std::fs::write(
             record,
-            serde_json::json!({"path": path[1], "contents": contents}).to_string(),
+            serde_json::json!({"flag": path[0], "path": path[1], "contents": contents}).to_string(),
         )
         .expect("record native system delivery");
     }

@@ -4342,10 +4342,12 @@ fn a_resumed_codex_thread_takes_a_strict_schema_natively_through_a_re_ask() {
 // llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its schema routing run; only the harness process (codex) is the mock harness, a session double held to its real CLI by the 0.159.2 strict-mode probes the `schema` row cites (module doc).
 /// Which codex schema run is native follows the shape the strict-mode probe
 /// accepted, through the real run: a nullable `type` array, `$ref`/`$defs`,
-/// `anyOf` and a strict nested object ride `--output-schema` with no prompt
-/// instruction; a nested object without `additionalProperties: false`,
-/// `format`, `allOf`, `not`, `if`, an untyped `const` and a non-object root
-/// each keep the prompt instruction and get no `--output-schema`.
+/// `$ref`/`definitions`, `anyOf`, `patternProperties`, array `items` and a
+/// strict nested object ride `--output-schema` with no prompt instruction; a
+/// nested object without `additionalProperties: false`, `format`, `allOf`,
+/// `not`, `if`, an untyped `const`, a non-object root, and a refused node
+/// nested under `patternProperties`, `definitions` or `items` each keep the
+/// prompt instruction and get no `--output-schema`.
 #[test]
 fn codex_routes_each_probed_schema_shape_to_the_path_strict_mode_allows() {
     let scratch = ScratchDir::new("lean-codex-schema-routing").unwrap();
@@ -4362,6 +4364,15 @@ fn codex_routes_each_probed_schema_shape_to_the_path_strict_mode_allows() {
             r##"{"type":"object","properties":{"a":{"$ref":"#/$defs/x"}},"required":["a"],"additionalProperties":false,"$defs":{"x":{"type":"string"}}}"##.to_string(),
         ),
         ("any-of", object(r#"{"anyOf":[{"type":"string"},{"type":"integer"}]}"#)),
+        (
+            "definitions",
+            r##"{"type":"object","properties":{"a":{"$ref":"#/definitions/x"}},"required":["a"],"additionalProperties":false,"definitions":{"x":{"type":"string"}}}"##.to_string(),
+        ),
+        (
+            "pattern-properties",
+            r#"{"type":"object","properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false,"patternProperties":{"^x_":{"type":"string"}}}"#.to_string(),
+        ),
+        ("items", object(r#"{"type":"array","items":{"type":"string"}}"#)),
         (
             "nested",
             object(
@@ -4382,6 +4393,20 @@ fn codex_routes_each_probed_schema_shape_to_the_path_strict_mode_allows() {
             r#"{"type":"object","properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false,"if":{"properties":{"a":{"const":"x"}}}}"#.to_string(),
         ),
         ("untyped-const", object(r#"{"const":"x"}"#)),
+        (
+            "definitions-format",
+            r##"{"type":"object","properties":{"a":{"$ref":"#/definitions/x"}},"required":["a"],"additionalProperties":false,"definitions":{"x":{"type":"string","format":"email"}}}"##.to_string(),
+        ),
+        (
+            "pattern-properties-format",
+            r#"{"type":"object","properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false,"patternProperties":{"^x_":{"type":"string","format":"email"}}}"#.to_string(),
+        ),
+        (
+            "items-open",
+            object(
+                r#"{"type":"array","items":{"type":"object","properties":{"b":{"type":"string"}},"required":["b"]}}"#,
+            ),
+        ),
         (
             "array-root",
             r#"{"type":"array","items":{"type":"string"}}"#.to_string(),

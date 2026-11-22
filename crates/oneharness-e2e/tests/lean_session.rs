@@ -3844,6 +3844,205 @@ fn claude_takes_an_image_and_a_schema_together_and_re_asks_an_invalid_answer() {
 }
 // llmlint: ignore-end[e2e_not_mocked]
 
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its structured-output loop run; only the harness process (claude-code) is the mock harness, replaying the stream-json shape of the captured turn and the 2.1.329 image run the `schema` row cites (module doc).
+/// A schema with no image on Claude Code, with the output format unset and
+/// with `stream-json`: the run is started under stream-json output with the
+/// schema on `--json-schema` and the prompt untouched on stdin, so the value comes
+/// back from the `result` event beside the per-call usage only stream-json
+/// reports. A valid answer lists its one call; an invalid first answer is
+/// re-asked and `calls` lists both; one still invalid after
+/// `schema_max_retries` re-asks is a schema failure naming the violation.
+#[test]
+fn claude_runs_a_schema_without_an_image_on_stream_json_and_lists_its_calls() {
+    let scratch = ScratchDir::new("lean-claude-text-schema").unwrap();
+    let schema = scratch.join("person.json");
+    std::fs::write(&schema, PERSON).unwrap();
+    let schema = schema.display().to_string();
+    let invalid = claude_structured_turn("msg_one", 11, 3, r#"{"name":"Ada"}"#);
+    let valid = claude_structured_turn("msg_two", 21, 4, r#"{"name":"Ada","age":36}"#);
+    let b = bin("claude-code");
+    let started_natively_on_stream_json = |label: &str, call: &Value| {
+        let argv = strings(&call["argv"]);
+        assert!(
+            has_seq(&argv, &["--output-format", "stream-json"]),
+            "{label}: {argv:?}"
+        );
+        assert!(
+            has_seq(&argv, &["--input-format", "text"]),
+            "{label}: no image, so no input frame: {argv:?}"
+        );
+        let delivered: Value =
+            serde_json::from_str(after(&argv, "--json-schema").expect("native")).unwrap();
+        assert_eq!(delivered, serde_json::from_str::<Value>(PERSON).unwrap());
+        let stdin = call["stdin"].as_str().unwrap();
+        assert!(stdin.starts_with("who is this?"), "{label}: {stdin}");
+        assert!(
+            !stdin.contains(PROMPT_SCHEMA_INSTRUCTION),
+            "native: {stdin}"
+        );
+    };
+    for (label, format) in [("unset", None), ("stream-json", Some("stream-json"))] {
+        let base = |log: &Path| {
+            let mut args = vec![
+                "run".to_string(),
+                "--harness".to_string(),
+                "claude-code".to_string(),
+                "--prompt".to_string(),
+                "who is this?".to_string(),
+                "--schema".to_string(),
+                schema.clone(),
+                "--bin".to_string(),
+                b.clone(),
+            ];
+            args.extend(
+                format
+                    .iter()
+                    .flat_map(|f| ["--output-format".to_string(), (*f).to_string()]),
+            );
+            (args, log.display().to_string())
+        };
+
+        // A valid first answer: one call, its reported usage.
+        let (args, log) = base(&scratch.join(format!("{label}-valid.jsonl")));
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let out = oh(
+            &args,
+            &[("MOCK_INVOCATION_LOG", &log), ("MOCK_STDOUT", &valid)],
+            None,
+        );
+        assert!(out.status.success(), "{label}: {out:?}");
+        let result = json(&out)["results"][0].clone();
+        assert_eq!(result["structured"]["age"], 36, "{label}: {result}");
+        assert_eq!(result["schema_valid"], true, "{label}");
+        assert_eq!(result["schema_attempts"], 1, "{label}");
+        assert_eq!(input_and_output_tokens(&result), vec![(21, 4)], "{label}");
+        assert!(diagnostics_for(&result, "calls").is_empty(), "{result}");
+        let calls = invocations(Path::new(&log));
+        assert_eq!(calls.len(), 1, "{label}");
+        started_natively_on_stream_json(label, &calls[0]);
+
+        // An invalid first answer is re-asked; both attempts' calls listed.
+        let (args, log) = base(&scratch.join(format!("{label}-retry.jsonl")));
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let counter = scratch.join(format!("{label}.count"));
+        let out = oh(
+            &args,
+            &[
+                ("MOCK_INVOCATION_LOG", &log),
+                ("MOCK_ATTEMPT_FILE", counter.to_str().unwrap()),
+                ("MOCK_STDOUT_1", &invalid),
+                ("MOCK_STDOUT_2", &valid),
+            ],
+            None,
+        );
+        assert!(out.status.success(), "{label}: {out:?}");
+        let result = json(&out)["results"][0].clone();
+        assert_eq!(result["structured"]["age"], 36, "{label}: {result}");
+        assert_eq!(result["schema_valid"], true, "{label}");
+        assert!(result["schema_error"].is_null(), "{label}");
+        assert_eq!(result["schema_attempts"], 2, "{label}");
+        assert_eq!(
+            input_and_output_tokens(&result),
+            vec![(11, 3), (21, 4)],
+            "{label}: one usage per call, both attempts, in order"
+        );
+        let calls = invocations(Path::new(&log));
+        assert_eq!(calls.len(), 2, "{label}");
+        for call in &calls {
+            started_natively_on_stream_json(label, call);
+        }
+
+        // Still invalid after `schema_max_retries` re-asks: a schema failure.
+        let (mut args, log) = base(&scratch.join(format!("{label}-exhausted.jsonl")));
+        args.extend(["--schema-max-retries".to_string(), "1".to_string()]);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let out = oh(
+            &args,
+            &[("MOCK_INVOCATION_LOG", &log), ("MOCK_STDOUT", &invalid)],
+            None,
+        );
+        assert_eq!(out.status.code(), Some(1), "{label}: {out:?}");
+        let result = json(&out)["results"][0].clone();
+        assert_eq!(result["schema_valid"], false, "{label}: {result}");
+        assert_eq!(result["schema_attempts"], 2, "{label}");
+        assert!(
+            result["schema_error"].as_str().unwrap().contains("\"age\""),
+            "{label}: names the violation: {result}"
+        );
+        assert_eq!(result["structured"]["name"], "Ada", "{label}");
+        assert_eq!(
+            input_and_output_tokens(&result),
+            vec![(11, 3), (11, 3)],
+            "{label}"
+        );
+        assert_eq!(invocations(Path::new(&log)).len(), 2, "{label}");
+    }
+}
+// llmlint: ignore-end[e2e_not_mocked]
+
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its structured-output loop run; only the harness process (claude-code) is the mock harness, replaying the single result document `--output-format json` prints, in the shape the `schema` row cites (module doc).
+/// A schema run that explicitly asks for `json` keeps it: the value comes
+/// from the single result document, which carries no per-call usage, so the
+/// result lists no `calls`. With an image the same explicit `json` is
+/// refused before any harness starts, since an image frame needs stream-json.
+#[test]
+fn claude_keeps_an_explicit_json_schema_run_without_calls_and_refuses_it_beside_an_image() {
+    let scratch = ScratchDir::new("lean-claude-json-schema").unwrap();
+    let schema = scratch.join("person.json");
+    std::fs::write(&schema, PERSON).unwrap();
+    let schema = schema.display().to_string();
+    let image = png(&scratch, "frame.png").display().to_string();
+    let document = r#"{"type":"result","subtype":"success","is_error":false,"result":"","session_id":"s-structured","usage":{"input_tokens":21,"output_tokens":4},"structured_output":{"name":"Ada","age":36}}"#;
+    let b = bin("claude-code");
+    let log = scratch.join("json.jsonl");
+    let mut args = vec![
+        "run",
+        "--harness",
+        "claude-code",
+        "--prompt",
+        "who is this?",
+        "--schema",
+        &schema,
+        "--output-format",
+        "json",
+        "--bin",
+        &b,
+    ];
+    let out = oh(
+        &args,
+        &[
+            ("MOCK_INVOCATION_LOG", log.to_str().unwrap()),
+            ("MOCK_STDOUT", document),
+        ],
+        None,
+    );
+    assert!(out.status.success(), "{out:?}");
+    let result = json(&out)["results"][0].clone();
+    assert_eq!(result["structured"]["age"], 36, "{result}");
+    assert_eq!(result["schema_valid"], true, "{result}");
+    assert!(result.get("calls").is_none(), "{result}");
+    let calls = invocations(&log);
+    assert_eq!(calls.len(), 1);
+    let argv = strings(&calls[0]["argv"]);
+    assert!(has_seq(&argv, &["--output-format", "json"]), "{argv:?}");
+    assert!(after(&argv, "--json-schema").is_some(), "{argv:?}");
+
+    let log = scratch.join("image.jsonl");
+    args.extend(["--image", &image]);
+    let out = oh(
+        &args,
+        &[
+            ("MOCK_INVOCATION_LOG", log.to_str().unwrap()),
+            ("MOCK_STDOUT", document),
+        ],
+        None,
+    );
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(stderr(&out).contains("--output-format"), "{}", stderr(&out));
+    assert!(!log.exists(), "no harness started");
+}
+// llmlint: ignore-end[e2e_not_mocked]
+
 // llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its structured-output loop run; only the harness process (codex) is the mock harness, a session double recording the captured rollout token counts (`tests/fixtures/codex-rollout-token-counts.jsonl`), held to its real CLI by the 0.159.2 runs the `schema` row cites (module doc).
 /// A schema strict mode accepts reaches codex natively, with and without an
 /// image: `--output-schema` names a file holding the schema, the image rides

@@ -1685,13 +1685,17 @@ ways, chosen per harness:
 - **Native** where the CLI supports it. `supports_native_schema` in `oneharness
   list` flags these, read from the `schema` column of the translation table
   under [Long sessions](#long-sessions-compaction-a-lean-tool-set-images-and-per-call-usage).
-  - **Claude Code**, every schema: `--json-schema`. Without `--image` the run is
-    `--output-format json` and the value is its result document's
-    `structured_output`. With `--image` the run stays on stream-json in and out
-    (the image rides a stream-json input frame), and the value is the stream's
-    `result` event's `structured_output`; so `--output-format` unset or
-    `stream-json` is accepted beside images, and only another explicit format
-    is refused. There is no fallback to the prompt path on Claude Code.
+  - **Claude Code**, every schema: `--json-schema`. With `--output-format`
+    unset or `stream-json`, with or without `--image`, the run is
+    `--output-format stream-json` (with `--image`, stream-json in too: the
+    image rides a stream-json input frame). The value is the stream's `result`
+    event's `structured_output`, and the result's `calls` lists every model
+    call with the usage Claude Code reported for it. Only an explicit other
+    format (`json`, `text`) runs `--output-format json`, where the value is the
+    result document's `structured_output` and `calls` is absent (`diagnostics`
+    says why): that document carries no per-call usage. Beside `--image` such
+    a format is refused before any harness starts. There is no fallback to the
+    prompt path on Claude Code.
   - **Codex**, only a schema OpenAI strict mode accepts: written to a private
     temp file for the run and passed as `--output-schema <file>` (on `exec` and
     `exec resume`, beside any `--image=`); the value is the final
@@ -2730,7 +2734,7 @@ which also cites the evidence for each entry):
 
 | Harness (release) | `auto_compact_tokens` | compact now | `tool_set` | `load_skills = false` | `load_mcp = false` | `images` | `calls` | run-level `allowed_tools` | `replace_system` | `schema` |
 |---|---|---|---|---|---|---|---|---|---|---|
-| Claude Code (2.1.316) | `CLAUDE_CODE_AUTO_COMPACT_WINDOW` = N + 33000; below 67000, the 100000 window floor plus `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` = N / 80000 × 100 | `-p /compact --resume ID --fork-session` | `--tools Bash Read` (intersected with read-only's set under `--mode read-only`) | `--disable-slash-commands` | `--strict-mcp-config` | base64 `image` blocks in one stream-json user frame (`--input-format stream-json`) | one `assistant.message.usage` per `message.id` under `--output-format stream-json` | `--allowedTools` per rule; under read-only `--permission-mode dontAsk`, `--tools` gains `Bash` (Linux; withheld elsewhere) | `--system-prompt-file FILE` in place of `--append-system-prompt-file` (2.1.329) | `--json-schema`; the `json` result's `structured_output`, or with images the stream-json `result` event's `structured_output` (2.1.329) |
+| Claude Code (2.1.316) | `CLAUDE_CODE_AUTO_COMPACT_WINDOW` = N + 33000; below 67000, the 100000 window floor plus `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` = N / 80000 × 100 | `-p /compact --resume ID --fork-session` | `--tools Bash Read` (intersected with read-only's set under `--mode read-only`) | `--disable-slash-commands` | `--strict-mcp-config` | base64 `image` blocks in one stream-json user frame (`--input-format stream-json`) | one `assistant.message.usage` per `message.id` under `--output-format stream-json` | `--allowedTools` per rule; under read-only `--permission-mode dontAsk`, `--tools` gains `Bash` (Linux; withheld elsewhere) | `--system-prompt-file FILE` in place of `--append-system-prompt-file` (2.1.329) | `--json-schema`; the stream-json `result` event's `structured_output`, with `calls`; only an explicit `json`/`text` reads the `json` result's `structured_output`, without `calls`, and is refused beside images (2.1.329) |
 | Codex (0.159.2) | `-c model_auto_compact_token_limit=N` | app-server `thread/fork` + `thread/compact/start` | partial: `features.goals`, `features.view_image`, `features.sleep_tool` off, `web_search="disabled"`, and `features.shell_tool` off only for a set naming neither `shell` nor `read` (codex's shell also reads files); `apply_patch`, `request_user_input`, the multi-agent `collaboration` tools and `clock__curr_time` stay loaded (no setting removes them) and the run says so | `-c skills.include_instructions=false` | each configured server overridden `-c mcp_servers.<name>={command="true",enabled=false}`, plus `features.apps=false` | `--image=PATH` | the rollout record's `event_msg token_count info.last_token_usage`, one per event | a per-run overlay `CODEX_HOME` whose `rules/` adds one `prefix_rule` per rule (Linux; withheld elsewhere) | `-c model_instructions_file="FILE"`, not folded into the prompt; usage error under `--control` | `--output-schema FILE` for a schema strict mode accepts (else prompt-based); the final `agent_message` |
 | OpenCode (1.18.5) | — | — | — | — | — | `-f PATH` | one per `step_finish` event (`step_finish.part.tokens`, `part.cost`) of `--format json` | withheld | refused | prompt-based |
 | Copilot (1.0.78) | — | — | — | — | — | `--attachment PATH` | — | withheld | refused | prompt-based |
@@ -2774,7 +2778,9 @@ releases:
   already choose; neither is used.
 - **`schema`**: a real Claude Code 2.1.329 run with an image in its stream-json
   frame and `--json-schema` answered through its `StructuredOutput` tool, its
-  `result` event carrying the validated `structured_output`. The codex rule is
+  `result` event carrying the validated `structured_output`; and a real 2.1.330
+  run with no image under `--output-format stream-json`, its `result` event
+  carrying `structured_output` beside one `assistant` usage per model call. The codex rule is
   stated under [Structured output](#structured-output).
 - **The Claude Code and Codex rows are drift-alarmed live** by
   `oh_lean_session_enforce` (`just live-claude`, `just live-codex`). On one

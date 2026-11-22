@@ -15834,7 +15834,7 @@ fn schema_native_claude_reads_structured_output_field() {
             "--schema",
             &schema,
             "--bin",
-            &bin_override("claude-code"),
+            &bin_override("claude-code"), // llmlint: ignore[e2e_not_mocked] The layer under test is the real oneharness binary's claude-code schema argv and its read of `structured_output` from the `result` event; only the paid claude CLI is doubled, by the repository's mock harness at its --bin seam, replaying the result-event shape the claude-code `schema` row of `lean::TRANSLATIONS` cites, because the deterministic gate cannot spend a model call.
             "--compact",
         ],
         &[("MOCK_STDOUT", stdout)],
@@ -15850,8 +15850,10 @@ fn schema_native_claude_reads_structured_output_field() {
         "native schema flag missing: {command:?}"
     );
     assert!(
-        command.windows(2).any(|w| w == ["--output-format", "json"]),
-        "native schema forces json output: {command:?}"
+        command
+            .windows(2)
+            .any(|w| w == ["--output-format", "stream-json"]),
+        "a native schema run stays on stream-json: {command:?}"
     );
     // Native delivery does NOT augment the prompt.
     assert!(

@@ -29,8 +29,8 @@ use serde_json::Value;
 pub enum NativeSchema {
     /// Claude Code: `--json-schema <inline JSON>`. The conforming value is
     /// returned under `structured_output`: the result document's under
-    /// `--output-format json`, the `result` event's under stream-json (an
-    /// image run's format).
+    /// `--output-format json` (only on an explicit non-stream format), else the
+    /// `result` event's under stream-json, the run's format by default.
     ClaudeJsonSchema,
     /// Codex: `exec --output-schema <file>`. The conforming value is the final
     /// `agent_message` text. Codex sends the schema as a *strict* response

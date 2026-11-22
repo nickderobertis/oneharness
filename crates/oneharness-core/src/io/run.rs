@@ -815,6 +815,12 @@ pub fn run_supervised(
     // to catch the same shape first.
     let explicit_format = args.output_format.or(cfg.output_format);
     let mode = resolve_mode(args, cfg);
+    // Whether the run asks to replace, decided from the request's shape before
+    // its system text is read (a `--system-file -` read waits for stdin): the
+    // text is present exactly when one of its three sources is.
+    let replace_requested =
+        (args.system.is_some() || args.system_file.is_some() || cfg.system.is_some())
+            && args.replace_system.or(cfg.replace_system).unwrap_or(false);
     let control_shape = validate_control(
         args,
         &specs,
@@ -825,6 +831,7 @@ pub fn run_supervised(
         run_mode,
         stream,
         mode,
+        replace_requested,
     )?;
     // A model fan-out multiplies the run into several (harness, model) units, so —
     // like a batch — it refuses every single-unit shape up front (loud usage
@@ -999,7 +1006,6 @@ pub fn run_supervised(
     // alone (added per unit below) never stands in for a harness's prompt.
     let replace_system =
         system.is_some() && args.replace_system.or(cfg.replace_system).unwrap_or(false);
-    validate_replace_system(replace_system, control_shape.is_some(), &specs)?;
     let require_available =
         args.require_available || cfg.require_available.unwrap_or(false) || undriven_chain_of_one;
 
@@ -3642,6 +3648,7 @@ fn validate_control(
     run_mode: RunMode,
     stream: bool,
     mode: PermissionMode,
+    replace_system: bool,
 ) -> Result<Option<ControlShape>, OneharnessError> {
     if !args.control {
         return Ok(None);
@@ -3765,6 +3772,10 @@ fn validate_control(
             }
         }
     }
+    // A launch-time replacing knob on a controlled turn is a request fact too,
+    // so it is refused after each candidate's control surface (qwen has none,
+    // and says so first) and ahead of the platform check below.
+    validate_replace_system(replace_system, specs)?;
     let shape = specs
         .first()
         .and_then(|spec| spec.control)
@@ -4980,12 +4991,14 @@ fn unsupported_input_result(
 /// started without the run's text. Claude Code's controlled turn is an
 /// ordinary `-p` launch, so its flag applies. Qwen, which also replaces at
 /// launch, has no turn control at all and is refused before this check.
+///
+/// Called from `validate_control`, so only for a controlled run, and ahead of
+/// its platform check: the conflict reads the same on every machine.
 fn validate_replace_system(
     replace: bool,
-    control: bool,
     specs: &[&'static HarnessSpec],
 ) -> Result<(), OneharnessError> {
-    if !replace || !control {
+    if !replace {
         return Ok(());
     }
     match specs
@@ -7210,11 +7223,46 @@ mod tests {
             RunMode::Parallel,
             false,
             PermissionMode::Default,
+            false,
         );
         assert!(
             matches!(
                 refused,
                 Err(OneharnessError::ImagesConflict {
+                    conflict: "--control",
+                    ..
+                })
+            ),
+            "{refused:?}"
+        );
+    }
+
+    #[test]
+    fn a_controlled_codex_replace_system_run_is_refused_as_a_request_fact_on_every_platform() {
+        // Like the image refusal above: decided ahead of the platform check, so
+        // a platform without unix sockets names `replace_system`, not the socket.
+        let args = RunRequest {
+            control: true,
+            session: Some("s".to_string()),
+            ..run_args()
+        };
+        let specs = [harness::by_id("codex").unwrap()];
+        let refused = validate_control(
+            &args,
+            &specs,
+            None,
+            false,
+            false,
+            false,
+            RunMode::Parallel,
+            false,
+            PermissionMode::Default,
+            true,
+        );
+        assert!(
+            matches!(
+                refused,
+                Err(OneharnessError::ReplaceSystemConflict {
                     conflict: "--control",
                     ..
                 })

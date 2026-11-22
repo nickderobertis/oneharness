@@ -252,6 +252,7 @@ export const ConfigReportSchema: z.ZodType<ConfigReport> = z.looseObject({
   models: z.lazy(() => Field2Schema).refine((value) => value !== undefined, { message: "Required" }),
   output_format: z.lazy(() => Field7Schema).refine((value) => value !== undefined, { message: "Required" }),
   reasoning: z.lazy(() => Field3Schema).refine((value) => value !== undefined, { message: "Required" }),
+  replace_system: z.lazy(() => FieldSchema).refine((value) => value !== undefined, { message: "Required" }),
   require_available: z.lazy(() => FieldSchema).refine((value) => value !== undefined, { message: "Required" }),
   run_mode: z.lazy(() => Field10Schema).refine((value) => value !== undefined, { message: "Required" }),
   schema_file: z.lazy(() => Field3Schema).refine((value) => value !== undefined, { message: "Required" }),
@@ -542,6 +543,7 @@ export const HarnessInfoSchema: z.ZodType<HarnessInfo> = z.looseObject({
   supports_native_schema: z.boolean().refine((value) => value !== undefined, { message: "Required" }),
   supports_prompt_stdin: z.boolean().refine((value) => value !== undefined, { message: "Required" }),
   supports_reasoning: z.boolean().refine((value) => value !== undefined, { message: "Required" }),
+  supports_replace_system: z.boolean().refine((value) => value !== undefined, { message: "Required" }),
   supports_resume: z.boolean().refine((value) => value !== undefined, { message: "Required" }),
   supports_run_allowed_tools: z.boolean().refine((value) => value !== undefined, { message: "Required" }),
   supports_skills_off: z.boolean().refine((value) => value !== undefined, { message: "Required" }),
@@ -3358,6 +3360,7 @@ export const RunOptionsSchema: z.ZodType<RunOptions> = z.strictObject({
     .refine((value) => value !== undefined, { message: "Required" }),
   promptFiles: z.array(z.string()).optional(),
   reasoning: z.string().optional(),
+  replaceSystem: z.boolean().optional(),
   requireAvailable: z.boolean().optional(),
   resume: z.string().optional(),
   runMode: z.lazy(() => RunModeSchema).optional(),
@@ -3540,6 +3543,8 @@ export const SettingSchema: z.ZodType<Setting> = z.union([
   z.literal("images"),
   z.literal("calls"),
   z.literal("allowed_tools"),
+  z.literal("replace_system"),
+  z.literal("schema"),
 ]);
 
 export const StatusSchema: z.ZodType<Status> = z.union([

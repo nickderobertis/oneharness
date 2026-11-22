@@ -89,6 +89,14 @@ pub struct OverlayTimings {
 /// the bump matters: a consumer that matches `setting` exhaustively learns of
 /// it only from the version.
 ///
+/// `0.16` adds the `replace_system` and `schema`
+/// [`crate::domain::lean::Setting`] values (a diagnostic's `setting`), the
+/// `config` report's `replace_system`, and the `list` report's
+/// `supports_replace_system`. A harness with no replacing knob answers a
+/// `replace_system` run with the existing `unsupported_input` refusal, whose
+/// `failure_kind_source` is `"request:replace_system"`. `supports_native_schema`
+/// is now true for codex too. The new enum values are why the bump matters.
+///
 /// `0.12` adds [`FailureKind::AppServerLost`] and its `"app-server-lost"`
 /// fallback reason: a pooled Codex dispatch whose shared app-server went away
 /// under its live turn. A new enum value, so exhaustive consumers learn of it
@@ -124,7 +132,7 @@ pub struct OverlayTimings {
 ///
 /// `0.4` added the `config` report's `stream` field (the layered `--stream`
 /// value, with its provenance).
-pub const SCHEMA_VERSION: &str = "0.15";
+pub const SCHEMA_VERSION: &str = "0.16";
 
 /// How a harness emits its result, which decides how `text` is extracted.
 ///

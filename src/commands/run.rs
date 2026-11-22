@@ -251,6 +251,7 @@ impl From<&RunArgs> for RunRequest {
             }),
             load_skills: args.no_skills.then_some(false),
             load_mcp: args.no_mcp.then_some(false),
+            replace_system: args.replace_system.then_some(true),
             images: args.image.clone(),
             cwd: args.cwd.clone(),
             env: args.env.clone(),

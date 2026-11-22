@@ -19,6 +19,11 @@
 //!                   (`tests/fixtures/codex-rollout-token-counts.jsonl`), and a
 //!                   stdio `app-server` answers `thread/fork` and
 //!                   `thread/compact/start` as the captured exchange does.
+//!   MOCK_CODEX_ANSWERS    with MOCK_CODEX_SESSIONS and MOCK_ATTEMPT_FILE, a
+//!                   JSON array of answers: the nth `exec` turn's final
+//!                   `agent_message` is element n-1 (the last one repeats),
+//!                   in place of the `context: [...]` answer — a structured
+//!                   run's attempts, each recorded with the captured calls.
 //!   MOCK_COMPACT_LOG      with MOCK_CODEX_SESSIONS, every request the stdio
 //!                   `app-server` receives is appended here, one per line.
 //!   MOCK_COMPACT_FAIL     with either, the compaction fails as that harness
@@ -51,7 +56,7 @@
 //!                   writes its own pid to this path, and then holds until it is
 //!                   killed — the compaction a caller cancels mid-rewrite.
 
-use std::io::{BufRead, Read, Write};
+use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
 const CLAUDE_COMPACT: &str = include_str!("../fixtures/claude-compact-fork.jsonl");
@@ -77,11 +82,7 @@ pub fn run_if_requested(argv: &[String]) {
 }
 
 fn stdin_prompt() -> String {
-    let mut prompt = String::new();
-    std::io::stdin()
-        .read_to_string(&mut prompt)
-        .expect("mock session prompt on stdin");
-    prompt
+    super::stdin_once()
 }
 
 fn fresh_id() -> String {
@@ -359,7 +360,7 @@ fn codex_exec(argv: &[String]) -> ! {
     while let Some(arg) = rest.next() {
         if matches!(
             arg.as_str(),
-            "-c" | "--config" | "-m" | "--model" | "-s" | "--sandbox"
+            "-c" | "--config" | "-m" | "--model" | "-s" | "--sandbox" | "--output-schema"
         ) {
             rest.next();
         } else if arg == "-" || !arg.starts_with('-') {
@@ -392,13 +393,25 @@ fn codex_exec(argv: &[String]) -> ! {
     .to_string()];
     lines.extend(CODEX_TOKEN_COUNTS.lines().map(str::to_string));
     append(&path, &lines);
-    let text = format!("context: [{}]", codex_context(&path).join(", "));
+    let text = scripted_codex_answer()
+        .unwrap_or_else(|| format!("context: [{}]", codex_context(&path).join(", ")));
     say(&[
         serde_json::json!({"type":"thread.started","thread_id":thread}).to_string(),
         serde_json::json!({"type":"turn.started"}).to_string(),
         serde_json::json!({"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":text}}).to_string(),
         serde_json::json!({"type":"turn.completed","usage":{"input_tokens":39287,"cached_input_tokens":37120,"output_tokens":64}}).to_string(),
     ]);
+}
+
+/// This turn's MOCK_CODEX_ANSWERS entry, counted by MOCK_ATTEMPT_FILE.
+fn scripted_codex_answer() -> Option<String> {
+    let answers: Vec<String> = serde_json::from_str(&std::env::var("MOCK_CODEX_ANSWERS").ok()?)
+        .expect("MOCK_CODEX_ANSWERS is a JSON array of strings");
+    let attempt = super::scripted_attempt().expect("MOCK_CODEX_ANSWERS needs MOCK_ATTEMPT_FILE");
+    let at = usize::try_from(attempt)
+        .unwrap_or(usize::MAX)
+        .saturating_sub(1);
+    answers.get(at).or(answers.last()).cloned()
 }
 
 /// The captured fork compaction's server lines, retargeted at `fork`.

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use crate::domain::lean::{self, Diagnostic, ImageInput, Setting};
 use crate::domain::report::{OutputFormat, RunResult, Status};
-use crate::domain::signals::Usage;
+use crate::domain::signals::{self, Usage};
 use crate::errors::OneharnessError;
 
 /// Read and check every image a run attaches, before anything spawns. A
@@ -114,6 +114,10 @@ pub struct CallsPlan {
     /// A resumed codex thread's rollout and its length before the run, so only
     /// the calls this run appended are read.
     pub codex_resumed_from: Option<(String, u64)>,
+    /// The stdout of each attempt a schema re-ask replaced, oldest first. Their
+    /// model calls lead the result's `calls`, so a re-asked run lists one usage
+    /// per call it made, not only its last attempt's.
+    pub earlier_attempts: Vec<String>,
 }
 
 impl CallsPlan {
@@ -139,23 +143,40 @@ pub fn attach(result: &mut RunResult, plan: &CallsPlan) {
     result.diagnostics.extend(plan.diagnostics.iter().cloned());
     let id = result.harness.clone();
     let calls = match id.as_str() {
-        "claude-code" if result.output_format == OutputFormat::StreamJson => {
-            lean::claude_stream_calls(&result.stdout).ok_or_else(|| {
-                "the stream-json output carried no assistant usage to read per call".to_string()
+        "claude-code" if result.output_format == OutputFormat::StreamJson => plan
+            .earlier_attempts
+            .iter()
+            .chain(std::iter::once(&result.stdout))
+            .map(|stdout| lean::claude_stream_calls(stdout).unwrap_or_default())
+            .reduce(|mut all, more| {
+                all.extend(more);
+                all
             })
-        }
+            .filter(|calls| !calls.is_empty())
+            .ok_or_else(|| {
+                "the stream-json output carried no assistant usage to read per call".to_string()
+            }),
         "claude-code" => Err(format!(
             "claude-code reports per-call usage only under `--output-format stream-json`; this \
              run used `{}`",
             result.output_format.as_str()
         )),
         "codex" => codex_calls(result, plan),
-        "opencode" => lean::opencode_step_calls(&result.stdout).ok_or_else(|| {
-            format!(
-                "the `{}` output carried no `step_finish` token figures to read per call",
-                result.output_format.as_str()
-            )
-        }),
+        "opencode" => plan
+            .earlier_attempts
+            .iter()
+            .chain(std::iter::once(&result.stdout))
+            .filter_map(|stdout| lean::opencode_step_calls(stdout))
+            .reduce(|mut all, more| {
+                all.extend(more);
+                all
+            })
+            .ok_or_else(|| {
+                format!(
+                    "the `{}` output carried no `step_finish` token figures to read per call",
+                    result.output_format.as_str()
+                )
+            }),
         _ => Err(format!(
             "{id} exposes no per-call usage ({})",
             lean::translation(&id, Setting::Calls).source
@@ -175,6 +196,43 @@ fn codex_calls(result: &RunResult, plan: &CallsPlan) -> Result<Vec<Usage>, Strin
         .as_deref()
         .ok_or("codex named no thread, so its rollout record cannot be found")?;
     let home = plan.codex_home.as_deref().ok_or("no codex home to read")?;
+    // Each attempt is one turn: a fresh thread, or (resumed) one more turn on
+    // the same one. Every thread is read once, for as many of its last turns
+    // as attempts ran on it, so a resumed re-ask is never counted twice.
+    let mut threads: Vec<(String, usize)> = Vec::new();
+    for named in plan
+        .earlier_attempts
+        .iter()
+        .map(|stdout| signals::extract_session(stdout))
+        .chain(std::iter::once(Some(thread.to_string())))
+        .flatten()
+    {
+        match threads.iter_mut().find(|(t, _)| *t == named) {
+            Some((_, turns)) => *turns += 1,
+            None => threads.push((named, 1)),
+        }
+    }
+    let mut calls = Vec::new();
+    for (named, turns) in &threads {
+        // An earlier attempt whose record is gone adds no calls; only the
+        // final attempt's absence is the run's to report.
+        match codex_thread_calls(home, named, *turns, plan) {
+            Ok(more) => calls.extend(more),
+            Err(reason) if named == thread => return Err(reason),
+            Err(_) => {}
+        }
+    }
+    Ok(calls)
+}
+
+/// The calls of the last `turns` turns `thread`'s rollout under `home` holds
+/// past where this run began.
+fn codex_thread_calls(
+    home: &Path,
+    thread: &str,
+    turns: usize,
+    plan: &CallsPlan,
+) -> Result<Vec<Usage>, String> {
     let path = find_codex_rollout(home, thread).ok_or_else(|| {
         format!(
             "no rollout record for thread `{thread}` under {}",
@@ -187,7 +245,13 @@ fn codex_calls(result: &RunResult, plan: &CallsPlan) -> Result<Vec<Usage>, Strin
         _ => 0,
     };
     let appended = String::from_utf8_lossy(bytes.get(start..).unwrap_or_default());
-    let calls = lean::codex_rollout_calls(&appended);
+    let per_turn = lean::codex_rollout_turn_calls(&appended);
+    let calls: Vec<Usage> = per_turn
+        .iter()
+        .skip(per_turn.len().saturating_sub(turns))
+        .flatten()
+        .cloned()
+        .collect();
     if calls.is_empty() {
         Err(format!(
             "the rollout record {} holds no token_count for this run",

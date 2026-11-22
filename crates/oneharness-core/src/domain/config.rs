@@ -179,6 +179,12 @@ pub struct FileConfig {
     pub load_skills: Option<bool>,
     /// `false` loads no MCP server or MCP tool (like `--no-mcp`).
     pub load_mcp: Option<bool>,
+    /// `true` makes the run's system text replace the harness's own system
+    /// prompt instead of being appended to it (like `--replace-system`).
+    /// Translated per harness by [`crate::domain::lean`]; a harness with no
+    /// replacing knob is refused for such a run, never handed the text to
+    /// append. Unset or `false` appends, as before.
+    pub replace_system: Option<bool>,
     /// Output format override (like `--output-format`).
     pub output_format: Option<OutputFormat>,
     /// Publish normalized events to stdout as they occur (like `--stream`; off
@@ -1020,6 +1026,7 @@ pub fn from_env(get: impl Fn(&str) -> Option<String>) -> Result<Option<FileConfi
             .transpose()?,
         load_skills: env_bool(&read, "ONEHARNESS_LOAD_SKILLS")?,
         load_mcp: env_bool(&read, "ONEHARNESS_LOAD_MCP")?,
+        replace_system: env_bool(&read, "ONEHARNESS_REPLACE_SYSTEM")?,
         output_format: env_output_format(&read)?,
         stream: env_bool(&read, "ONEHARNESS_STREAM")?,
         schema_file: read("ONEHARNESS_SCHEMA_FILE"),
@@ -1206,6 +1213,7 @@ pub fn merge(base: FileConfig, over: FileConfig) -> FileConfig {
         tool_set: over.tool_set.or(base.tool_set),
         load_skills: over.load_skills.or(base.load_skills),
         load_mcp: over.load_mcp.or(base.load_mcp),
+        replace_system: over.replace_system.or(base.replace_system),
         output_format: over.output_format.or(base.output_format),
         stream: over.stream.or(base.stream),
         schema_file: over.schema_file.or(base.schema_file),
@@ -1677,14 +1685,15 @@ pub struct ConfigReport {
     /// (or neither) is set — the effective mode then derives from `bypass`.
     pub mode: Field<PermissionMode>,
     pub timeout: Field<u64>,
-    // The layered `auto_compact_tokens`, `tool_set`, `load_skills` and
-    // `load_mcp`, each unset unless a layer sets it. `//` rather than `///`:
+    // The layered `auto_compact_tokens`, `tool_set`, `load_skills`,
+    // `load_mcp` and `replace_system`, each unset unless a layer sets it. `//` rather than `///`:
     // a doc comment beside a `Field` `$ref` makes the SDK generator inline a
     // fresh copy of the type under a new name.
     pub auto_compact_tokens: Field<u64>,
     pub tool_set: Field<Vec<ToolClass>>,
     pub load_skills: Field<bool>,
     pub load_mcp: Field<bool>,
+    pub replace_system: Field<bool>,
     pub output_format: Field<OutputFormat>,
     /// Whether config asks every `run` to stream (`--stream` / ONEHARNESS_STREAM);
     /// defaults to false, the built-in buffered report.
@@ -2107,6 +2116,7 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
         tool_set: pick(layers, |c| c.tool_set.clone()),
         load_skills: pick(layers, |c| c.load_skills),
         load_mcp: pick(layers, |c| c.load_mcp),
+        replace_system: pick(layers, |c| c.replace_system),
         output_format: pick(layers, |c| c.output_format),
         stream: pick(layers, |c| c.stream).or_default(false),
         schema_file: pick(layers, |c| c.schema_file.clone()),

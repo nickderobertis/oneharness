@@ -1,8 +1,9 @@
 //! The settings that keep a long continued session cheap, stated once by the
 //! caller and translated here for whichever harness runs: compaction at a size
 //! (`auto_compact_tokens`), compaction on demand (`oneharness compact`), a lean
-//! tool set (`tool_set`, `load_skills`, `load_mcp`), image input (`images`) and
-//! per-call usage (`calls`).
+//! tool set (`tool_set`, `load_skills`, `load_mcp`), image input (`images`),
+//! per-call usage (`calls`), a system prompt that replaces the harness's own
+//! (`replace_system`) and how a schema reaches the harness (`schema`).
 //!
 //! Every translation comes from one table, [`TRANSLATIONS`]: per harness and
 //! the release it was confirmed against, each setting's knob, the knob's unit,
@@ -103,10 +104,17 @@ pub enum Setting {
     /// The run-level allowlist (`allowed_tools` outside `[sync]`), applied to
     /// one run through its overlay. Added in report schema `0.15`.
     AllowedTools,
+    /// The run's system text replaces the harness's own system prompt
+    /// instead of being appended to it. Added in report schema `0.16`.
+    ReplaceSystem,
+    /// The schema of a structured-output run, delivered through the
+    /// harness's own structured-output knob (native) rather than as an
+    /// instruction appended to the prompt. Added in report schema `0.16`.
+    Schema,
 }
 
 impl Setting {
-    pub const ALL: [Setting; 8] = [
+    pub const ALL: [Setting; 10] = [
         Setting::AutoCompactTokens,
         Setting::CompactNow,
         Setting::ToolSet,
@@ -115,6 +123,8 @@ impl Setting {
         Setting::Images,
         Setting::Calls,
         Setting::AllowedTools,
+        Setting::ReplaceSystem,
+        Setting::Schema,
     ];
 
     #[must_use]
@@ -128,6 +138,8 @@ impl Setting {
             Setting::Images => "images",
             Setting::Calls => "calls",
             Setting::AllowedTools => "allowed_tools",
+            Setting::ReplaceSystem => "replace_system",
+            Setting::Schema => "schema",
         }
     }
 }
@@ -177,6 +189,12 @@ pub enum Unit {
     Operation,
     /// Per-call token counts.
     UsageRecord,
+    /// Text taken verbatim.
+    Text,
+    /// A JSON Schema document, inline.
+    InlineJson,
+    /// The structured value the harness returns for a schema.
+    StructuredValue,
 }
 
 /// One knob of a translation and its unit.
@@ -299,10 +317,15 @@ impl ClaudeWindowRule {
 
 const CLAUDE: &str = "claude-code";
 const CLAUDE_VERSION: &str = "2.1.316";
+/// The Claude Code release the `replace_system` and `schema` entries were
+/// confirmed against (the rest of its table rests on `CLAUDE_VERSION`).
+const CLAUDE_SYSTEM_VERSION: &str = "2.1.329";
 const CODEX: &str = "codex";
 const CODEX_VERSION: &str = "0.159.2";
 /// The codex feature that loads its shell, which reads files too.
 const CODEX_SHELL_TOOL: &str = "features.shell_tool";
+/// The codex config key whose file replaces its base instructions.
+const CODEX_INSTRUCTIONS_FILE: &str = "model_instructions_file";
 
 const fn knob(knob: Knob, unit: Unit) -> KnobSpec {
     KnobSpec { knob, unit }
@@ -359,6 +382,25 @@ macro_rules! no_lean_knobs {
         )
     };
     ($harness:expr, $version:expr, $help:expr, $images:expr, $calls:expr, $allowed:expr) => {
+        no_lean_knobs!(
+            $harness,
+            $version,
+            $help,
+            $images,
+            $calls,
+            $allowed,
+            none($harness, $version, Setting::ReplaceSystem, $help)
+        )
+    };
+    (
+        $harness:expr,
+        $version:expr,
+        $help:expr,
+        $images:expr,
+        $calls:expr,
+        $allowed:expr,
+        $replace:expr
+    ) => {
         [
             none($harness, $version, Setting::AutoCompactTokens, $help),
             none($harness, $version, Setting::CompactNow, $help),
@@ -368,11 +410,34 @@ macro_rules! no_lean_knobs {
             $images,
             $calls,
             $allowed,
+            $replace,
+            prompt_schema($harness, $version),
         ]
     };
 }
 
-const CLAUDE_TABLE: [Translation; 8] = [
+/// A harness oneharness hands a schema as an instruction appended to the
+/// prompt: no native knob is used, so nothing about the run is refused.
+const fn prompt_schema(harness: &'static str, version: &'static str) -> Translation {
+    Translation {
+        harness,
+        version,
+        setting: Setting::Schema,
+        knobs: &[],
+        mapping: PROMPT_SCHEMA,
+        residual: None,
+        source: "no native structured-output knob is used: the schema rides the prompt and \
+                 oneharness validates the answer",
+    }
+}
+
+/// How a prompt-based schema run is delivered, shared by every harness that
+/// takes one (and by codex, for a schema its native knob would refuse).
+const PROMPT_SCHEMA: &str = "prompt-based: the schema instruction is appended to the prompt, the \
+                             value is read from the final text, and a re-ask restates the schema \
+                             with the validation errors";
+
+const CLAUDE_TABLE: [Translation; 10] = [
     Translation {
         harness: CLAUDE,
         version: CLAUDE_VERSION,
@@ -491,9 +556,51 @@ const CLAUDE_TABLE: [Translation; 8] = [
         source: "spike-command-grant (Claude Code 2.1.323, 167 scripted-model probes) and \
                  live/control/run_allowlist_live.py's journeys against the installed CLI",
     },
+    Translation {
+        harness: CLAUDE,
+        version: CLAUDE_SYSTEM_VERSION,
+        setting: Setting::ReplaceSystem,
+        knobs: &[
+            knob(Knob::Flag("--system-prompt-file"), Unit::FilePath),
+            knob(Knob::Flag("--system-prompt"), Unit::Text),
+        ],
+        mapping: "the run's system text, in the private temp file it already rides, on \
+                  `--system-prompt-file` in place of `--append-system-prompt-file` (inline \
+                  `--system-prompt` in place of `--append-system-prompt` where the text rides the \
+                  argv)",
+        residual: None,
+        source:
+            "`claude --help` (2.1.329) `--system-prompt <prompt>` \"System prompt to use for the \
+                 session\" and its `--system-prompt[-file]`; requests captured from 2.1.329 at a \
+                 stub endpoint: the appended run sent 7064 characters of system text, \
+                 `--system-prompt-file` and `--system-prompt` 165 (the caller's text beside a \
+                 one-line SDK identity)",
+    },
+    Translation {
+        harness: CLAUDE,
+        version: CLAUDE_SYSTEM_VERSION,
+        setting: Setting::Schema,
+        knobs: &[
+            knob(Knob::Flag("--json-schema"), Unit::InlineJson),
+            knob(
+                Knob::StreamField("structured_output"),
+                Unit::StructuredValue,
+            ),
+        ],
+        mapping: "`--json-schema <schema>` for every schema. Without images the run reads \
+                  `--output-format json` and the value is the result document's \
+                  `structured_output`; with images it stays on stream-json in and out (the image \
+                  frame needs it) and the value is the stream's `result` event's \
+                  `structured_output`. A re-ask is a fresh run on the same path",
+        residual: None,
+        source:
+            "`claude --help` (2.1.329) `--json-schema <schema>`; a real 2.1.329 run with a PNG \
+                 in its stream-json frame and `--json-schema` answered through its \
+                 `StructuredOutput` tool, its `result` event carrying `structured_output`",
+    },
 ];
 
-const CODEX_TABLE: [Translation; 8] = [
+const CODEX_TABLE: [Translation; 10] = [
     Translation {
         harness: CODEX,
         version: CODEX_VERSION,
@@ -625,12 +732,46 @@ const CODEX_TABLE: [Translation; 8] = [
                  `$CODEX_HOME/rules/` is honoured) and live/control/run_allowlist_live.py's \
                  journeys against the installed CLI",
     },
+    Translation {
+        harness: CODEX,
+        version: CODEX_VERSION,
+        setting: Setting::ReplaceSystem,
+        knobs: &[knob(
+            Knob::ConfigOverride(CODEX_INSTRUCTIONS_FILE),
+            Unit::FilePath,
+        )],
+        mapping: "the run's system text in a private temp file, `-c \
+                  model_instructions_file=\"<file>\"`, and not folded into the prompt; not on a \
+                  `--control` turn, whose app-server is launched before the turn's text is known",
+        residual: None,
+        source: "requests captured from codex 0.159.2 at a stub endpoint: the override replaced \
+                 the 22163-byte \"You are Codex\" base-instructions message with the file's text, \
+                 leaving the skills and multi-agent developer messages",
+    },
+    Translation {
+        harness: CODEX,
+        version: CODEX_VERSION,
+        setting: Setting::Schema,
+        knobs: &[knob(Knob::Flag("--output-schema"), Unit::FilePath)],
+        mapping: "a schema OpenAI strict mode accepts (`structured::Schema::is_openai_strict`) is \
+                  written to a private temp file and passed as `--output-schema <file>` on `exec` \
+                  and `exec resume`, beside any `--image=`; the value is the final \
+                  `agent_message` text. Any other schema stays prompt-based, unchanged",
+        residual: None,
+        source: "`codex exec --help` (0.159.2) `--output-schema <FILE>`; real 0.159.2 runs: with \
+                 and without `--image`, with no tool and after a shell tool ran, the final \
+                 `agent_message` conformed (openai/codex#15451 did not reproduce); the request \
+                 carries the schema as a strict `json_schema` format, and the API refused \
+                 (400 `invalid_json_schema`) a schema with an optional property, no \
+                 `additionalProperties: false`, `allOf`, `oneOf`, `not`, `if`, an untyped \
+                 `const`, or a non-object root",
+    },
 ];
 
 const OPENCODE: &str = "opencode";
 const OPENCODE_VERSION: &str = "1.18.5";
 
-const OPENCODE_TABLE: [Translation; 8] = no_lean_knobs!(
+const OPENCODE_TABLE: [Translation; 10] = no_lean_knobs!(
     OPENCODE,
     OPENCODE_VERSION,
     "`opencode run --help` (1.18.5) names no flag for it",
@@ -668,10 +809,18 @@ const OPENCODE_TABLE: [Translation; 8] = no_lean_knobs!(
         "withheld: spike-command-grant (opencode 1.18.22) found its read-only `--agent plan` lets \
          a redirection or any executable write the worktree, and a permission override reaches \
          only the plan agent, not a subagent it delegates to"
+    ),
+    none(
+        OPENCODE,
+        OPENCODE_VERSION,
+        Setting::ReplaceSystem,
+        "`opencode run --help` (1.18.5) names no flag for it; an agent's own `prompt` config \
+         replaces it only for that agent, and oneharness's modes already choose the agent \
+         (`--agent plan` under read-only)"
     )
 );
 
-const COPILOT_TABLE: [Translation; 8] = no_lean_knobs!(
+const COPILOT_TABLE: [Translation; 10] = no_lean_knobs!(
     "copilot",
     "1.0.78",
     "`copilot --help` (1.0.78) names no headless flag oneharness has confirmed for it",
@@ -687,7 +836,7 @@ const COPILOT_TABLE: [Translation; 8] = no_lean_knobs!(
     }
 );
 
-const GOOSE_TABLE: [Translation; 8] = no_lean_knobs!(
+const GOOSE_TABLE: [Translation; 10] = no_lean_knobs!(
     "goose",
     "1.44.0",
     "`goose run --help` (1.44.0) names no flag for it",
@@ -696,22 +845,70 @@ const GOOSE_TABLE: [Translation; 8] = no_lean_knobs!(
         "1.44.0",
         Setting::Images,
         "`goose run --help` (1.44.0) names no image input"
+    ),
+    none(
+        "goose",
+        "1.44.0",
+        Setting::Calls,
+        "its output carries one run-level usage at most, with no per-call figures",
+    ),
+    none(
+        "goose",
+        "1.44.0",
+        Setting::AllowedTools,
+        "withheld: no per-run mechanism is proven against its real CLI to apply the allowlist to \
+         one run alone and nothing wider",
+    ),
+    none(
+        "goose",
+        "1.44.0",
+        Setting::ReplaceSystem,
+        "`goose run --help` (1.44.0): its `--system` \"Provide additional system instructions\" \
+         adds to its prompt, and no flag replaces it"
     )
 );
 
-const QWEN_TABLE: [Translation; 8] = no_lean_knobs!(
-    "qwen",
-    "0.21.0",
+const QWEN: &str = "qwen";
+const QWEN_VERSION: &str = "0.21.0";
+
+const QWEN_TABLE: [Translation; 10] = no_lean_knobs!(
+    QWEN,
+    QWEN_VERSION,
     "`qwen --help` (0.21.0) names no flag for it",
     none(
-        "qwen",
-        "0.21.0",
+        QWEN,
+        QWEN_VERSION,
         Setting::Images,
         "`qwen --help` (0.21.0) names no image input"
-    )
+    ),
+    none(
+        QWEN,
+        QWEN_VERSION,
+        Setting::Calls,
+        "its output carries one run-level usage at most, with no per-call figures",
+    ),
+    none(
+        QWEN,
+        QWEN_VERSION,
+        Setting::AllowedTools,
+        "withheld: no per-run mechanism is proven against its real CLI to apply the allowlist to \
+         one run alone and nothing wider",
+    ),
+    Translation {
+        harness: QWEN,
+        version: QWEN_VERSION,
+        setting: Setting::ReplaceSystem,
+        knobs: &[knob(Knob::Env("QWEN_SYSTEM_MD"), Unit::FilePath)],
+        mapping: "the run's system text in a private temp file named by `QWEN_SYSTEM_MD=<file>` \
+                  on the qwen process, and not folded into the prompt; not on a `--control` turn",
+        residual: None,
+        source: "qwen 0.21.0 bundled source, `getCoreSystemPrompt`: with `QWEN_SYSTEM_MD` set to \
+                 a path, the base prompt is that file's text instead of its built-in one (user \
+                 memory still follows it)",
+    }
 );
 
-const CRUSH_TABLE: [Translation; 8] = no_lean_knobs!(
+const CRUSH_TABLE: [Translation; 10] = no_lean_knobs!(
     "crush",
     "0.87.0",
     "`crush run --help` (0.87.0) names no flag for it",
@@ -723,7 +920,7 @@ const CRUSH_TABLE: [Translation; 8] = no_lean_knobs!(
     )
 );
 
-const CURSOR_TABLE: [Translation; 8] = no_lean_knobs!(
+const CURSOR_TABLE: [Translation; 10] = no_lean_knobs!(
     "cursor",
     "2026.07.23-e383d2b",
     "`cursor-agent --help` (2026.07.23-e383d2b) names no flag for it",
@@ -736,7 +933,7 @@ const CURSOR_TABLE: [Translation; 8] = no_lean_knobs!(
 );
 
 /// Every harness's translation of every setting.
-pub const TRANSLATIONS: [[Translation; 8]; 8] = [
+pub const TRANSLATIONS: [[Translation; 10]; 8] = [
     CLAUDE_TABLE,
     CODEX_TABLE,
     OPENCODE_TABLE,
@@ -749,7 +946,7 @@ pub const TRANSLATIONS: [[Translation; 8]; 8] = [
 
 /// What an id the registry does not hold translates to: no knob for anything,
 /// so every setting reads as unsupported rather than as a panic.
-const UNREGISTERED: [Translation; 8] = no_lean_knobs!(
+const UNREGISTERED: [Translation; 10] = no_lean_knobs!(
     "unregistered",
     "-",
     "not a registered harness id",
@@ -1006,6 +1203,53 @@ pub fn claude_tools_flag() -> &'static str {
     }
 }
 
+/// The flags Claude Code takes the run's system text on: `(file, inline)`.
+/// Appended by default; under `replace_system` the table's replacing flags.
+#[must_use]
+pub fn claude_system_flags(replace: bool) -> (&'static str, &'static str) {
+    if !replace {
+        return ("--append-system-prompt-file", "--append-system-prompt");
+    }
+    let knobs = translation(CLAUDE, Setting::ReplaceSystem).knobs;
+    match (knobs.first().map(|k| k.knob), knobs.get(1).map(|k| k.knob)) {
+        (Some(Knob::Flag(file)), Some(Knob::Flag(inline))) => (file, inline),
+        _ => ("--system-prompt-file", "--system-prompt"),
+    }
+}
+
+/// The argv a harness whose replacing knob is a config override (codex)
+/// adds to replace its system prompt with the file at `path`; empty for
+/// every other harness.
+#[must_use]
+pub fn replace_system_args(id: &str, path: &str) -> Vec<String> {
+    match translation(id, Setting::ReplaceSystem)
+        .knobs
+        .first()
+        .map(|k| k.knob)
+    {
+        Some(Knob::ConfigOverride(key)) => vec![
+            "-c".to_string(),
+            format!("{key}={}", toml::Value::String(path.to_string())),
+        ],
+        _ => Vec::new(),
+    }
+}
+
+/// The environment a harness whose replacing knob is a variable (qwen) is
+/// started with to replace its system prompt with the file at `path`; empty
+/// for every other harness.
+#[must_use]
+pub fn replace_system_env(id: &str, path: &str) -> Vec<(String, String)> {
+    match translation(id, Setting::ReplaceSystem)
+        .knobs
+        .first()
+        .map(|k| k.knob)
+    {
+        Some(Knob::Env(name)) => vec![(name.to_string(), path.to_string())],
+        _ => Vec::new(),
+    }
+}
+
 /// Claude Code's tool names for `classes` under `mode`, in its own spelling,
 /// read from the table's `--tools` mapping. Under read-only the list is
 /// intersected with `read_only` (that mode's own tools).
@@ -1236,6 +1480,13 @@ pub fn claude_stream_calls(stdout: &str) -> Option<Vec<Usage>> {
 /// reports its final attempt's calls, the attempt its `usage` describes.
 #[must_use]
 pub fn codex_rollout_calls(rollout: &str) -> Vec<Usage> {
+    codex_rollout_turn_calls(rollout).pop().unwrap_or_default()
+}
+
+/// [`codex_rollout_calls`] for every turn the lines hold, oldest first: one
+/// list per `task_started`, or a single list when there is none.
+#[must_use]
+pub fn codex_rollout_turn_calls(rollout: &str) -> Vec<Vec<Usage>> {
     // The table's selector, `<record type> <payload type> <payload path>`.
     let selector = match translation(CODEX, Setting::Calls)
         .knobs
@@ -1250,34 +1501,48 @@ pub fn codex_rollout_calls(rollout: &str) -> Vec<Usage> {
         return Vec::new();
     };
     let pointer = format!("/payload/{}", path.replace('.', "/"));
-    let events: Vec<Value> = rollout
-        .lines()
-        .filter_map(|line| serde_json::from_str::<Value>(line.trim()).ok())
-        .collect();
     let event_type = |value: &Value| -> Option<String> {
         (value.get("type").and_then(Value::as_str) == Some(record))
             .then(|| value.pointer("/payload/type").and_then(Value::as_str))
             .flatten()
             .map(str::to_string)
     };
-    let last_turn = events
+    let events: Vec<Value> = rollout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line.trim()).ok())
+        .collect();
+    let started = events
         .iter()
-        .rposition(|value| event_type(value).as_deref() == Some("task_started"))
-        .map_or(0, |at| at + 1);
-    events[last_turn..]
-        .iter()
-        .filter(|value| event_type(value).as_deref() == Some(kind))
-        .filter_map(|value| {
-            let last = value.pointer(&pointer)?.as_object()?;
-            Some(Usage {
-                input_tokens: last.get("input_tokens").and_then(Value::as_u64),
-                output_tokens: last.get("output_tokens").and_then(Value::as_u64),
-                cache_read_tokens: last.get("cached_input_tokens").and_then(Value::as_u64),
-                cache_write_tokens: last.get("cache_write_input_tokens").and_then(Value::as_u64),
-                cost_usd: None,
-            })
-        })
-        .collect()
+        .any(|value| event_type(value).as_deref() == Some("task_started"));
+    let mut turns: Vec<Vec<Usage>> = if started {
+        Vec::new()
+    } else {
+        vec![Vec::new()]
+    };
+    for value in &events {
+        match event_type(value).as_deref() {
+            Some("task_started") => turns.push(Vec::new()),
+            Some(found) if found == kind => {
+                let (Some(turn), Some(last)) = (
+                    turns.last_mut(),
+                    value.pointer(&pointer).and_then(Value::as_object),
+                ) else {
+                    continue;
+                };
+                turn.push(Usage {
+                    input_tokens: last.get("input_tokens").and_then(Value::as_u64),
+                    output_tokens: last.get("output_tokens").and_then(Value::as_u64),
+                    cache_read_tokens: last.get("cached_input_tokens").and_then(Value::as_u64),
+                    cache_write_tokens: last
+                        .get("cache_write_input_tokens")
+                        .and_then(Value::as_u64),
+                    cost_usd: None,
+                });
+            }
+            _ => {}
+        }
+    }
+    turns
 }
 
 /// Per-call usage from opencode's `--format json` stdout: one entry per
@@ -1355,9 +1620,11 @@ mod tests {
     }
 
     /// README.md's translation matrix is held to this table: each row's
-    /// release, whether each cell claims a knob (`—`/`refused` for none,
-    /// `partial:` for a residual), and that every knob the table names appears
-    /// in its cell. Every registered harness is in exactly one row.
+    /// release (a cell ending in its own `(release)` states that entry's),
+    /// whether each cell claims a knob (`—`/`refused`/`withheld`/`prompt-based`
+    /// for none, `partial:` for a residual), and that every knob the table
+    /// names appears in its cell. Every registered harness is in exactly one
+    /// row.
     #[test]
     fn the_readme_translation_matrix_matches_the_table() {
         let readme = include_str!("../../../../README.md").replace("\r\n", "\n");
@@ -1392,10 +1659,15 @@ mod tests {
                 seen.push(id);
                 for (setting, cell) in Setting::ALL.into_iter().zip(&cells[1..]) {
                     let t = translation(id, setting);
-                    if let Some(release) = release {
+                    let own_release = cell
+                        .strip_suffix(')')
+                        .and_then(|c| c.rsplit_once(" ("))
+                        .map(|(_, r)| r)
+                        .filter(|r| r.chars().all(|c| c.is_ascii_digit() || c == '.'));
+                    if let Some(release) = own_release.or(release) {
                         assert_eq!(release, t.version, "{id} {setting:?}");
                     }
-                    let none = *cell == "—" || *cell == "refused" || *cell == "withheld";
+                    let none = ["—", "refused", "withheld", "prompt-based"].contains(cell);
                     assert_eq!(none, t.knobs.is_empty(), "{id} {setting:?}: {cell}");
                     assert_eq!(
                         cell.starts_with("partial:"),
@@ -1425,6 +1697,65 @@ mod tests {
         let mut ids: Vec<&str> = harness::all().iter().map(|s| s.id).collect();
         ids.sort_unstable();
         assert_eq!(seen, ids);
+    }
+
+    /// The `schema` and `replace_system` rows are the adapters' own: a native
+    /// schema row exactly where the registry declares a native schema, and a
+    /// replacing knob exactly where building a replace run puts that knob on
+    /// the argv or in the environment — so `oneharness list`, which reads the
+    /// rows, cannot claim what the adapter does not do.
+    #[test]
+    fn the_schema_and_replace_system_rows_are_what_each_adapter_builds() {
+        for spec in harness::all() {
+            assert_eq!(
+                supports(spec.id, Setting::Schema),
+                spec.native_schema.is_some(),
+                "{}",
+                spec.id
+            );
+            let t = translation(spec.id, Setting::ReplaceSystem);
+            let argv = (spec.build_argv)(&harness::BuildCtx {
+                bin: spec.id,
+                prompt: "hi",
+                model: None,
+                system: Some("S"),
+                resume: None,
+                fork: false,
+                mode: PermissionMode::Default,
+                output_format: spec.output_format,
+                schema: None,
+                system_file: Some("/sys"),
+                replace_system: t.supported(),
+                schema_file: None,
+                delivery: harness::PromptDelivery::Stdin,
+                plugins: true,
+                apps: true,
+                skip_git_repo_check: false,
+                analytics: true,
+                model_catalog: None,
+                tools: None,
+                allowed_tools: None,
+            });
+            let env = replace_system_env(spec.id, "/sys");
+            let Some(first) = t.knobs.first() else {
+                assert!(env.is_empty() && replace_system_args(spec.id, "/sys").is_empty());
+                continue;
+            };
+            let delivered = match first.knob {
+                Knob::Flag(flag) => argv.windows(2).any(|w| w == [flag, "/sys"]),
+                Knob::ConfigOverride(key) => argv
+                    .windows(2)
+                    .any(|w| w[0] == "-c" && w[1] == format!("{key}=\"/sys\"")),
+                Knob::Env(name) => env == [(name.to_string(), "/sys".to_string())],
+                other => panic!("{}: unexpected replacing knob {other:?}", spec.id),
+            };
+            assert!(delivered, "{}: {argv:?} {env:?}", spec.id);
+            assert!(
+                !argv.iter().any(|a| a.contains("append-system-prompt")),
+                "{}: {argv:?}",
+                spec.id
+            );
+        }
     }
 
     #[test]
@@ -1506,6 +1837,8 @@ mod tests {
                         output_format: spec.output_format,
                         schema: None,
                         system_file: None,
+                        replace_system: false,
+                        schema_file: None,
                         delivery: harness::PromptDelivery::Argv,
                         plugins: false,
                         apps: false,
@@ -1590,6 +1923,8 @@ mod tests {
             output_format: crate::domain::report::OutputFormat::StreamJson,
             schema: None,
             system_file: None,
+            replace_system: false,
+            schema_file: None,
             delivery,
             plugins: false,
             apps: false,
@@ -1724,6 +2059,12 @@ mod tests {
             codex_rollout_calls(&two_turns).len(),
             1,
             "only the last turn's calls"
+        );
+        let per_turn = codex_rollout_turn_calls(&two_turns);
+        assert_eq!(
+            per_turn.iter().map(Vec::len).collect::<Vec<_>>(),
+            vec![3, 1],
+            "one list per turn, oldest first"
         );
     }
 

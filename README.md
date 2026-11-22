@@ -174,7 +174,7 @@ for **every** harness — as does `--schema` ([structured output](#structured-ou
 prompt-based where a harness has no native schema flag).
 `oneharness list --format json` prints this registry as JSON, including each
 adapter's exact command, its `sync_file`, and `supports_resume` /
-`supports_fork` / `supports_native_schema` /
+`supports_fork` / `supports_native_schema` / `supports_replace_system` /
 `supports_reasoning` / `supports_allowed_tools` / `supports_denied_tools` /
 `supports_hooks` capability flags.
 
@@ -689,6 +689,7 @@ mode = "default"                # --mode; beats `bypass` (default: "default")
 # tool_set = ["shell", "read"] # --tool-set: load only these built-in tool classes
 # load_skills = false          # --no-skills: load no skills list
 # load_mcp = false             # --no-mcp: load no MCP server or MCP tool
+# replace_system = true        # --replace-system: `system` replaces the harness's own prompt
 output_format = "json"          # --output-format
 stream = false                  # --stream / --no-stream (incremental events)
 schema_file = "person.json"     # --schema (structured output; relative to project)
@@ -1681,14 +1682,38 @@ Schema](https://json-schema.org/) and validates it, so a programmatic consumer
 gets a checked JSON value instead of prose to parse. The schema is delivered two
 ways, chosen per harness:
 
-- **Native** where the CLI supports it — Claude Code's `--json-schema` (with
-  `--output-format json`), which returns the conforming value in its result
-  document's `structured_output` field. `supports_native_schema` in `oneharness
-  list` flags these.
-- **Prompt-based** for every other harness — the schema is appended to the
-  prompt as an instruction to emit only a conforming JSON value, which oneharness
-  then recovers from the final text (unwrapping a ```` ```json ```` fence or an
-  object embedded in prose).
+- **Native** where the CLI supports it. `supports_native_schema` in `oneharness
+  list` flags these, read from the `schema` column of the translation table
+  under [Long sessions](#long-sessions-compaction-a-lean-tool-set-images-and-per-call-usage).
+  - **Claude Code**, every schema: `--json-schema`. Without `--image` the run is
+    `--output-format json` and the value is its result document's
+    `structured_output`. With `--image` the run stays on stream-json in and out
+    (the image rides a stream-json input frame), and the value is the stream's
+    `result` event's `structured_output`; so `--output-format` unset or
+    `stream-json` is accepted beside images, and only another explicit format
+    is refused. There is no fallback to the prompt path on Claude Code.
+  - **Codex**, only a schema OpenAI strict mode accepts: written to a private
+    temp file for the run and passed as `--output-schema <file>` (on `exec` and
+    `exec resume`, beside any `--image=`); the value is the final
+    `agent_message`. Codex sends the schema as a *strict* `json_schema`
+    response format, which the API refuses (HTTP 400 `invalid_json_schema`)
+    for any other schema, so the choice is made from the schema's shape before
+    the run — never as a retry after a failure, and no schema is rewritten.
+    Native means all of: the root is `type: object`; every object node has
+    `additionalProperties: false` and lists every property in `required`;
+    every node states a `type` (or is a `$ref` or an `anyOf`); and every
+    keyword is one of `$schema`, `$ref`, `$defs`, `definitions`, `title`,
+    `description`, `type`, `properties`, `required`, `additionalProperties`,
+    `patternProperties`, `items`, `anyOf`, `enum`, `const`, `pattern`,
+    `minLength`, `maxLength`, `minimum`, `maximum`, `exclusiveMinimum`,
+    `exclusiveMaximum`, `multipleOf`, `minItems`, `maxItems`. Any other schema —
+    an optional property, `allOf`, `oneOf`, `not`, `if`, `format`, an untyped
+    `enum`/`const`, a non-object root — keeps the prompt-based path below,
+    exactly as before.
+- **Prompt-based** for every other harness (and codex's non-strict schemas) —
+  the schema is appended to the prompt as an instruction to emit only a
+  conforming JSON value, which oneharness then recovers from the final text
+  (unwrapping a ```` ```json ```` fence or an object embedded in prose).
 
 Either way oneharness **validates the result itself** (with the
 [`jsonschema`](https://crates.io/crates/jsonschema) crate), so a native flag the
@@ -1698,11 +1723,11 @@ times (default 2 — so at most `1 + N` invocations per harness). The loop runs
 **per harness**, so a `--schema` run across many harnesses under `--run-mode
 parallel` is still concurrent.
 
-> Codex CLI also has a native `--output-schema`, but it takes a schema *file*
-> and is [reportedly ignored once the agent uses tools](https://github.com/openai/codex/issues/15451),
-> so oneharness uses the more reliable prompt-based path for it today. The
-> registry's `native_schema` hook makes adding more native deliveries a
-> one-line, well-tested change.
+> Codex's `--output-schema` was [reported ignored once the agent uses
+> tools](https://github.com/openai/codex/issues/15451). On codex 0.159.2 it was
+> not: real runs with and without `--image`, in a turn that ran no tool and in
+> one that ran a shell command first, all ended on a final `agent_message`
+> that conformed to the schema.
 
 Each result gains four fields (all `null` when no `--schema` was given):
 
@@ -1714,7 +1739,9 @@ Each result gains four fields (all `null` when no `--schema` was given):
   run a failure (exit `1`), so you can gate on "did I actually get conforming
   output".
 - `schema_attempts` — how many times the harness was invoked under the loop
-  (`1 + retries`).
+  (`1 + retries`). Each re-ask is a fresh run, and where the harness reports
+  per-call usage the result's `calls` lists every attempt's model calls, oldest
+  first.
 - `schema_error` — the validation errors from the final attempt, joined for
   display; `null` when valid.
 
@@ -2638,8 +2665,9 @@ context.
 
 A caller that keeps one session across many turns — a supervisor checking a
 print every two minutes for hours — pays at every model call for everything
-the session has loaded. Five settings, stated once and translated for
-whichever harness runs, keep that cost bounded:
+the session has loaded, the harness's own general-purpose system prompt
+included. Six settings, stated once and translated for whichever harness runs,
+keep that cost bounded:
 
 | Setting | Config / env / flag | What it does |
 |---|---|---|
@@ -2648,13 +2676,16 @@ whichever harness runs, keep that cost bounded:
 | `load_skills` | `load_skills = false` / `ONEHARNESS_LOAD_SKILLS` / `--no-skills` | `false` loads no skills list. |
 | `load_mcp` | `load_mcp = false` / `ONEHARNESS_LOAD_MCP` / `--no-mcp` | `false` loads no MCP server or MCP tool. |
 | `images` | `--image PATH` (repeatable; `RunRequest::images`) | Each file reaches the model as an image, not as a path it must open. |
+| `replace_system` | `replace_system = true` / `ONEHARNESS_REPLACE_SYSTEM` / `--replace-system` | The run's system text (`system` / `--system` / `--system-file`) replaces the harness's own system prompt instead of being appended to it. Without system text it changes nothing. |
 
 Each layers exactly like `timeout` (user config under project config, each
 under its `extends` parents, under `ONEHARNESS_*`, under the flag) and sits on
 the library's `RunRequest`. Absent, nothing changes. Out of range is a usage
 error naming the setting: zero, negative or not an integer for
 `auto_compact_tokens`, an unknown class for `tool_set`, not a boolean for the
-other two. They are not `allowed_tools`/`denied_tools`: those are permission
+other three. A `RunRequest` value beats every layer; its `None` defers to them,
+so `replace_system: Some(false)` appends even under a config or environment
+`true`. They are not `allowed_tools`/`denied_tools`: those are permission
 rules `sync` writes, deciding what may *run*; these decide what is *loaded*,
 and reach a `--no-config` run too.
 
@@ -2664,10 +2695,16 @@ its result's `diagnostics` names the harness and the setting. A harness with no
 image input is refused for an image run (`status: skipped`, `failure_kind:
 "unsupported_input"`, an `error` naming `images`), so a fallback chain moves on
 (`"unsupported-input"`) rather than answering without the picture. A missing or
-unreadable image file is refused before any harness starts. `oneharness list`
-reports per adapter `supports_auto_compact`, `supports_compact_now`,
-`supports_tool_set`, `supports_skills_off`, `supports_mcp_off`,
-`supports_images` and `supports_call_usage`.
+unreadable image file is refused before any harness starts. A harness with no
+knob that replaces its system prompt is refused for a `replace_system` run the
+same way (`failure_kind_source: "request:replace_system"`, an `error` naming
+`replace_system`): it is never handed the text to append instead. Codex and
+Qwen set their replacing knob when they launch, so a `replace_system` run with
+`--control` on either is a usage error (exit 2); Claude Code's controlled turn
+takes its flag as any run does. `oneharness list` reports per adapter
+`supports_auto_compact`, `supports_compact_now`, `supports_tool_set`,
+`supports_skills_off`, `supports_mcp_off`, `supports_images`,
+`supports_call_usage` and `supports_replace_system`.
 
 **Per-call usage.** Each result's `calls` lists one usage per model call the
 turn made, in order (input, output, cache reads and writes), read from the
@@ -2691,13 +2728,14 @@ another identity than `--harness`, is refused (exit 2) as `run` refuses it.
 The translation, from one table in the source (`domain::lean::TRANSLATIONS`,
 which also cites the evidence for each entry):
 
-| Harness (release) | `auto_compact_tokens` | compact now | `tool_set` | `load_skills = false` | `load_mcp = false` | `images` | `calls` | run-level `allowed_tools` |
-|---|---|---|---|---|---|---|---|---|
-| Claude Code (2.1.316) | `CLAUDE_CODE_AUTO_COMPACT_WINDOW` = N + 33000; below 67000, the 100000 window floor plus `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` = N / 80000 × 100 | `-p /compact --resume ID --fork-session` | `--tools Bash Read` (intersected with read-only's set under `--mode read-only`) | `--disable-slash-commands` | `--strict-mcp-config` | base64 `image` blocks in one stream-json user frame (`--input-format stream-json`) | one `assistant.message.usage` per `message.id` under `--output-format stream-json` | `--allowedTools` per rule; under read-only `--permission-mode dontAsk`, `--tools` gains `Bash` (Linux; withheld elsewhere) |
-| Codex (0.159.2) | `-c model_auto_compact_token_limit=N` | app-server `thread/fork` + `thread/compact/start` | partial: `features.goals`, `features.view_image`, `features.sleep_tool` off, `web_search="disabled"`, and `features.shell_tool` off only for a set naming neither `shell` nor `read` (codex's shell also reads files); `apply_patch`, `request_user_input`, the multi-agent `collaboration` tools and `clock__curr_time` stay loaded (no setting removes them) and the run says so | `-c skills.include_instructions=false` | each configured server overridden `-c mcp_servers.<name>={command="true",enabled=false}`, plus `features.apps=false` | `--image=PATH` | the rollout record's `event_msg token_count info.last_token_usage`, one per event | a per-run overlay `CODEX_HOME` whose `rules/` adds one `prefix_rule` per rule (Linux; withheld elsewhere) |
-| OpenCode (1.18.5) | — | — | — | — | — | `-f PATH` | one per `step_finish` event (`step_finish.part.tokens`, `part.cost`) of `--format json` | withheld |
-| Copilot (1.0.78) | — | — | — | — | — | `--attachment PATH` | — | withheld |
-| Goose, Qwen, Crush, Cursor | — | — | — | — | — | refused | — | withheld |
+| Harness (release) | `auto_compact_tokens` | compact now | `tool_set` | `load_skills = false` | `load_mcp = false` | `images` | `calls` | run-level `allowed_tools` | `replace_system` | `schema` |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Claude Code (2.1.316) | `CLAUDE_CODE_AUTO_COMPACT_WINDOW` = N + 33000; below 67000, the 100000 window floor plus `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` = N / 80000 × 100 | `-p /compact --resume ID --fork-session` | `--tools Bash Read` (intersected with read-only's set under `--mode read-only`) | `--disable-slash-commands` | `--strict-mcp-config` | base64 `image` blocks in one stream-json user frame (`--input-format stream-json`) | one `assistant.message.usage` per `message.id` under `--output-format stream-json` | `--allowedTools` per rule; under read-only `--permission-mode dontAsk`, `--tools` gains `Bash` (Linux; withheld elsewhere) | `--system-prompt-file FILE` in place of `--append-system-prompt-file` (inline `--system-prompt` in place of `--append-system-prompt`) (2.1.329) | `--json-schema`; the `json` result's `structured_output`, or with images the stream-json `result` event's `structured_output` (2.1.329) |
+| Codex (0.159.2) | `-c model_auto_compact_token_limit=N` | app-server `thread/fork` + `thread/compact/start` | partial: `features.goals`, `features.view_image`, `features.sleep_tool` off, `web_search="disabled"`, and `features.shell_tool` off only for a set naming neither `shell` nor `read` (codex's shell also reads files); `apply_patch`, `request_user_input`, the multi-agent `collaboration` tools and `clock__curr_time` stay loaded (no setting removes them) and the run says so | `-c skills.include_instructions=false` | each configured server overridden `-c mcp_servers.<name>={command="true",enabled=false}`, plus `features.apps=false` | `--image=PATH` | the rollout record's `event_msg token_count info.last_token_usage`, one per event | a per-run overlay `CODEX_HOME` whose `rules/` adds one `prefix_rule` per rule (Linux; withheld elsewhere) | `-c model_instructions_file="FILE"`, not folded into the prompt; usage error under `--control` | `--output-schema FILE` for a schema strict mode accepts (else prompt-based); the final `agent_message` |
+| OpenCode (1.18.5) | — | — | — | — | — | `-f PATH` | one per `step_finish` event (`step_finish.part.tokens`, `part.cost`) of `--format json` | withheld | refused | prompt-based |
+| Copilot (1.0.78) | — | — | — | — | — | `--attachment PATH` | — | withheld | refused | prompt-based |
+| Qwen (0.21.0) | — | — | — | — | — | refused | — | withheld | `QWEN_SYSTEM_MD=FILE` on the qwen process, not folded into the prompt; usage error under `--control` | prompt-based |
+| Goose, Crush, Cursor | — | — | — | — | — | refused | — | withheld | refused | prompt-based |
 
 How the Claude Code and Codex rows were settled, against the installed
 releases:
@@ -2724,6 +2762,20 @@ releases:
 - The lean-tool, skills, MCP and image rows were confirmed by capturing each
   harness's outbound API request at a local stub endpoint (no model call), and
   `codex debug prompt-input` for codex's skills block.
+- **`replace_system`** was confirmed the same way. Claude Code 2.1.329 sent
+  7064 characters of system text with `--append-system-prompt-file` and 165
+  with `--system-prompt-file` or `--system-prompt` (the caller's text beside a
+  one-line SDK identity). Codex 0.159.2's `-c model_instructions_file=` replaced
+  its 22163-byte "You are Codex" base-instructions message with the file's
+  text; its skills and multi-agent messages stay (`load_skills = false` drops
+  the first). Qwen 0.21.0's bundled source reads `QWEN_SYSTEM_MD` as the file
+  whose text is its base prompt. Goose's `--system` only adds instructions, and
+  OpenCode's only replacing prompt is an agent's, which oneharness's modes
+  already choose; neither is used.
+- **`schema`**: a real Claude Code 2.1.329 run with an image in its stream-json
+  frame and `--json-schema` answered through its `StructuredOutput` tool, its
+  `result` event carrying the validated `structured_output`. The codex rule is
+  stated under [Structured output](#structured-output).
 - **The Claude Code and Codex rows are drift-alarmed live** by
   `oh_lean_session_enforce` (`just live-claude`, `just live-codex`). On one
   real session it checks that a lean turn's own `system/init` line loads
@@ -2746,10 +2798,10 @@ or delivery option.
 
 | Harness | User prompt | Supplied system prompt |
 | --- | --- | --- |
-| claude-code | stdin (`-p --input-format text`) | private temp file (`--append-system-prompt-file`) |
-| codex | stdin (`codex exec -`) | folded into the stdin prompt |
+| claude-code | stdin (`-p --input-format text`) | private temp file (`--append-system-prompt-file`; `--system-prompt-file` under `replace_system`) |
+| codex | stdin (`codex exec -`) | folded into the stdin prompt (a private temp file on `-c model_instructions_file=` under `replace_system`) |
 | opencode | stdin (positional omitted) | folded into the stdin prompt |
-| qwen | stdin (`-p` omitted) | folded into the stdin prompt |
+| qwen | stdin (`-p` omitted) | folded into the stdin prompt (a private temp file in `QWEN_SYSTEM_MD` under `replace_system`) |
 | crush | stdin (positional omitted) | folded into the stdin prompt |
 | copilot | stdin (`-p` omitted) | folded into the stdin prompt |
 | cursor | stdin (`-p`, positional omitted) | folded into the stdin prompt |

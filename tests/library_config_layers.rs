@@ -156,6 +156,110 @@ fn a_run_request_layers_its_config_files_beneath_env_and_request_fields() {
     }
 }
 
+type ReplaceCase = (
+    &'static str,
+    &'static str,
+    Option<&'static str>,
+    Option<bool>,
+    bool,
+);
+
+/// `RunRequest::replace_system` layers as `load_skills` does: a config file,
+/// its `extends` parent and `ONEHARNESS_REPLACE_SYSTEM` each set it, a later
+/// layer beats an earlier one, and the request's own `Some` beats them all —
+/// `Some(false)` appends even where a file or the environment says `true` —
+/// while its `None` defers to them. Read off which system flag the mock
+/// claude-code received.
+#[test]
+fn a_run_request_replace_system_beats_config_and_env_and_none_defers_to_them() {
+    let _env = hermetic();
+    let defaults = mock_claude_defaults("system = \"Supervise the print.\"\n");
+    // (label, the later file, ONEHARNESS_REPLACE_SYSTEM, the request's field,
+    // whether the harness received the replacing flag)
+    let cases: [ReplaceCase; 8] = [
+        ("unset everywhere appends", "", None, None, false),
+        (
+            "the later file sets it",
+            "replace_system = true\n",
+            None,
+            None,
+            true,
+        ),
+        (
+            "an extends parent sets it",
+            "extends = \"base.toml\"\n",
+            None,
+            None,
+            true,
+        ),
+        (
+            "the file beats its parent",
+            "extends = \"base.toml\"\nreplace_system = false\n",
+            None,
+            None,
+            false,
+        ),
+        (
+            "the environment beats the files",
+            "replace_system = false\n",
+            Some("true"),
+            None,
+            true,
+        ),
+        (
+            "Some(false) beats a file's true",
+            "replace_system = true\n",
+            None,
+            Some(false),
+            false,
+        ),
+        (
+            "Some(false) beats the environment's true",
+            "",
+            Some("true"),
+            Some(false),
+            false,
+        ),
+        (
+            "Some(true) beats the environment's false",
+            "",
+            Some("false"),
+            Some(true),
+            true,
+        ),
+    ];
+    for (i, (label, later, env, request, replaces)) in cases.into_iter().enumerate() {
+        let (dir, d, j) = two_configs(&format!("replace-{i}"), &defaults, later);
+        std::fs::write(dir.join("base.toml"), "replace_system = true\n").unwrap();
+        let argv_file = dir.join("argv.txt");
+        match env {
+            Some(value) => std::env::set_var("ONEHARNESS_REPLACE_SYSTEM", value),
+            None => std::env::remove_var("ONEHARNESS_REPLACE_SYSTEM"),
+        }
+        let outcome = run(
+            &RunRequest {
+                replace_system: request,
+                ..layered_run(&dir, vec![d, j], &argv_file)
+            },
+            RunControls::default(),
+        );
+        std::env::remove_var("ONEHARNESS_REPLACE_SYSTEM");
+        outcome.unwrap_or_else(|err| panic!("{label}: {err}"));
+        let received = std::fs::read_to_string(&argv_file)
+            .unwrap_or_else(|err| panic!("{label}: the harness never ran: {err}"));
+        let flags: Vec<&str> = received
+            .lines()
+            .filter(|arg| arg.ends_with("system-prompt-file"))
+            .collect();
+        let expected = if replaces {
+            "--system-prompt-file"
+        } else {
+            "--append-system-prompt-file"
+        };
+        assert_eq!(flags, [expected], "{label}: received {received:?}");
+    }
+}
+
 #[test]
 fn a_run_request_reports_every_layer_in_the_order_config_explains_them() {
     let _env = hermetic();

@@ -252,6 +252,12 @@ export const CAPABILITIES = {
 				unless: null,
 			},
 			{
+				option: "replaceSystem",
+				flag: "--replace-system",
+				kind: "switch",
+				unless: null,
+			},
+			{
 				option: "images",
 				flag: "--image",
 				kind: "repeated",
@@ -573,6 +579,12 @@ export const CAPABILITIES = {
 			{
 				option: "noMcp",
 				flag: "--no-mcp",
+				kind: "switch",
+				unless: null,
+			},
+			{
+				option: "replaceSystem",
+				flag: "--replace-system",
 				kind: "switch",
 				unless: null,
 			},

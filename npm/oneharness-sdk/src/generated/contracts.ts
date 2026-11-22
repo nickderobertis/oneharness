@@ -88,7 +88,9 @@ export type Setting =
   | "load_mcp"
   | "images"
   | "calls"
-  | "allowed_tools";
+  | "allowed_tools"
+  | "replace_system"
+  | "schema";
 export type ToolCallStatus = "completed" | "failed" | "timeout" | "interrupted";
 /**
  * How a normalized tool interval was obtained.

@@ -65,6 +65,18 @@ pub struct BuildCtx<'a> {
     /// `--append-system-prompt`; `system` is left unread. `None` keeps the
     /// direct caller's legacy inline path.
     pub system_file: Option<&'a str>,
+    /// Whether the run's system text replaces the harness's own system prompt
+    /// (`replace_system`) rather than being appended to it. Set by the command
+    /// layer only for a harness whose [`crate::domain::lean`] table names a
+    /// replacing knob, and only with system text in [`Self::system_file`]:
+    /// Claude Code then takes `--system-prompt-file`, codex `-c
+    /// model_instructions_file=`, and neither folds the text into the prompt.
+    pub replace_system: bool,
+    /// Path to a temp file holding the schema, for a harness whose native
+    /// structured-output flag reads a file (codex's `--output-schema`). Set by
+    /// the command layer beside [`Self::schema`] when the run delivers its
+    /// schema natively there.
+    pub schema_file: Option<&'a str>,
     /// How the user prompt reaches the harness for this run. One value rather
     /// than a flag per route, because the routes are alternatives: a prompt
     /// cannot ride both an argv positional and a message stream, and the two
@@ -186,6 +198,10 @@ fn format_flag(format: OutputFormat) -> &'static str {
 /// no-op. Adapters with a native flag (claude-code, goose) pass `c.prompt`
 /// directly and map `c.system` separately instead of calling this.
 fn prompt_with_system(c: &BuildCtx) -> String {
+    if c.replace_system {
+        // The text rides the harness's replacing knob instead.
+        return c.prompt.to_string();
+    }
     prompt_with_system_text(c.system, c.prompt)
 }
 
@@ -1118,24 +1134,19 @@ static REGISTRY: &[HarnessSpec] = &[
         default_env: &[],
         // Large prompts ride stdin: `codex exec -` (the `-` sentinel forces the
         // prompt to be read from stdin, and works with `resume <id> -` too —
-        // sourced from the exec CLI's clap docs). Codex has no system-prompt flag,
-        // so oneharness prepends `--system` into the prompt; that combined text is
-        // what rides stdin (`system_rides_prompt`).
+        // sourced from the exec CLI's clap docs). Codex has no flag that appends
+        // to its system prompt, so oneharness prepends `--system` into the
+        // prompt; that combined text is what rides stdin (`system_rides_prompt`).
+        // Under `replace_system` it rides `-c model_instructions_file=` instead.
         large_input: LargeInput {
             prompt_stdin: true,
             system_rides_prompt: true,
             system_file_flag: None,
         },
-        // Codex `exec` *does* have a native schema flag (`--output-schema <file>`),
-        // but it takes a schema FILE (not inline) and is reportedly ignored once
-        // the agent uses tools: https://github.com/openai/codex/issues/15451 — so
-        // structured output uses the more reliable prompt-based path for it today.
-        // To wire it up once that's resolved: add a `CodexOutputSchema` variant to
-        // `structured::NativeSchema`, set it here, add a `--output-schema` arm to
-        // `argv_codex` (the command layer must materialize the schema to a temp
-        // file and pass its path via `BuildCtx.schema`), and teach
-        // `structured::extract_value` where Codex reports the conforming value.
-        native_schema: None,
+        // `exec --output-schema <file>`, for a schema strict mode accepts (see
+        // `NativeSchema::CodexOutputSchema`, and the `schema` row of the lean
+        // table for the 0.159.2 runs behind it, openai/codex#15451 among them).
+        native_schema: Some(NativeSchema::CodexOutputSchema),
         // `codex exec` gates by sandbox, not by op-type, and downgrades approval
         // to `never` (it never hangs — out-of-sandbox actions fail closed and the
         // agent continues). `read-only` is the (OS-enforced) read-only sandbox,
@@ -1429,10 +1440,9 @@ static REGISTRY: &[HarnessSpec] = &[
         // Large prompts ride stdin: `qwen` reads the prompt from stdin when piped
         // and `-p` is omitted (sourced from qwen-code's `gemini.tsx`). oneharness
         // has no system flag mapping for qwen (it prepends `--system`), so the
-        // combined text rides stdin (`system_rides_prompt`). (Qwen also has a
-        // file-based system override via the `QWEN_SYSTEM_MD` env var, but it
-        // *replaces* the whole system prompt — the prepend-into-stdin path is
-        // simpler and consistent with the other prependers.)
+        // combined text rides stdin (`system_rides_prompt`). `QWEN_SYSTEM_MD`
+        // *replaces* qwen's whole system prompt, so it carries the text only
+        // under `replace_system` (the lean table's row for qwen).
         large_input: LargeInput {
             prompt_stdin: true,
             system_rides_prompt: true,
@@ -1859,12 +1869,14 @@ fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
     // System prompt: for a large one the command layer materializes it to a temp
     // file and sets `system_file`, delivered via `--append-system-prompt-file`
     // (off the argv); otherwise it rides inline `--append-system-prompt`. The file
-    // form wins when both are set.
+    // form wins when both are set. `replace_system` swaps each for its replacing
+    // twin (`--system-prompt-file` / `--system-prompt`).
+    let (file_flag, inline_flag) = lean::claude_system_flags(c.replace_system);
     if let Some(path) = c.system_file {
-        a.push("--append-system-prompt-file".into());
+        a.push(file_flag.into());
         a.push(path.into());
     } else if let Some(s) = c.system {
-        a.push("--append-system-prompt".into());
+        a.push(inline_flag.into());
         a.push(s.into());
     }
     if let Some(sid) = c.resume {
@@ -1890,9 +1902,9 @@ fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
         a.push("--verbose".into());
     }
     // Native structured output: `--json-schema <inline>` makes Claude Code return
-    // the conforming value in the result document's `structured_output` field
-    // (it requires `--output-format json`, already emitted above). Sourced from
-    // the headless docs; only set when a schema run selected this adapter.
+    // the conforming value under `structured_output` — the result document's
+    // under `--output-format json`, the `result` event's under stream-json (an
+    // image run). Only set when a schema run selected this adapter.
     if let Some(schema) = c.schema {
         a.push("--json-schema".into());
         a.push(schema.into());
@@ -1912,7 +1924,9 @@ fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
 /// [`codex_sandbox`] and [`argv_with_caller_args`] for how the two resolve
 /// against a caller's own `sandbox_mode` override.
 ///
-/// Codex exposes no system-prompt flag, so `--system` is prepended to the prompt.
+/// Codex exposes no flag that appends to its system prompt, so `--system` is
+/// prepended to the prompt; under `replace_system` it rides `-c
+/// model_instructions_file=` instead, and a native schema rides `--output-schema`.
 /// The single bypass flag replaces the older `--sandbox danger-full-access -a
 /// never`: codex-cli >= 0.135 removed `-a`, and this flag is the supported way to
 /// skip every approval prompt and the sandbox for a headless run.
@@ -1970,6 +1984,15 @@ fn argv_codex(c: &BuildCtx) -> Vec<String> {
     // formats map to it. Sourced from `codex exec --help`.
     if c.output_format != OutputFormat::Text {
         a.push("--json".into());
+    }
+    if let Some(path) = c.system_file.filter(|_| c.replace_system) {
+        a.extend(lean::replace_system_args("codex", path));
+    }
+    // Native structured output: the schema file the command layer wrote; the
+    // final `agent_message` is the conforming value.
+    if let Some(path) = c.schema_file {
+        a.push("--output-schema".into());
+        a.push(path.into());
     }
     // The resumed thread's id is the positional that precedes the prompt for
     // `codex exec resume <id> <prompt>` (the `resume` token was pushed above).
@@ -2507,6 +2530,8 @@ mod tests {
             output_format,
             schema: None,
             system_file: None,
+            replace_system: false,
+            schema_file: None,
             delivery: PromptDelivery::Argv,
             plugins: false,
             apps: false,
@@ -3091,6 +3116,8 @@ mod tests {
             output_format: OutputFormat::Json,
             schema: None,
             system_file: None,
+            replace_system: false,
+            schema_file: None,
             delivery: PromptDelivery::Argv,
             plugins: false,
             apps: false,
@@ -3178,6 +3205,8 @@ mod tests {
             output_format: spec.output_format,
             schema: None,
             system_file: None,
+            replace_system: false,
+            schema_file: None,
             delivery: PromptDelivery::Argv,
             plugins: false,
             apps: false,
@@ -3387,6 +3416,8 @@ mod tests {
         let a = (spec.build_argv)(&BuildCtx {
             system: Some("be terse"),
             system_file: Some("/tmp/oneharness-sys.txt"),
+            replace_system: false,
+            schema_file: None,
             ..base_ctx(spec)
         });
         assert!(

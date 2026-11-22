@@ -279,6 +279,13 @@ pub struct RunOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "bool")]
     pub no_mcp: Option<bool>,
+    /// Make the system text replace each harness's own system prompt instead
+    /// of being appended to it (Claude Code `--system-prompt-file`, Codex
+    /// `model_instructions_file`, Qwen `QWEN_SYSTEM_MD`). A harness with no
+    /// replacing knob is refused for the run (`unsupported_input`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub replace_system: Option<bool>,
     /// Image files attached to the prompt as images the model sees.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Vec<String>")]
@@ -1148,6 +1155,7 @@ mod tests {
             auto_compact_tokens: None,
             tool_set: None,
             no_skills: None,
+            replace_system: None,
             no_mcp: None,
             images: None,
             events: Some(true),

@@ -918,6 +918,7 @@ pub struct RunArgs {
     /// System text supplied to every harness, always outside the child's argv.
     /// Claude Code uses a private --append-system-prompt-file; other harnesses
     /// fold it into the user turn. Goose loses native system-slot priority.
+    /// With --replace-system it replaces the harness's own system prompt instead.
     /// Values beginning with `-`/`--` or `---` front matter are accepted as text.
     #[arg(long, value_name = "TEXT", allow_hyphen_values = true)]
     pub system: Option<String>,
@@ -1066,10 +1067,11 @@ pub struct RunArgs {
 
     /// Constrain each harness's final answer to this JSON Schema file
     /// (structured output). The schema is delivered natively where the harness
-    /// supports it (Claude Code's --json-schema) and via the prompt otherwise;
-    /// the response is validated and, on failure, re-prompted up to
-    /// --schema-max-retries times. Each result gains `structured`,
-    /// `schema_valid`, `schema_attempts`, and `schema_error`.
+    /// supports it (Claude Code's --json-schema, with or without --image; Codex's
+    /// --output-schema, with or without --image, for a schema OpenAI strict mode
+    /// accepts) and via the prompt otherwise; the response is validated and, on
+    /// failure, re-prompted up to --schema-max-retries times. Each result gains
+    /// `structured`, `schema_valid`, `schema_attempts`, and `schema_error`.
     #[arg(long, value_name = "PATH")]
     pub schema: Option<PathBuf>,
 
@@ -1117,6 +1119,15 @@ pub struct RunArgs {
     /// Codex: each configured server disabled, apps off).
     #[arg(long)]
     pub no_mcp: bool,
+
+    /// Make the system text (--system / --system-file / config `system`)
+    /// replace each harness's own system prompt instead of being appended to
+    /// it (Claude Code: --system-prompt-file; Codex: -c
+    /// model_instructions_file=; Qwen: QWEN_SYSTEM_MD). A harness with no
+    /// replacing knob is refused for the run (`unsupported_input`), never
+    /// handed the text to append. Without system text it changes nothing.
+    #[arg(long)]
+    pub replace_system: bool,
 
     /// Attach an image file to the prompt as an image the model sees
     /// (repeatable). A missing or unreadable file is refused before any

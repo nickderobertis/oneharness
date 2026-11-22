@@ -32,6 +32,15 @@
 //!                   harness runs, replacing a top-level link in the way
 //!   MOCK_HOME_SNAPSHOT  if set, what `$CODEX_HOME` holds while the harness
 //!                   runs is appended here as one JSON line per invocation
+//!   MOCK_INVOCATION_LOG  if set, one JSON line per invocation is APPENDED here
+//!                   before answering: `argv`, all of `stdin`, `env` (each
+//!                   variable MOCK_RECORD_ENV names, comma-separated), and
+//!                   `files`, the contents of every file an argument (or the
+//!                   value after an argument's `=`, unquoted) or a recorded
+//!                   variable names while the harness runs — so a journey sees
+//!                   every attempt of a re-asked run, and a private temp file
+//!                   the run removes afterwards. Composes with
+//!                   MOCK_CODEX_SESSIONS, which reads the same stdin.
 //!   MOCK_ENV_FILE   if set, the whole inherited environment is written here
 //!                   as one JSON object before answering
 //!   MOCK_CLAUDE_SESSIONS / MOCK_CODEX_SESSIONS / MOCK_COMPACT_BEGUN  act like
@@ -435,6 +444,61 @@ const EXTRA_REQUEST_GRACE: std::time::Duration = std::time::Duration::from_milli
 /// while any larger value is a typo that would otherwise overflow the `Instant`
 /// deadline the delay becomes.
 const MAX_REPLY_DELAY_MS: u64 = 600_000;
+
+/// All of stdin, read once: MOCK_INVOCATION_LOG records it and a session
+/// double answers from it, so whichever asks first reads the pipe.
+pub(crate) fn stdin_once() -> String {
+    static STDIN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    STDIN
+        .get_or_init(|| {
+            let mut text = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)
+                .expect("mock harness: stdin is UTF-8");
+            text
+        })
+        .clone()
+}
+
+fn record_invocation(path: &str, argv: &[String]) {
+    let recorded: Vec<(String, String)> = std::env::var("MOCK_RECORD_ENV")
+        .unwrap_or_default()
+        .split(',')
+        .filter(|name| !name.is_empty())
+        .filter_map(|name| {
+            std::env::var(name)
+                .ok()
+                .map(|value| (name.to_string(), value))
+        })
+        .collect();
+    let named = argv
+        .iter()
+        .flat_map(|arg| {
+            let value = arg
+                .split_once('=')
+                .map(|(_, v)| v.trim_matches('"').to_string());
+            std::iter::once(arg.clone()).chain(value)
+        })
+        .chain(recorded.iter().map(|(_, value)| value.clone()));
+    let files: serde_json::Map<String, serde_json::Value> = named
+        .filter(|candidate| std::path::Path::new(candidate).is_file())
+        .filter_map(|candidate| {
+            let text = std::fs::read_to_string(&candidate).ok()?;
+            Some((candidate, serde_json::Value::String(text)))
+        })
+        .collect();
+    let env: serde_json::Map<String, serde_json::Value> = recorded
+        .into_iter()
+        .map(|(name, value)| (name, serde_json::Value::String(value)))
+        .collect();
+    let line = serde_json::json!({"argv": argv, "stdin": stdin_once(), "env": env, "files": files});
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .expect("open MOCK_INVOCATION_LOG");
+    file.write_all(format!("{line}\n").as_bytes())
+        .expect("write MOCK_INVOCATION_LOG");
+}
 
 /// Per-attempt scripting: with MOCK_ATTEMPT_FILE set, read the prior count,
 /// increment it, write it back, and return this invocation's 1-based attempt
@@ -2914,6 +2978,10 @@ pub fn run() -> ! {
 
     if let Ok(path) = mock_var("MOCK_CODEX_PLUGINS_LOG") {
         record_codex_plugins(&path, &argv);
+    }
+
+    if let Ok(path) = mock_var("MOCK_INVOCATION_LOG") {
+        record_invocation(&path, &argv);
     }
 
     sessions::run_if_requested(&argv);

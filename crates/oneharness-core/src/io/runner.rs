@@ -193,6 +193,9 @@ impl<'a> SpawnControls<'a> {
 pub struct Outcome {
     pub capture: Capture,
     pub attempts: u32,
+    /// Every attempt before the final one, oldest first: what a re-ask
+    /// replaced. Their model calls happened too, so per-call usage reads them.
+    pub earlier: Vec<Capture>,
 }
 
 /// Run `jobs` concurrently, at most `max_parallel` at a time, preserving order.
@@ -302,6 +305,7 @@ where
                     Outcome {
                         capture: unstarted_capture(&jobs[i]),
                         attempts: 0,
+                        earlier: Vec::new(),
                     }
                 } else {
                     run_job_with_retry(&jobs[i], i, controls, retry)
@@ -331,6 +335,7 @@ where
     let cancel = controls.cancel;
     let mut capture = run_job_supervised(job, controls);
     let mut attempts = 1u32;
+    let mut earlier = Vec::new();
     while !cancellation_requested(cancel) {
         let Some(next) = retry(index, attempts, &capture) else {
             break;
@@ -343,10 +348,17 @@ where
             timeout: job.timeout,
             stdin: next.stdin,
         };
-        capture = run_job_supervised(&next, controls);
+        earlier.push(std::mem::replace(
+            &mut capture,
+            run_job_supervised(&next, controls),
+        ));
         attempts += 1;
     }
-    Outcome { capture, attempts }
+    Outcome {
+        capture,
+        attempts,
+        earlier,
+    }
 }
 
 /// Decide the program and argument list to actually spawn for `argv`.

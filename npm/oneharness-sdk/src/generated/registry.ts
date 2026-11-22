@@ -124,9 +124,11 @@ export interface HarnessInfo {
   supports_mock_deny: boolean;
   /**
    * Whether `run --schema` is delivered through a native structured-output
-   * flag for this harness (Claude Code's `--json-schema`). `false` means the
+   * flag for this harness (Claude Code's `--json-schema`, codex's
+   * `--output-schema` for a schema strict mode accepts). `false` means the
    * portable prompt-based path is used — structured output works either way;
-   * oneharness always validates and retries.
+   * oneharness always validates and retries. Read from the lean table's
+   * `schema` entry.
    */
   supports_native_schema: boolean;
   /**
@@ -141,6 +143,13 @@ export interface HarnessInfo {
    * then a loud usage error (effort is provider/model config there).
    */
   supports_reasoning: boolean;
+  /**
+   * Whether `replace_system` replaces this harness's own system prompt
+   * with the run's system text. `false`: a run asking for it is refused for
+   * this harness (`unsupported_input`), never handed the text to append.
+   * Added in report schema `0.16`.
+   */
+  supports_replace_system: boolean;
   /**
    * Whether `run --resume <session>` is supported for this harness.
    */

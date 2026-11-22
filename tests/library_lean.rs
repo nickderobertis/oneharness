@@ -135,6 +135,77 @@ fn a_run_request_delivers_codex_its_overrides_and_image_flag() {
     );
 }
 
+/// `replace_system` and an image beside a schema, as a Rust dependent asks
+/// for them: claude-code receives the system text on its replacing flag, the
+/// image in its stream-json frame and the schema on `--json-schema`, and the
+/// result carries the validated value from the stream's `result` event; a
+/// harness with no replacing knob is refused for the same request.
+#[test]
+fn a_run_request_replaces_the_system_prompt_and_takes_an_image_beside_a_schema() {
+    let profiles = ProfileScratch::new();
+    let scratch = ScratchDir::new("library-lean-replace").unwrap();
+    let input = scratch.join("input.json");
+    let image = scratch.join("frame.png");
+    png(&image);
+    let schema = scratch.join("schema.json");
+    std::fs::write(
+        &schema,
+        r#"{"type":"object","properties":{"color":{"type":"string"}},"required":["color"],"additionalProperties":false}"#,
+    )
+    .unwrap();
+    let stdout = [
+        r#"{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","name":"StructuredOutput","input":{"color":"red"}}],"usage":{"input_tokens":5,"output_tokens":2}}}"#,
+        r#"{"type":"result","subtype":"success","result":"","structured_output":{"color":"red"}}"#,
+    ]
+    .join("\n");
+    let req = RunRequest {
+        harness: vec!["claude-code".to_string(), "goose".to_string()],
+        run_mode: Some(oneharness_core::domain::fallback::RunMode::Parallel),
+        prompt: vec!["what colour?".to_string()],
+        system: Some("You are the print supervisor.".to_string()),
+        replace_system: Some(true),
+        schema: Some(schema.clone()),
+        bin: vec![bin_override("claude-code"), bin_override("goose")],
+        env: vec![
+            format!("MOCK_INPUT_FILE={}", input.display()),
+            format!("MOCK_STDOUT={stdout}"),
+            profiles.as_str().to_string(),
+        ],
+        no_config: true,
+        timeout: Some(60),
+        images: vec![image.clone()],
+        ..RunRequest::default()
+    };
+    let outcome = run(&req, RunControls::default()).expect("a valid request");
+    let claude = &outcome.report.results[0];
+    assert_eq!(claude.structured, Some(serde_json::json!({"color": "red"})));
+    assert_eq!(claude.schema_valid, Some(true), "{claude:?}");
+    assert_eq!(claude.schema_error, None);
+    assert_eq!(claude.calls.as_ref().map(Vec::len), Some(1));
+    let goose = &outcome.report.results[1];
+    assert_eq!(
+        goose.failure_kind,
+        Some(oneharness_core::domain::signals::FailureKind::UnsupportedInput),
+        "{goose:?}"
+    );
+
+    let recorded = read_json(&input);
+    let argv: Vec<&str> = recorded["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a.as_str().unwrap())
+        .collect();
+    assert!(argv.contains(&"--system-prompt-file"), "{argv:?}");
+    assert!(
+        !argv.iter().any(|a| a.contains("append-system-prompt")),
+        "{argv:?}"
+    );
+    assert!(argv.contains(&"--json-schema"), "{argv:?}");
+    let frame: Value = serde_json::from_str(recorded["stdin"].as_str().unwrap().trim()).unwrap();
+    assert_eq!(frame["message"]["content"][0]["type"], "image");
+}
+
 /// A session kept by a session-keeping mock of `id`, driven as a library.
 struct Kept {
     dir: ScratchDir,

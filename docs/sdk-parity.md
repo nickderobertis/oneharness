@@ -212,6 +212,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--tool-set` | `toolSet` | `--flag VALUE` per element |
 | `--no-skills` | `noSkills` | `--flag` when true |
 | `--no-mcp` | `noMcp` | `--flag` when true |
+| `--replace-system` | `replaceSystem` | `--flag` when true |
 | `--image` | `images` | `--flag VALUE` per element |
 | `--cwd` | `cwd` | `--flag VALUE` |
 | `--env` | `env` | `--flag KEY=VALUE` per entry |
@@ -272,6 +273,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--tool-set` | `toolSet` | `--flag VALUE` per element |
 | `--no-skills` | `noSkills` | `--flag` when true |
 | `--no-mcp` | `noMcp` | `--flag` when true |
+| `--replace-system` | `replaceSystem` | `--flag` when true |
 | `--image` | `images` | `--flag VALUE` per element |
 | `--cwd` | `cwd` | `--flag VALUE` |
 | `--env` | `env` | `--flag KEY=VALUE` per entry |
@@ -513,9 +515,9 @@ caller rather than being dropped.
 | --- | --- | --- | --- | --- | --- |
 | `run_report` | `batch`, `bypass_permissions`, `config_files`, `control`, `dry_run`, `fallback`, `fork`, `history_file`, `mock_rules`, `model`, `models`, `oneharness_version`, `permission_mode`, `prompt`, `results`, `resume`, `schema`, `schema_max_retries`, `schema_version`, `session`, `spy_file` | 97 | yes | yes | yes |
 | `run_stream_envelope` | `event`, `harness_id`, `history_dir`, `history_id`, `history_project`, `history_session`, `report`, `type` | 104 | yes | yes | yes |
-| `list_report` | `harnesses`, `schema_version` | 44 | yes | yes | yes |
+| `list_report` | `harnesses`, `schema_version` | 45 | yes | **no** — missing `supports_replace_system` | **no** — missing `supports_replace_system` |
 | `detect_report` | `detected`, `schema_version` | 7 | yes | yes | yes |
-| `config_report` | `all`, `allowed_tools`, `auto_compact_tokens`, `bypass`, `config_files`, `env`, `exclude`, `harness`, `harnesses`, `history`, `history_dir`, `history_labels`, `history_pointer_file`, `load_mcp`, `load_skills`, `max_parallel`, `mode`, `model`, `models`, `output_format`, `reasoning`, `require_available`, `run_mode`, `schema_file`, `schema_max_retries`, `schema_version`, `server_overloaded_max_retries`, `stream`, `sync`, `system`, `timeout`, `tool_set` | 53 | yes | yes | yes |
+| `config_report` | `all`, `allowed_tools`, `auto_compact_tokens`, `bypass`, `config_files`, `env`, `exclude`, `harness`, `harnesses`, `history`, `history_dir`, `history_labels`, `history_pointer_file`, `load_mcp`, `load_skills`, `max_parallel`, `mode`, `model`, `models`, `output_format`, `reasoning`, `replace_system`, `require_available`, `run_mode`, `schema_file`, `schema_max_retries`, `schema_version`, `server_overloaded_max_retries`, `stream`, `sync`, `system`, `timeout`, `tool_set` | 54 | yes | **no** — missing `replace_system` | **no** — missing `replace_system` |
 | `sync_report` | `check`, `config_files`, `exact`, `results`, `schema_version` | 16 | yes | yes | yes |
 | `usage_report` | `identities`, `observed_at`, `schema_version` | 42 | yes | yes | yes |
 | `interrupt_response` | `error`, `mechanism`, `ok`, `reason`, `redirected`, `v` | 6 | yes | yes | yes |

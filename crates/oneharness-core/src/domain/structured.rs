@@ -6,8 +6,10 @@
 //!
 //! - **Native** — a harness whose CLI takes the schema directly (Claude Code's
 //!   `--json-schema`, which returns the conforming value in a `structured_output`
-//!   field). The schema reaches the model through the flag; nothing is added to
-//!   the prompt.
+//!   field; codex's `--output-schema <file>`, whose final message is the value).
+//!   The schema reaches the model through the flag; nothing is added to the
+//!   prompt. Codex takes it only for a schema OpenAI strict mode accepts
+//!   ([`Schema::is_openai_strict`]); any other schema stays prompt-based there.
 //! - **Prompt-based** — every other harness. The schema is appended to the
 //!   prompt as an instruction to emit only a conforming JSON value, and the
 //!   value is recovered from the harness's final text.
@@ -25,15 +27,35 @@ use serde_json::Value;
 /// [`crate::domain::harness::HarnessSpec`]; `None` means prompt-based delivery.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeSchema {
-    /// Claude Code: `--json-schema <inline JSON>` alongside `--output-format
-    /// json`. The conforming value is returned under the result document's
-    /// top-level `structured_output` field (sourced from the headless docs).
+    /// Claude Code: `--json-schema <inline JSON>`. The conforming value is
+    /// returned under `structured_output`: the result document's under
+    /// `--output-format json`, the `result` event's under stream-json (an
+    /// image run's format).
     ClaudeJsonSchema,
-    // Codex `exec --output-schema <file>` is the next candidate, but its flag is
-    // file-based and reportedly ignored once tools run
-    // (https://github.com/openai/codex/issues/15451), so it stays prompt-based for
-    // now. Adding it: a `CodexOutputSchema` variant here, wired in the codex
-    // registry entry + `argv_codex`, with `extract_value` taught its output shape.
+    /// Codex: `exec --output-schema <file>`. The conforming value is the final
+    /// `agent_message` text. Codex sends the schema as a *strict* response
+    /// format, which the API refuses for a schema strict mode does not accept,
+    /// so only such a schema takes this path ([`NativeSchema::accepts`]).
+    /// openai/codex#15451 (the flag reportedly ignored once a tool runs) did
+    /// not reproduce on 0.159.2: real runs with and without `--image`, with no
+    /// tool and after a shell tool ran, all ended on a conforming answer.
+    CodexOutputSchema,
+}
+
+impl NativeSchema {
+    /// Whether this native path takes `schema`; a schema it refuses stays on
+    /// the prompt-based path, chosen before the run and never after a failure.
+    pub fn accepts(self, schema: &Schema) -> bool {
+        match self {
+            NativeSchema::ClaudeJsonSchema => true,
+            NativeSchema::CodexOutputSchema => schema.is_openai_strict(),
+        }
+    }
+
+    /// Whether the harness reads the schema from a file rather than inline.
+    pub fn takes_file(self) -> bool {
+        matches!(self, NativeSchema::CodexOutputSchema)
+    }
 }
 
 /// A compiled JSON Schema plus its canonical text, used to instruct a harness,
@@ -75,6 +97,17 @@ impl Schema {
         &self.text
     }
 
+    /// Whether OpenAI's strict structured-output mode accepts this schema, by
+    /// a conservative whitelist of what the real API was seen to accept: the
+    /// root is `type: object`; every node states a `type` (or is a `$ref` or
+    /// an `anyOf`); every object node has `additionalProperties: false` and
+    /// requires every property; and no node uses a keyword outside
+    /// [`STRICT_KEYWORDS`]. Anything else — `allOf`, `oneOf`, `not`, `if`,
+    /// `format`, an untyped `enum`/`const` — answers `false`.
+    pub fn is_openai_strict(&self) -> bool {
+        self.raw.get("type").and_then(Value::as_str) == Some("object") && strict_node(&self.raw)
+    }
+
     /// Validate an instance: `Ok(())` when it conforms, else the human-readable
     /// validation errors in document order.
     pub fn validate(&self, instance: &Value) -> Result<(), Vec<String>> {
@@ -89,6 +122,90 @@ impl Schema {
             Err(errors)
         }
     }
+}
+
+/// The keywords a schema node may use and still be delivered to codex
+/// natively. Seen accepted by the API under strict mode (codex 0.159.2):
+/// `anyOf`, `$ref`/`$defs`, a nullable `type` array, `patternProperties`,
+/// `pattern`, `minLength`/`maxLength`, the numeric bounds, `multipleOf`,
+/// `minItems`/`maxItems`, a typed `enum`, and the annotations.
+pub const STRICT_KEYWORDS: &[&str] = &[
+    "$schema",
+    "$ref",
+    "$defs",
+    "definitions",
+    "title",
+    "description",
+    "type",
+    "properties",
+    "required",
+    "additionalProperties",
+    "patternProperties",
+    "items",
+    "anyOf",
+    "enum",
+    "const",
+    "pattern",
+    "minLength",
+    "maxLength",
+    "minimum",
+    "maximum",
+    "exclusiveMinimum",
+    "exclusiveMaximum",
+    "multipleOf",
+    "minItems",
+    "maxItems",
+];
+
+fn strict_node(node: &Value) -> bool {
+    let Some(map) = node.as_object() else {
+        return false;
+    };
+    if !map.keys().all(|k| STRICT_KEYWORDS.contains(&k.as_str())) {
+        return false;
+    }
+    let types: Vec<&str> = match map.get("type") {
+        Some(Value::String(t)) => vec![t.as_str()],
+        Some(Value::Array(ts)) => match ts.iter().map(Value::as_str).collect::<Option<Vec<_>>>() {
+            Some(ts) => ts,
+            None => return false,
+        },
+        Some(_) => return false,
+        None if map.contains_key("$ref") || map.contains_key("anyOf") => Vec::new(),
+        None => return false,
+    };
+    let properties = map.get("properties").and_then(Value::as_object);
+    if types.contains(&"object") || properties.is_some() {
+        if map.get("additionalProperties") != Some(&Value::Bool(false)) {
+            return false;
+        }
+        let required: Vec<&str> = map
+            .get("required")
+            .and_then(Value::as_array)
+            .map(|r| r.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        if !properties
+            .into_iter()
+            .flatten()
+            .all(|(name, _)| required.contains(&name.as_str()))
+        {
+            return false;
+        }
+    }
+    let children = properties
+        .into_iter()
+        .chain(map.get("patternProperties").and_then(Value::as_object))
+        .chain(map.get("$defs").and_then(Value::as_object))
+        .chain(map.get("definitions").and_then(Value::as_object))
+        .flat_map(|m| m.values())
+        .chain(map.get("items"))
+        .chain(
+            map.get("anyOf")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten(),
+        );
+    children.into_iter().all(strict_node)
 }
 
 /// The result of checking one harness response against the schema: the value
@@ -132,15 +249,24 @@ pub fn check(schema: &Schema, native: Option<NativeSchema>, text: &str, stdout: 
 /// reports it in a known field; everyone else embeds it in the final text.
 pub fn extract_value(native: Option<NativeSchema>, text: &str, stdout: &str) -> Option<Value> {
     if native == Some(NativeSchema::ClaudeJsonSchema) {
-        // Claude Code's `--json-schema` returns the conforming value under the
-        // result document's top-level `structured_output`. Prefer it; fall back
-        // to parsing the text if the field is absent (e.g. the flag was ignored).
-        if let Ok(doc) = serde_json::from_str::<Value>(stdout.trim()) {
-            if let Some(value) = doc.get("structured_output") {
-                if !value.is_null() {
-                    return Some(value.clone());
-                }
-            }
+        // Claude Code's `--json-schema` returns the conforming value under
+        // `structured_output`: the whole document's under `json`, the last
+        // `result` event's under stream-json. Prefer it; fall back to parsing
+        // the text if the field is absent (e.g. the flag was ignored).
+        let document = serde_json::from_str::<Value>(stdout.trim()).ok();
+        let result_event = || {
+            stdout
+                .lines()
+                .rev()
+                .filter_map(|line| serde_json::from_str::<Value>(line.trim()).ok())
+                .find(|event| event.get("type").and_then(Value::as_str) == Some("result"))
+        };
+        if let Some(value) = document
+            .or_else(result_event)
+            .and_then(|doc| doc.get("structured_output").cloned())
+            .filter(|value| !value.is_null())
+        {
+            return Some(value);
         }
     }
     extract_json(text)
@@ -418,5 +544,88 @@ mod tests {
         // compiled schema must be `Sync`. A failure here is a compile error.
         fn assert_sync<T: Sync>() {}
         assert_sync::<Schema>();
+    }
+
+    /// The cases are the schemas probed against the real API through codex
+    /// 0.159.2 (`--output-schema`, strict mode): each `false` here is one the
+    /// API refused with `invalid_json_schema`, or one that never answered.
+    #[test]
+    fn only_a_schema_strict_mode_accepts_is_openai_strict() {
+        let strict = |v: Value| Schema::compile(&v.to_string()).unwrap().is_openai_strict();
+        let object = |props: Value| {
+            let required: Vec<String> = props.as_object().unwrap().keys().cloned().collect();
+            json!({"type":"object","properties":props,"required":required,"additionalProperties":false})
+        };
+        assert!(person().is_openai_strict());
+        for accepted in [
+            object(json!({"a": {"anyOf": [{"type": "string"}, {"type": "integer"}]}})),
+            object(json!({"a": {"type": ["string", "null"]}})),
+            object(json!({"a": {"type": "string", "minLength": 1, "pattern": "^a"}})),
+            object(json!({"a": {"type": "string", "enum": ["x", "y"]}})),
+            object(json!({"a": {"type": "array", "items": {"type": "string"}, "maxItems": 3}})),
+            json!({"type":"object","properties":{"a":{"$ref":"#/$defs/x"}},"required":["a"],
+                   "additionalProperties":false,"$defs":{"x":{"type":"string"}}}),
+        ] {
+            assert!(strict(accepted.clone()), "{accepted}");
+        }
+        for refused in [
+            json!({"type":"object","properties":{"a":{"type":"string"}},"required":[],
+                   "additionalProperties":false}),
+            json!({"type":"object","properties":{"a":{"type":"string"}},"required":["a"]}),
+            object(
+                json!({"a": {"type": "object", "properties": {"b": {"type": "string"}},
+                                 "required": ["b"]}}),
+            ),
+            object(json!({"a": {"allOf": [{"type": "string"}]}})),
+            object(json!({"a": {"oneOf": [{"type": "string"}]}})),
+            object(json!({"a": {"not": {"type": "string"}}})),
+            object(json!({"a": {"type": "string", "format": "email"}})),
+            object(json!({"a": {"const": "z"}})),
+            json!({"type": "array", "items": {"type": "string"}}),
+            json!({"properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false}),
+            json!({"type":"object","properties":{"a":{"type":"string"}},"required":["a"],
+                   "additionalProperties":false,"if":{"properties":{"a":{"const":"x"}}}}),
+        ] {
+            assert!(!strict(refused.clone()), "{refused}");
+        }
+    }
+
+    #[test]
+    fn native_codex_takes_only_a_strict_schema_and_claude_any() {
+        let loose =
+            Schema::compile(r#"{"type":"object","properties":{"a":{"type":"string"}}}"#).unwrap();
+        assert!(NativeSchema::ClaudeJsonSchema.accepts(&loose));
+        assert!(!NativeSchema::CodexOutputSchema.accepts(&loose));
+        assert!(NativeSchema::CodexOutputSchema.accepts(&person()));
+        assert!(NativeSchema::CodexOutputSchema.takes_file());
+        assert!(!NativeSchema::ClaudeJsonSchema.takes_file());
+    }
+
+    #[test]
+    fn native_claude_reads_the_stream_json_result_event() {
+        let stream = concat!(
+            r#"{"type":"system","subtype":"init"}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","name":"StructuredOutput"}]}}"#,
+            "\n",
+            r#"{"type":"result","subtype":"success","result":"prose","structured_output":{"name":"Ada","age":36}}"#,
+            "\n",
+        );
+        let c = check(
+            &person(),
+            Some(NativeSchema::ClaudeJsonSchema),
+            "prose",
+            stream,
+        );
+        assert!(c.is_valid(), "{c:?}");
+        assert_eq!(c.value.unwrap()["age"], 36);
+        let without = r#"{"type":"result","result":"{\"name\":\"Ada\",\"age\":1}"}"#;
+        let c = check(
+            &person(),
+            Some(NativeSchema::ClaudeJsonSchema),
+            r#"{"name":"Ada","age":1}"#,
+            without,
+        );
+        assert_eq!(c.value.unwrap()["age"], 1, "falls back to the text");
     }
 }

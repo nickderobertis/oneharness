@@ -338,11 +338,60 @@ fn each_setting_layers_like_timeout_through_extends_env_and_flag() {
         );
     }
 
+    // replace_system, read off which system flag claude-code receives.
+    let replaced = |argv: &[String]| {
+        let replacing = argv.iter().any(|a| a == "--system-prompt-file");
+        let appending = argv.iter().any(|a| a == "--append-system-prompt-file");
+        assert_ne!(replacing, appending, "exactly one system flag: {argv:?}");
+        replacing
+    };
+    let parent = Project::new(
+        "layers-replace-parent",
+        "extends = \"parent.toml\"\nsystem = \"S\"\n",
+        "replace_system = true\n",
+    );
+    assert!(
+        replaced(&printed(&parent, "claude-code", &[], &[])),
+        "from the extends parent"
+    );
+    let child = Project::new(
+        "layers-replace-file",
+        "extends = \"parent.toml\"\nsystem = \"S\"\nreplace_system = false\n",
+        "replace_system = true\n",
+    );
+    assert!(
+        !replaced(&printed(&child, "claude-code", &[], &[])),
+        "the file beats its parent"
+    );
+    let on = [("ONEHARNESS_REPLACE_SYSTEM", "true")];
+    assert!(
+        replaced(&printed(&child, "claude-code", &[], &on)),
+        "env beats the files"
+    );
+    let off = [("ONEHARNESS_REPLACE_SYSTEM", "false")];
+    assert!(!replaced(&printed(&parent, "claude-code", &[], &off)));
+    assert!(
+        replaced(&printed(&child, "claude-code", &["--replace-system"], &off)),
+        "the flag beats env"
+    );
+    let unset = Project::new("layers-replace-none", "system = \"S\"\n", "");
+    assert!(
+        !replaced(&printed(&unset, "claude-code", &[], &[])),
+        "absent appends"
+    );
+
     // The config report attributes each to its layer.
     let cwd = file.cwd();
     let out = oh(&["config", "--cwd", &cwd], &[], Some(&file.user()));
     let report = json(&out);
     assert_eq!(report["auto_compact_tokens"]["value"], 1000);
+    let cwd = parent.cwd();
+    let report = json(&oh(&["config", "--cwd", &cwd], &[], Some(&parent.user())));
+    assert_eq!(report["replace_system"]["value"], true);
+    assert!(report["replace_system"]["source"]
+        .as_str()
+        .unwrap()
+        .ends_with("parent.toml"));
 }
 // llmlint: ignore-end[e2e_not_mocked]
 
@@ -356,6 +405,7 @@ fn an_out_of_range_setting_is_refused_naming_it() {
         ("tool_set = [\"shell\", \"edit\"]\n", "edit"),
         ("load_skills = \"no\"\n", "load_skills"),
         ("load_mcp = 0\n", "load_mcp"),
+        ("replace_system = \"yes\"\n", "replace_system"),
     ] {
         let p = Project::new("refused", toml, "");
         let cwd = p.cwd();
@@ -385,6 +435,7 @@ fn an_out_of_range_setting_is_refused_naming_it() {
         ("ONEHARNESS_TOOL_SET", "shell,web"),
         ("ONEHARNESS_LOAD_SKILLS", "maybe"),
         ("ONEHARNESS_LOAD_MCP", "2"),
+        ("ONEHARNESS_REPLACE_SYSTEM", "sometimes"),
     ] {
         let out = oh(
             &[
@@ -1674,7 +1725,12 @@ fn an_image_run_refuses_the_shapes_an_image_cannot_ride() {
             "--control",
         ),
         (vec!["--output-format", "json"], "--output-format"),
-        (vec!["--schema", &schema], "--schema"),
+        // A schema does not lift the conflict: an explicit non-stream format
+        // is still one an image frame cannot ride.
+        (
+            vec!["--output-format", "json", "--schema", &schema],
+            "--output-format",
+        ),
     ] {
         let mut args = vec![
             "run",
@@ -2293,10 +2349,11 @@ fn calls_are_reported_for_a_run_that_did_not_finish_cleanly() {
 // llmlint: ignore-end[e2e_not_mocked]
 
 // llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its translation run; only the harness process (codex) is the mock harness, held to its real CLI by the capture it cites and `live-codex` (module doc).
-/// A retried attempt on a resumed codex thread reports the final attempt's
-/// calls, the attempt its `usage` describes, not every attempt's.
+/// A re-asked attempt on a resumed codex thread lists every attempt's calls:
+/// both turns this run appended to the one thread, each read once, and none
+/// of the earlier turn the session already held.
 #[test]
-fn a_retried_codex_turn_reports_its_final_attempts_calls() {
+fn a_retried_codex_turn_reports_every_attempts_calls_once() {
     let s = Sessions::new("calls-retried");
     s.turn("codex", "alpha");
     let schema = s.dir.join("schema.json");
@@ -2335,7 +2392,7 @@ fn a_retried_codex_turn_reports_its_final_attempts_calls() {
     let report = json(&oh(&args, &[], None));
     let result = &report["results"][0];
     assert_eq!(result["schema_attempts"], 2, "{result}");
-    assert_eq!(result["calls"].as_array().unwrap().len(), 3, "{result}");
+    assert_eq!(result["calls"].as_array().unwrap().len(), 6, "{result}");
 }
 // llmlint: ignore-end[e2e_not_mocked]
 
@@ -2373,15 +2430,15 @@ fn the_list_text_view_states_each_lean_capability() {
     };
     assert_eq!(
         row("claude-code"),
-        format!("auto_compact yes · compact_now yes · tool_set yes · skills_off yes · mcp_off yes · images yes · call_usage yes · run_allowed_tools {granted}")
+        format!("auto_compact yes · compact_now yes · tool_set yes · skills_off yes · mcp_off yes · images yes · call_usage yes · run_allowed_tools {granted} · replace_system yes")
     );
     assert_eq!(
         row("codex"),
-        format!("auto_compact yes · compact_now yes · tool_set no · skills_off yes · mcp_off yes · images yes · call_usage yes · run_allowed_tools {granted}")
+        format!("auto_compact yes · compact_now yes · tool_set no · skills_off yes · mcp_off yes · images yes · call_usage yes · run_allowed_tools {granted} · replace_system yes")
     );
     assert_eq!(
         row("goose"),
-        "auto_compact no · compact_now no · tool_set no · skills_off no · mcp_off no · images no · call_usage no · run_allowed_tools no"
+        "auto_compact no · compact_now no · tool_set no · skills_off no · mcp_off no · images no · call_usage no · run_allowed_tools no · replace_system no"
     );
 }
 
@@ -3180,3 +3237,584 @@ fn ambient_config_selection_never_displaces_the_helpers_own() {
         "every named journey ran: {stdout}"
     );
 }
+
+/// Every invocation the mock recorded under MOCK_INVOCATION_LOG, in order.
+fn invocations(path: &Path) -> Vec<Value> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+/// The contents the mock read from the file `argv` names after `flag` (or,
+/// for a `key=` override, in its value).
+fn delivered_file(invocation: &Value, path: &str) -> String {
+    invocation["files"][path]
+        .as_str()
+        .unwrap_or_else(|| panic!("no file {path} was readable while it ran: {invocation}"))
+        .to_string()
+}
+
+fn after<'a>(argv: &'a [String], flag: &str) -> Option<&'a str> {
+    argv.windows(2)
+        .find(|w| w[0] == flag)
+        .map(|w| w[1].as_str())
+}
+
+const REPLACEMENT: &str = "You are the print supervisor. Answer in one line.";
+
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its translation run; only the harness process (each adapter) is the mock harness, held to its real CLI by the request captures the `replace_system` table rows cite (module doc).
+/// `replace_system` reaches each harness as its translation row records, the
+/// text only ever on the replacing knob: Claude Code's `--system-prompt-file`,
+/// codex's `-c model_instructions_file=`, qwen's `QWEN_SYSTEM_MD`. A harness
+/// whose row names no knob is refused and never started, never handed the
+/// text to append; `oneharness list` says which is which.
+#[test]
+fn replace_system_reaches_each_harness_on_its_replacing_knob_or_refuses_it() {
+    let scratch = ScratchDir::new("lean-replace-system").unwrap();
+    let listed = list();
+    for id in ALL_IDS {
+        let log = scratch.join(format!("{id}.jsonl"));
+        let log_env = format!("MOCK_INVOCATION_LOG={}", log.display());
+        let b = bin(id);
+        let out = oh(
+            &[
+                "run",
+                "--harness",
+                id,
+                "--prompt",
+                "status?",
+                "--system",
+                REPLACEMENT,
+                "--replace-system",
+                "--bin",
+                &b,
+                "--mode",
+                "bypass",
+                "--env",
+                &log_env,
+                "--env",
+                "MOCK_RECORD_ENV=QWEN_SYSTEM_MD",
+            ],
+            &[],
+            None,
+        );
+        let report = json(&out);
+        let result = &report["results"][0];
+        if !supports(&listed, id, "supports_replace_system") {
+            assert_eq!(result["status"], "skipped", "{id}: {result}");
+            assert_eq!(result["failure_kind"], "unsupported_input", "{id}");
+            assert_eq!(result["failure_kind_source"], "request:replace_system");
+            let error = result["error"].as_str().unwrap();
+            assert!(
+                error.contains(id) && error.contains("replace_system"),
+                "{id}: {error}"
+            );
+            assert!(invocations(&log).is_empty(), "{id} was started");
+            continue;
+        }
+        assert!(out.status.success(), "{id}: {out:?}");
+        let calls = invocations(&log);
+        assert_eq!(calls.len(), 1, "{id}");
+        let argv = strings(&calls[0]["argv"]);
+        let stdin = calls[0]["stdin"].as_str().unwrap();
+        assert!(
+            !stdin.contains(REPLACEMENT),
+            "{id} folded the text: {stdin}"
+        );
+        assert!(
+            !argv.iter().any(|a| a.contains("append-system-prompt")),
+            "{id}: {argv:?}"
+        );
+        let path = match *id {
+            "claude-code" => after(&argv, "--system-prompt-file")
+                .unwrap_or_else(|| panic!("{argv:?}"))
+                .to_string(),
+            "codex" => {
+                let value = argv
+                    .windows(2)
+                    .find_map(|w| {
+                        (w[0] == "-c")
+                            .then(|| w[1].strip_prefix("model_instructions_file="))
+                            .flatten()
+                    })
+                    .unwrap_or_else(|| panic!("{argv:?}"));
+                // A TOML basic string, which a JSON string parse reads alike.
+                serde_json::from_str::<String>(value).expect("a quoted path")
+            }
+            "qwen" => calls[0]["env"]["QWEN_SYSTEM_MD"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{}", calls[0]))
+                .to_string(),
+            other => panic!("{other} is listed as replacing but has no assertion here"),
+        };
+        assert_eq!(delivered_file(&calls[0], &path), REPLACEMENT, "{id}");
+        assert!(
+            !Path::new(&path).exists(),
+            "{id}: the private file outlived the run"
+        );
+    }
+}
+// llmlint: ignore-end[e2e_not_mocked]
+
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its translation run; only the harness process (claude-code, codex) is the mock harness, held to its real CLI by the request captures the `replace_system` rows cite (module doc).
+/// Absent or false, `replace_system` changes nothing: Claude Code still takes
+/// its appending flag and codex still has the text folded into its prompt.
+/// A fallback chain moves past a harness that cannot replace to one that can.
+#[test]
+fn without_replace_system_the_text_is_appended_and_a_chain_moves_past_a_harness_that_cannot_replace(
+) {
+    let scratch = ScratchDir::new("lean-replace-absent").unwrap();
+    let no_env: &[(&str, &str)] = &[];
+    for (label, envs) in [
+        ("absent", no_env),
+        (
+            "false in the environment",
+            &[("ONEHARNESS_REPLACE_SYSTEM", "false")],
+        ),
+    ] {
+        for id in ["claude-code", "codex"] {
+            let log = scratch.join(format!("{id}-{}.jsonl", envs.len()));
+            let log_env = format!("MOCK_INVOCATION_LOG={}", log.display());
+            let b = bin(id);
+            let args = [
+                "run",
+                "--harness",
+                id,
+                "--prompt",
+                "status?",
+                "--system",
+                REPLACEMENT,
+                "--bin",
+                &b,
+                "--env",
+                &log_env,
+            ];
+            // A real (empty) user config, so the environment layer is read.
+            let config = scratch.join("empty.toml");
+            std::fs::write(&config, "").unwrap();
+            let out = oh(&args, envs, Some(&config));
+            assert!(out.status.success(), "{label} {id}: {out:?}");
+            let calls = invocations(&log);
+            let argv = strings(&calls[0]["argv"]);
+            let stdin = calls[0]["stdin"].as_str().unwrap();
+            assert!(
+                !argv
+                    .iter()
+                    .any(|a| a == "--system-prompt-file"
+                        || a.starts_with("model_instructions_file=")),
+                "{label} {id}: {argv:?}"
+            );
+            if id == "claude-code" {
+                let path = after(&argv, "--append-system-prompt-file").unwrap();
+                assert_eq!(delivered_file(&calls[0], path), REPLACEMENT, "{label}");
+            } else {
+                assert!(stdin.starts_with(REPLACEMENT), "{label}: folded {stdin:?}");
+            }
+        }
+    }
+
+    let log = scratch.join("chain.jsonl");
+    let log_env = format!("MOCK_INVOCATION_LOG={}", log.display());
+    let (goose, claude) = (bin("goose"), bin("claude-code"));
+    let out = oh(
+        &[
+            "run",
+            "--harness",
+            "goose",
+            "--harness",
+            "claude-code",
+            "--run-mode",
+            "fallback",
+            "--prompt",
+            "status?",
+            "--system",
+            REPLACEMENT,
+            "--replace-system",
+            "--bin",
+            &goose,
+            "--bin",
+            &claude,
+            "--env",
+            &log_env,
+        ],
+        &[],
+        None,
+    );
+    assert!(out.status.success(), "{out:?}");
+    let report = json(&out);
+    assert_eq!(report["results"][0]["harness"], "goose");
+    assert_eq!(report["results"][0]["failure_kind"], "unsupported_input");
+    assert_eq!(report["fallback"]["ran"], "claude-code", "{report}");
+    let calls = invocations(&log);
+    assert_eq!(calls.len(), 1, "only claude-code was started");
+    assert!(after(&strings(&calls[0]["argv"]), "--system-prompt-file").is_some());
+}
+// llmlint: ignore-end[e2e_not_mocked]
+
+/// A `replace_system` run on `--control` is refused before anything starts
+/// for a harness whose replacing knob is set at launch, naming both.
+#[test]
+fn replace_system_on_a_controlled_codex_turn_is_a_usage_error() {
+    let scratch = ScratchDir::new("lean-replace-control").unwrap();
+    let store = scratch.join("store").display().to_string();
+    let b = bin("codex");
+    let out = oh(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "hi",
+            "--system",
+            REPLACEMENT,
+            "--replace-system",
+            "--control",
+            "--session",
+            "s",
+            "--session-dir",
+            &store,
+            "--bin",
+            &b,
+        ],
+        &[],
+        None,
+    );
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    let said = stderr(&out);
+    assert!(
+        said.contains("replace_system") && said.contains("--control") && said.contains("codex"),
+        "{said}"
+    );
+}
+
+/// A schema OpenAI strict mode accepts: every property required, no others.
+const PERSON: &str = r#"{"type":"object","properties":{"name":{"type":"string"},"age":{"type":"integer"}},"required":["name","age"],"additionalProperties":false}"#;
+
+/// The prompt-based path's instruction, which a native delivery never adds.
+const PROMPT_SCHEMA_INSTRUCTION: &str = "You must respond with a single JSON value";
+
+/// One Claude Code stream-json turn, in the shape of
+/// `tests/fixtures/claude-stream-json-turn.jsonl` and the 2.1.329 image run
+/// the `schema` row cites: one model call answering through its
+/// `StructuredOutput` tool, then the `result` event carrying the value.
+fn claude_structured_turn(message: &str, input: u64, output: u64, value: &str) -> String {
+    [
+        r#"{"type":"system","subtype":"init","session_id":"s-structured"}"#.to_string(),
+        format!(
+            r#"{{"type":"assistant","message":{{"id":"{message}","role":"assistant","content":[{{"type":"tool_use","id":"t-{message}","name":"StructuredOutput","input":{value}}}],"usage":{{"input_tokens":{input},"output_tokens":{output},"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}}}}"#
+        ),
+        format!(
+            r#"{{"type":"result","subtype":"success","is_error":false,"result":"","session_id":"s-structured","usage":{{"input_tokens":{input},"output_tokens":{output}}},"structured_output":{value}}}"#
+        ),
+    ]
+    .join("\n")
+}
+
+fn input_and_output_tokens(result: &Value) -> Vec<(u64, u64)> {
+    result["calls"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no calls: {result}"))
+        .iter()
+        .map(|c| {
+            (
+                c["input_tokens"].as_u64().unwrap(),
+                c["output_tokens"].as_u64().unwrap(),
+            )
+        })
+        .collect()
+}
+
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its structured-output loop run; only the harness process (claude-code) is the mock harness, replaying the stream-json shape of the captured turn and the 2.1.329 image run the `schema` row cites (module doc).
+/// An image beside a schema on Claude Code, with the output format unset and
+/// with `stream-json`: the image rides the stream-json frame, the schema
+/// rides `--json-schema`, and the validated value comes back from the
+/// `result` event. An invalid first answer is re-asked, and `calls` lists
+/// both attempts' model calls with the usage each reported.
+#[test]
+fn claude_takes_an_image_and_a_schema_together_and_re_asks_an_invalid_answer() {
+    let scratch = ScratchDir::new("lean-claude-image-schema").unwrap();
+    let image = png(&scratch, "frame.png").display().to_string();
+    let schema = scratch.join("person.json");
+    std::fs::write(&schema, PERSON).unwrap();
+    let schema = schema.display().to_string();
+    let invalid = claude_structured_turn("msg_one", 11, 3, r#"{"name":"Ada"}"#);
+    let valid = claude_structured_turn("msg_two", 21, 4, r#"{"name":"Ada","age":36}"#);
+    let b = bin("claude-code");
+    for (label, format) in [("unset", None), ("stream-json", Some("stream-json"))] {
+        let log = scratch.join(format!("{label}.jsonl"));
+        let counter = scratch.join(format!("{label}.count"));
+        let mut args = vec![
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "who is this?",
+            "--image",
+            &image,
+            "--schema",
+            &schema,
+            "--bin",
+            &b,
+        ];
+        args.extend(format.iter().flat_map(|f| ["--output-format", *f]));
+        let out = oh(
+            &args,
+            &[
+                ("MOCK_INVOCATION_LOG", log.to_str().unwrap()),
+                ("MOCK_ATTEMPT_FILE", counter.to_str().unwrap()),
+                ("MOCK_STDOUT_1", &invalid),
+                ("MOCK_STDOUT_2", &valid),
+            ],
+            None,
+        );
+        assert!(out.status.success(), "{label}: {out:?}");
+        let result = json(&out)["results"][0].clone();
+        assert_eq!(result["structured"]["age"], 36, "{label}: {result}");
+        assert_eq!(result["schema_valid"], true, "{label}");
+        assert!(result["schema_error"].is_null(), "{label}");
+        assert_eq!(result["schema_attempts"], 2, "{label}");
+        assert_eq!(
+            input_and_output_tokens(&result),
+            vec![(11, 3), (21, 4)],
+            "{label}: one usage per call, both attempts, in order"
+        );
+        let calls = invocations(&log);
+        assert_eq!(calls.len(), 2, "{label}");
+        for (attempt, call) in calls.iter().enumerate() {
+            let argv = strings(&call["argv"]);
+            assert!(
+                has_seq(&argv, &["--input-format", "stream-json"]),
+                "{argv:?}"
+            );
+            assert!(
+                has_seq(&argv, &["--output-format", "stream-json"]),
+                "{argv:?}"
+            );
+            let delivered: Value =
+                serde_json::from_str(after(&argv, "--json-schema").expect("native")).unwrap();
+            assert_eq!(delivered, serde_json::from_str::<Value>(PERSON).unwrap());
+            let frame: Value =
+                serde_json::from_str(call["stdin"].as_str().unwrap().trim()).unwrap();
+            let content = frame["message"]["content"].as_array().unwrap();
+            assert_eq!(content[0]["type"], "image", "{label} attempt {attempt}");
+            let text = content[1]["text"].as_str().unwrap();
+            assert!(text.starts_with("who is this?"), "{text}");
+            assert!(!text.contains(PROMPT_SCHEMA_INSTRUCTION), "native: {text}");
+        }
+    }
+
+    // Still invalid after `schema_max_retries` re-asks: a schema failure.
+    let log = scratch.join("exhausted.jsonl");
+    let out = oh(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "who is this?",
+            "--image",
+            &image,
+            "--schema",
+            &schema,
+            "--schema-max-retries",
+            "1",
+            "--bin",
+            &b,
+        ],
+        &[
+            ("MOCK_INVOCATION_LOG", log.to_str().unwrap()),
+            ("MOCK_STDOUT", &invalid),
+        ],
+        None,
+    );
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let result = json(&out)["results"][0].clone();
+    assert_eq!(result["schema_valid"], false, "{result}");
+    assert_eq!(result["schema_attempts"], 2);
+    assert!(
+        result["schema_error"].as_str().unwrap().contains("\"age\""),
+        "names the violation: {result}"
+    );
+    assert_eq!(result["structured"]["name"], "Ada");
+    assert_eq!(invocations(&log).len(), 2);
+}
+// llmlint: ignore-end[e2e_not_mocked]
+
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its structured-output loop run; only the harness process (codex) is the mock harness, a session double recording the captured rollout token counts (`tests/fixtures/codex-rollout-token-counts.jsonl`), held to its real CLI by the 0.159.2 runs the `schema` row cites (module doc).
+/// A schema strict mode accepts reaches codex natively, with and without an
+/// image: `--output-schema` names a file holding the schema, the image rides
+/// `--image=`, and the prompt carries no schema instruction. An invalid first
+/// answer is re-asked, and `calls` lists both turns' calls from the rollout.
+#[test]
+fn codex_takes_a_strict_schema_natively_with_and_without_an_image() {
+    let scratch = ScratchDir::new("lean-codex-native-schema").unwrap();
+    let image = png(&scratch, "frame.png").display().to_string();
+    let schema = scratch.join("person.json");
+    std::fs::write(&schema, PERSON).unwrap();
+    let schema = schema.display().to_string();
+    let b = bin("codex");
+    let answers = r#"["{\"name\":\"Ada\"}","{\"name\":\"Ada\",\"age\":36}"]"#;
+    for with_image in [false, true] {
+        let tag = if with_image { "image" } else { "plain" };
+        let log = scratch.join(format!("{tag}.jsonl"));
+        let counter = scratch.join(format!("{tag}.count"));
+        let home = scratch.join(format!("{tag}-home"));
+        let home_env = format!("CODEX_HOME={}", home.display());
+        let mut args = vec![
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "who is this?",
+            "--schema",
+            &schema,
+            "--bin",
+            &b,
+            "--mode",
+            "bypass",
+            "--env",
+            &home_env,
+            "--env",
+            "MOCK_CODEX_SESSIONS=1",
+        ];
+        if with_image {
+            args.extend(["--image", &image]);
+        }
+        let out = oh(
+            &args,
+            &[
+                ("MOCK_INVOCATION_LOG", log.to_str().unwrap()),
+                ("MOCK_ATTEMPT_FILE", counter.to_str().unwrap()),
+                ("MOCK_CODEX_ANSWERS", answers),
+            ],
+            None,
+        );
+        assert!(out.status.success(), "{tag}: {out:?}");
+        let result = json(&out)["results"][0].clone();
+        assert_eq!(result["status"], "ok", "{tag}: {result}");
+        assert_eq!(result["structured"]["age"], 36, "{tag}: {result}");
+        assert_eq!(result["schema_valid"], true, "{tag}");
+        assert!(result["schema_error"].is_null(), "{tag}");
+        assert_eq!(result["schema_attempts"], 2, "{tag}");
+        let inputs: Vec<u64> = input_and_output_tokens(&result)
+            .into_iter()
+            .map(|(input, _)| input)
+            .collect();
+        assert_eq!(
+            inputs,
+            vec![13_006, 13_101, 13_180, 13_006, 13_101, 13_180],
+            "{tag}: each turn's recorded calls, both attempts, in order"
+        );
+        let calls = invocations(&log);
+        assert_eq!(calls.len(), 2, "{tag}");
+        for (attempt, call) in calls.iter().enumerate() {
+            let argv = strings(&call["argv"]);
+            let path = after(&argv, "--output-schema").unwrap_or_else(|| panic!("{argv:?}"));
+            let delivered: Value = serde_json::from_str(&delivered_file(call, path)).unwrap();
+            assert_eq!(delivered, serde_json::from_str::<Value>(PERSON).unwrap());
+            assert!(
+                !Path::new(path).exists(),
+                "the schema file outlived the run"
+            );
+            assert_eq!(
+                argv.iter().any(|a| a.starts_with("--image=")),
+                with_image,
+                "{argv:?}"
+            );
+            let stdin = call["stdin"].as_str().unwrap();
+            assert!(
+                !stdin.contains(PROMPT_SCHEMA_INSTRUCTION),
+                "{tag} {attempt}: {stdin}"
+            );
+        }
+    }
+
+    // Still invalid after `schema_max_retries` re-asks: a schema failure.
+    let home = scratch.join("exhausted-home");
+    let home_env = format!("CODEX_HOME={}", home.display());
+    let counter = scratch.join("exhausted.count");
+    let out = oh(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "who is this?",
+            "--schema",
+            &schema,
+            "--schema-max-retries",
+            "1",
+            "--bin",
+            &b,
+            "--mode",
+            "bypass",
+            "--env",
+            &home_env,
+            "--env",
+            "MOCK_CODEX_SESSIONS=1",
+        ],
+        &[
+            ("MOCK_ATTEMPT_FILE", counter.to_str().unwrap()),
+            ("MOCK_CODEX_ANSWERS", r#"["{\"name\":\"Ada\"}"]"#),
+        ],
+        None,
+    );
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let result = json(&out)["results"][0].clone();
+    assert_eq!(result["schema_valid"], false, "{result}");
+    assert_eq!(result["schema_attempts"], 2);
+    assert!(
+        result["schema_error"].as_str().unwrap().contains("\"age\""),
+        "names the violation: {result}"
+    );
+}
+// llmlint: ignore-end[e2e_not_mocked]
+
+// llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its structured-output loop run; only the harness process (codex) is the mock harness, held to its real CLI by the 0.159.2 refusals the `schema` row cites (module doc).
+/// A schema strict mode would refuse keeps codex on the prompt path it took
+/// before: no `--output-schema`, the instruction in the prompt.
+#[test]
+fn codex_keeps_a_schema_strict_mode_refuses_on_the_prompt_path() {
+    let scratch = ScratchDir::new("lean-codex-loose-schema").unwrap();
+    let schema = scratch.join("loose.json");
+    std::fs::write(
+        &schema,
+        r#"{"type":"object","properties":{"name":{"type":"string"},"age":{"type":"integer"}},"required":["name"]}"#,
+    )
+    .unwrap();
+    let schema = schema.display().to_string();
+    let log = scratch.join("loose.jsonl");
+    let b = bin("codex");
+    let answer =
+        r#"{"type":"item.completed","item":{"type":"agent_message","text":"{\"name\":\"Ada\"}"}}"#;
+    let out = oh(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "who is this?",
+            "--schema",
+            &schema,
+            "--bin",
+            &b,
+        ],
+        &[
+            ("MOCK_INVOCATION_LOG", log.to_str().unwrap()),
+            ("MOCK_STDOUT", answer),
+        ],
+        None,
+    );
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(json(&out)["results"][0]["schema_valid"], true);
+    let calls = invocations(&log);
+    let argv = strings(&calls[0]["argv"]);
+    assert!(!argv.iter().any(|a| a == "--output-schema"), "{argv:?}");
+    assert!(calls[0]["stdin"]
+        .as_str()
+        .unwrap()
+        .contains(PROMPT_SCHEMA_INSTRUCTION));
+}
+// llmlint: ignore-end[e2e_not_mocked]

@@ -194,6 +194,12 @@
           "unless": null
         },
         {
+          "option": "replaceSystem",
+          "flag": "--replace-system",
+          "kind": "switch",
+          "unless": null
+        },
+        {
           "option": "images",
           "flag": "--image",
           "kind": "repeated",
@@ -521,6 +527,12 @@
         {
           "option": "noMcp",
           "flag": "--no-mcp",
+          "kind": "switch",
+          "unless": null
+        },
+        {
+          "option": "replaceSystem",
+          "flag": "--replace-system",
           "kind": "switch",
           "unless": null
         },
@@ -2789,6 +2801,16 @@
             "description": "The run-level allowlist (`allowed_tools` outside `[sync]`), applied to\none run through its overlay. Added in report schema `0.15`.",
             "type": "string",
             "const": "allowed_tools"
+          },
+          {
+            "description": "The run's system text replaces the harness's own system prompt\ninstead of being appended to it. Added in report schema `0.16`.",
+            "type": "string",
+            "const": "replace_system"
+          },
+          {
+            "description": "The schema of a structured-output run, delivered through the\nharness's own structured-output knob (native) rather than as an\ninstruction appended to the prompt. Added in report schema `0.16`.",
+            "type": "string",
+            "const": "schema"
           }
         ]
       },
@@ -4264,6 +4286,16 @@
             "description": "The run-level allowlist (`allowed_tools` outside `[sync]`), applied to\none run through its overlay. Added in report schema `0.15`.",
             "type": "string",
             "const": "allowed_tools"
+          },
+          {
+            "description": "The run's system text replaces the harness's own system prompt\ninstead of being appended to it. Added in report schema `0.16`.",
+            "type": "string",
+            "const": "replace_system"
+          },
+          {
+            "description": "The schema of a structured-output run, delivered through the\nharness's own structured-output knob (native) rather than as an\ninstruction appended to the prompt. Added in report schema `0.16`.",
+            "type": "string",
+            "const": "schema"
           }
         ]
       },
@@ -4567,6 +4599,10 @@
       },
       "reasoning": {
         "type": "string"
+      },
+      "replaceSystem": {
+        "description": "Make the system text replace each harness's own system prompt instead\nof being appended to it (Claude Code `--system-prompt-file`, Codex\n`model_instructions_file`, Qwen `QWEN_SYSTEM_MD`). A harness with no\nreplacing knob is refused for the run (`unsupported_input`).",
+        "type": "boolean"
       },
       "requireAvailable": {
         "description": "Treat a not-installed harness as a failure.",
@@ -17340,7 +17376,7 @@
             "type": "boolean"
           },
           "supports_native_schema": {
-            "description": "Whether `run --schema` is delivered through a native structured-output\nflag for this harness (Claude Code's `--json-schema`). `false` means the\nportable prompt-based path is used — structured output works either way;\noneharness always validates and retries.",
+            "description": "Whether `run --schema` is delivered through a native structured-output\nflag for this harness (Claude Code's `--json-schema`, codex's\n`--output-schema` for a schema strict mode accepts). `false` means the\nportable prompt-based path is used — structured output works either way;\noneharness always validates and retries. Read from the lean table's\n`schema` entry.",
             "type": "boolean"
           },
           "supports_prompt_stdin": {
@@ -17349,6 +17385,10 @@
           },
           "supports_reasoning": {
             "description": "Whether `run --reasoning <effort>` can be delivered on the argv for this\nharness (Claude Code's `--effort`, Codex's `model_reasoning_effort`).\n`false` means it has no headless reasoning flag — a reasoning request is\nthen a loud usage error (effort is provider/model config there).",
+            "type": "boolean"
+          },
+          "supports_replace_system": {
+            "description": "Whether `replace_system` replaces this harness's own system prompt\nwith the run's system text. `false`: a run asking for it is refused for\nthis harness (`unsupported_input`), never handed the text to append.\nAdded in report schema `0.16`.",
             "type": "boolean"
           },
           "supports_resume": {
@@ -17415,6 +17455,7 @@
           "supports_images",
           "supports_call_usage",
           "supports_run_allowed_tools",
+          "supports_replace_system",
           "example_command",
           "variants"
         ]
@@ -17786,6 +17827,9 @@
         "description": "Reasoning / thinking effort (`--reasoning` / `ONEHARNESS_REASONING`), if\nany. Forwarded to reasoning-capable harnesses only.",
         "$ref": "#/$defs/Field3"
       },
+      "replace_system": {
+        "$ref": "#/$defs/Field"
+      },
       "require_available": {
         "$ref": "#/$defs/Field"
       },
@@ -17840,6 +17884,7 @@
       "tool_set",
       "load_skills",
       "load_mcp",
+      "replace_system",
       "output_format",
       "stream",
       "schema_file",

@@ -1531,6 +1531,8 @@ describe("OneHarness", () => {
 			toolSet: ["shell", "read"],
 			noSkills: true,
 			noMcp: true,
+			system: "You are the print supervisor.",
+			replaceSystem: true,
 			env: { MOCK_ARGV_FILE: argvFile },
 			bins: { "claude-code": mock },
 		});
@@ -1540,6 +1542,8 @@ describe("OneHarness", () => {
 		).toEqual(["--tools", "Bash", "Read"]);
 		expect(argv).toContain("--disable-slash-commands");
 		expect(argv).toContain("--strict-mcp-config");
+		expect(argv).toContain("--system-prompt-file");
+		expect(argv).not.toContain("--append-system-prompt-file");
 
 		const env = {
 			CLAUDE_CONFIG_DIR: resolve(dir, "home"),

@@ -24,7 +24,7 @@ pub const UNAVAILABLE_SOURCE: &str = "raw:crush-session-unavailable";
 /// told apart in the store.
 pub const UNIDENTIFIED_SOURCE: &str = "raw:crush-session-unidentified";
 
-// llmlint: ignore[contracts_have_one_source_or_a_drift_gate] These are the value-taking flags `crush run --help` lists in v0.87.0 and v0.102.0; crush publishes no machine-readable flag list to generate them from. A flag crush adds later only goes unrecognised here, so its value is skipped as a positional and no store flag is misread; the store flags crush documents (`-D`, `-c`, `-H`) are what `just live-crush` exercises when it reads a real run back.
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] These flag spellings and their meaning (`-s/--session` names the session, `-C/--continue` the most recent one, `-D/--data-dir`, `-c/--cwd` and `-H/--host` choose the store) are `crush run --help`'s in v0.87.0 and crush's `internal/cmd/run.go` and `root.go` at v0.102.0; crush publishes no machine-readable flag list to generate them from. Drift fails safe: a flag crush adds later is skipped as a positional, and a session or store crush stops naming this way leaves the run's session unidentified or its store unreadable, so `text` stays stdout's and `text_source` says so — never another run's reply, because the store's reply is taken only when stdout is its strict prefix. `just live-crush` (ci.yml's `check` job, on every pull request that changes crates/**) reads a real run back through these argvs.
 /// `crush run` flags that take a value, so the parser skips the value too.
 const VALUED_FLAGS: &[&str] = &[
     "-m",
@@ -115,6 +115,8 @@ pub fn run_store(argv: &[String]) -> Result<RunStore, StoreMiss> {
     }
     Ok(store)
 }
+
+// llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 
 fn with_store_flags(mut argv: Vec<String>, store: &RunStore) -> Vec<String> {
     for StoreFlag { flag, value } in &store.flags {

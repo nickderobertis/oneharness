@@ -32,7 +32,6 @@ if ! printf '%s' "$OH_REPORT" | jq -e --arg m "$marker" '(.results[0].text // ""
   oh_dump
   fail "crush: the marker is absent from .text (only in stdout), so the cut reply was not recovered — run \`crush session show <id> --json\` in the run's cwd and check its last assistant message against domain::crush_store::turn_reply"
 fi
-note "PASS: crush session store read back (text_source=$source_read)"
 
 # Large prompt + system (issue #1115): oneharness pipes a >128 KiB prompt to
 # `crush run`'s stdin (positional omitted), with the system prepended — so it

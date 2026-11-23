@@ -1124,9 +1124,13 @@ oh_memory_free_enforce() {
       HOME="$home" OPENAI_BASE_URL="$base" OPENAI_API_KEY="$key" OPENAI_MODEL=oneharness-capture \
         oh_run "$id" "$(oh_prompt "$(oh_marker)")" --bin "$id=$real" --cwd "$work"
     )
-    if ! grep -qF -- "$canary" "$requests" 2>/dev/null; then
-      fail "$id: a turn with its memory on did not send the user-global memory canary to the endpoint ($requests shows what it sent), so this phase cannot tell memory-off from a qwen that no longer recalls; check where this $id now keeps its auto-memory and update oh_qwen_live_setup to match"
-    fi
+    local control=0
+    grep -qF -- "$canary" "$requests" || control=$?
+    case "$control" in
+      0) ;;
+      1) fail "$id: a turn with its memory on did not send the user-global memory canary to the endpoint ($requests shows what it sent), so this phase cannot tell memory-off from a qwen that no longer recalls; check where this $id now keeps its auto-memory and update oh_qwen_live_setup to match" ;;
+      *) fail "$id: could not read $requests (grep exited $control, its error above), so the memory-on control proved nothing; check that the host temp dir is readable" ;;
+    esac
     rm -f "$requests" || fail "$id: could not clear $requests between the two turns; check that the host temp dir is writable"
     HOME="$home" OPENAI_BASE_URL="$base" OPENAI_API_KEY="$key" OPENAI_MODEL=oneharness-capture \
       oh_run "$id" "$(oh_prompt "$(oh_marker)")" --bin "$id=$real" --cwd "$work"

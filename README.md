@@ -1558,6 +1558,8 @@ invalidating earlier ones):
   from a real transcript** captured from the live CLI (never guessed) and is
   drift-alarmed by a per-harness live e2e (`oh_events_assert`):
 
+  <!-- llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] This is the user-facing statement of where each Claude Code `calls` entry's figures come from, which the task requires here; its drift gate is the behavior, pinned through the real binary by `crates/oneharness-e2e/tests/lean_session.rs` (the one-call, two-call, schema re-ask and malformed-stream journeys assert the flag in argv and each call's figures). -->
+
   | harness | events via | `events_source` |
   |---------|------------|-----------------|
   | `opencode` | `json` (default) | `json:opencode-parts` |
@@ -1566,6 +1568,8 @@ invalidating earlier ones):
   | `codex` | `exec --json` (default; `--events` needs no upgrade) | `json:codex-items` |
   | `qwen` | `--events` → `--output-format stream-json` | `stream-json:content-blocks` |
   | `goose`, `crush`, `copilot` | no machine-readable transcript headlessly | — (null) |
+
+  <!-- llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate] -->
 
   Four recognizers cover these, each harness-agnostic: OpenCode parts (a `tool`
   part is a `tool_call`; a completed `text` part a `message` and a completed
@@ -2716,6 +2720,8 @@ harness's own stream or session record; the run's `usage` total is unchanged.
 Where the harness exposes no per-call figures it is absent and `diagnostics`
 says why.
 
+<!-- llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] This is the user-facing statement of where each Claude Code `calls` entry's figures come from, which the task requires here; its drift gate is the behavior, pinned through the real binary by `crates/oneharness-e2e/tests/lean_session.rs` (the one-call, two-call, schema re-ask and malformed-stream journeys assert the flag in argv and each call's figures). -->
+
 On Claude Code (`--output-format stream-json`) a call's input and cache
 figures are its `assistant` event's, and its `output_tokens` is the call's
 final figure: the `message_delta` stream event that ends the call. Claude Code
@@ -2731,6 +2737,8 @@ of each call's output, in proportion to the tokens the run generates: 65 to
 about 80 KB per 1,000 output tokens. `text`, `usage` and `events` are
 unaffected: they are read from the `result` and `assistant` events, never the
 partial lines.
+
+<!-- llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate] -->
 
 **`oneharness compact --session NAME [--session-dir DIR] [--harness ID]`**
 compacts a named session now (library: `oneharness_core::io::compact::
@@ -2748,6 +2756,8 @@ another identity than `--harness`, is refused (exit 2) as `run` refuses it.
 The translation, from one table in the source (`domain::lean::TRANSLATIONS`,
 which also cites the evidence for each entry):
 
+<!-- llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] This matrix's drift gate is `domain::lean`'s `the_readme_translation_matrix_matches_the_table`, which holds every row to the source table: its release, which cells claim a knob, and every knob each cell names. -->
+
 | Harness (release) | `auto_compact_tokens` | compact now | `tool_set` | `load_skills = false` | `load_mcp = false` | `images` | `calls` | run-level `allowed_tools` | `replace_system` | `schema` |
 |---|---|---|---|---|---|---|---|---|---|---|
 | Claude Code (2.1.316) | `CLAUDE_CODE_AUTO_COMPACT_WINDOW` = N + 33000; below 67000, the 100000 window floor plus `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` = N / 80000 × 100 | `-p /compact --resume ID --fork-session` | `--tools Bash Read` (intersected with read-only's set under `--mode read-only`) | `--disable-slash-commands` | `--strict-mcp-config` | base64 `image` blocks in one stream-json user frame (`--input-format stream-json`) | one `assistant.message.usage` per `message.id` under `--output-format stream-json`, which adds `--include-partial-messages`: each call's `output_tokens` is its `message_delta`'s final figure (2.1.330) | `--allowedTools` per rule; under read-only `--permission-mode dontAsk`, `--tools` gains `Bash` (Linux; withheld elsewhere) | `--system-prompt-file FILE` in place of `--append-system-prompt-file` (2.1.329) | `--json-schema`; the stream-json `result` event's `structured_output`, with `calls`; only an explicit `json`/`text` reads the `json` result's `structured_output`, without `calls`, and is refused beside images (2.1.329) |
@@ -2756,6 +2766,8 @@ which also cites the evidence for each entry):
 | Copilot (1.0.78) | — | — | — | — | — | `--attachment PATH` | — | withheld | refused | prompt-based |
 | Qwen (0.21.0) | — | — | — | — | — | refused | — | withheld | `QWEN_SYSTEM_MD=FILE` on the qwen process, not folded into the prompt; usage error under `--control` | prompt-based |
 | Goose, Crush, Cursor | — | — | — | — | — | refused | — | withheld | refused | prompt-based |
+
+<!-- llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate] -->
 
 How the Claude Code and Codex rows were settled, against the installed
 releases:

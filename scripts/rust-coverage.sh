@@ -113,6 +113,7 @@ done <<<"$specs"
   echo "rust-coverage: rebuilding the instrumented selections named no executable, so the report would read only stale objects; check that cargo-llvm-cov passes --cargo-message-format through to nextest (just bootstrap installs a version that does)" >&2
   exit 1
 }
+# llmlint: ignore-block[changed_behavior_has_e2e] Driving this report under a moved target directory needs every crate's instrumented build, the whole coverage target (about 15 minutes and several GB of scratch); its proof is `just check` under CARGO_TARGET_DIR=/tmp, which reads the objects and profiles here, and the directory comes from scripts/llvm-cov-target-dir.sh, which check-cargo-test-target-dir.sh drives through the real cargo-test.sh.
 node -e '
   const fs = require("fs");
   const path = require("path");
@@ -134,6 +135,7 @@ node -e '
   };
   walk(path.join(process.argv[2], "debug"));
 ' "$artifacts" "$llvm_cov_target"
+# llmlint: ignore-end[changed_behavior_has_e2e]
 
 # The report collects every profile in $llvm_cov_target. A record is an
 # indexed profile, which llvm-profdata merges exactly as it does a raw one, so
@@ -148,7 +150,11 @@ for record in "${records[@]}"; do
     echo "coverage: no profile for $record at target/coverage/$record.profdata; its test target never ran instrumented. Run 'just coverage' (it runs every Rust test target first)." >&2
     exit 1
   fi
-  cp "target/coverage/$record.profdata" "$llvm_cov_target/$record.profraw"
+  # llmlint: ignore[changed_behavior_has_e2e] Driving this report under a moved target directory needs every crate's instrumented build, the whole coverage target (about 15 minutes and several GB of scratch); its proof is `just check` under CARGO_TARGET_DIR=/tmp, which reads the objects and profiles here, and the directory comes from scripts/llvm-cov-target-dir.sh, which check-cargo-test-target-dir.sh drives through the real cargo-test.sh.
+  cp "target/coverage/$record.profdata" "$llvm_cov_target/$record.profraw" || {
+    echo "rust-coverage: could not place $record's profile in $llvm_cov_target (cp's error above); check that directory is writable, then re-run 'just coverage'" >&2
+    exit 1
+  }
 done
 
 # Every workspace member, as `--workspace` reported: `report` otherwise keeps
@@ -167,6 +173,7 @@ while IFS= read -r member; do members+=(-p "$member"); done <<<"$names"
 status=0
 cargo llvm-cov report "${members[@]}" --summary-only --fail-under-lines "$floor" \
   >target/coverage/rust-coverage.txt 2>target/coverage/rust-coverage.err || status=$?
+# llmlint: ignore[changed_behavior_has_e2e] Driving this report under a moved target directory needs every crate's instrumented build, the whole coverage target (about 15 minutes and several GB of scratch); its proof is `just check` under CARGO_TARGET_DIR=/tmp, which reads the objects and profiles here, and the directory comes from scripts/llvm-cov-target-dir.sh, which check-cargo-test-target-dir.sh drives through the real cargo-test.sh.
 merged=("$llvm_cov_target"/*.profdata)
 if [ -s "${merged[0]}" ]; then
   cp "${merged[0]}" target/coverage/rust.profdata

@@ -159,8 +159,9 @@ llvm_profdata="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^hos
 }
 inputs="$(mktemp)"
 trap 'rm -f "$inputs"' EXIT
-if [ -d "$llvm_cov_target" ]; then
-  find "$llvm_cov_target" -maxdepth 1 -name '*.profraw' >"$inputs"
+if [ -d "$llvm_cov_target" ] && ! find "$llvm_cov_target" -maxdepth 1 -name '*.profraw' >"$inputs"; then
+  echo "cargo-test: could not list the raw profiles under $llvm_cov_target (find's error above); check that directory's permissions, then re-run the test target with --skip-nx-cache" >&2
+  exit 1
 fi
 [ -s "$inputs" ] || {
   echo "cargo-test: the instrumented run of $package wrote no profile under $llvm_cov_target; its coverage cannot be recorded; check that cargo-llvm-cov is installed (just bootstrap) and nothing overrides LLVM_PROFILE_FILE, then re-run the test target with --skip-nx-cache" >&2

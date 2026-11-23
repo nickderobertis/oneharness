@@ -2,9 +2,10 @@
 #
 # Print the directory `cargo llvm-cov` builds its instrumented objects into and
 # writes its raw profiles to, resolved the way cargo-llvm-cov resolves it
-# (src/cargo.rs, 0.8): CARGO_LLVM_COV_TARGET_DIR, taken relative to the cwd
-# when it is not absolute; otherwise `llvm-cov-target` under cargo's own target
-# directory, which follows CARGO_TARGET_DIR and `build.target-dir`.
+# (src/cargo.rs, 0.8): `llvm-cov-target` under cargo's own target directory,
+# which follows CARGO_TARGET_DIR and `build.target-dir`. cargo-llvm-cov's own
+# override, CARGO_LLVM_COV_TARGET_DIR, is refused rather than re-implemented:
+# nothing here sets it, and a copy of its rule would have no drift check.
 #
 #   scripts/llvm-cov-target-dir.sh
 #
@@ -18,15 +19,15 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
 if [ -n "${CARGO_LLVM_COV_TARGET_DIR:-}" ]; then
-  case "$CARGO_LLVM_COV_TARGET_DIR" in
-    /*) printf '%s\n' "$CARGO_LLVM_COV_TARGET_DIR" ;;
-    *) printf '%s/%s\n' "$root" "$CARGO_LLVM_COV_TARGET_DIR" ;;
-  esac
-  exit 0
+  echo "llvm-cov-target-dir: CARGO_LLVM_COV_TARGET_DIR is set ('$CARGO_LLVM_COV_TARGET_DIR'), which the coverage scripts do not follow; unset it and move the build with CARGO_TARGET_DIR instead" >&2
+  exit 2
 fi
 
-target="$(cargo metadata --no-deps --format-version 1 --locked --offline |
-  node -e 'let s="";process.stdin.on("data",(d)=>{s+=d}).on("end",()=>{console.log(JSON.parse(s).target_directory ?? "")})')"
+if ! target="$(cargo metadata --no-deps --format-version 1 --locked --offline |
+  node -e 'let s="";process.stdin.on("data",(d)=>{s+=d}).on("end",()=>{console.log(JSON.parse(s).target_directory ?? "")})')"; then
+  echo "llvm-cov-target-dir: reading cargo's target directory failed (cargo metadata or node, above); run 'cargo metadata --no-deps --offline --locked' to see why, fix it, and rerun" >&2
+  exit 1
+fi
 [ -n "$target" ] || {
   echo "llvm-cov-target-dir: cargo metadata named no target directory; check 'cargo metadata --no-deps --offline --locked' and CARGO_TARGET_DIR" >&2
   exit 1

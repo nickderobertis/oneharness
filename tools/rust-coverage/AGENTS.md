@@ -23,13 +23,13 @@ Subtree rules for the Rust line-coverage floor.
 - **The build may live off the checkout.** `cargo-test.sh` and
   `rust-coverage.sh` find the objects and raw profiles through
   `scripts/llvm-cov-target-dir.sh`, cargo-llvm-cov's own rule
-  (`CARGO_LLVM_COV_TARGET_DIR`, else `<cargo target dir>/llvm-cov-target`),
-  so `CARGO_TARGET_DIR=/tmp/...` is measured where it was built. The merged
+  (`<cargo target dir>/llvm-cov-target`; its `CARGO_LLVM_COV_TARGET_DIR`
+  override is refused, not followed), so `CARGO_TARGET_DIR=/tmp/...` is measured where it was built. The merged
   per-run profiles stay in the checkout's `target/coverage`, the Nx outputs.
   Profiles the cache replayed from a build elsewhere are not this build's:
   after moving the target directory, run the Rust `test` targets and
   `rust-coverage:coverage` with `--skip-nx-cache`.
-  `check-cargo-test-target-dir.sh` (`workspace-integration`) holds
+  `check-cargo-test-target-dir.sh` (`rust-coverage-integration`) holds
   `cargo-test.sh` to it.
 - The threshold is line coverage, not region/branch: the hermetic mock-harness
   suite drives whole user journeys (high-leverage line coverage), and a few

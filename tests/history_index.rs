@@ -1655,32 +1655,35 @@ struct DatedStore {
     _scratch: ScratchDir,
     store: PathBuf,
     project: PathBuf,
-    runs: Vec<(HistoryId, &'static str)>,
+    /// Each run and the UTC date it was stamped on, read once at seeding.
+    runs: Vec<(HistoryId, String)>,
 }
 
 /// Runs on two past UTC dates and today, plus a legacy index and event index
 /// an older core left behind.
 fn dated_store(tag: &str, seed: u64) -> DatedStore {
-    let scratch = ScratchDir::new(&format!("hindex-dated-{tag}")).unwrap();
-    let store = scratch.join("store");
-    let project = scratch.join("project");
-    std::fs::create_dir_all(&project).unwrap();
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap()
         .as_secs();
+    dated_store_at(tag, seed, now)
+}
+
+/// [`dated_store`] with its newest run stamped at `newest` (epoch seconds),
+/// so a test can pin the instant rather than read the clock.
+fn dated_store_at(tag: &str, seed: u64, newest: u64) -> DatedStore {
+    let scratch = ScratchDir::new(&format!("hindex-dated-{tag}")).unwrap();
+    let store = scratch.join("store");
+    let project = scratch.join("project");
+    std::fs::create_dir_all(&project).unwrap();
     let mut runs = Vec::new();
-    for (index, (date, secs)) in [
-        ("2026-01-01", epoch_of("2026-01-01")),
-        ("2026-01-02", epoch_of("2026-01-02")),
-        ("today", now),
-    ]
-    .into_iter()
-    .enumerate()
+    for (index, secs) in [epoch_of("2026-01-01"), epoch_of("2026-01-02"), newest]
+        .into_iter()
+        .enumerate()
     {
         let id = id_at(secs, seed + index as u64 + 1);
         seed_run(&store, &project, &format!("dated-{index}"), id, "dated");
-        runs.push((id, date));
+        runs.push((id, UtcDate::from_epoch_secs(secs as i64).to_string()));
     }
     std::fs::write(
         store.join(".index.jsonl"),
@@ -1774,7 +1777,7 @@ fn past_runs_on_two_utc_dates_stay_found_and_nothing_rewrites_the_store() {
     assert_eq!(legacy(store), legacy_before, "clear --yes");
     assert!(store.join(".index.d").is_dir());
     // A cleared run's entry stays; its lookup skips the missing session.
-    let (id, _) = dated.runs[0];
+    let id = dated.runs[0].0;
     assert_eq!(
         history_verb(store, &["show", &id.to_string()])
             .status
@@ -2662,7 +2665,11 @@ fn an_all_time_lookup_streams_the_legacy_index_in_bounded_memory() {
 #[cfg(unix)]
 #[test]
 fn reindex_indexes_copied_in_sessions_appending_only_what_each_segment_lacks() {
-    let source = dated_store("reindex-source", 100);
+    // The newest copied run is stamped at the last second of a UTC day, so a
+    // listing that read the clock again for "today" would ask for the next
+    // day and miss it, every run, not only across a real midnight.
+    let last_second_of_yesterday = epoch_of(&today().to_string()) - 12 * 3600 - 1;
+    let source = dated_store_at("reindex-source", 100, last_second_of_yesterday);
     let target = dated_store("reindex-target", 200);
     // The target's segments already hold entries for 2026-01-01, 2026-01-02
     // and today — the dates the copied runs land on.
@@ -2749,15 +2756,8 @@ fn reindex_indexes_copied_in_sessions_appending_only_what_each_segment_lacks() {
     for (id, date) in &source.runs {
         let shown = json(&history_verb(&target.store, &["show", &id.to_string()]));
         assert_eq!(shown[0]["history_id"], id.to_string(), "{date}");
-        let since = if *date == "today" {
-            today().to_string()
-        } else {
-            date.to_string()
-        };
-        let listed = history_verb(
-            &target.store,
-            &["list", "--all-projects", "--since", &since],
-        );
+        // The date the run was stamped on, never a second read of the clock.
+        let listed = history_verb(&target.store, &["list", "--all-projects", "--since", date]);
         assert!(listed_ids(&listed, &target.store).contains(id), "{date}");
     }
     // A second reindex adds nothing and leaves every segment byte-identical.

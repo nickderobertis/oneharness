@@ -108,14 +108,20 @@ fn scratch(tag: &str) -> ScratchDir {
     ScratchDir::new(&format!("crush-store-{tag}")).expect("scratch dir")
 }
 
+/// The sessions the mock's store lists, read the way oneharness reads them:
+/// through `crush session list --json`.
 fn listed_sessions(store: &Path) -> Vec<Value> {
-    serde_json::from_slice::<Value>(
-        &std::fs::read(store.join("sessions.json")).expect("the mock stored a session"),
-    )
-    .unwrap()
-    .as_array()
-    .cloned()
-    .unwrap()
+    let output = Command::new(workspace_bin("oneharness-mock-harness"))
+        .args(["session", "list", "--json"])
+        .env("MOCK_CRUSH_STORE", store)
+        .output()
+        .expect("run the mock's `session list`");
+    assert!(output.status.success(), "{output:?}");
+    serde_json::from_slice::<Value>(&output.stdout)
+        .unwrap()
+        .as_array()
+        .cloned()
+        .unwrap()
 }
 
 #[test]
@@ -385,6 +391,11 @@ fn runs_sharing_a_store_at_once_cannot_be_told_apart_and_keep_stdout() {
     );
     let results = report["results"].as_array().expect("a batch of results");
     assert_eq!(results.len(), 2, "{output:?}");
+    assert_eq!(
+        listed_sessions(&dir.join("store")).len(),
+        2,
+        "the store lists both turns' sessions, as crush's own does"
+    );
     for result in results {
         assert_eq!(result["text"], "ONEHARNESS-LIVE-3");
         assert_eq!(result["text_source"], "raw:crush-session-unidentified");
@@ -394,6 +405,51 @@ fn runs_sharing_a_store_at_once_cannot_be_told_apart_and_keep_stdout() {
         "{}",
         stderr(&output)
     );
+}
+
+/// The batch journey above holds only if the stand-in store keeps every
+/// session that concurrent runs create, as crush's database does. Many
+/// `crush run`s started at once into one store must each be listed: a store
+/// that drops one leaves a run seeing a single new session and reading
+/// another run's reply as its own.
+#[test]
+fn a_store_shared_by_concurrent_runs_lists_every_session_they_create() {
+    const RUNS: usize = 16;
+    let dir = scratch("concurrent");
+    let store = dir.join("store");
+    let children: Vec<_> = (0..RUNS)
+        .map(|n| {
+            Command::new(workspace_bin("oneharness-mock-harness"))
+                .args(["run", &format!("say {n}")])
+                .env("MOCK_CRUSH_STORE", &store)
+                .env("MOCK_CRUSH_REPLY", REPLY)
+                .env("MOCK_STDOUT", CUT)
+                .spawn()
+                .expect("spawn a mock crush run")
+        })
+        .collect();
+    for mut child in children {
+        assert!(child.wait().expect("a mock crush run ends").success());
+    }
+    let listed = listed_sessions(&store);
+    assert_eq!(listed.len(), RUNS, "{listed:?}");
+    for session in &listed {
+        let shown = Command::new(workspace_bin("oneharness-mock-harness"))
+            .args([
+                "session",
+                "show",
+                session["uuid"].as_str().unwrap(),
+                "--json",
+            ])
+            .env("MOCK_CRUSH_STORE", &store)
+            .output()
+            .expect("run the mock's `session show`");
+        assert!(shown.status.success(), "{shown:?}");
+        assert!(
+            String::from_utf8_lossy(&shown.stdout).contains(REPLY),
+            "{shown:?}"
+        );
+    }
 }
 
 #[test]

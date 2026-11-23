@@ -110,6 +110,7 @@ fn scratch(tag: &str) -> ScratchDir {
 
 /// The sessions the mock's store lists, read the way oneharness reads them:
 /// through `crush session list --json`.
+// llmlint: ignore-block[e2e_not_mocked] This reads back the state of the journey's own stand-in store, not the behavior under test: the store exists only as the mock harness's (the gate cannot run the paid, authenticated crush), so listing it through that same mock's `session list --json` — the command oneharness itself spawns at the `--bin` seam — is the one way to name a session id to resume or count what the runs created. `just live-crush` holds the real store to the same path.
 fn listed_sessions(store: &Path) -> Vec<Value> {
     let output = Command::new(workspace_bin("oneharness-mock-harness"))
         .args(["session", "list", "--json"])
@@ -123,6 +124,7 @@ fn listed_sessions(store: &Path) -> Vec<Value> {
         .cloned()
         .unwrap()
 }
+// llmlint: ignore-end[e2e_not_mocked]
 
 #[test]
 fn a_reply_crush_printed_only_the_start_of_is_read_back_from_its_session_store() {
@@ -391,6 +393,9 @@ fn runs_sharing_a_store_at_once_cannot_be_told_apart_and_keep_stdout() {
     );
     let results = report["results"].as_array().expect("a batch of results");
     assert_eq!(results.len(), 2, "{output:?}");
+    // The stand-in store keeps every session concurrent runs create, as
+    // crush's database does: the mock's own fixture test
+    // (`crates/oneharness-mock-harness/tests/fixture.rs`) holds it to that.
     assert_eq!(
         listed_sessions(&dir.join("store")).len(),
         2,
@@ -405,51 +410,6 @@ fn runs_sharing_a_store_at_once_cannot_be_told_apart_and_keep_stdout() {
         "{}",
         stderr(&output)
     );
-}
-
-/// The batch journey above holds only if the stand-in store keeps every
-/// session that concurrent runs create, as crush's database does. Many
-/// `crush run`s started at once into one store must each be listed: a store
-/// that drops one leaves a run seeing a single new session and reading
-/// another run's reply as its own.
-#[test]
-fn a_store_shared_by_concurrent_runs_lists_every_session_they_create() {
-    const RUNS: usize = 16;
-    let dir = scratch("concurrent");
-    let store = dir.join("store");
-    let children: Vec<_> = (0..RUNS)
-        .map(|n| {
-            Command::new(workspace_bin("oneharness-mock-harness"))
-                .args(["run", &format!("say {n}")])
-                .env("MOCK_CRUSH_STORE", &store)
-                .env("MOCK_CRUSH_REPLY", REPLY)
-                .env("MOCK_STDOUT", CUT)
-                .spawn()
-                .expect("spawn a mock crush run")
-        })
-        .collect();
-    for mut child in children {
-        assert!(child.wait().expect("a mock crush run ends").success());
-    }
-    let listed = listed_sessions(&store);
-    assert_eq!(listed.len(), RUNS, "{listed:?}");
-    for session in &listed {
-        let shown = Command::new(workspace_bin("oneharness-mock-harness"))
-            .args([
-                "session",
-                "show",
-                session["uuid"].as_str().unwrap(),
-                "--json",
-            ])
-            .env("MOCK_CRUSH_STORE", &store)
-            .output()
-            .expect("run the mock's `session show`");
-        assert!(shown.status.success(), "{shown:?}");
-        assert!(
-            String::from_utf8_lossy(&shown.stdout).contains(REPLY),
-            "{shown:?}"
-        );
-    }
 }
 
 #[test]

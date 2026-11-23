@@ -38,7 +38,8 @@ trap cleanup EXIT
 
 if CARGO_LLVM_COV_TARGET_DIR=cov bash "$root/scripts/llvm-cov-target-dir.sh" >/dev/null 2>"$tmp/refused.err" ||
   ! grep -q 'move the build with CARGO_TARGET_DIR' "$tmp/refused.err"; then
-  fail "scripts/llvm-cov-target-dir.sh did not refuse CARGO_LLVM_COV_TARGET_DIR with its recovery action; restore the refusal"
+  sed 's/^/    /' "$tmp/refused.err" >&2 || true
+  fail "scripts/llvm-cov-target-dir.sh (its stderr above) did not refuse CARGO_LLVM_COV_TARGET_DIR with its recovery action; restore the refusal"
 fi
 
 if ! CARGO_TARGET_DIR="$tmp/moved" bash "$root/scripts/cargo-test.sh" oneharness-sdk-contract \

@@ -15,7 +15,8 @@
       "{workspaceRoot}/crates/**/*",
       "{workspaceRoot}/tests/**/*",
       "{workspaceRoot}/scripts/rust-coverage.sh",
-      "{workspaceRoot}/scripts/cargo-test.sh"
+      "{workspaceRoot}/scripts/cargo-test.sh",
+      "{workspaceRoot}/scripts/llvm-cov-target-dir.sh"
     ]
   },
   "targets": {
@@ -49,6 +50,7 @@
           "transitive": false
         },
         "{workspaceRoot}/scripts/rust-coverage.sh",
+        "{workspaceRoot}/scripts/llvm-cov-target-dir.sh",
         "{workspaceRoot}/crates/*/project.json",
         "{workspaceRoot}/src/project.json",
         "{workspaceRoot}/tests/project.json",

@@ -14,8 +14,9 @@
 # every one must have left its profile: a missing one is a run that never
 # happened, and leaving it out could only move the number.
 #
-# The report maps the profiles onto the instrumented objects in
-# target/llvm-cov-target, so those must be this tree's. A profile the cache
+# The report maps the profiles onto the instrumented objects in cargo-llvm-cov's
+# target directory (scripts/llvm-cov-target-dir.sh: under CARGO_TARGET_DIR when
+# that is set), so those must be this tree's. A profile the cache
 # replayed was produced by objects built from these same inputs, but the objects
 # on disk may be a later build's (an edit since reverted), which could drop the
 # replayed counts or carry code the tree no longer has — failing the floor or,
@@ -72,6 +73,15 @@ specs="$(git ls-files --cached --others --exclude-standard '*project.json' | nod
   exit 1
 }
 
+# Where cargo-llvm-cov keeps the instrumented objects and the profiles the
+# report collects: under CARGO_TARGET_DIR when the build is moved off the
+# checkout, never a fixed target/ path, or the report would read objects and
+# profiles some other build left in target/.
+llvm_cov_target="$(bash scripts/llvm-cov-target-dir.sh)" || {
+  echo "rust-coverage: could not resolve cargo-llvm-cov's target directory (above); fix it, then re-run 'just coverage'" >&2
+  exit 1
+}
+
 # The objects first, for this tree; then the profiles, each run's own.
 records=()
 build_log="$(mktemp)"
@@ -90,7 +100,7 @@ while IFS=$'\x1f' read -r -a args; do
   records+=("$record")
 done <<<"$specs"
 
-# The report reads EVERY executable under target/llvm-cov-target named for a
+# The report reads EVERY executable under $llvm_cov_target named for a
 # workspace target, not only the ones these runs built: an object a different
 # build left there — an older tree's, restored by CI's target-directory cache, or
 # a selection no project runs any more — has its own symbol hash, so its
@@ -122,10 +132,10 @@ node -e '
       }
     }
   };
-  walk("target/llvm-cov-target/debug");
-' "$artifacts"
+  walk(path.join(process.argv[2], "debug"));
+' "$artifacts" "$llvm_cov_target"
 
-# The report collects every profile in target/llvm-cov-target. A record is an
+# The report collects every profile in $llvm_cov_target. A record is an
 # indexed profile, which llvm-profdata merges exactly as it does a raw one, so
 # each is placed there under the extension the report collects.
 cargo llvm-cov clean --profraw-only
@@ -138,7 +148,7 @@ for record in "${records[@]}"; do
     echo "coverage: no profile for $record at target/coverage/$record.profdata; its test target never ran instrumented. Run 'just coverage' (it runs every Rust test target first)." >&2
     exit 1
   fi
-  cp "target/coverage/$record.profdata" "target/llvm-cov-target/$record.profraw"
+  cp "target/coverage/$record.profdata" "$llvm_cov_target/$record.profraw"
 done
 
 # Every workspace member, as `--workspace` reported: `report` otherwise keeps
@@ -157,11 +167,11 @@ while IFS= read -r member; do members+=(-p "$member"); done <<<"$names"
 status=0
 cargo llvm-cov report "${members[@]}" --summary-only --fail-under-lines "$floor" \
   >target/coverage/rust-coverage.txt 2>target/coverage/rust-coverage.err || status=$?
-merged=(target/llvm-cov-target/*.profdata)
+merged=("$llvm_cov_target"/*.profdata)
 if [ -s "${merged[0]}" ]; then
   cp "${merged[0]}" target/coverage/rust.profdata
 elif [ "$status" -eq 0 ]; then
-  echo "rust-coverage: the report wrote no merged profile under target/llvm-cov-target; re-run the Rust test targets with --skip-nx-cache so their profiles are rebuilt, then this coverage target" >&2
+  echo "rust-coverage: the report wrote no merged profile under $llvm_cov_target; re-run the Rust test targets with --skip-nx-cache so their profiles are rebuilt, then this coverage target" >&2
   exit 1
 fi
 total="$(awk '/^TOTAL/ { print $(NF-3) " lines (" $(NF-4) " missed of " $(NF-5) ")" }' target/coverage/rust-coverage.txt)"

@@ -16,6 +16,7 @@
     ],
     "rustTestRunner": [
       "{workspaceRoot}/scripts/cargo-test.sh",
+      "{workspaceRoot}/scripts/llvm-cov-target-dir.sh",
       "{workspaceRoot}/scripts/coverage-linker.sh",
       "{workspaceRoot}/scripts/check-temp-leaks.sh",
       "{workspaceRoot}/.config/nextest.toml",

@@ -137,6 +137,12 @@ fi
 
 profile="target/coverage/$record.profdata"
 mkdir -p target/coverage
+# Where cargo-llvm-cov writes this run's raw profiles: under CARGO_TARGET_DIR
+# when the build is moved off the checkout, never a fixed target/ path.
+llvm_cov_target="$(bash scripts/llvm-cov-target-dir.sh)" || {
+  echo "cargo-test: could not resolve cargo-llvm-cov's target directory (above); fix it, then re-run the test target" >&2
+  exit 1
+}
 rm -f "$profile"
 # Profiles are named after the workspace, not the crate, so a previous crate's
 # are cleared first; Nx runs these targets one at a time (`parallelism: false`)
@@ -153,9 +159,11 @@ llvm_profdata="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^hos
 }
 inputs="$(mktemp)"
 trap 'rm -f "$inputs"' EXIT
-find target/llvm-cov-target -maxdepth 1 -name '*.profraw' >"$inputs"
+if [ -d "$llvm_cov_target" ]; then
+  find "$llvm_cov_target" -maxdepth 1 -name '*.profraw' >"$inputs"
+fi
 [ -s "$inputs" ] || {
-  echo "cargo-test: the instrumented run of $package wrote no profile under target/llvm-cov-target; its coverage cannot be recorded; check that cargo-llvm-cov is installed (just bootstrap) and nothing overrides LLVM_PROFILE_FILE, then re-run the test target with --skip-nx-cache" >&2
+  echo "cargo-test: the instrumented run of $package wrote no profile under $llvm_cov_target; its coverage cannot be recorded; check that cargo-llvm-cov is installed (just bootstrap) and nothing overrides LLVM_PROFILE_FILE, then re-run the test target with --skip-nx-cache" >&2
   exit 1
 }
 "$llvm_profdata" merge -sparse --input-files="$inputs" -o "$profile"

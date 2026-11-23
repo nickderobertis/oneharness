@@ -1098,11 +1098,13 @@ oh_memory_free_enforce() {
   canary="ONEHARNESS-MEMORY-$RANDOM$RANDOM"
   # The shape qwen's own extraction writes: an index line, and the memory file
   # it links, with its frontmatter.
+  # llmlint: ignore-block[tests_mirror_real_usage] The phase needs a known memory under the sandbox HOME before any turn runs: qwen writes one only when its model decides, in a background extraction after a paid turn, to remember something, so letting qwen create it would make the canary's presence the model's choice. What is seeded is the files that extraction writes, in its own shape, and the turns read them through qwen's real recall path.
   {
     printf -- '- [Codename](user.md) — the user codename is %s\n' "$canary" >"$sandbox/ambient/.qwen/memories/MEMORY.md" &&
       printf -- '---\nname: Codename\ndescription: the user codename is %s\ntype: user\n---\nThe user codename is %s.\n' \
         "$canary" "$canary" >"$sandbox/ambient/.qwen/memories/user.md"
   } || _oh_stall_abort "$sandbox" "$pid" "$id: could not seed the memory canary under $sandbox/ambient/.qwen/memories; check that the host temp dir is writable"
+  # llmlint: ignore-end[tests_mirror_real_usage]
   local started_ok=0
   # llmlint: ignore-block[e2e_not_mocked] What this phase observes is the request qwen sends its model, so a recorder must stand where the model is, for the endpoint's start and both turns sent to it; the real model is driven by the paid turns e2e-qwen.sh runs under the same settings.
   _oh_endpoint_start chat-capture-endpoint.py "$py" "$sandbox/endpoint" "$sandbox/endpoint.log" || started_ok=$?

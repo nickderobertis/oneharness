@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.3](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.35.2...oneharness-core-v0.35.3) - 2026-11-23
+
+### Fixed
+
+- *(run)* report each Claude Code call's final output tokens under stream-json ([#1667](https://github.com/nickderobertis/oneharness/pull/1667))
+
 ## [0.35.2](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.35.1...oneharness-core-v0.35.2) - 2026-11-23
 
 ### Fixed

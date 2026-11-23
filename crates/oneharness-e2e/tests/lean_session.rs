@@ -4151,9 +4151,10 @@ fn claude_result_iterations(iterations: &str) -> String {
 // llmlint: ignore-block[e2e_not_mocked] The real `oneharness` binary and its translation run; only the harness process (claude-code) is the mock harness, replaying the partial-message stream shape of the captured turn the `calls` row cites (module doc), here corrupted or made ambiguous.
 /// Malformed stream lines never move a call's figures: a `message_delta` on a
 /// non-string `parent_tool_use_id`, one with no `message_start` before it on
-/// its stream, one whose `output_tokens` is no number, a `stream_event` with
-/// no event, and `usage.iterations` entries that are no object or carry no
-/// output. And when calls share input and cache figures, the `result`
+/// its stream, one after the message's `message_stop` or after a
+/// `message_start` naming no message, one whose `output_tokens` is no number,
+/// a `stream_event` with no event, and `usage.iterations` entries that are no
+/// object or carry no output or no input and cache figures. And when calls share input and cache figures, the `result`
 /// event's last iteration is the latest one's (an earlier iteration the
 /// call before): it settles that call unless the call streamed its final,
 /// and never passes to an earlier call.
@@ -4201,6 +4202,16 @@ fn claude_calls_keep_their_figures_through_a_malformed_or_ambiguous_stream() {
     };
     let mut lines = vec![CLAUDE_INIT.to_string()];
     lines.extend(first.lines());
+    lines.push(
+        r#"{"type":"stream_event","event":{"type":"message_stop"},"session_id":"s-calls","parent_tool_use_id":null}"#
+            .into(),
+    );
+    lines.push(delta("null", "7777"));
+    lines.push(
+        r#"{"type":"stream_event","event":{"type":"message_start","message":{"type":"message","usage":{"output_tokens":1}}},"session_id":"s-calls","parent_tool_use_id":null}"#
+            .into(),
+    );
+    lines.push(delta("null", "6666"));
     lines.push(delta("42", "9999"));
     lines.push(delta(r#"{"id":"t1"}"#, "9998"));
     lines.push(delta(r#""toolu_orphan""#, "5555"));
@@ -4218,6 +4229,16 @@ fn claude_calls_keep_their_figures_through_a_malformed_or_ambiguous_stream() {
         vec![first.expected(), second.expected()],
         "the first call keeps its streamed final, the second takes the iteration's"
     );
+
+    // An iteration missing its input and cache figures identifies no call,
+    // not even one whose usage is missing them too.
+    let lines = [
+        CLAUDE_INIT.to_string(),
+        r#"{"type":"assistant","message":{"id":"msg_bare","role":"assistant","content":[{"type":"text","text":"the answer"}],"usage":{"output_tokens":2}},"parent_tool_use_id":null,"session_id":"s-calls"}"#.into(),
+        claude_result_iterations(r#"{"output_tokens":60}"#),
+    ];
+    let result = run(lines.to_vec());
+    assert_eq!(result["calls"][0]["output_tokens"], 2, "{result}");
 
     // Two calls with the same input and cache figures, neither streamed: the
     // iteration settles the later; the earlier keeps its placeholder.

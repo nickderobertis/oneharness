@@ -7,7 +7,6 @@
 # with the toolchain's llvm-profdata. Coverage is not measured on Windows.
 set -euo pipefail
 
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [[ "${OS:-}" == "Windows_NT" ]]; then
   echo "check-cargo-test-target-dir: skipped on Windows (coverage is measured on Linux/macOS)"
   exit 0
@@ -17,6 +16,8 @@ fail() {
   echo "check-cargo-test-target-dir: $1" >&2
   exit 1
 }
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || fail "cannot resolve the repository root from ${BASH_SOURCE[0]}; run this script from a readable checkout"
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX")" || fail "could not create a scratch directory under ${TMPDIR:-/tmp}; check that it exists and is writable, or set TMPDIR to one that is"
 record="target-dir-probe-$$"

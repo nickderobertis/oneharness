@@ -15,8 +15,14 @@
 # in target/. Both run it from the repository root, as cargo-llvm-cov runs.
 set -euo pipefail
 
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$root"
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || {
+  echo "llvm-cov-target-dir: cannot resolve the repository root from ${BASH_SOURCE[0]}; run this script from a readable checkout" >&2
+  exit 1
+}
+cd "$root" || {
+  echo "llvm-cov-target-dir: cannot enter the repository root $root; check its permissions, or run this script from a readable checkout" >&2
+  exit 1
+}
 
 if [ -n "${CARGO_LLVM_COV_TARGET_DIR:-}" ]; then
   echo "llvm-cov-target-dir: CARGO_LLVM_COV_TARGET_DIR is set ('$CARGO_LLVM_COV_TARGET_DIR'), which the coverage scripts do not follow; unset it and move the build with CARGO_TARGET_DIR instead" >&2

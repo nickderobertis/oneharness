@@ -2340,6 +2340,7 @@ fn argv_qwen(c: &BuildCtx) -> Vec<String> {
 /// as of v0.80.0), so the mode is not expressed on the argv. `--session <id>`
 /// continues a stored session by id (linear append; no headless fork). The id is
 /// the `session_id` crush reports under `--format json`.
+/// Where the run's `text` comes from: `domain::crush_store`.
 fn argv_crush(c: &BuildCtx) -> Vec<String> {
     let mut a = vec![c.bin.into(), "run".into(), "-q".into()];
     if let Some(sid) = c.resume {

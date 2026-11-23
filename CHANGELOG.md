@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.32.2](https://github.com/nickderobertis/oneharness/compare/v0.32.1...v0.32.2) - 2026-11-23
+
+### Fixed
+
+- *(crush)* return crush's full final reply when its printed output is cut short ([#1669](https://github.com/nickderobertis/oneharness/pull/1669))
+
 ## [0.32.1](https://github.com/nickderobertis/oneharness/compare/v0.32.0...v0.32.1) - 2026-11-22
 
 ### Fixed

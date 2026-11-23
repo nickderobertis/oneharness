@@ -705,6 +705,7 @@ name = "oneharness-mock-harness"
 version = "0.0.0"
 dependencies = [
  "oneharness",
+ "serde_json",
 ]
 
 [[package]]

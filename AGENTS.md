@@ -70,7 +70,8 @@ follow-ups (see "After the main task").
   `github-workflows-integration`, `github-workflows-setup`,
   `github-workflows-gate-env`, `release-payload-contract`, `e2e-support`,
   `network-breakdown`, `network-telemetry`, `pool-maintenance`, `workspace`,
-  `workspace-integration`, `rust-coverage`, `shell-coverage`,
+  `workspace-integration`, `rust-coverage`, `rust-coverage-integration`,
+  `shell-coverage`,
   `shell-toolchain`, `scripts`, the paid `live-*` suites
   (claude, codex, opencode, goose, qwen, crush, copilot, cursor, schema,
   control, variants) and the dispatch-only `explore-*` probes (control,

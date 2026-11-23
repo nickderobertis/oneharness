@@ -1381,17 +1381,32 @@ fn crush_session_path(store: &str, sid: &str) -> std::path::PathBuf {
     std::path::Path::new(store).join(format!("{sid}.json"))
 }
 
+/// The directory holding one list entry per session the mock store created.
+/// Each run writes only its own entry and `session list` gathers them, so
+/// runs sharing the store at once never overwrite each other's sessions, as
+/// crush's database never loses a concurrent insert.
+fn crush_listed_dir(store: &str) -> std::path::PathBuf {
+    std::path::Path::new(store).join("listed")
+}
+
+/// Write `contents` to `path` whole or not at all: a temporary file of this
+/// process's own beside it, renamed over it, so a concurrent reader never
+/// sees half a document.
+fn write_whole(path: &std::path::Path, contents: &str) {
+    let mut temporary = path.as_os_str().to_owned();
+    temporary.push(format!(".tmp-{}", std::process::id()));
+    let temporary = std::path::PathBuf::from(temporary);
+    std::fs::write(&temporary, contents).expect("write the mock crush store file");
+    std::fs::rename(&temporary, path).expect("publish the mock crush store file");
+}
+
 /// Record one `crush run` turn the way crush's store does: the session it
 /// continues (`--session`) or a new one created now, gaining the prompt as a
 /// user message and the whole reply as an assistant message — whatever the run
 /// then prints.
 fn record_crush_turn(store: &str, argv: &[String], reply: &str) {
-    std::fs::create_dir_all(store).expect("create the mock crush session store");
-    let list_path = std::path::Path::new(store).join("sessions.json");
-    let mut list: Vec<serde_json::Value> = std::fs::read_to_string(&list_path)
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default();
+    let listed = crush_listed_dir(store);
+    std::fs::create_dir_all(&listed).expect("create the mock crush session store");
     let sid = crush_flag(argv, ["--session", "-s"]).map_or_else(
         || {
             let nanos = std::time::SystemTime::now()
@@ -1401,8 +1416,9 @@ fn record_crush_turn(store: &str, argv: &[String], reply: &str) {
             let created = oneharness_core::domain::history::format_rfc3339(
                 i64::try_from(epoch_ms() / 1_000).expect("seconds fit"),
             );
-            list.push(serde_json::json!({"id": sid, "uuid": sid, "title": "mock",
-                "created": created, "modified": created}));
+            let entry = serde_json::json!({"id": sid, "uuid": sid, "title": "mock",
+                "created": created, "modified": created});
+            write_whole(&listed.join(format!("{sid}.json")), &entry.to_string());
             sid
         },
         |sid| sid,
@@ -1440,9 +1456,29 @@ fn record_crush_turn(store: &str, argv: &[String], reply: &str) {
         parts.push(serde_json::json!({"type": "finish", "reason": finish}));
         messages.push(serde_json::json!({"role": "assistant", "parts": parts}));
     }
-    std::fs::write(path, session.to_string()).expect("write the mock crush session");
-    std::fs::write(list_path, serde_json::Value::from(list).to_string())
-        .expect("write the mock crush session list");
+    write_whole(&path, &session.to_string());
+}
+
+/// `crush session list --json`'s document: every session the store created,
+/// oldest first, or `None` when the store was never created.
+fn crush_session_list(store: &str) -> Option<String> {
+    let entries = std::fs::read_dir(crush_listed_dir(store)).ok()?;
+    let mut listed: Vec<serde_json::Value> = entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+        .map(|entry| {
+            let text = std::fs::read_to_string(entry.path()).expect("read a mock crush listing");
+            serde_json::from_str(&text).expect("a mock crush listing is JSON")
+        })
+        .collect();
+    let key = |session: &serde_json::Value| {
+        (
+            session["created"].as_str().unwrap_or_default().to_string(),
+            session["id"].as_str().unwrap_or_default().to_string(),
+        )
+    };
+    listed.sort_by_key(key);
+    Some(serde_json::Value::from(listed).to_string())
 }
 
 /// `crush session list --json` / `crush session show <id> --json` against the
@@ -1463,8 +1499,11 @@ fn answer_crush_session(store: &str, argv: &[String]) -> ! {
         std::process::exit(1);
     }
     let path = match argv.get(1).map(String::as_str) {
-        Some("list") => std::path::Path::new(store).join("sessions.json"),
-        Some("show") => crush_session_path(store, argv.get(2).map_or("", String::as_str)),
+        Some("list") => None,
+        Some("show") => Some(crush_session_path(
+            store,
+            argv.get(2).map_or("", String::as_str),
+        )),
         other => {
             let _ = writeln!(
                 std::io::stderr(),
@@ -1495,9 +1534,10 @@ fn answer_crush_session(store: &str, argv: &[String]) -> ! {
         }
     }
     // A store with no sessions lists none, as crush's own fresh store does.
-    let document = std::fs::read_to_string(&path)
-        .ok()
-        .or_else(|| (argv.get(1).map(String::as_str) == Some("list")).then(|| "[]".to_string()));
+    let document = match path {
+        Some(path) => std::fs::read_to_string(path).ok(),
+        None => Some(crush_session_list(store).unwrap_or_else(|| "[]".to_string())),
+    };
     match document {
         Some(document) => {
             if std::env::var("MOCK_CRUSH_STORE_READ").as_deref() == Ok("malformed") {

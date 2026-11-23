@@ -26,6 +26,14 @@ await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
 try {
 	const origin = `http://127.0.0.1:${server.address().port}`;
 	const child = spawn("bash", ["-c", 'set -euo pipefail; source "$1/scripts/e2e-lib.sh"; unset OH_TIMEOUT; oh_qwen_live_setup; [ "$OH_TIMEOUT" = 300 ]; OH_TIMEOUT=7; oh_qwen_live_setup; [ "$OH_TIMEOUT" = 7 ]; exec "$2" --input-type=module -e "$3"', "_", root, process.execPath, `
+		// Every qwen the suite launches inherits these system settings; one
+		// turn's auto-memory steered the next before they turned it off.
+		const { readFileSync } = await import("node:fs");
+		const memory = JSON.parse(readFileSync(process.env.QWEN_CODE_SYSTEM_SETTINGS_PATH, "utf8")).memory ?? {};
+		if (memory.enableManagedAutoMemory !== false || memory.enableManagedAutoDream !== false) {
+			console.error("qwen auto-memory is not off in " + process.env.QWEN_CODE_SYSTEM_SETTINGS_PATH + "; restore OH_QWEN_NO_MEMORY_SETTINGS in scripts/e2e-lib.sh");
+			process.exit(4);
+		}
 		const headers = { Authorization: "Bearer PRIVATE_SENTINEL" };
 		const response = await fetch("${origin}/ok", { headers });
 		if (await response.text() !== "ok") process.exit(2);

@@ -17,3 +17,6 @@ path = "src/main.rs"
 
 [dependencies]
 oneharness = { path = "../.." }
+
+[dev-dependencies]
+serde_json = { workspace = true }

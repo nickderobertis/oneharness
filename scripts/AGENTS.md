@@ -32,6 +32,12 @@ Subtree rules for the repository's tooling scripts.
   model's reply. Start it through `oh_echo_without_context` (`e2e-lib.sh`),
   which launches from an empty sandbox outside any checkout with every context
   home pointed into it; `check-qwen-context-free.sh` holds it to that.
+- **No live turn may recall another's.** A harness that writes memory after a
+  turn and recalls it in the next (qwen's user-global auto-memory) lets one
+  phase's prompt steer a later one: qwen's events turn replayed the plan
+  phase's `touch`. Turn that memory off for the whole suite (qwen:
+  `oh_qwen_live_setup`'s system settings), and prove it live against the
+  capture endpoint (`oh_memory_free_enforce`).
 - **An echo probe asks for the marker alone and runs once.** `oh_prompt` names
   the test suite and requests exactly the marker, with no reassurance about
   trust or secrets (models read that as injection); `oh_assert_echoed` checks

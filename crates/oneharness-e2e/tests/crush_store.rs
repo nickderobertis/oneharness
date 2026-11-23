@@ -108,15 +108,23 @@ fn scratch(tag: &str) -> ScratchDir {
     ScratchDir::new(&format!("crush-store-{tag}")).expect("scratch dir")
 }
 
+/// The sessions the mock's store lists, read the way oneharness reads them:
+/// through `crush session list --json`.
+// llmlint: ignore-block[e2e_not_mocked] This reads back the state of the journey's own stand-in store, not the behavior under test: the store exists only as the mock harness's (the gate cannot run the paid, authenticated crush), so listing it through that same mock's `session list --json` — the command oneharness itself spawns at the `--bin` seam — is the one way to name a session id to resume or count what the runs created. `just live-crush` holds the real store to the same path.
 fn listed_sessions(store: &Path) -> Vec<Value> {
-    serde_json::from_slice::<Value>(
-        &std::fs::read(store.join("sessions.json")).expect("the mock stored a session"),
-    )
-    .unwrap()
-    .as_array()
-    .cloned()
-    .unwrap()
+    let output = Command::new(workspace_bin("oneharness-mock-harness"))
+        .args(["session", "list", "--json"])
+        .env("MOCK_CRUSH_STORE", store)
+        .output()
+        .expect("run the mock's `session list`");
+    assert!(output.status.success(), "{output:?}");
+    serde_json::from_slice::<Value>(&output.stdout)
+        .unwrap()
+        .as_array()
+        .cloned()
+        .unwrap()
 }
+// llmlint: ignore-end[e2e_not_mocked]
 
 #[test]
 fn a_reply_crush_printed_only_the_start_of_is_read_back_from_its_session_store() {
@@ -385,6 +393,14 @@ fn runs_sharing_a_store_at_once_cannot_be_told_apart_and_keep_stdout() {
     );
     let results = report["results"].as_array().expect("a batch of results");
     assert_eq!(results.len(), 2, "{output:?}");
+    // The stand-in store keeps every session concurrent runs create, as
+    // crush's database does: the mock's own fixture test
+    // (`crates/oneharness-mock-harness/tests/fixture.rs`) holds it to that.
+    assert_eq!(
+        listed_sessions(&dir.join("store")).len(),
+        2,
+        "the store lists both turns' sessions, as crush's own does"
+    );
     for result in results {
         assert_eq!(result["text"], "ONEHARNESS-LIVE-3");
         assert_eq!(result["text_source"], "raw:crush-session-unidentified");

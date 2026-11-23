@@ -318,6 +318,9 @@ const CLAUDE_VERSION: &str = "2.1.316";
 /// The Claude Code release the `replace_system` and `schema` entries were
 /// confirmed against (the rest of its table rests on `CLAUDE_VERSION`).
 const CLAUDE_SYSTEM_VERSION: &str = "2.1.329";
+/// The Claude Code release whose stream the `calls` row was confirmed
+/// against: where each call's final `output_tokens` is streamed.
+const CLAUDE_CALLS_VERSION: &str = "2.1.330";
 const CODEX: &str = "codex";
 const CODEX_VERSION: &str = "0.159.2";
 /// The codex feature that loads its shell, which reads files too.
@@ -530,16 +533,25 @@ const CLAUDE_TABLE: [Translation; 10] = [
     },
     Translation {
         harness: CLAUDE,
-        version: CLAUDE_VERSION,
+        version: CLAUDE_CALLS_VERSION,
         setting: Setting::Calls,
-        knobs: &[knob(
-            Knob::StreamField("assistant.message.usage"),
-            Unit::UsageRecord,
-        )],
+        knobs: &[
+            knob(
+                Knob::StreamField("assistant.message.usage"),
+                Unit::UsageRecord,
+            ),
+            knob(Knob::Flag("--include-partial-messages"), Unit::Switch),
+        ],
         mapping: "one usage per distinct `message.id` of the stream-json `assistant` events, in \
-                  order; the single-document `json` format carries none",
+                  order, its output the call's final figure from the `message_delta` that \
+                  `--include-partial-messages` streams (else the `result` event's \
+                  `usage.iterations`); the single-document `json` format carries none",
         residual: None,
-        source: "tests/fixtures/claude-stream-json-turn.jsonl, captured from Claude Code",
+        source: "tests/fixtures/claude-stream-json-turn.jsonl, captured from Claude Code; a \
+                 2.1.330 run of three calls whose `assistant` events carried `message_start`'s \
+                 placeholder `output_tokens` (16, 16, 3) while their `message_delta` events \
+                 carried 74, 74 and 3, summing to the `result` event's 151, whose \
+                 `usage.iterations` listed the last call alone",
     },
     Translation {
         harness: CLAUDE,
@@ -1201,6 +1213,21 @@ pub fn claude_tools_flag() -> &'static str {
     }
 }
 
+/// The flag that makes Claude Code stream each model call's `message_delta`,
+/// whose usage is the call's final `output_tokens`: the table's `calls` knob
+/// that is a flag, which every stream-json run carries.
+#[must_use]
+pub fn claude_partial_messages_flag() -> &'static str {
+    translation(CLAUDE, Setting::Calls)
+        .knobs
+        .iter()
+        .find_map(|k| match k.knob {
+            Knob::Flag(flag) => Some(flag),
+            _ => None,
+        })
+        .unwrap_or("--include-partial-messages")
+}
+
 /// The flag Claude Code takes the run's system-text file on: appended by
 /// default; under `replace_system` the table's replacing flag.
 #[must_use]
@@ -1418,9 +1445,22 @@ pub fn claude_image_frame(prompt: &str, images: &[ImageInput]) -> String {
 }
 
 /// Per-call usage from claude-code's stream-json stdout: one entry per
-/// distinct `message.id` of its `assistant` events, in first-seen order, each
-/// from that message's last event (a message with several content blocks is
-/// emitted once per block). `None` when the stream carries no assistant usage.
+/// distinct `message.id` of its `assistant` events, in first-seen order. Each
+/// entry's input, cache-read and cache-write figures are that message's last
+/// `assistant` event's (a message with several content blocks is emitted once
+/// per block). Its `output_tokens` is the call's final figure: the
+/// `message_delta` stream event that ends the message (streamed under
+/// `--include-partial-messages`, matched to its message by the
+/// `message_start` before it on the same `parent_tool_use_id`, with no
+/// `message_stop` or nameless `message_start` between), else the `result`
+/// event's `usage.iterations` entry whose input and cache figures are all
+/// present and the call's (Claude Code lists only the last call there). An iteration
+/// belongs to the latest call with its figures that no later iteration
+/// claimed; if that call streamed its
+/// final, the iteration is spent without changing any call. Only a call
+/// neither carries keeps the `assistant` event's own figure, which is
+/// `message_start`'s placeholder. `None` when the stream carries no assistant
+/// usage.
 #[must_use]
 pub fn claude_stream_calls(stdout: &str) -> Option<Vec<Usage>> {
     // The table's selector, `<event type>.<message field>.<usage field>`.
@@ -1438,37 +1478,130 @@ pub fn claude_stream_calls(stdout: &str) -> Option<Vec<Usage>> {
     else {
         return None;
     };
+    let tokens =
+        |usage: &serde_json::Map<String, Value>, key: &str| usage.get(key).and_then(Value::as_u64);
     let mut order: Vec<String> = Vec::new();
     let mut by_id: std::collections::HashMap<String, Usage> = std::collections::HashMap::new();
+    // The call's final output figure, by message id, and the message each
+    // stream (`parent_tool_use_id`, `None` for the main thread) is inside.
+    let mut finals: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    let mut open: std::collections::HashMap<Option<String>, String> =
+        std::collections::HashMap::new();
+    let mut iterations: Vec<serde_json::Map<String, Value>> = Vec::new();
     for line in stdout.lines() {
         let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
             continue;
         };
-        if value.get("type").and_then(Value::as_str) != Some(event) {
-            continue;
+        match value.get("type").and_then(Value::as_str) {
+            Some("stream_event") => {
+                // Absent or null is the main thread, a string a subagent's
+                // tool; any other value names no stream, so the event is
+                // ignored rather than taken for the main thread's.
+                let stream = match value.get("parent_tool_use_id") {
+                    None | Some(Value::Null) => None,
+                    Some(Value::String(tool)) => Some(tool.clone()),
+                    Some(_) => continue,
+                };
+                let Some(inner) = value.get("event") else {
+                    continue;
+                };
+                match inner.get("type").and_then(Value::as_str) {
+                    // A start that names no message, and a message's stop,
+                    // close the stream: a delta outside a named message is
+                    // no call's.
+                    Some("message_start") => {
+                        match inner.pointer("/message/id").and_then(Value::as_str) {
+                            Some(id) => open.insert(stream, id.to_string()),
+                            None => open.remove(&stream),
+                        };
+                    }
+                    Some("message_stop") => {
+                        open.remove(&stream);
+                    }
+                    Some("message_delta") => {
+                        let output = inner
+                            .get("usage")
+                            .and_then(Value::as_object)
+                            .and_then(|u| tokens(u, "output_tokens"));
+                        if let (Some(id), Some(output)) = (open.get(&stream), output) {
+                            finals.insert(id.clone(), output);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Some("result") => {
+                iterations = value
+                    .pointer("/usage/iterations")
+                    .and_then(Value::as_array)
+                    .map(|all| all.iter().filter_map(Value::as_object).cloned().collect())
+                    .unwrap_or_default();
+            }
+            Some(found) if found == event => {
+                let Some(message) = value.get(message_field) else {
+                    continue;
+                };
+                let (Some(id), Some(usage)) = (
+                    message.get("id").and_then(Value::as_str),
+                    message.get(usage_field).and_then(Value::as_object),
+                ) else {
+                    continue;
+                };
+                let reading = Usage {
+                    input_tokens: tokens(usage, "input_tokens"),
+                    output_tokens: tokens(usage, "output_tokens"),
+                    cache_read_tokens: tokens(usage, "cache_read_input_tokens"),
+                    cache_write_tokens: tokens(usage, "cache_creation_input_tokens"),
+                    cost_usd: None,
+                };
+                if !by_id.contains_key(id) {
+                    order.push(id.to_string());
+                }
+                by_id.insert(id.to_string(), reading);
+            }
+            _ => {}
         }
-        let Some(message) = value.get(message_field) else {
-            continue;
-        };
-        let (Some(id), Some(usage)) = (
-            message.get("id").and_then(Value::as_str),
-            message.get(usage_field).and_then(Value::as_object),
+    }
+    for (id, output) in &finals {
+        if let Some(call) = by_id.get_mut(id) {
+            call.output_tokens = Some(*output);
+        }
+    }
+    // An iteration names no message: walking them newest first, each is the
+    // latest call, not already claimed by a later iteration, whose input and
+    // cache figures are its own. A call with a streamed final keeps it, and
+    // the iteration is spent on it rather than passed to an earlier call with
+    // the same figures.
+    let mut claimed: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for iteration in iterations.iter().rev() {
+        // An iteration missing any identifying figure identifies no call:
+        // absent on both sides is not a match.
+        let (Some(output), Some(input), Some(read), Some(write)) = (
+            tokens(iteration, "output_tokens"),
+            tokens(iteration, "input_tokens"),
+            tokens(iteration, "cache_read_input_tokens"),
+            tokens(iteration, "cache_creation_input_tokens"),
         ) else {
             continue;
         };
-        let reading = Usage {
-            input_tokens: usage.get("input_tokens").and_then(Value::as_u64),
-            output_tokens: usage.get("output_tokens").and_then(Value::as_u64),
-            cache_read_tokens: usage.get("cache_read_input_tokens").and_then(Value::as_u64),
-            cache_write_tokens: usage
-                .get("cache_creation_input_tokens")
-                .and_then(Value::as_u64),
-            cost_usd: None,
+        let matched = order.iter().rev().find(|id| {
+            !claimed.contains(id.as_str())
+                && by_id.get(id.as_str()).is_some_and(|call| {
+                    call.input_tokens == Some(input)
+                        && call.cache_read_tokens == Some(read)
+                        && call.cache_write_tokens == Some(write)
+                })
+        });
+        let Some(id) = matched else {
+            continue;
         };
-        if !by_id.contains_key(id) {
-            order.push(id.to_string());
+        claimed.insert(id.as_str());
+        if finals.contains_key(id) {
+            continue;
         }
-        by_id.insert(id.to_string(), reading);
+        if let Some(call) = by_id.get_mut(id.as_str()) {
+            call.output_tokens = Some(output);
+        }
     }
     (!order.is_empty()).then(|| order.iter().filter_map(|id| by_id.remove(id)).collect())
 }
@@ -1988,12 +2121,118 @@ mod tests {
         .unwrap()
     }
 
+    /// Composed in the captured 2.1.330 shapes: a call's final output figure
+    /// comes from the `message_delta` ending it, matched per stream (a
+    /// subagent's call interleaves with the main thread's), else from the
+    /// `result` event's iteration whose input and cache figures are its own.
+    #[test]
+    fn a_claude_calls_output_is_its_final_figure_not_the_placeholder() {
+        let assistant = |id: &str, parent: &str, read: u64| {
+            format!(
+                r#"{{"type":"assistant","parent_tool_use_id":{parent},"message":{{"id":"{id}","usage":{{"input_tokens":2,"output_tokens":1,"cache_read_input_tokens":{read},"cache_creation_input_tokens":0}}}}}}"#
+            )
+        };
+        let start = |id: &str, parent: &str| {
+            format!(
+                r#"{{"type":"stream_event","parent_tool_use_id":{parent},"event":{{"type":"message_start","message":{{"id":"{id}","usage":{{"output_tokens":1}}}}}}}}"#
+            )
+        };
+        let delta = |parent: &str, output: u64| {
+            format!(
+                r#"{{"type":"stream_event","parent_tool_use_id":{parent},"event":{{"type":"message_delta","usage":{{"input_tokens":9,"output_tokens":{output}}}}}}}"#
+            )
+        };
+        let interleaved = [
+            start("m1", "null"),
+            start("s1", r#""t1""#),
+            assistant("s1", r#""t1""#, 10),
+            delta(r#""t1""#, 40),
+            assistant("m1", "null", 20),
+            delta("null", 75),
+        ]
+        .join("\n");
+        let calls = claude_stream_calls(&interleaved).unwrap();
+        assert_eq!(
+            calls.iter().map(|u| u.output_tokens).collect::<Vec<_>>(),
+            [Some(40), Some(75)]
+        );
+        assert_eq!(
+            calls[1].input_tokens,
+            Some(2),
+            "the delta's other figures are not read"
+        );
+
+        let result = r#"{"type":"result","usage":{"output_tokens":90,"iterations":[{"input_tokens":2,"output_tokens":60,"cache_read_input_tokens":30,"cache_creation_input_tokens":0}]}}"#;
+        let unstreamed = [
+            assistant("a", "null", 20),
+            assistant("b", "null", 30),
+            result.to_string(),
+        ]
+        .join("\n");
+        assert_eq!(
+            claude_stream_calls(&unstreamed)
+                .unwrap()
+                .iter()
+                .map(|u| u.output_tokens)
+                .collect::<Vec<_>>(),
+            [Some(1), Some(60)],
+            "only the listed call is settled; the other keeps its own figure"
+        );
+        let unmatched = [assistant("a", "null", 20), result.to_string()].join("\n");
+        assert_eq!(
+            claude_stream_calls(&unmatched).unwrap()[0].output_tokens,
+            Some(1),
+            "an iteration whose figures are no call's is no call's output"
+        );
+
+        // A delta outside any message names no call: one after the message's
+        // `message_stop`, or after a `message_start` that names no message,
+        // does not overwrite the previous call's final.
+        let stop = r#"{"type":"stream_event","event":{"type":"message_stop"}}"#;
+        let nameless = r#"{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"output_tokens":1}}}}"#;
+        for between in [stop, nameless] {
+            let orphaned = [
+                start("m1", "null"),
+                assistant("m1", "null", 20),
+                delta("null", 75),
+                between.to_string(),
+                delta("null", 999),
+            ]
+            .join("\n");
+            assert_eq!(
+                claude_stream_calls(&orphaned).unwrap()[0].output_tokens,
+                Some(75),
+                "a delta after {between} is no call's"
+            );
+        }
+
+        // Missing figures match nothing: an iteration carrying only its
+        // output does not settle a call whose usage carried none either.
+        let bare = [
+            r#"{"type":"assistant","message":{"id":"e","usage":{}}}"#,
+            r#"{"type":"result","usage":{"iterations":[{"output_tokens":60}]}}"#,
+        ]
+        .join("\n");
+        assert_eq!(
+            claude_stream_calls(&bare).unwrap()[0].output_tokens,
+            None,
+            "an iteration without its input and cache figures identifies no call"
+        );
+    }
+
     #[test]
     fn per_call_usage_is_read_from_the_recorded_streams() {
         let claude = claude_stream_calls(&fixture("claude-stream-json-turn.jsonl")).unwrap();
         assert_eq!(claude.len(), 2);
         assert_eq!(claude[0].cache_write_tokens, Some(34_280));
         assert_eq!(claude[1].cache_read_tokens, Some(47_969));
+        // Each `assistant` event repeats `message_start`'s placeholder (7, 1);
+        // the `message_delta` that ends each call carries its real output,
+        // and the two sum to the `result` event's 504.
+        assert_eq!(
+            claude.iter().map(|u| u.output_tokens).collect::<Vec<_>>(),
+            [Some(371), Some(133)]
+        );
         let codex = codex_rollout_calls(&fixture("codex-rollout-token-counts.jsonl"));
         assert_eq!(
             codex

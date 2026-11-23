@@ -35,6 +35,7 @@
             "oneharness-e2e",
             "oneharness-integration",
             "release-tooling",
+            "rust-coverage-integration",
             "sdk-conformance",
             "shell-toolchain",
             "workspace",

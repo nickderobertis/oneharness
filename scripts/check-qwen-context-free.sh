@@ -339,6 +339,8 @@ grep -q 'oh_echo_without_context qwen --sync ' "$root/scripts/e2e-qwen.sh" ||
   fail "scripts/e2e-qwen.sh no longer runs its synced-settings turn through oh_echo_without_context --sync"
 grep -qx 'oh_context_free_enforce qwen' "$root/scripts/e2e-qwen.sh" ||
   fail "scripts/e2e-qwen.sh no longer holds real qwen to the context-free launch with oh_context_free_enforce"
+grep -qx 'oh_memory_free_enforce qwen' "$root/scripts/e2e-qwen.sh" ||
+  fail "scripts/e2e-qwen.sh no longer holds real qwen to its memory-off settings with oh_memory_free_enforce"
 
 # 7. The live alarm passes when the checkout turn sends the checkout's AGENTS.md
 #    and the global canary and the context-free turn sends neither, and gives

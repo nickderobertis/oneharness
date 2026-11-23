@@ -1451,9 +1451,10 @@ pub fn claude_image_frame(prompt: &str, images: &[ImageInput]) -> String {
 /// per block). Its `output_tokens` is the call's final figure: the
 /// `message_delta` stream event that ends the message (streamed under
 /// `--include-partial-messages`, matched to its message by the
-/// `message_start` before it on the same `parent_tool_use_id`), else the
-/// `result` event's `usage.iterations` entry whose input and cache figures
-/// are the call's (Claude Code lists only the last call there). An iteration
+/// `message_start` before it on the same `parent_tool_use_id`, with no
+/// `message_stop` or nameless `message_start` between), else the `result`
+/// event's `usage.iterations` entry whose input and cache figures are all
+/// present and the call's (Claude Code lists only the last call there). An iteration
 /// belongs to the latest call with its figures that no later iteration
 /// claimed; if that call streamed its
 /// final, the iteration is spent without changing any call. Only a call
@@ -1505,10 +1506,17 @@ pub fn claude_stream_calls(stdout: &str) -> Option<Vec<Usage>> {
                     continue;
                 };
                 match inner.get("type").and_then(Value::as_str) {
+                    // A start that names no message, and a message's stop,
+                    // close the stream: a delta outside a named message is
+                    // no call's.
                     Some("message_start") => {
-                        if let Some(id) = inner.pointer("/message/id").and_then(Value::as_str) {
-                            open.insert(stream, id.to_string());
-                        }
+                        match inner.pointer("/message/id").and_then(Value::as_str) {
+                            Some(id) => open.insert(stream, id.to_string()),
+                            None => open.remove(&stream),
+                        };
+                    }
+                    Some("message_stop") => {
+                        open.remove(&stream);
                     }
                     Some("message_delta") => {
                         let output = inner
@@ -1566,16 +1574,22 @@ pub fn claude_stream_calls(stdout: &str) -> Option<Vec<Usage>> {
     // the same figures.
     let mut claimed: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for iteration in iterations.iter().rev() {
-        let Some(output) = tokens(iteration, "output_tokens") else {
+        // An iteration missing any identifying figure identifies no call:
+        // absent on both sides is not a match.
+        let (Some(output), Some(input), Some(read), Some(write)) = (
+            tokens(iteration, "output_tokens"),
+            tokens(iteration, "input_tokens"),
+            tokens(iteration, "cache_read_input_tokens"),
+            tokens(iteration, "cache_creation_input_tokens"),
+        ) else {
             continue;
         };
         let matched = order.iter().rev().find(|id| {
             !claimed.contains(id.as_str())
                 && by_id.get(id.as_str()).is_some_and(|call| {
-                    call.input_tokens == tokens(iteration, "input_tokens")
-                        && call.cache_read_tokens == tokens(iteration, "cache_read_input_tokens")
-                        && call.cache_write_tokens
-                            == tokens(iteration, "cache_creation_input_tokens")
+                    call.input_tokens == Some(input)
+                        && call.cache_read_tokens == Some(read)
+                        && call.cache_write_tokens == Some(write)
                 })
         });
         let Some(id) = matched else {
@@ -2169,6 +2183,40 @@ mod tests {
             claude_stream_calls(&unmatched).unwrap()[0].output_tokens,
             Some(1),
             "an iteration whose figures are no call's is no call's output"
+        );
+
+        // A delta outside any message names no call: one after the message's
+        // `message_stop`, or after a `message_start` that names no message,
+        // does not overwrite the previous call's final.
+        let stop = r#"{"type":"stream_event","event":{"type":"message_stop"}}"#;
+        let nameless = r#"{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"output_tokens":1}}}}"#;
+        for between in [stop, nameless] {
+            let orphaned = [
+                start("m1", "null"),
+                assistant("m1", "null", 20),
+                delta("null", 75),
+                between.to_string(),
+                delta("null", 999),
+            ]
+            .join("\n");
+            assert_eq!(
+                claude_stream_calls(&orphaned).unwrap()[0].output_tokens,
+                Some(75),
+                "a delta after {between} is no call's"
+            );
+        }
+
+        // Missing figures match nothing: an iteration carrying only its
+        // output does not settle a call whose usage carried none either.
+        let bare = [
+            r#"{"type":"assistant","message":{"id":"e","usage":{}}}"#,
+            r#"{"type":"result","usage":{"iterations":[{"output_tokens":60}]}}"#,
+        ]
+        .join("\n");
+        assert_eq!(
+            claude_stream_calls(&bare).unwrap()[0].output_tokens,
+            None,
+            "an iteration without its input and cache figures identifies no call"
         );
     }
 

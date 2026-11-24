@@ -640,9 +640,16 @@ def watched_setup_and(
     return subprocess.CompletedProcess(argv, run.returncode, out, err)
 
 
-def process_parents() -> dict[int, tuple[int, str]]:
+class ProcessEntry(NamedTuple):
+    """One process's parent pid and state letter (`Z` a zombie, `T` stopped), from /proc."""
+
+    ppid: int
+    state: str
+
+
+def process_table() -> dict[int, ProcessEntry]:
     """Every process's parent pid and state letter, from /proc."""
-    found: dict[int, tuple[int, str]] = {}
+    found: dict[int, ProcessEntry] = {}
     for entry in Path("/proc").iterdir():
         if not entry.name.isdigit():
             continue
@@ -651,18 +658,18 @@ def process_parents() -> dict[int, tuple[int, str]]:
             fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
         except (OSError, IndexError):
             continue  # gone since the listing
-        found[int(entry.name)] = (int(fields[1]), fields[0])
+        found[int(entry.name)] = ProcessEntry(ppid=int(fields[1]), state=fields[0])
     return found
 
 
 def descendants(root: int) -> list[int]:
     """The pids below `root` in the process tree: processes this test started."""
-    parents = process_parents()
+    table = process_table()
     below: list[int] = []
     frontier = [root]
     while frontier:
         parent = frontier.pop()
-        children = [pid for pid, (ppid, _) in parents.items() if ppid == parent]
+        children = [pid for pid, entry in table.items() if entry.ppid == parent]
         below += children
         frontier += children
     return below
@@ -682,11 +689,11 @@ def launching_init_below(root: int) -> int | None:
     has started the launch: the pid 1 of a namespace whose child is not one.
     (pasta's own namespace has a pid 1 too — the init's parent, before it
     unshares — so being a pid 1 alone does not single it out.)"""
-    parents = process_parents()
+    table = process_table()
     for pid in descendants(root):
         if namespace_pid(pid)[-1:] != ["1"]:
             continue
-        children = [child for child, (ppid, _) in parents.items() if ppid == pid]
+        children = [child for child, entry in table.items() if entry.ppid == pid]
         if any(namespace_pid(child)[-1:] not in (["1"], []) for child in children):
             return pid
     return None
@@ -694,13 +701,16 @@ def launching_init_below(root: int) -> int | None:
 
 def is_stopped(pid: int) -> bool:
     """Whether `pid` is stopped by a signal (state T), as SIGSTOP leaves it."""
-    return process_parents().get(pid, (0, ""))[1] == "T"
+    entry = process_table().get(pid)
+    return entry is not None and entry.state == "T"
 
 
 def live_children(pid: int) -> list[int]:
     """`pid`'s children that have not exited (a zombie is one that has, unreaped)."""
     return [
-        child for child, (ppid, state) in process_parents().items() if ppid == pid and state != "Z"
+        child
+        for child, entry in process_table().items()
+        if entry.ppid == pid and entry.state != "Z"
     ]
 
 

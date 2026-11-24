@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { harnessPins, parsePins, unpinnedRun } from "../harness-pins.mjs";
 
-const pinned = new Set(["@github/copilot", "opencode-ai", "goose"]);
+const pinned = new Set(["@github/copilot", "opencode-ai", "goose", "cursor-agent"]);
 const same = (a, b) => assert.equal(unpinnedRun(a, pinned), unpinnedRun(b, pinned));
 const differs = (a, b) => assert.notEqual(unpinnedRun(a, pinned), unpinnedRun(b, pinned));
 
@@ -11,9 +11,28 @@ test("a pinned harness CLI install reads as its unpinned source", () => {
   same("npm install -g @github/copilot@1.0.114\ncopilot --version", "npm install -g @github/copilot\ncopilot --version");
   same("npm install -g @github/copilot@1.0.114 opencode-ai@1.19.6", "npm install -g @github/copilot opencode-ai");
   same("npm install -g @github/copilot@1.0.114", "npm install -g @github/copilot@1.0.115");
+  // A package on an install's continuation line belongs to the install.
+  same("npm install -g @github/copilot@1.0.114 \\\n  opencode-ai@1.19.6", "npm install -g @github/copilot \\\n  opencode-ai");
+  differs("echo done \\\n  opencode-ai@1.19.6", "echo done \\\n  opencode-ai");
   same(
     "curl -fsSL https://github.com/block/goose/releases/download/v1.60.2/download_cli.sh | GOOSE_VERSION=1.60.2 CONFIGURE=false bash",
     "curl -fsSL https://github.com/block/goose/releases/download/stable/download_cli.sh | CONFIGURE=false bash",
+  );
+});
+
+test("a pinned Goose PowerShell or Cursor install reads as its vendor installer", () => {
+  same(
+    "$env:GOOSE_VERSION = '1.60.2'; irm 'https://raw.githubusercontent.com/block/goose/v1.60.2/download_cli.ps1' | iex",
+    "irm 'https://raw.githubusercontent.com/block/goose/main/download_cli.ps1' | iex",
+  );
+  same("  bash scripts/install-cursor-agent.sh 2026.11.22-e9042b2", "  curl https://cursor.com/install -fsS | bash");
+  same("$script = & ./scripts/cursor-installer.ps1 -Version 2026.11.22-e9042b2", "$script = irm 'https://cursor.com/install?win32=true'");
+  // A helper handed a non-build, or run some other way, is not the installer.
+  differs("  bash scripts/install-cursor-agent.sh latest", "  curl https://cursor.com/install -fsS | bash");
+  differs("  bash scripts/install-cursor-agent.sh 2026.11.22-e9042b2 && rm -rf ~", "  curl https://cursor.com/install -fsS | bash");
+  differs(
+    "irm 'https://raw.githubusercontent.com/block/goose/v1.60.2/download_cli.ps1' | iex",
+    "irm 'https://raw.githubusercontent.com/block/goose/main/download_cli.ps1' | iex",
   );
 });
 
@@ -41,6 +60,9 @@ test("the repo's pin file is what the contracts read", () => {
 test("a malformed pin file is refused, never read as a partial allowlist", () => {
   assert.deepEqual([...parsePins("# c\n\n@github/copilot 1.0.114\ngoose 1.60.2\n")], ["@github/copilot", "goose"]);
   for (const bad of ["@github/copilot", "@github/copilot latest", "@github/copilot 1.0", "@github/copilot 1.0.114 1.0.115"])
-    assert.throws(() => parsePins(`goose 1.60.2\n${bad}\n`), /:2: must pin one package to exactly one x\.y\.z version/);
+    assert.throws(() => parsePins(`goose 1.60.2\n${bad}\n`), /:2: must pin one package to exactly one version/);
   assert.throws(() => parsePins("goose 1.60.2\ngoose 1.60.2\n"), /:2: pins goose twice/);
+  assert.deepEqual([...parsePins("cursor-agent 2026.11.22-e9042b2\n")], ["cursor-agent"]);
+  for (const bad of ["cursor-agent 1.2.3", "cursor-agent latest", "goose 2026.11.22-e9042b2"])
+    assert.throws(() => parsePins(`${bad}\n`), /must pin one package to exactly one version/);
 });

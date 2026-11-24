@@ -43,7 +43,7 @@ jobs:
 
       - name: Install Cursor CLI
         run: |
-          curl https://cursor.com/install -fsS | bash
+          bash scripts/install-cursor-agent.sh 2026.11.22-e9042b2
           if [ -x "$HOME/.local/bin/cursor-agent" ]; then
             echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           else

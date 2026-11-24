@@ -202,6 +202,25 @@ jobs:
         env:
           NX_BASE: ${{ steps.tier.outputs.base }}
         run: just budgets-offline
+      # A moved harness CLI pin, or a changed install helper, is proven where the
+      # workflows install it — Linux, macOS ARM64 and Windows — before it merges:
+      # each pinned CLI is installed into scratch space and must report its pin
+      # from its own --version. No credentials and no model call.
+      - name: Verify the pinned harness CLIs install (scripts/verify-harness-cli-pins.sh)
+        if: github.event_name == 'pull_request' && (matrix.os != 'macos-latest' || needs.macos-policy.outputs.macos_required == 'true')
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          for sha in "$BASE_SHA" "$HEAD_SHA"; do
+            [[ "$sha" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || { echo "::error::'$sha' is not a commit id"; exit 1; }
+          done
+          if git diff --quiet "$BASE_SHA" "$HEAD_SHA" -- .harness-cli-versions scripts/install-cursor-agent.sh \
+            scripts/cursor-installer.ps1 scripts/verify-harness-cli-pins.sh; then
+            echo "No harness CLI pin or install helper changed; nothing to verify."
+          else
+            bash scripts/verify-harness-cli-pins.sh
+          fi
       # llmlint: ignore-block[external_service_suite_stays_out_of_the_affected_tier] The scheduling contract explicitly requires CI's one Mac check to own the existing real live commands sequentially. They remain separate from Nx's deterministic affected tier, gated to trusted heads and the original workflow paths, while their Linux/Windows workflows retain coverage.
       - name: Select consolidated live paths
         id: live-paths
@@ -431,8 +450,8 @@ jobs:
       - name: Install Cursor CLI (Unix)
         if: (matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.cursor == 'true') && (runner.os != 'Windows')
         run: |
-          # llmlint: ignore[boundary_inputs_validated] Retain Cursor's existing vendor TLS installer trust boundary; see e2e-cursor.yml.
-          curl https://cursor.com/install -fsS | bash
+          # llmlint: ignore[boundary_inputs_validated] Cursor's vendor installer over TLS remains the trust boundary; scripts/install-cursor-agent.sh pins the build it downloads and validates its version argument and the installer's download URL.
+          bash scripts/install-cursor-agent.sh 2026.11.22-e9042b2
           if [ -x "$HOME/.local/bin/cursor-agent" ]; then
             echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           else

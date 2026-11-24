@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { parse } from "yaml";
 import { isDeepStrictEqual } from "node:util";
 import { assertRevision } from "../git-input.mjs";
-import { unpinnedLine } from "../harness-pins.mjs";
+import { unpinnedRun } from "../harness-pins.mjs";
 import { workflows, validateWorkflow, triggered, resolveJobs, expand, render, evaluate } from "../workflow-graph.mjs";
 
 // The tree this change merges into supplies the actual workflow declarations,
@@ -93,7 +93,7 @@ function matrixFor(workflow, row, scenario) {
 }
 function stepSignature(step) {
   const { if: condition, ...signature } = step;
-  if (signature.run) signature.run = signature.run.split("\n").filter(line => !line.trim().startsWith("#")).map(line => unpinnedLine(line)).join("\n");
+  if (signature.run) signature.run = unpinnedRun(signature.run.split("\n").filter(line => !line.trim().startsWith("#")).join("\n"));
   return signature;
 }
 function compareSteps(file, before, after, row, scenario) {

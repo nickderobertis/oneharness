@@ -125,7 +125,7 @@ jobs:
         run: bash scripts/network-recorder-preflight.sh
       - name: Install Codex CLI
         run: |
-          npm install -g @openai/codex
+          npm install -g @openai/codex@0.172.0
           codex --version
 
       # Codex does not pick up OPENAI_API_KEY from the env for headless `exec`;

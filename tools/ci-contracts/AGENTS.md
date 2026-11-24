@@ -27,10 +27,12 @@ action, and the manual llmlint gate.
   reads (`Full sweep (just check all)`); `check-ci-gate-tier.sh` drives the
   script with synthetic events and holds ci.yml's wiring, its required context
   names and its unconditioned jobs in place.
-- **Required checks install harness CLIs at a pin.** Every harness CLI ci.yml
-  installs is pinned in `.harness-cli-versions` (npm `pkg@x.y.z`; Goose via its
-  installer's `GOOSE_VERSION` and tagged script); `check-harness-cli-pins.sh`
-  holds ci.yml to it. The paid `e2e-*`/`explore-*` workflows gate no merge and
-  stay on latest on purpose, so they still catch upstream drift. Cursor's
-  installer takes no version and stays unpinned. Move a pin to a version a
-  green `e2e-<harness>` run already used.
+- **Every workflow installs harness CLIs at a pin.** `.harness-cli-versions`
+  pins each CLI any workflow installs (npm `pkg@x.y.z`; Goose via its tagged
+  installer and `GOOSE_VERSION`; Cursor, whose installer takes no version,
+  through `scripts/install-cursor-agent.sh` / `cursor-installer.ps1`, which pin
+  the build it downloads). `check-harness-cli-pins.sh` holds every workflow to
+  it; `.github/harness-pins.mjs` lets the workflow contracts read a pinned
+  install as the same install. When a pin or helper changes, the `check` job
+  runs `verify-harness-cli-pins.sh` on every OS: each CLI installed into scratch
+  and must report its pin from `--version`, no credentials or model calls.

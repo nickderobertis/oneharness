@@ -94,7 +94,7 @@ jobs:
       - name: Install Goose CLI (Unix)
         if: runner.os != 'Windows'
         run: |
-          curl -fsSL https://github.com/block/goose/releases/download/stable/download_cli.sh | CONFIGURE=false bash
+          curl -fsSL https://github.com/block/goose/releases/download/v1.60.2/download_cli.sh | GOOSE_VERSION=1.60.2 CONFIGURE=false bash
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       # Windows uses Goose's PowerShell installer (the parallel of download_cli.sh);
@@ -105,8 +105,9 @@ jobs:
         run: |
           $env:CONFIGURE = 'false'
           # No .ps1 is published as a release asset (only download_cli.sh); the
-          # PowerShell installer lives in the repo tree.
-          irm 'https://raw.githubusercontent.com/block/goose/main/download_cli.ps1' | iex
+          # PowerShell installer lives in the repo tree, read at the pinned tag.
+          # GOOSE_VERSION pins the binary it fetches (.harness-cli-versions).
+          $env:GOOSE_VERSION = '1.60.2'; irm 'https://raw.githubusercontent.com/block/goose/v1.60.2/download_cli.ps1' | iex
           $dir = Join-Path $env:USERPROFILE '.local\bin'
           if (Test-Path $dir) { Add-Content -Path $env:GITHUB_PATH -Value $dir }
 

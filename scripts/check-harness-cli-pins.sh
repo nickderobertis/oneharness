@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
-# Hold the workflows the required checks run to `.harness-cli-versions`: every
-# `npm install -g` in them names an exact version, that version is the pin, and
-# every Goose vendor install passes its pin. An unpinned install there fails a
-# passing tree whenever a publisher is mid-release (Copilot 1.0.115's package
-# landed before its darwin-arm64 platform package and failed
-# `check (macos-latest)`), so a floating version is a finding, not a style.
+# Hold every workflow under .github/workflows/ to `.harness-cli-versions`: every
+# `npm install -g` names an exact version and it is the pin, every Goose vendor
+# install (bash or PowerShell) fetches and passes its pin, and every Cursor
+# install goes through the pinning helpers at its pin — never Cursor's bare
+# installer, which takes no version. An unpinned install fails a passing tree
+# whenever a publisher is mid-release (Copilot 1.0.115's package landed before
+# its darwin-arm64 platform package and failed `check (macos-latest)`), so a
+# floating version is a finding, not a style.
 #
 # Usage: check-harness-cli-pins.sh [PINS_FILE [WORKFLOW...]]
-# Defaults: .harness-cli-versions and .github/workflows/ci.yml.
+# Defaults: .harness-cli-versions and every .github/workflows/*.yml.
 set -euo pipefail
 
 cd "$(dirname "$0")/.." || {
@@ -20,7 +22,7 @@ if [ "$#" -gt 1 ]; then
   shift
   workflows=("$@")
 else
-  workflows=(.github/workflows/ci.yml)
+  workflows=(.github/workflows/*.yml)
 fi
 
 fail() {
@@ -78,39 +80,76 @@ findings="$(
         }
       }
     }
+    function unquote(t) { gsub(/^["'"'"']+|["'"'"';]+$/, "", t); return t }
     # Goose: every installer URL on the line is the pinned vendor URL, compared
-    # whole (host, repository and tag), and every GOOSE_VERSION assignment is the
-    # pin, compared as a string — so a second assignment cannot override it.
-    function check_goose(where, text,    want_url, want_env, n, tok, i, t, urls, envs) {
+    # whole (host, repository and tag): the release asset for bash, the tagged
+    # source file for PowerShell (Goose publishes no .ps1 asset). Every
+    # GOOSE_VERSION assignment, bash `GOOSE_VERSION=x` or PowerShell
+    # `$env:GOOSE_VERSION = "x"`, is the pin compared as a string, so a dot is no
+    # wildcard and a second assignment cannot override the first.
+    function check_goose(where, text,    want_sh, want_ps1, want, n, tok, i, t, v, urls, envs) {
       if (!("goose" in pin)) {
         finding(where, "installs Goose, which " pins_file " does not pin")
         return
       }
       installed["goose"] = 1
-      want_url = "https://github.com/block/goose/releases/download/v" pin["goose"] "/download_cli.sh"
-      want_env = "GOOSE_VERSION=" pin["goose"]
+      want_sh = "https://github.com/block/goose/releases/download/v" pin["goose"] "/download_cli.sh"
+      want_ps1 = "https://raw.githubusercontent.com/block/goose/v" pin["goose"] "/download_cli.ps1"
       n = split(text, tok, /[ \t]+/)
       for (i = 1; i <= n; i++) {
-        t = tok[i]
-        gsub(/^["'"'"']+|["'"'"']+$/, "", t)
+        t = unquote(tok[i])
         if (t ~ /download_cli\.(sh|ps1)$/) {
           urls++
-          if (t != want_url)
-            finding(where, "fetches the Goose installer " t "; fetch " want_url)
+          want = t ~ /\.ps1$/ ? want_ps1 : want_sh
+          if (t != want) finding(where, "fetches the Goose installer " t "; fetch " want)
         }
-        if (t ~ /^GOOSE_VERSION=/) {
+        if (t ~ /GOOSE_VERSION/) {
           envs++
-          if (t != want_env)
-            finding(where, "passes Goose " t "; pass " want_env)
+          if (t ~ /^GOOSE_VERSION=/) v = substr(t, length("GOOSE_VERSION=") + 1)
+          else if (t == "$env:GOOSE_VERSION" && tok[i + 1] == "=") { v = unquote(tok[i + 2]); i += 2 }
+          else v = t
+          if (v != pin["goose"]) finding(where, "passes Goose GOOSE_VERSION " v "; pass GOOSE_VERSION " pin["goose"])
         }
       }
-      if (!urls) finding(where, "installs Goose from no URL this check can read; fetch " want_url)
-      if (!envs) finding(where, "installs Goose without " want_env "; pass it to the installer")
+      if (!urls) finding(where, "installs Goose from no URL this check can read; fetch " want_sh)
+      if (!envs) finding(where, "installs Goose without GOOSE_VERSION " pin["goose"] "; pass it to the installer")
+    }
+    # Cursor: its installer takes no version, so it is installed only through
+    # the helpers that pin it, each handed exactly the pin; a bare installer
+    # fetch, or a versioned package URL at another build, is a finding.
+    function check_cursor(where, text,    n, tok, i, t, v, helpers) {
+      if (!("cursor-agent" in pin)) {
+        finding(where, "installs Cursor, which " pins_file " does not pin")
+        return
+      }
+      n = split(text, tok, /[ \t]+/)
+      for (i = 1; i <= n; i++) {
+        t = unquote(tok[i])
+        if (t ~ /cursor\.com\/install/)
+          finding(where, "runs Cursor'"'"'s installer unpinned (" t "); install through scripts/install-cursor-agent.sh " pin["cursor-agent"] " (Unix) or scripts/cursor-installer.ps1 -Version " pin["cursor-agent"] " (Windows)")
+        # A helper counts where it is run (`bash …sh`, `& …ps1`, `./…`), not
+        # where it is only named, as in a path list.
+        if ((t ~ /install-cursor-agent\.sh$/ && (tok[i - 1] ~ /^(bash|sh)$/ || t ~ /^\.\//)) ||
+            (t ~ /cursor-installer\.ps1$/ && (tok[i - 1] ~ /^(&|pwsh|powershell)$/ || t ~ /^\.\//))) {
+          helpers++
+          installed["cursor-agent"] = 1
+          v = unquote(tok[i + 1])
+          if (t ~ /\.ps1$/) v = (tok[i + 1] == "-Version") ? unquote(tok[i + 2]) : ""
+          if (v != pin["cursor-agent"])
+            finding(where, "installs Cursor at \"" v "\"; pass " (t ~ /\.ps1$/ ? "-Version " : "") pin["cursor-agent"])
+        }
+        if (match(t, /downloads\.cursor\.com\/lab\/[^\/]+\//)) {
+          v = substr(t, RSTART + length("downloads.cursor.com/lab/"), RLENGTH - length("downloads.cursor.com/lab/") - 1)
+          installed["cursor-agent"] = 1
+          if (v != pin["cursor-agent"]) finding(where, "downloads Cursor build " v "; download " pin["cursor-agent"])
+        }
+      }
     }
     FILENAME == pins_file {
       if ($0 ~ /^[ \t]*(#|$)/) next
-      if (NF != 2 || $2 !~ /^[0-9]+\.[0-9]+\.[0-9]+$/) {
-        finding(pins_file ":" FNR, "must pin one package to exactly one x.y.z version, found: " $0)
+      # npm and Goose take an exact x.y.z; Cursor only its build id.
+      if (NF != 2 || ($1 == "cursor-agent" ? $2 !~ /^[0-9][0-9][0-9][0-9]\.[0-9][0-9]\.[0-9][0-9]-[0-9a-f]+$/ : $2 !~ /^[0-9]+\.[0-9]+\.[0-9]+$/)) {
+        finding(pins_file ":" FNR, "must pin one package to exactly one version (x.y.z; cursor-agent YYYY.MM.DD-<hex>), found: " $0)
         next
       }
       if ($1 in pin) finding(pins_file ":" FNR, "pins " $1 " twice")
@@ -119,6 +158,8 @@ findings="$(
       next
     }
     FNR == 1 { joined = ""; start = 0 }
+    # A comment installs nothing, though it may name an installer.
+    !start && /^[ \t]*#/ { next }
     {
       line = $0
       if (!start) start = FNR
@@ -126,7 +167,8 @@ findings="$(
       joined = joined line
       where = FILENAME ":" start
       if (joined ~ /npm[ \t]+(install|i)[ \t]+(-g|--global)/) check_npm(where, joined)
-      if (joined ~ /download_cli\.(sh|ps1)/) check_goose(where, joined)
+      if (joined ~ /download_cli\.(sh|ps1)|GOOSE_VERSION/) check_goose(where, joined)
+      if (joined ~ /cursor\.com\/install|install-cursor-agent\.sh|cursor-installer\.ps1|downloads\.cursor\.com/) check_cursor(where, joined)
       joined = ""; start = 0
     }
     END {

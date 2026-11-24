@@ -1,21 +1,20 @@
-# The harness CLIs the REQUIRED checks install, pinned once (`.tool-versions`
-# format: one package and exactly one x.y.z version per line). The npm ones are
-# keyed by package name; `goose` is Goose's vendor installer, which takes its
-# version as GOOSE_VERSION.
+# Every harness CLI any workflow under .github/workflows/ installs, pinned once
+# (`.tool-versions` format: one package and exactly one version per line). The
+# npm ones are keyed by package name and pinned to an exact x.y.z; `goose` is
+# Goose's vendor installer (bash and PowerShell), which takes GOOSE_VERSION;
+# `cursor-agent` is Cursor's build id (YYYY.MM.DD-<hex>), which its installer
+# cannot take, so scripts/install-cursor-agent.sh and scripts/cursor-installer.ps1
+# pin the installer to it and it downloads that versioned package.
 #
-# Scope: `.github/workflows/ci.yml` only — the jobs a merge waits on. An
-# unpinned install there fails a passing tree whenever a publisher is
-# mid-release (Copilot 1.0.115 shipped its package before its darwin-arm64
-# platform package and failed `check (macos-latest)`). The paid `e2e-*` and
-# dispatch-only `explore-*` workflows gate nothing and deliberately track the
-# latest releases: that is what still catches an upstream CLI change. Cursor's
-# installer (cursor.com/install) bakes its version into the script it serves
-# and takes no version input, so ci.yml's Cursor install cannot be pinned.
+# Why every workflow: an unpinned install fails a passing tree whenever a
+# publisher is mid-release (Copilot 1.0.115 shipped its package before its
+# darwin-arm64 platform package and failed `check (macos-latest)`), and that is
+# as true of the live e2e and explore workflows as of the required checks.
 #
-# scripts/check-harness-cli-pins.sh holds ci.yml to this file: every npm
-# global install there names its package's pin, and every Goose install passes
-# it. To move a pin: change it here, run the check, fix each ci.yml line it
-# names, and let the PR's `check (macos-latest)` prove the new version installs.
+# scripts/check-harness-cli-pins.sh holds every workflow to this file. To move a
+# pin: change it here, run the check, fix each workflow line it names, and let
+# the PR's check jobs (scripts/verify-harness-cli-pins.sh, run on every OS when
+# this file changes) prove each new version installs and reports itself.
 @anthropic-ai/claude-code 2.1.331
 @openai/codex 0.172.0
 opencode-ai 1.19.6
@@ -23,3 +22,4 @@ opencode-ai 1.19.6
 @charmland/crush 0.102.0
 @github/copilot 1.0.114
 goose 1.60.2
+cursor-agent 2026.11.22-e9042b2

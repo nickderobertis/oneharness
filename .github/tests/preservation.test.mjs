@@ -219,7 +219,7 @@ test("preservation rejects a removed live assertion, a removed aggregate depende
   reported["e2e-control.yml"].jobs.report = { needs: "live", "runs-on": "ubuntu-latest", steps: [] };
   assert.throws(() => compare(original, reported), /e2e-control\.yml: retired job report is still declared/);
 });
-test("a harness CLI pin keeps its install step, but a swapped install does not", () => {
+test("a harness CLI pin keeps its install step, but a swapped, dropped or floating install does not", () => {
   const original = baseline();
   const codexInstall = graph => graph["ci.yml"].jobs.llmlint.steps.find(step => step.name === "Install Codex CLI");
   const installs = (from, to) => {
@@ -234,4 +234,8 @@ test("a harness CLI pin keeps its install step, but a swapped install does not",
   compare(original, installs(pinned, "npm install -g @openai/codex@0.0.1"));
   const changed = /ci\.yml\/llmlint: removed or changed retained assertion\/install step Install Codex CLI/;
   assert.throws(() => compare(original, installs(pinned, "npm install -g @openai/codex-fork@0.172.0")), changed);
+  assert.throws(() => compare(original, installs(pinned, "true")), changed);
+  // A non-exact version is no pin: which exact version is right is check-harness-cli-pins.sh's call.
+  assert.throws(() => compare(original, installs(pinned, "npm install -g @openai/codex@latest")), changed);
 });
+// llmlint: ignore-end[shell_test_tiers_stay_split]

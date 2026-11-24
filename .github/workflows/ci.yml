@@ -202,6 +202,7 @@ jobs:
         env:
           NX_BASE: ${{ steps.tier.outputs.base }}
         run: just budgets-offline
+      # llmlint: ignore-block[external_service_suite_stays_out_of_the_affected_tier] Installing each pinned harness CLI from npm and its vendor is the proof that a moved pin installs on every OS its workflows use, so it must run on each check runner; .github/budgets.yaml allows one Mac job per run, so it cannot be a workflow of its own. It is not part of Nx's affected tier, runs only on a pull request that changes a pin or an install helper, and makes no model call.
       # A moved harness CLI pin, or a changed install helper, is proven where the
       # workflows install it — Linux, macOS ARM64 and Windows — before it merges:
       # each pinned CLI is installed into scratch space and must report its pin
@@ -221,6 +222,7 @@ jobs:
           else
             bash scripts/verify-harness-cli-pins.sh
           fi
+      # llmlint: ignore-end[external_service_suite_stays_out_of_the_affected_tier]
       # llmlint: ignore-block[external_service_suite_stays_out_of_the_affected_tier] The scheduling contract explicitly requires CI's one Mac check to own the existing real live commands sequentially. They remain separate from Nx's deterministic affected tier, gated to trusted heads and the original workflow paths, while their Linux/Windows workflows retain coverage.
       - name: Select consolidated live paths
         id: live-paths

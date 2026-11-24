@@ -32,25 +32,26 @@ url="${CURSOR_INSTALLER_URL:-https://cursor.com/install}"
 installer="$(curl -fsS "$url")" ||
   fail "could not fetch Cursor's installer from $url" "check the network and that $url still serves the installer, then rerun"
 
-# The installer's own version, read from its one download URL.
 pattern='https://downloads\.cursor\.com/lab/([0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9a-f]{7,40})/'
 [[ "$installer" =~ $pattern ]] ||
   fail "Cursor's installer at $url no longer downloads from https://downloads.cursor.com/lab/<version>/" \
     "read the current installer and update this script's pinning to its new shape"
 embedded="${BASH_REMATCH[1]}"
-
 pinned="${installer//"$embedded"/"$pin"}"
-case "$pinned" in
-  *"$embedded"*) [ "$embedded" = "$pin" ] || fail "the installer still names $embedded after pinning $pin" ;;
-esac
-case "$pinned" in
-  *"https://downloads.cursor.com/lab/$pin/"*) ;;
-  *) fail "the pinned installer does not download https://downloads.cursor.com/lab/$pin/" ;;
-esac
+
+# Every download the pinned installer could make must be the pin's: a second
+# build anywhere in it would install something other than what was asked for.
+rest="$pinned"
+while [[ "$rest" =~ https://downloads\.cursor\.com/lab/([^/[:space:]\"\']*)/ ]]; do
+  [ "${BASH_REMATCH[1]}" = "$pin" ] ||
+    fail "Cursor's installer at $url also downloads build ${BASH_REMATCH[1]}, which pinning $pin leaves in place" \
+      "read the current installer; pin it only once it downloads a single build"
+  rest="${rest#*"${BASH_REMATCH[0]}"}"
+done
 
 if [ "${OH_CURSOR_PRINT_ONLY:-0}" = 1 ]; then
   printf '%s\n' "$pinned"
   exit 0
 fi
-bash -c "$pinned" || fail "Cursor's installer failed installing $pin (its output is above)" \
+bash -o pipefail -c "$pinned" || fail "Cursor's installer failed installing $pin (its output is above)" \
   "check that https://downloads.cursor.com/lab/$pin/ still serves this platform's package"

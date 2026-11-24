@@ -1,11 +1,10 @@
 import { readFileSync } from "node:fs";
 
-// The harness CLIs ci.yml's required checks install at a pin
-// (.harness-cli-versions). scripts/check-harness-cli-pins.sh owns WHICH version
-// each must name; the workflow contracts own WHAT is installed. So, for them, a
-// pinned install is the same install as the unpinned one in the paid e2e-*
-// workflows (which track latest on purpose) and as its own earlier pin: only
-// the version is read away, and only for a CLI that file pins, so a dropped,
+// Every workflow installs its harness CLIs at a pin (.harness-cli-versions),
+// and scripts/check-harness-cli-pins.sh owns WHICH version each must name. The
+// workflow contracts own WHAT is installed, so for them a pinned install is the
+// same install as its unpinned vendor form and as its own earlier pin: only the
+// version is read away, and only for a CLI that file pins, so a dropped,
 // renamed or extra install still reads as a different command.
 export function parsePins(text, path = ".harness-cli-versions") {
   const pinned = new Set();

@@ -7,8 +7,8 @@
 #
 # ci.yml's check job runs it on Linux, macOS ARM64 and Windows whenever a pin
 # or an install helper changes, so a moved pin is proven where the workflows
-# install it before it merges. One line per CLI on success, as evidence:
-#   verify-harness-cli-pins: <os>/<arch> <name> <pin>: <its --version output>
+# install it before it merges. On success it prints one line, the evidence:
+#   verify-harness-cli-pins: ok <os>/<arch>: <name> <pin> (<its --version>); ...
 #
 # Usage: verify-harness-cli-pins.sh [PINS_FILE]
 set -euo pipefail
@@ -43,10 +43,8 @@ scratch="$(mktemp -d "${TMPDIR:-/tmp}/verify-harness-cli-pins.XXXXXX")" ||
 cleanup() { rm -rf "$scratch" || echo "verify-harness-cli-pins: could not remove $scratch; remove it by hand" >&2; }
 trap cleanup EXIT
 
-# A Windows path for PowerShell; the same path elsewhere.
 native() { if [ "$os" = windows ]; then cygpath -w "$1"; else printf '%s' "$1"; fi; }
 
-# Run quietly; on failure show what the installer said.
 quietly() {
   local what="$1" log="$scratch/install.log"
   shift
@@ -72,25 +70,27 @@ install_and_report() {
   local name="$1" version="$2" bin
   case "$name" in
     goose)
-      mkdir -p "$scratch/goose"
+      mkdir -p "$scratch/goose" || fail "cannot create $scratch/goose" "point TMPDIR at a writable directory"
       if [ "$os" = windows ]; then
         quietly goose env GOOSE_BIN_DIR="$(native "$scratch/goose")" GOOSE_VERSION="$version" CONFIGURE=false \
           pwsh -NoProfile -NonInteractive -Command \
           "irm 'https://raw.githubusercontent.com/block/goose/v$version/download_cli.ps1' | iex"
         bin="$scratch/goose/goose.exe"
       else
-        quietly goose bash -c "curl -fsSL 'https://github.com/block/goose/releases/download/v$version/download_cli.sh' |
+        quietly goose bash -o pipefail -c "curl -fsSL 'https://github.com/block/goose/releases/download/v$version/download_cli.sh' |
           GOOSE_BIN_DIR='$scratch/goose' GOOSE_VERSION='$version' CONFIGURE=false bash"
         bin="$scratch/goose/goose"
       fi
       ;;
     cursor-agent)
-      mkdir -p "$scratch/home" "$scratch/localappdata"
+      mkdir -p "$scratch/home" "$scratch/localappdata" ||
+        fail "cannot create Cursor's scratch home under $scratch" "point TMPDIR at a writable directory"
       if [ "$os" = windows ]; then
         quietly cursor-agent env LOCALAPPDATA="$(native "$scratch/localappdata")" USERPROFILE="$(native "$scratch/home")" \
           pwsh -NoProfile -NonInteractive -Command \
           "\$s = & '$(native "$root/scripts/cursor-installer.ps1")' -Version '$version'; Invoke-Expression \$s"
-        bin="$(find "$scratch/localappdata" "$scratch/home" -iname 'cursor-agent.cmd' -type f 2>/dev/null | sed -n 1p)"
+        bin="$(find "$scratch/localappdata" "$scratch/home" -iname 'cursor-agent.cmd' -type f -print -quit)" ||
+          fail "cannot search $scratch for the cursor-agent.cmd launcher Cursor's installer lays down"
       else
         quietly cursor-agent env HOME="$scratch/home" bash "$root/scripts/install-cursor-agent.sh" "$version"
         bin="$scratch/home/.local/bin/cursor-agent"
@@ -107,15 +107,25 @@ install_and_report() {
   [ -n "$bin" ] && [ -e "$bin" ] || fail "$name $version installed no runnable binary (looked for ${bin:-a cursor-agent.cmd launcher})"
   local reported
   reported="$("$bin" --version 2>&1 | tr -d '\r')" || fail "$name $version did not run: $reported"
-  case "$reported" in
-    *"$version"*) ;;
-    *) fail "$name reported '$reported', not the pinned $version" "the installer fetched another version; pin it so it cannot" ;;
-  esac
-  echo "verify-harness-cli-pins: $os/$arch $name $version: $(printf '%s' "$reported" | tr '\n' ' ' | sed 's/ *$//')"
+  # The pin must be a whole word of the output (`v` prefix and a closing `.`
+  # allowed), so 1.0.1140 is not 1.0.114.
+  local word found=0 words
+  read -ra words <<<"${reported//$'\n'/ }"
+  for word in "${words[@]}"; do
+    word="${word#v}"
+    if [ "${word%.}" = "$version" ]; then found=1; fi
+  done
+  [ "$found" = 1 ] ||
+    fail "$name reported '$reported', not the pinned $version" "the installer fetched another version; pin it so it cannot"
+  evidence="${evidence:+$evidence; }$name $version ($(printf '%s' "$reported" | tr '\n' ' ' | sed 's/ *$//'))"
 }
+
+evidence=""
 
 while read -r name version rest; do
   case "$name" in '' | '#'*) continue ;; esac
   [ -z "$rest" ] || fail "malformed pin line: $name $version $rest"
   install_and_report "$name" "$version"
 done <"$pins"
+[ -n "$evidence" ] || fail "$pins pins nothing"
+echo "verify-harness-cli-pins: ok $os/$arch: $evidence"

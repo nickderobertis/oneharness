@@ -1,11 +1,6 @@
-# Return Cursor's Windows installer pinned to an exact cursor-agent version.
-#
-# Like scripts/install-cursor-agent.sh: Cursor's installer
-# (https://cursor.com/install?win32=true) takes no version, it is regenerated
-# per release with its version written into its download URL. This reads that
-# embedded version, replaces every occurrence with the pin, checks the result
-# downloads exactly https://downloads.cursor.com/lab/<pin>/, and returns the
-# script text for the caller to run (e2e-cursor.yml runs it visibly).
+# Return Cursor's Windows installer pinned to an exact cursor-agent build, for
+# the caller to run (e2e-cursor.yml runs it visibly). The pinning is
+# scripts/install-cursor-agent.sh's, in PowerShell.
 #
 # Usage: $script = & ./scripts/cursor-installer.ps1 -Version 2026.11.22-e9042b2
 #   -InstallerUrl overrides the source (tests use a local fixture path).
@@ -44,5 +39,11 @@ if ($embedded -cne $Version -and $pinned.Contains($embedded)) {
 }
 if (-not $pinned.Contains("https://downloads.cursor.com/lab/$Version/")) {
   Fail "the pinned installer does not download https://downloads.cursor.com/lab/$Version/"
+}
+# Every download the pinned installer could make must be the pin's.
+foreach ($download in [regex]::Matches($pinned, 'https://downloads\.cursor\.com/lab/([^/\s''"]*)/')) {
+  if ($download.Groups[1].Value -cne $Version) {
+    Fail "Cursor's installer at $InstallerUrl also downloads build $($download.Groups[1].Value), which pinning $Version leaves in place" 'read the current installer; pin it only once it downloads a single build'
+  }
 }
 $pinned

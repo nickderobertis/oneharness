@@ -218,8 +218,8 @@ drift() {
   if ! { cp "$root/.github/workflows/$1" "$wf.orig" && sed "$2" "$wf.orig" >"$wf"; }; then
     fail "cannot drift the copy of $1" "check that $tmp is writable, then rerun"
   fi
-  # The first line the drift changed: compare the two copies line by line.
-  n="$(awk 'NR == FNR { orig[FNR] = $0; next } $0 != orig[FNR] { print FNR; exit }' "$wf.orig" "$wf")"
+  n="$(awk 'NR == FNR { orig[FNR] = $0; next } $0 != orig[FNR] { print FNR; exit }' "$wf.orig" "$wf")" ||
+    fail "cannot compare the drifted copy of $1 with its original" "check that $tmp is readable, then rerun"
   [ -n "$n" ] || fail "the drift '$2' changed nothing in $1" "update this case to the workflow's current install line"
   echo "$n"
 }
@@ -234,7 +234,9 @@ line="$(drift e2e-control.yml "s#@github/copilot@$pin\$#@github/copilot#")" || e
 real_case "an unpinned Copilot in e2e-control.yml" 1 \
   ".github/workflows/e2e-control.yml:$line: npm installs @github/copilot unpinned"
 undrift e2e-control.yml
-qwen="$(awk '$1 == "@qwen-code/qwen-code" { print $2 }' "$root/.harness-cli-versions")"
+qwen="$(awk '$1 == "@qwen-code/qwen-code" { print $2 }' "$root/.harness-cli-versions")" ||
+  fail "cannot read .harness-cli-versions" "restore the file, then rerun"
+[ -n "$qwen" ] || fail ".harness-cli-versions no longer pins @qwen-code/qwen-code" "restore its pin line, then rerun"
 line="$(drift explore-hooks.yml "s#@qwen-code/qwen-code@$qwen #@qwen-code/qwen-code #")" || exit 1
 # Qwen sits on the install's continuation line; a finding names where the
 # install starts, the line above.

@@ -705,6 +705,16 @@ class Setup(unittest.TestCase):
         # runner the escape-marker fault passed. The control suite's own setup
         # exempts its shared-server launches; its other launches, and every
         # other suite's shared servers, keep the grace.
+        #
+        # Each case reads the recorder's own record of why it stopped the
+        # launch's tree (the line's `stopped`), never how long the launch
+        # took: a loaded runner stretches the setup, the shim and every
+        # interpreter's start around the grace (11.9 s against a 1 s grace on
+        # one CI run), but cannot change which of the init's stops fired. A
+        # reaped leftover is stopped for its `descendant-grace` well before a
+        # deadline that, were the grace gone, would stop it instead; a kept
+        # one, under no deadline, ends by itself — after outliving the grace
+        # by far — and the recorder never stops it at all.
         need_builds(self)
         need_recorder(self)
         control = re.search(
@@ -713,7 +723,7 @@ class Setup(unittest.TestCase):
             re.MULTILINE,
         )
         assert control is not None, "scripts/e2e-control.sh no longer sets up its recorder"
-        grace, deadline = 1, 8
+        grace, deadline = 1, 30
         server = ["app-server", "--listen", "unix:///nonexistent/app.sock"]
         for case in (
             GraceCase("control", control.group(0), server, keeps_leftovers=True),
@@ -725,15 +735,16 @@ class Setup(unittest.TestCase):
                 tmp = scratch(self)
                 heartbeat = tmp / "heartbeat"
                 # A codex whose launch exits at once, leaving a detached
-                # command beating until something stops it.
+                # command beating until something stops it — or, where the
+                # launch keeps it, until it ends by itself well after the grace.
                 real = tmp / "real-bin"
                 real.mkdir()
-                words = transfer_argv(0, 0, 0, "--detach", "--linger", "600")
+                linger = 5 if case.keeps_leftovers else 600
+                words = transfer_argv(0, 0, 0, "--detach", "--linger", str(linger))
                 (real / "codex").write_text(
                     f'#!/usr/bin/env bash\nexec {shlex.join(words)} --heartbeat "$OH_TEST_BEAT"\n'
                 )
                 (real / "codex").chmod(0o755)
-                started = time.monotonic()
                 run = setup_and(
                     tmp,
                     f"{setup}; codex {shlex.join(args)}",
@@ -741,18 +752,13 @@ class Setup(unittest.TestCase):
                     extra={
                         "OH_TEST_BEAT": str(heartbeat),
                         "OH_E2E_NET_DESCENDANT_GRACE": str(grace),
-                        "OH_E2E_NET_DEADLINE": str(deadline),
+                        # No deadline where the leftover is kept: nothing but
+                        # a grace wrongly applied could stop it.
+                        "OH_E2E_NET_DEADLINE": "0" if case.keeps_leftovers else str(deadline),
                     },
                 )
-                took = time.monotonic() - started
                 self.assertEqual(run.returncode, 0, run.stderr)
-                beats = [float(b.split()[1]) for b in heartbeat.read_text().splitlines()]
-                if case.keeps_leftovers:
-                    self.assertGreater(took, deadline - 0.5, "the server's command was reaped")
-                    self.assertGreater(beats[-1] - beats[0], 6, "it did not outlive the grace")
-                else:
-                    self.assertLess(took, grace + 4, "the launch kept no grace")
-                    self.assertLess(beats[-1] - beats[0], grace + 2, "it outlived the grace")
+                self.assertTrue(heartbeat.read_text(), "the detached command never ran")
                 size = heartbeat.stat().st_size
                 time.sleep(0.5)
                 self.assertEqual(heartbeat.stat().st_size, size, "the command is still alive")
@@ -760,6 +766,12 @@ class Setup(unittest.TestCase):
                 (start,) = starts(records)
                 (line,) = measurements(records, start["launch_id"])
                 self.assertEqual(line["method"], "netns-pasta", line)
+                if case.keeps_leftovers:
+                    self.assertNotIn("stopped", line, "the server's command was reaped")
+                else:
+                    self.assertEqual(
+                        line.get("stopped"), "descendant-grace", "the launch kept no grace"
+                    )
 
     def test_a_shared_server_grace_that_is_no_number_stops_the_setup(self) -> None:
         need_builds(self)
@@ -1108,6 +1120,11 @@ class Settings(unittest.TestCase):
         self.assertEqual(
             netmeasure.NamespaceResult.from_json(json.dumps(good)).line("x").rx_bytes, 10
         )
+        reaped = netmeasure.NamespaceResult.from_json(
+            json.dumps({**good, "stopped": "descendant-grace"})
+        )
+        self.assertEqual(reaped.line("x").stopped, "descendant-grace")
+        self.assertEqual(netmeasure.NamespaceResult.from_json(reaped.to_json()), reaped)
         for name, change in (
             ("a negative count", {"moved": [-1, 1, 5, 1]}),
             ("a boolean count", {"moved": [True, 1, 5, 1]}),
@@ -1120,6 +1137,7 @@ class Settings(unittest.TestCase):
             ("a window that ends before it begins", {"start": {"before_ns": 5, "after_ns": 2}}),
             ("windows out of order", {"start": {"before_ns": 6, "after_ns": 7}}),
             ("a window that is not an object", {"end": [3, 4]}),
+            ("a stop the init never makes", {"stopped": "tired"}),
         ):
             with self.subTest(result=name):
                 with self.assertRaises(ValueError):

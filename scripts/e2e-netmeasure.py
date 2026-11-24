@@ -27,7 +27,14 @@ way oneharness dials a control server it started:
 
     {"launch_id", "method": "netns-pasta", "rx_bytes", "tx_bytes",
      "payload_rx_estimate", "payload_tx_estimate",
-     "namespace_tcp_retrans_segs", "seconds", "exit"}
+     "namespace_tcp_retrans_segs", "seconds", "exit"[, "stopped"]}
+
+`stopped` is there only when the measurer stopped the namespace rather than
+the tree ending by itself, and says why: `descendant-grace` (a descendant
+outstayed the launch's exit by the grace), `deadline`, or `requested` (this
+process was signalled, or its supervisor lost it). It is the namespace's own
+record of the decision, so a reader can tell a reaped leftover from one that
+ran to the deadline without timing the launch.
 
 `rx_bytes`/`tx_bytes` are the TAP interface's `/proc/net/dev` deltas: bytes at
 the namespace boundary — payload plus per-frame Ethernet/IP/TCP headers — not
@@ -153,6 +160,9 @@ class Measured:
     seconds: float
     exit: Optional[int]
     method: str = METHOD
+    # Why the measurer stopped the namespace (a Stop's value); None, and left
+    # out of the line, when the tree ended by itself.
+    stopped: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -164,6 +174,14 @@ class Unavailable:
     seconds: float
     exit: Optional[int]
     method: str = "unavailable"
+
+
+class Stop(Enum):
+    """Why a namespace's init stopped the launch's tree."""
+
+    DESCENDANT_GRACE = "descendant-grace"  # a descendant outstayed the launch's exit
+    DEADLINE = "deadline"  # OH_E2E_NET_DEADLINE passed
+    REQUESTED = "requested"  # the init was signalled, or the supervisor asked
 
 
 class Ending(Enum):
@@ -245,6 +263,7 @@ class NamespaceResult:
     exit: Optional[int]
     start: Window
     end: Window
+    stopped: Optional[Stop] = None
 
     def to_json(self) -> str:
         return json.dumps(
@@ -255,6 +274,7 @@ class NamespaceResult:
                 "exit": self.exit,
                 "start": asdict(self.start),
                 "end": asdict(self.end),
+                "stopped": None if self.stopped is None else self.stopped.value,
             }
         )
 
@@ -286,7 +306,12 @@ class NamespaceResult:
         start, end = Window.read(fields["start"]), Window.read(fields["end"])
         if start.after_ns > end.before_ns:
             raise ValueError("the last counter read began before the first one ended")
-        return NamespaceResult(Counters(*moved), retrans, float(seconds), code, start, end)
+        stopped = fields.get("stopped")
+        try:
+            stop = None if stopped is None else Stop(stopped)
+        except ValueError:
+            raise ValueError(f"stopped is not a reason the init stops for: {stopped!r}") from None
+        return NamespaceResult(Counters(*moved), retrans, float(seconds), code, start, end, stop)
 
     def line(self, launch_id: LaunchId) -> Measured:
         return Measured(
@@ -298,6 +323,7 @@ class NamespaceResult:
             self.namespace_tcp_retrans_segs,
             self.seconds,
             self.exit,
+            stopped=None if self.stopped is None else self.stopped.value,
         )
 
 
@@ -314,7 +340,10 @@ def append_line(path: str, record: Measured | Unavailable) -> None:
     """Append one JSON line in a single write, so concurrent launches never interleave.
 
     Raises Unrecorded, having said on stderr which file, why, and what to do."""
-    data = (json.dumps(asdict(record), separators=(",", ":")) + "\n").encode()
+    fields = asdict(record)
+    if fields.get("stopped", "") is None:
+        del fields["stopped"]  # a tree that ended by itself: the line says nothing of a stop
+    data = (json.dumps(fields, separators=(",", ":")) + "\n").encode()
     try:
         fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
         try:
@@ -590,6 +619,7 @@ def namespace_init(
     # When the launch's descendants have outstayed it (set once it exits).
     outstayed_at: Optional[float] = None
     kill_at: Optional[float] = None
+    stopped: Optional[Stop] = None
     while True:
         try:
             pid, status = os.waitpid(-1, os.WNOHANG)
@@ -603,12 +633,14 @@ def namespace_init(
         if pid:
             continue
         now = time.monotonic()
-        if kill_at is None and (
-            stop_requested
-            or (scratch / "stop").exists()
-            or (stop_at is not None and now >= stop_at)
-            or (outstayed_at is not None and now >= outstayed_at)
-        ):
+        if kill_at is None:
+            if stop_requested or (scratch / "stop").exists():
+                stopped = Stop.REQUESTED
+            elif stop_at is not None and now >= stop_at:
+                stopped = Stop.DEADLINE
+            elif outstayed_at is not None and now >= outstayed_at:
+                stopped = Stop.DESCENDANT_GRACE
+        if kill_at is None and stopped is not None:
             os.kill(-1, signal.SIGTERM)
             kill_at = now + KILL_GRACE
         elif kill_at is not None and now >= kill_at:
@@ -625,6 +657,7 @@ def namespace_init(
         launch_exit,
         Window(start.before_ns, start.after_ns),
         Window(end.before_ns, end.after_ns),
+        stopped,
     )
     partial = scratch / "result.json.partial"
     partial.write_text(result.to_json())

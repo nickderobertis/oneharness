@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { harnessPins, unpinnedRun } from "../harness-pins.mjs";
+import { harnessPins, parsePins, unpinnedRun } from "../harness-pins.mjs";
 
 const pinned = new Set(["@github/copilot", "opencode-ai", "goose"]);
 const same = (a, b) => assert.equal(unpinnedRun(a, pinned), unpinnedRun(b, pinned));
@@ -36,4 +36,11 @@ test("the repo's pin file is what the contracts read", () => {
   for (const line of readFileSync(".harness-cli-versions", "utf8").split("\n"))
     if (line.trim() && !line.trim().startsWith("#")) assert.ok(pins.has(line.trim().split(/\s+/)[0]));
   assert.ok(pins.has("@github/copilot"));
+});
+
+test("a malformed pin file is refused, never read as a partial allowlist", () => {
+  assert.deepEqual([...parsePins("# c\n\n@github/copilot 1.0.114\ngoose 1.60.2\n")], ["@github/copilot", "goose"]);
+  for (const bad of ["@github/copilot", "@github/copilot latest", "@github/copilot 1.0", "@github/copilot 1.0.114 1.0.115"])
+    assert.throws(() => parsePins(`goose 1.60.2\n${bad}\n`), /:2: must pin one package to exactly one x\.y\.z version/);
+  assert.throws(() => parsePins("goose 1.60.2\ngoose 1.60.2\n"), /:2: pins goose twice/);
 });

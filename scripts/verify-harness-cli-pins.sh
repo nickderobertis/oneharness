@@ -43,7 +43,16 @@ scratch="$(mktemp -d "${TMPDIR:-/tmp}/verify-harness-cli-pins.XXXXXX")" ||
 cleanup() { rm -rf "$scratch" || echo "verify-harness-cli-pins: could not remove $scratch; remove it by hand" >&2; }
 trap cleanup EXIT
 
-native() { if [ "$os" = windows ]; then cygpath -w "$1"; else printf '%s' "$1"; fi; }
+# native_path VAR PATH: VAR becomes PATH as PowerShell on Windows reads it.
+# Run outside a command substitution, so a failed conversion stops the script.
+native_path() {
+  local converted="$2"
+  if [ "$os" = windows ]; then
+    converted="$(cygpath -w "$2")" ||
+      fail "cygpath could not convert $2 to a Windows path" "run this under Git Bash, which provides cygpath"
+  fi
+  printf -v "$1" '%s' "$converted"
+}
 
 quietly() {
   local what="$1" log="$scratch/install.log"
@@ -51,7 +60,7 @@ quietly() {
   local status=0
   "$@" >"$log" 2>&1 || status=$?
   if [ "$status" -ne 0 ]; then
-    cat "$log" >&2
+    cat -- "$log" >&2 || echo "verify-harness-cli-pins: (the install log $log could not be read)" >&2
     fail "installing $what failed with exit $status (its output, if any, is above)" "check that the pinned version is published for $os/$arch"
   fi
 }
@@ -74,8 +83,10 @@ install_and_report() {
     goose)
       mkdir -p "$scratch/goose" || fail "cannot create $scratch/goose" "point TMPDIR at a writable directory"
       if [ "$os" = windows ]; then
+        local goose_dir
+        native_path goose_dir "$scratch/goose"
         # shellcheck disable=SC2016 # the inner shell expands it from the environment, so no path or version is spliced into its source
-        quietly goose env GOOSE_BIN_DIR="$(native "$scratch/goose")" GOOSE_VERSION="$version" CONFIGURE=false \
+        quietly goose env GOOSE_BIN_DIR="$goose_dir" GOOSE_VERSION="$version" CONFIGURE=false \
           OH_GOOSE_INSTALLER="https://raw.githubusercontent.com/block/goose/v$version/download_cli.ps1" \
           pwsh -NoProfile -NonInteractive -Command 'irm $env:OH_GOOSE_INSTALLER | iex'
         bin="$scratch/goose/goose.exe"
@@ -91,9 +102,13 @@ install_and_report() {
       mkdir -p "$scratch/home" "$scratch/localappdata" ||
         fail "cannot create Cursor's scratch home under $scratch" "point TMPDIR at a writable directory"
       if [ "$os" = windows ]; then
+        local local_app_data user_profile helper
+        native_path local_app_data "$scratch/localappdata"
+        native_path user_profile "$scratch/home"
+        native_path helper "$root/scripts/cursor-installer.ps1"
         # shellcheck disable=SC2016 # the inner shell expands it from the environment, so no path or version is spliced into its source
-        quietly cursor-agent env LOCALAPPDATA="$(native "$scratch/localappdata")" USERPROFILE="$(native "$scratch/home")" \
-          OH_CURSOR_HELPER="$(native "$root/scripts/cursor-installer.ps1")" OH_CURSOR_VERSION="$version" \
+        quietly cursor-agent env LOCALAPPDATA="$local_app_data" USERPROFILE="$user_profile" \
+          OH_CURSOR_HELPER="$helper" OH_CURSOR_VERSION="$version" \
           pwsh -NoProfile -NonInteractive -Command 'Invoke-Expression (& $env:OH_CURSOR_HELPER -Version $env:OH_CURSOR_VERSION)'
         bin="$(find "$scratch/localappdata" "$scratch/home" -iname 'cursor-agent.cmd' -type f -print -quit)" ||
           fail "cannot search $scratch for the cursor-agent.cmd launcher Cursor's installer lays down"
@@ -126,7 +141,9 @@ install_and_report() {
   done
   [ "$found" = 1 ] ||
     fail "$name reported '$reported', not the pinned $version" "the installer fetched another version; pin it so it cannot"
-  evidence="${evidence:+$evidence; }$name $version ($(printf '%s' "$reported" | tr '\n' ' ' | sed 's/ *$//'))"
+  local flat="${reported//$'\n'/ }"
+  flat="${flat%"${flat##*[! ]}"}"
+  evidence="${evidence:+$evidence; }$name $version ($flat)"
 }
 
 evidence=""

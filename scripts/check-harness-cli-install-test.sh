@@ -43,7 +43,6 @@ expect() {
 pin=2026.11.22-e9042b2
 old=2020.01.01-abcdef0
 
-# --- Cursor, Unix: the vendor installer with its embedded build swapped. ------
 # The fixture has the shape of cursor.com/install: its build written into the
 # download URL and the install paths, and an install that records which build
 # it would fetch.
@@ -56,10 +55,21 @@ write "$tmp/installer.sh" \
   'printf "#!/bin/sh\necho %s\n" "${build%%/*}" >"$HOME/.local/bin/cursor-agent"' \
   'chmod +x "$HOME/.local/bin/cursor-agent"'
 # curl on Windows reads a file URL by its drive path, not an MSYS one.
+# file_url VAR PATH, outside a command substitution so a failed conversion stops the test.
 file_url() {
-  if command -v cygpath >/dev/null 2>&1; then printf 'file:///%s' "$(cygpath -m "$1")"; else printf 'file://%s' "$1"; fi
+  local drive
+  if command -v cygpath >/dev/null 2>&1; then
+    drive="$(cygpath -m "$2")" || fail "cygpath could not convert $2" "run this under Git Bash, which provides cygpath"
+    printf -v "$1" 'file:///%s' "$drive"
+  else
+    printf -v "$1" 'file://%s' "$2"
+  fi
 }
-unix() { env CURSOR_INSTALLER_URL="$(file_url "$tmp/$1")" "${@:2}" bash "$root/scripts/install-cursor-agent.sh" "$pin"; }
+unix() {
+  local url
+  file_url url "$tmp/$1"
+  env CURSOR_INSTALLER_URL="$url" "${@:2}" bash "$root/scripts/install-cursor-agent.sh" "$pin"
+}
 
 mkdir -p "$tmp/home" || fail "cannot create $tmp/home" "check that $tmp is writable, then rerun"
 expect "the pinned Unix installer runs" 0 "" unix installer.sh HOME="$tmp/home"
@@ -69,14 +79,16 @@ out="$(unix installer.sh OH_CURSOR_PRINT_ONLY=1)" || fail "printing the pinned i
 case "$out" in *"$old"*) fail "the pinned installer still names $old: $out" ;; esac
 case "$out" in *"versions/$pin"*) ;; *) fail "the pinned installer's install path is not the pin's: $out" ;; esac
 
+installer_url=""
+file_url installer_url "$tmp/installer.sh"
 # The build-id boundary every Cursor validator shares: 7 to 40 hex digits.
 for ok in 2026.11.22-abcdef1 2026.11.22-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; do
-  out="$(env CURSOR_INSTALLER_URL="$(file_url "$tmp/installer.sh")" OH_CURSOR_PRINT_ONLY=1 \
+  out="$(env CURSOR_INSTALLER_URL="$installer_url" OH_CURSOR_PRINT_ONLY=1 \
     bash "$root/scripts/install-cursor-agent.sh" "$ok" 2>&1)" || fail "the Unix helper refused the build $ok: $out"
 done
 for bad in latest 1.2.3 "$pin; rm -rf /" '' 2026.11.22-abcdef 2026.11.22-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; do
   expect "the Unix helper refusing version '$bad'" 1 "is not a Cursor build id" \
-    env CURSOR_INSTALLER_URL="$(file_url "$tmp/installer.sh")" bash "$root/scripts/install-cursor-agent.sh" "$bad"
+    env CURSOR_INSTALLER_URL="$installer_url" bash "$root/scripts/install-cursor-agent.sh" "$bad"
 done
 expect "the Unix helper with no version" 1 "expected exactly one argument, the version; got 0" \
   bash "$root/scripts/install-cursor-agent.sh"
@@ -95,19 +107,28 @@ expect "a reshaped Unix installer" 1 "no longer downloads from https://downloads
   unix reshaped.sh
 expect "an unreachable Unix installer" 1 "could not fetch Cursor's installer" unix absent.sh
 
-# --- Cursor, Windows: the same pinning in PowerShell (every runner has pwsh). -
 command -v pwsh >/dev/null 2>&1 ||
   fail "pwsh is not on PATH; scripts/cursor-installer.ps1 cannot be tested" \
     "install PowerShell (https://aka.ms/powershell) — GitHub's runners carry it"
-native() { if command -v cygpath >/dev/null 2>&1; then cygpath -w "$1"; else printf '%s' "$1"; fi; }
+# native_path VAR PATH: VAR becomes PATH as PowerShell reads it, checked.
+native_path() {
+  local converted="$2"
+  if command -v cygpath >/dev/null 2>&1; then
+    converted="$(cygpath -w "$2")" || fail "cygpath could not convert $2" "run this under Git Bash, which provides cygpath"
+  fi
+  printf -v "$1" '%s' "$converted"
+}
 # shellcheck disable=SC2016 # fixture installer text: PowerShell expands it, not bash
 write "$tmp/installer.ps1" "\$downloadUrl = 'https://downloads.cursor.com/lab/$old/'" "\$version = '$old'" \
   'Write-Host "installing $version"'
 # The helper throws; print the message unwrapped, as a caller's log would show
 # it. Paths and the version reach PowerShell as environment values, not source.
 ps() {
+  local helper installer
+  native_path helper "$root/scripts/cursor-installer.ps1"
+  native_path installer "$tmp/$2"
   # shellcheck disable=SC2016 # PowerShell expands it from the environment, so no path is spliced into its source
-  env OH_HELPER="$(native "$root/scripts/cursor-installer.ps1")" OH_VERSION="$1" OH_INSTALLER="$(native "$tmp/$2")" \
+  env OH_HELPER="$helper" OH_VERSION="$1" OH_INSTALLER="$installer" \
     pwsh -NoProfile -NonInteractive -Command \
     'try { & $env:OH_HELPER -Version $env:OH_VERSION -InstallerUrl $env:OH_INSTALLER } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }'
 }
@@ -132,7 +153,6 @@ expect "a Windows installer that downloads a second build" 1 "also downloads bui
   ps "$pin" two-builds.ps1
 expect "an unreachable Windows installer" 1 "could not fetch Cursor's installer" ps "$pin" absent.ps1
 
-# --- verify-harness-cli-pins.sh with stub installers. ------------------------
 # npm installs a binary that reports the version it was asked for (or
 # STUB_REPORTS, or with STUB_SUFFIX appended); curl serves Goose's installer
 # and Cursor's fixture.

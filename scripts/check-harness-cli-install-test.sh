@@ -160,6 +160,8 @@ chmod +x "$prefix/bin/$b"
 STUB
 cat >"$tmp/bin/curl" <<STUB || fail "cannot write the curl stub" "check that $tmp is writable, then rerun"
 #!/usr/bin/env bash
+set -euo pipefail
+url=""
 for a in "\$@"; do url="\$a"; done
 case "\$url" in
   *download_cli.sh) printf '%s\n' 'mkdir -p "\$GOOSE_BIN_DIR"' \
@@ -175,13 +177,15 @@ verify() { env PATH="$tmp/bin:$PATH" OH_VERIFY_HARNESS_OS=Linux "$@" bash "$root
 
 out="$(verify)" || fail "the verifier failed with every stub reporting its pin: $out"
 [ "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" = 1 ] || fail "the verifier's success was not one line: $out"
+listing="$(cat -- "$root/.harness-cli-versions")" ||
+  fail "cannot read .harness-cli-versions" "restore it ('git checkout -- .harness-cli-versions'), then rerun"
 while read -r name version; do
   case "$name" in '' | '#'*) continue ;; esac
   case "$out" in
     "verify-harness-cli-pins: ok linux/"*" $name $version ("*"$version"*) ;;
     *) fail "the verifier's evidence names no $name $version: $out" ;;
   esac
-done <"$root/.harness-cli-versions"
+done <<<"$listing"
 
 expect "an npm CLI reporting another version" 1 "reported '" verify STUB_REPORTS=0.0.1
 # A version that only contains the pin is not the pin.

@@ -130,11 +130,13 @@ install_and_report() {
 }
 
 evidence=""
+listing="$(cat -- "$pins")" ||
+  fail "cannot read $pins" "restore it ('git checkout -- .harness-cli-versions') or make it readable, then rerun"
 
 while read -r name version rest; do
   case "$name" in '' | '#'*) continue ;; esac
   [ -z "$rest" ] || fail "malformed pin line: $name $version $rest"
   install_and_report "$name" "$version"
-done <"$pins"
+done <<<"$listing"
 [ -n "$evidence" ] || fail "$pins pins nothing"
 echo "verify-harness-cli-pins: ok $os/$arch: $evidence"

@@ -692,6 +692,11 @@ def launching_init_below(root: int) -> int | None:
     return None
 
 
+def is_stopped(pid: int) -> bool:
+    """Whether `pid` is stopped by a signal (state T), as SIGSTOP leaves it."""
+    return process_parents().get(pid, (0, ""))[1] == "T"
+
+
 def live_children(pid: int) -> list[int]:
     """`pid`'s children that have not exited (a zombie is one that has, unreaped)."""
     return [
@@ -802,15 +807,22 @@ class WindowsFormDirectory(unittest.TestCase):
         )
 
 
-def leftover_codex(tmp: Path, *lifetime: str) -> tuple[Path, Path]:
+def leftover_codex(tmp: Path, *lifetime: str, release: Path | None = None) -> tuple[Path, Path]:
     """A PATH directory whose codex exits as soon as it has left a detached
     command beating into the returned heartbeat file, living as `lifetime`
-    (transfer.py's `--linger S` or `--hold`) says."""
+    (transfer.py's `--linger S` or `--hold`) says. Given `release`, the
+    launch first waits for that file to exist: until the test makes it, the
+    launch cannot exit, so no grace can start."""
     real = tmp / "real-bin"
     real.mkdir()
     words = transfer_argv(0, 0, 0, "--detach", *lifetime)
+    wait = (
+        ""
+        if release is None
+        else f"until [ -e {shlex.quote(str(release))} ]; do sleep 0.05; done\n"
+    )
     (real / "codex").write_text(
-        f'#!/usr/bin/env bash\nexec {shlex.join(words)} --heartbeat "$OH_TEST_BEAT"\n'
+        f'#!/usr/bin/env bash\n{wait}exec {shlex.join(words)} --heartbeat "$OH_TEST_BEAT"\n'
     )
     (real / "codex").chmod(0o755)
     return real, tmp / "heartbeat"
@@ -952,13 +964,18 @@ class Setup(unittest.TestCase):
         # itself meanwhile would leave the resumed recorder nothing to stop
         # and the line no `stopped`; one that waits for a signal is still
         # there, and is stopped for its grace.
+        #
+        # A handshake orders it, never a race with the grace: the launch
+        # waits for a release file before it does anything, so it cannot exit
+        # — and the grace, which runs from its exit, cannot start — until
+        # this test has found the init, frozen it and seen it stopped. However
+        # late this test runs, the init is frozen first.
         need_builds(self)
         need_recorder(self)
-        # The grace outlasts the moment between the init starting the launch
-        # and this test freezing it, so the init is frozen before it decides.
-        grace, lifetime = 3, 2.0
+        grace, lifetime = 1, 2.0
         tmp = scratch(self)
-        real, heartbeat = leftover_codex(tmp, "--hold")
+        release = tmp / "release"
+        real, heartbeat = leftover_codex(tmp, "--hold", release=release)
         frozen: list[int] = []
 
         def hold_up_the_recorder(root: int) -> None:
@@ -979,6 +996,8 @@ class Setup(unittest.TestCase):
                 return gone or (len(beats) > 1 and beats[-1] - beats[0] > lifetime + 1)
 
             try:
+                until(self, "the frozen init stopping", lambda: is_stopped(init))
+                release.touch()  # only now may the launch run on, and exit
                 until(self, f"the leftover outliving a {lifetime:.0f} s lifetime", outlived)
             finally:
                 # Resumed before anything else: the watchdog's stop must reach

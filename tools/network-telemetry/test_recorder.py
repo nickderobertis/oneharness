@@ -524,6 +524,9 @@ class MeasuredLaunch(unittest.TestCase):
         (start,) = starts(records)
         (line,) = measurements(records, start["launch_id"])
         self.assertEqual(line["method"], "netns-pasta", line)
+        # Its caller gone, the recorder stopped the launch: neither the grace
+        # (the launch itself still ran) nor the 1800 s default deadline did.
+        self.assertEqual(line.get("stopped"), "requested", line)
         size = heartbeat.stat().st_size
         time.sleep(0.5)
         self.assertEqual(heartbeat.stat().st_size, size, "the launch outlived the stop")
@@ -599,6 +602,7 @@ class MeasuredLaunch(unittest.TestCase):
         written = measurements(records, start["launch_id"])
         self.assertEqual(len(written), 1, f"lines {written}; pending markers left: {left}")
         self.assertEqual(written[0]["method"], "netns-pasta", written)
+        self.assertEqual(written[0].get("stopped"), "requested", written)
         self.assertEqual(left, [], "its marker was left")
 
 

@@ -203,10 +203,6 @@ jobs:
           NX_BASE: ${{ steps.tier.outputs.base }}
         run: just budgets-offline
       # llmlint: ignore-block[external_service_suite_stays_out_of_the_affected_tier] Installing each pinned harness CLI from npm and its vendor is the proof that a moved pin installs on every OS its workflows use, so it must run on each check runner; .github/budgets.yaml allows one Mac job per run, so it cannot be a workflow of its own. It is not part of Nx's affected tier, runs only on a pull request that changes a pin or an install helper, and makes no model call.
-      # A moved harness CLI pin, or a changed install helper, is proven where the
-      # workflows install it — Linux, macOS ARM64 and Windows — before it merges:
-      # each pinned CLI is installed into scratch space and must report its pin
-      # from its own --version. No credentials and no model call.
       - name: Verify the pinned harness CLIs install (scripts/verify-harness-cli-pins.sh)
         if: github.event_name == 'pull_request' && (matrix.os != 'macos-latest' || needs.macos-policy.outputs.macos_required == 'true')
         env:

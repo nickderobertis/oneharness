@@ -11,6 +11,7 @@
       "!{projectRoot}/.telemetry/**/*",
       "!{projectRoot}/node_modules/**/*",
       "{workspaceRoot}/release-platforms.toml",
+      "{workspaceRoot}/.harness-cli-versions",
       "{workspaceRoot}/scripts/release-bundle.mjs",
       "{workspaceRoot}/scripts/release-install.mjs",
       "{workspaceRoot}/scripts/ci-verdict.sh",

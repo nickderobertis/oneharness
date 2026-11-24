@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { parse } from "yaml";
 import { isDeepStrictEqual } from "node:util";
 import { assertRevision } from "../git-input.mjs";
+import { unpinnedLine } from "../harness-pins.mjs";
 import { workflows, validateWorkflow, triggered, resolveJobs, expand, render, evaluate } from "../workflow-graph.mjs";
 
 // The tree this change merges into supplies the actual workflow declarations,
@@ -92,7 +93,7 @@ function matrixFor(workflow, row, scenario) {
 }
 function stepSignature(step) {
   const { if: condition, ...signature } = step;
-  if (signature.run) signature.run = signature.run.split("\n").filter(line => !line.trim().startsWith("#")).join("\n");
+  if (signature.run) signature.run = signature.run.split("\n").filter(line => !line.trim().startsWith("#")).map(line => unpinnedLine(line)).join("\n");
   return signature;
 }
 function compareSteps(file, before, after, row, scenario) {
@@ -218,4 +219,19 @@ test("preservation rejects a removed live assertion, a removed aggregate depende
   reported["e2e-control.yml"].jobs.report = { needs: "live", "runs-on": "ubuntu-latest", steps: [] };
   assert.throws(() => compare(original, reported), /e2e-control\.yml: retired job report is still declared/);
 });
-// llmlint: ignore-end[shell_test_tiers_stay_split]
+test("a harness CLI pin keeps its install step, but a swapped install does not", () => {
+  const original = baseline();
+  const codexInstall = graph => graph["ci.yml"].jobs.llmlint.steps.find(step => step.name === "Install Codex CLI");
+  const installs = (from, to) => {
+    const graph = structuredClone(workflows());
+    const step = codexInstall(graph);
+    assert.match(step.run, from, `ci.yml/llmlint's Codex install no longer runs ${from}`);
+    step.run = step.run.replace(from, to);
+    return graph;
+  };
+  const pinned = /npm install -g @openai\/codex@\d+\.\d+\.\d+/;
+  // Moving the pin (here to a version no pin file names) is the same install.
+  compare(original, installs(pinned, "npm install -g @openai/codex@0.0.1"));
+  const changed = /ci\.yml\/llmlint: removed or changed retained assertion\/install step Install Codex CLI/;
+  assert.throws(() => compare(original, installs(pinned, "npm install -g @openai/codex-fork@0.172.0")), changed);
+});

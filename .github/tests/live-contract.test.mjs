@@ -6,6 +6,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { parse, stringify } from "yaml";
 import { history } from "./history.mjs";
 import { evaluate, workflows, triggered, resolveJobs } from "../workflow-graph.mjs";
+import { unpinnedRun } from "../harness-pins.mjs";
 import { tmpdir } from "node:os";
 // Paid Mac CLI execution requires hosted credentials and a Mac runner.
 // Structural command/credential checks do not claim native execution.
@@ -35,11 +36,14 @@ test("consolidated Mac job retains real live commands and credential bindings fr
     for (const step of original.steps.filter(
       (s) => s.run && (!s.if || evaluate(s.if, { runner: { os: "macOS" } })),
     )) {
+      // A CLI ci.yml pins is the source's install at that pin (harness-pins.mjs).
       const command = (s) =>
-        s
-          .split("\n")
-          .filter((l) => !l.trim().startsWith("#"))
-          .join("\n");
+        unpinnedRun(
+          s
+            .split("\n")
+            .filter((l) => !l.trim().startsWith("#"))
+            .join("\n"),
+        );
       const copies = ci.steps.filter(
         (s) =>
           s.run &&

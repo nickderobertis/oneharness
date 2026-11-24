@@ -27,7 +27,12 @@ way oneharness dials a control server it started:
 
     {"launch_id", "method": "netns-pasta", "rx_bytes", "tx_bytes",
      "payload_rx_estimate", "payload_tx_estimate",
-     "namespace_tcp_retrans_segs", "seconds", "exit"[, "stopped"]}
+     "namespace_tcp_retrans_segs", "seconds", "exit"[, "descendant_grace"][, "stopped"]}
+
+`descendant_grace` is the grace in seconds the namespace gave the launch's
+descendants after its own exit, left out when it gave none (0): what the init
+held this launch to, which a suite's `--shared-server-grace` can set apart
+from the measurer's own.
 
 `stopped` is there only when the measurer stopped the namespace rather than
 the tree ending by itself, and says why: `descendant-grace` (a descendant
@@ -160,6 +165,9 @@ class Measured:
     seconds: float
     exit: Optional[int]
     method: str = METHOD
+    # The descendant grace the init held the launch to; None, and left out of
+    # the line, when it gave none.
+    descendant_grace: Optional[float] = None
     # Why the measurer stopped the namespace (a Stop's value); None, and left
     # out of the line, when the tree ended by itself.
     stopped: Optional[str] = None
@@ -264,6 +272,7 @@ class NamespaceResult:
     start: Window
     end: Window
     stopped: Optional[Stop] = None
+    descendant_grace: float = 0.0
 
     def to_json(self) -> str:
         return json.dumps(
@@ -275,6 +284,7 @@ class NamespaceResult:
                 "start": asdict(self.start),
                 "end": asdict(self.end),
                 "stopped": None if self.stopped is None else self.stopped.value,
+                "descendant_grace": self.descendant_grace,
             }
         )
 
@@ -294,13 +304,15 @@ class NamespaceResult:
             raise ValueError(
                 f"counters are not four non-negative integers and a retransmit count: {moved!r}"
             )
-        if (
-            isinstance(seconds, bool)
-            or not isinstance(seconds, (int, float))
-            or not math.isfinite(seconds)
-            or seconds < 0
-        ):
-            raise ValueError(f"seconds is not a finite non-negative number: {seconds!r}")
+        grace = fields.get("descendant_grace", 0.0)
+        for name, value in (("seconds", seconds), ("descendant_grace", grace)):
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or value < 0
+            ):
+                raise ValueError(f"{name} is not a finite non-negative number: {value!r}")
         if code is not None and not is_exit_status(code):
             raise ValueError(f"exit is not an exit status (0 to 255) or null: {code!r}")
         start, end = Window.read(fields["start"]), Window.read(fields["end"])
@@ -311,7 +323,9 @@ class NamespaceResult:
             stop = None if stopped is None else Stop(stopped)
         except ValueError:
             raise ValueError(f"stopped is not a reason the init stops for: {stopped!r}") from None
-        return NamespaceResult(Counters(*moved), retrans, float(seconds), code, start, end, stop)
+        return NamespaceResult(
+            Counters(*moved), retrans, float(seconds), code, start, end, stop, float(grace)
+        )
 
     def line(self, launch_id: LaunchId) -> Measured:
         return Measured(
@@ -323,6 +337,7 @@ class NamespaceResult:
             self.namespace_tcp_retrans_segs,
             self.seconds,
             self.exit,
+            descendant_grace=self.descendant_grace or None,
             stopped=None if self.stopped is None else self.stopped.value,
         )
 
@@ -341,8 +356,11 @@ def append_line(path: str, record: Measured | Unavailable) -> None:
 
     Raises Unrecorded, having said on stderr which file, why, and what to do."""
     fields = asdict(record)
-    if fields.get("stopped", "") is None:
-        del fields["stopped"]  # a tree that ended by itself: the line says nothing of a stop
+    # A tree that ended by itself, or a launch given no grace: the line says
+    # nothing of either.
+    for optional in ("descendant_grace", "stopped"):
+        if fields.get(optional, "") is None:
+            del fields[optional]
     data = (json.dumps(fields, separators=(",", ":")) + "\n").encode()
     try:
         fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
@@ -658,6 +676,7 @@ def namespace_init(
         Window(start.before_ns, start.after_ns),
         Window(end.before_ns, end.after_ns),
         stopped,
+        grace,
     )
     partial = scratch / "result.json.partial"
     partial.write_text(result.to_json())

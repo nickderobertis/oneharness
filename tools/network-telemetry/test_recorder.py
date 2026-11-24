@@ -373,6 +373,7 @@ class MeasuredLaunch(unittest.TestCase):
         (line,) = measurements(records, start["launch_id"])
         self.assertEqual((line["method"], line["exit"]), ("netns-pasta", 7))
         self.assertNotIn("stopped", line, "a tree that ended by itself was recorded as stopped")
+        self.assertEqual(line.get("descendant_grace"), 5, "the default grace went unrecorded")
 
     def test_a_detached_descendant_is_stopped_at_the_deadline_and_recorded_once(self) -> None:
         need_recorder(self)
@@ -436,6 +437,7 @@ class MeasuredLaunch(unittest.TestCase):
                 (line,) = measurements(records, start["launch_id"])
                 self.assertEqual((line["method"], line["exit"]), ("netns-pasta", 3), line)
                 self.assertEqual(line.get("stopped"), "descendant-grace", line)
+                self.assertEqual(line.get("descendant_grace"), grace, line)
 
     def test_a_zero_grace_follows_the_descendants_until_the_deadline(self) -> None:
         # The opt-out: OH_E2E_NET_DESCENDANT_GRACE=0 measures a resident
@@ -465,6 +467,7 @@ class MeasuredLaunch(unittest.TestCase):
         (line,) = measurements(records, start["launch_id"])
         self.assertEqual(line["method"], "netns-pasta", line)
         self.assertEqual(line.get("stopped"), "deadline", line)
+        self.assertNotIn("descendant_grace", line, "a launch given no grace recorded one")
         self.assertGreaterEqual(line["seconds"], deadline)
 
     def test_a_shim_its_caller_kills_with_its_process_group_still_records_once(self) -> None:

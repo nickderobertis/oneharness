@@ -706,15 +706,19 @@ class Setup(unittest.TestCase):
         # exempts its shared-server launches; its other launches, and every
         # other suite's shared servers, keep the grace.
         #
-        # Each case reads the recorder's own record of why it stopped the
-        # launch's tree (the line's `stopped`), never how long the launch
-        # took: a loaded runner stretches the setup, the shim and every
-        # interpreter's start around the grace (11.9 s against a 1 s grace on
-        # one CI run), but cannot change which of the init's stops fired. A
-        # reaped leftover is stopped for its `descendant-grace` well before a
-        # deadline that, were the grace gone, would stop it instead; a kept
-        # one, under no deadline, ends by itself — after outliving the grace
-        # by far — and the recorder never stops it at all.
+        # Each case reads the recorder's own record — the grace its init held
+        # the launch to (`descendant_grace`) and why it stopped the tree
+        # (`stopped`) — never how long anything took: a loaded runner
+        # stretches the setup, the shim and every interpreter's start around
+        # the grace (11.9 s against a 1 s grace on one CI run), but cannot
+        # change either. No case has a deadline, so no stop but the grace can
+        # fire, and the double's launch exits only once its leftover is
+        # beating. A kept leftover is given no grace and ends by itself,
+        # unstopped, whenever that is. A reaped one is given the grace and
+        # stopped for it; its own lifetime is only the bound on a broken
+        # tree's hang, and the grace runs from the launch's exit, after the
+        # leftover has started, so no setup or interpreter start counts
+        # against it.
         need_builds(self)
         need_recorder(self)
         control = re.search(
@@ -723,7 +727,7 @@ class Setup(unittest.TestCase):
             re.MULTILINE,
         )
         assert control is not None, "scripts/e2e-control.sh no longer sets up its recorder"
-        grace, deadline = 1, 30
+        grace, hang_bound = 1, 60
         server = ["app-server", "--listen", "unix:///nonexistent/app.sock"]
         for case in (
             GraceCase("control", control.group(0), server, keeps_leftovers=True),
@@ -734,12 +738,12 @@ class Setup(unittest.TestCase):
             with self.subTest(suite=suite, launch=args[0]):
                 tmp = scratch(self)
                 heartbeat = tmp / "heartbeat"
-                # A codex whose launch exits at once, leaving a detached
-                # command beating until something stops it — or, where the
-                # launch keeps it, until it ends by itself well after the grace.
+                # A codex whose launch exits as soon as it has left a
+                # detached command beating, which lingers until something
+                # stops it or, at the latest, until it ends by itself.
                 real = tmp / "real-bin"
                 real.mkdir()
-                linger = 5 if case.keeps_leftovers else 600
+                linger = 2 if case.keeps_leftovers else hang_bound
                 words = transfer_argv(0, 0, 0, "--detach", "--linger", str(linger))
                 (real / "codex").write_text(
                     f'#!/usr/bin/env bash\nexec {shlex.join(words)} --heartbeat "$OH_TEST_BEAT"\n'
@@ -752,9 +756,8 @@ class Setup(unittest.TestCase):
                     extra={
                         "OH_TEST_BEAT": str(heartbeat),
                         "OH_E2E_NET_DESCENDANT_GRACE": str(grace),
-                        # No deadline where the leftover is kept: nothing but
-                        # a grace wrongly applied could stop it.
-                        "OH_E2E_NET_DEADLINE": "0" if case.keeps_leftovers else str(deadline),
+                        # No deadline: nothing but the grace can stop a leftover.
+                        "OH_E2E_NET_DEADLINE": "0",
                     },
                 )
                 self.assertEqual(run.returncode, 0, run.stderr)
@@ -767,10 +770,14 @@ class Setup(unittest.TestCase):
                 (line,) = measurements(records, start["launch_id"])
                 self.assertEqual(line["method"], "netns-pasta", line)
                 if case.keeps_leftovers:
+                    self.assertNotIn("descendant_grace", line, "the server was given a grace")
                     self.assertNotIn("stopped", line, "the server's command was reaped")
                 else:
                     self.assertEqual(
-                        line.get("stopped"), "descendant-grace", "the launch kept no grace"
+                        line.get("descendant_grace"), grace, "the launch kept no grace"
+                    )
+                    self.assertEqual(
+                        line.get("stopped"), "descendant-grace", "its command was not reaped"
                     )
 
     def test_a_shared_server_grace_that_is_no_number_stops_the_setup(self) -> None:
@@ -1120,10 +1127,14 @@ class Settings(unittest.TestCase):
         self.assertEqual(
             netmeasure.NamespaceResult.from_json(json.dumps(good)).line("x").rx_bytes, 10
         )
+        self.assertIsNone(
+            netmeasure.NamespaceResult.from_json(json.dumps(good)).line("x").descendant_grace
+        )
         reaped = netmeasure.NamespaceResult.from_json(
-            json.dumps({**good, "stopped": "descendant-grace"})
+            json.dumps({**good, "stopped": "descendant-grace", "descendant_grace": 1.5})
         )
         self.assertEqual(reaped.line("x").stopped, "descendant-grace")
+        self.assertEqual(reaped.line("x").descendant_grace, 1.5)
         self.assertEqual(netmeasure.NamespaceResult.from_json(reaped.to_json()), reaped)
         for name, change in (
             ("a negative count", {"moved": [-1, 1, 5, 1]}),
@@ -1138,6 +1149,8 @@ class Settings(unittest.TestCase):
             ("windows out of order", {"start": {"before_ns": 6, "after_ns": 7}}),
             ("a window that is not an object", {"end": [3, 4]}),
             ("a stop the init never makes", {"stopped": "tired"}),
+            ("a negative grace", {"descendant_grace": -1}),
+            ("a grace that is no number", {"descendant_grace": "5"}),
         ):
             with self.subTest(result=name):
                 with self.assertRaises(ValueError):

@@ -69,7 +69,12 @@ out="$(unix installer.sh OH_CURSOR_PRINT_ONLY=1)" || fail "printing the pinned i
 case "$out" in *"$old"*) fail "the pinned installer still names $old: $out" ;; esac
 case "$out" in *"versions/$pin"*) ;; *) fail "the pinned installer's install path is not the pin's: $out" ;; esac
 
-for bad in latest 1.2.3 "$pin; rm -rf /" ''; do
+# The build-id boundary every Cursor validator shares: 7 to 40 hex digits.
+for ok in 2026.11.22-abcdef1 2026.11.22-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; do
+  out="$(env CURSOR_INSTALLER_URL="$(file_url "$tmp/installer.sh")" OH_CURSOR_PRINT_ONLY=1 \
+    bash "$root/scripts/install-cursor-agent.sh" "$ok" 2>&1)" || fail "the Unix helper refused the build $ok: $out"
+done
+for bad in latest 1.2.3 "$pin; rm -rf /" '' 2026.11.22-abcdef 2026.11.22-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; do
   expect "the Unix helper refusing version '$bad'" 1 "is not a Cursor build id" \
     env CURSOR_INSTALLER_URL="$(file_url "$tmp/installer.sh")" bash "$root/scripts/install-cursor-agent.sh" "$bad"
 done
@@ -83,7 +88,7 @@ write "$tmp/two-builds.sh" "A=https://downloads.cursor.com/lab/$old/x.tar.gz" \
 expect "an installer that downloads a second build" 1 "also downloads build 2019.01.01-0000000" unix two-builds.sh
 # The vendor's own failure is the helper's failure, with the installer's words.
 write "$tmp/failing.sh" "URL=https://downloads.cursor.com/lab/$old/x.tar.gz" 'echo "no space left on device" >&2' 'exit 3'
-expect "an installer that fails" 1 "Cursor's installer failed installing $pin" unix failing.sh HOME="$tmp/home"
+expect "an installer that fails" 1 "Cursor's installer failed installing $pin with exit 3" unix failing.sh HOME="$tmp/home"
 expect "an installer that fails, its output kept" 1 "no space left on device" unix failing.sh HOME="$tmp/home"
 write "$tmp/reshaped.sh" 'curl -fsSL https://cdn.cursor.example/agent.tar.gz | tar -xz'
 expect "a reshaped Unix installer" 1 "no longer downloads from https://downloads.cursor.com/lab/<version>/" \
@@ -98,9 +103,13 @@ native() { if command -v cygpath >/dev/null 2>&1; then cygpath -w "$1"; else pri
 # shellcheck disable=SC2016 # fixture installer text: PowerShell expands it, not bash
 write "$tmp/installer.ps1" "\$downloadUrl = 'https://downloads.cursor.com/lab/$old/'" "\$version = '$old'" \
   'Write-Host "installing $version"'
-# The helper throws; print the message unwrapped, as a caller's log would show it.
+# The helper throws; print the message unwrapped, as a caller's log would show
+# it. Paths and the version reach PowerShell as environment values, not source.
 ps() {
-  pwsh -NoProfile -NonInteractive -Command "try { \$s = & '$(native "$root/scripts/cursor-installer.ps1")' -Version '$1' -InstallerUrl '$(native "$tmp/$2")'; \$s } catch { [Console]::Error.WriteLine(\$_.Exception.Message); exit 1 }"
+  # shellcheck disable=SC2016 # PowerShell expands it from the environment, so no path is spliced into its source
+  env OH_HELPER="$(native "$root/scripts/cursor-installer.ps1")" OH_VERSION="$1" OH_INSTALLER="$(native "$tmp/$2")" \
+    pwsh -NoProfile -NonInteractive -Command \
+    'try { & $env:OH_HELPER -Version $env:OH_VERSION -InstallerUrl $env:OH_INSTALLER } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }'
 }
 out="$(ps "$pin" installer.ps1)" || fail "the Windows helper failed on its fixture: $out"
 case "$out" in
@@ -108,7 +117,12 @@ case "$out" in
   *"\$downloadUrl = 'https://downloads.cursor.com/lab/$pin/'"*"\$version = '$pin'"*) ;;
   *) fail "the Windows helper did not pin both of its installer's version lines: $out" ;;
 esac
-expect "the Windows helper refusing 'latest'" 1 "is not a Cursor build id" ps latest installer.ps1
+for bad in latest 2026.11.22-abcdef 2026.11.22-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; do
+  expect "the Windows helper refusing '$bad'" 1 "is not a Cursor build id" ps "$bad" installer.ps1
+done
+for ok in 2026.11.22-abcdef1 2026.11.22-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; do
+  out="$(ps "$ok" installer.ps1 2>&1)" || fail "the Windows helper refused the build $ok: $out"
+done
 write "$tmp/reshaped.ps1" "\$downloadUrl = 'https://cdn.cursor.example/'"
 expect "a reshaped Windows installer" 1 "no longer downloads from https://downloads.cursor.com/lab/<version>/" \
   ps "$pin" reshaped.ps1
@@ -127,6 +141,7 @@ cat >"$tmp/bin/npm" <<'STUB' || fail "cannot write the npm stub" "check that $tm
 #!/usr/bin/env bash
 set -euo pipefail
 [ "${STUB_NPM_FAILS:-}" = 1 ] && { echo "npm error 404 Not Found" >&2; exit 1; }
+[ "${STUB_NPM_SILENT_FAIL:-}" = 1 ] && exit 7
 prefix=""
 spec=""
 while [ "$#" -gt 0 ]; do
@@ -138,8 +153,9 @@ case "$pkg" in
   @anthropic-ai/claude-code) b=claude ;; @openai/codex) b=codex ;; opencode-ai) b=opencode ;;
   @qwen-code/qwen-code) b=qwen ;; @charmland/crush) b=crush ;; @github/copilot) b=copilot ;;
 esac
+[ "${STUB_NO_BIN:-}" = 1 ] && exit 0
 mkdir -p "$prefix/bin"
-printf '#!/bin/sh\necho "%s %s"\n' "$b" "${STUB_REPORTS:-$ver}${STUB_SUFFIX:-}" >"$prefix/bin/$b"
+printf '#!/bin/sh\necho "%s %s"\nexit %s\n' "$b" "${STUB_PREFIX:-}${STUB_REPORTS:-$ver}${STUB_SUFFIX:-}" "${STUB_VERSION_EXIT:-0}" >"$prefix/bin/$b"
 chmod +x "$prefix/bin/$b"
 STUB
 cat >"$tmp/bin/curl" <<STUB || fail "cannot write the curl stub" "check that $tmp is writable, then rerun"
@@ -170,6 +186,11 @@ done <"$root/.harness-cli-versions"
 expect "an npm CLI reporting another version" 1 "reported '" verify STUB_REPORTS=0.0.1
 # A version that only contains the pin is not the pin.
 expect "an npm CLI reporting the pin with a digit more" 1 "not the pinned" verify STUB_SUFFIX=0
+# A `v` prefix and a closing `.` are how CLIs print a version (crush, copilot).
+expect "versions printed as v<pin>." 0 "verify-harness-cli-pins: ok" verify STUB_PREFIX=v STUB_SUFFIX=.
+expect "an install that lays down no binary" 1 "installed no runnable binary" verify STUB_NO_BIN=1
+expect "a --version that fails" 1 "--version exited 4" verify STUB_VERSION_EXIT=4
+expect "an install failing silently keeps its status" 1 "failed with exit 7" verify STUB_NPM_SILENT_FAIL=1
 expect "an npm install that fails" 1 "installing @anthropic-ai/claude-code failed" verify STUB_NPM_FAILS=1
 sed 's#^@github/copilot .*#@github/copilot latest#' "$root/.harness-cli-versions" >"$tmp/pins" ||
   fail "cannot write the malformed pin file fixture" "check that $tmp is writable, then rerun"

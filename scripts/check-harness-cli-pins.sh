@@ -80,6 +80,13 @@ findings="$(
         }
       }
     }
+    # A Cursor build id: YYYY.MM.DD- and 7 to 40 hex digits, the shape both
+    # Cursor install helpers and .github/harness-pins.mjs accept.
+    function cursor_build(v,    hex) {
+      if (v !~ /^[0-9][0-9][0-9][0-9]\.[0-9][0-9]\.[0-9][0-9]-[0-9a-f]+$/) return 0
+      hex = substr(v, 12)
+      return length(hex) >= 7 && length(hex) <= 40
+    }
     function unquote(t) { gsub(/^["'"'"']+|["'"'"';]+$/, "", t); return t }
     # Goose: every installer URL on the line is the pinned vendor URL, compared
     # whole (host, repository and tag): the release asset for bash, the tagged
@@ -148,7 +155,7 @@ findings="$(
     FILENAME == pins_file {
       if ($0 ~ /^[ \t]*(#|$)/) next
       # npm and Goose take an exact x.y.z; Cursor only its build id.
-      if (NF != 2 || ($1 == "cursor-agent" ? $2 !~ /^[0-9][0-9][0-9][0-9]\.[0-9][0-9]\.[0-9][0-9]-[0-9a-f]+$/ : $2 !~ /^[0-9]+\.[0-9]+\.[0-9]+$/)) {
+      if (NF != 2 || ($1 == "cursor-agent" ? !cursor_build($2) : $2 !~ /^[0-9]+\.[0-9]+\.[0-9]+$/)) {
         finding(pins_file ":" FNR, "must pin one package to exactly one version (x.y.z; cursor-agent YYYY.MM.DD-<hex>), found: " $0)
         next
       }

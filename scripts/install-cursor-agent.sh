@@ -53,5 +53,7 @@ if [ "${OH_CURSOR_PRINT_ONLY:-0}" = 1 ]; then
   printf '%s\n' "$pinned"
   exit 0
 fi
-bash -o pipefail -c "$pinned" || fail "Cursor's installer failed installing $pin (its output is above)" \
+status=0
+bash -o pipefail -c "$pinned" || status=$?
+[ "$status" -eq 0 ] || fail "Cursor's installer failed installing $pin with exit $status (its output, if any, is above)" \
   "check that https://downloads.cursor.com/lab/$pin/ still serves this platform's package"

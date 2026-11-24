@@ -13,7 +13,7 @@ export function parsePins(text, path = ".harness-cli-versions") {
     if (!line || line.startsWith("#")) return;
     const fields = line.split(/\s+/);
     // npm and Goose take an exact x.y.z; Cursor only its build id.
-    const shape = fields[0] === "cursor-agent" ? /^\d{4}\.\d{2}\.\d{2}-[0-9a-f]+$/ : /^\d+\.\d+\.\d+$/;
+    const shape = fields[0] === "cursor-agent" ? /^\d{4}\.\d{2}\.\d{2}-[0-9a-f]{7,40}$/ : /^\d+\.\d+\.\d+$/;
     if (fields.length !== 2 || !shape.test(fields[1]))
       throw Error(`${path}:${index + 1}: must pin one package to exactly one version (x.y.z; cursor-agent YYYY.MM.DD-<hex>), found: ${line}. Next: fix it and rerun scripts/check-harness-cli-pins.sh.`);
     if (pinned.has(fields[0])) throw Error(`${path}:${index + 1}: pins ${fields[0]} twice. Next: keep one line for it.`);
@@ -40,7 +40,7 @@ const goosePs1Pinned = new RegExp(
 );
 // Cursor's installer takes no version, so a pinned Cursor install is one of the
 // helpers that pin it (scripts/install-cursor-agent.sh, cursor-installer.ps1).
-const build = String.raw`\d{4}\.\d{2}\.\d{2}-[0-9a-f]+`;
+const build = String.raw`\d{4}\.\d{2}\.\d{2}-[0-9a-f]{7,40}`;
 const cursorUnixPinned = new RegExp(String.raw`^(\s*)bash scripts/install-cursor-agent\.sh ${build}$`);
 const cursorWindowsPinned = new RegExp(String.raw`& \./scripts/cursor-installer\.ps1 -Version ${build}$`);
 

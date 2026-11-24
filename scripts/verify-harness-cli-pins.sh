@@ -48,10 +48,12 @@ native() { if [ "$os" = windows ]; then cygpath -w "$1"; else printf '%s' "$1"; 
 quietly() {
   local what="$1" log="$scratch/install.log"
   shift
-  "$@" >"$log" 2>&1 || {
+  local status=0
+  "$@" >"$log" 2>&1 || status=$?
+  if [ "$status" -ne 0 ]; then
     cat "$log" >&2
-    fail "installing $what failed (its output is above)" "check that the pinned version is published for $os/$arch"
-  }
+    fail "installing $what failed with exit $status (its output, if any, is above)" "check that the pinned version is published for $os/$arch"
+  fi
 }
 
 npm_bin() {
@@ -72,13 +74,16 @@ install_and_report() {
     goose)
       mkdir -p "$scratch/goose" || fail "cannot create $scratch/goose" "point TMPDIR at a writable directory"
       if [ "$os" = windows ]; then
+        # shellcheck disable=SC2016 # the inner shell expands it from the environment, so no path or version is spliced into its source
         quietly goose env GOOSE_BIN_DIR="$(native "$scratch/goose")" GOOSE_VERSION="$version" CONFIGURE=false \
-          pwsh -NoProfile -NonInteractive -Command \
-          "irm 'https://raw.githubusercontent.com/block/goose/v$version/download_cli.ps1' | iex"
+          OH_GOOSE_INSTALLER="https://raw.githubusercontent.com/block/goose/v$version/download_cli.ps1" \
+          pwsh -NoProfile -NonInteractive -Command 'irm $env:OH_GOOSE_INSTALLER | iex'
         bin="$scratch/goose/goose.exe"
       else
-        quietly goose bash -o pipefail -c "curl -fsSL 'https://github.com/block/goose/releases/download/v$version/download_cli.sh' |
-          GOOSE_BIN_DIR='$scratch/goose' GOOSE_VERSION='$version' CONFIGURE=false bash"
+        # shellcheck disable=SC2016 # the inner shell expands it from the environment, so no path or version is spliced into its source
+        quietly goose env GOOSE_BIN_DIR="$scratch/goose" GOOSE_VERSION="$version" CONFIGURE=false \
+          OH_GOOSE_INSTALLER="https://github.com/block/goose/releases/download/v$version/download_cli.sh" \
+          bash -o pipefail -c 'curl -fsSL "$OH_GOOSE_INSTALLER" | bash'
         bin="$scratch/goose/goose"
       fi
       ;;
@@ -86,9 +91,10 @@ install_and_report() {
       mkdir -p "$scratch/home" "$scratch/localappdata" ||
         fail "cannot create Cursor's scratch home under $scratch" "point TMPDIR at a writable directory"
       if [ "$os" = windows ]; then
+        # shellcheck disable=SC2016 # the inner shell expands it from the environment, so no path or version is spliced into its source
         quietly cursor-agent env LOCALAPPDATA="$(native "$scratch/localappdata")" USERPROFILE="$(native "$scratch/home")" \
-          pwsh -NoProfile -NonInteractive -Command \
-          "\$s = & '$(native "$root/scripts/cursor-installer.ps1")' -Version '$version'; Invoke-Expression \$s"
+          OH_CURSOR_HELPER="$(native "$root/scripts/cursor-installer.ps1")" OH_CURSOR_VERSION="$version" \
+          pwsh -NoProfile -NonInteractive -Command 'Invoke-Expression (& $env:OH_CURSOR_HELPER -Version $env:OH_CURSOR_VERSION)'
         bin="$(find "$scratch/localappdata" "$scratch/home" -iname 'cursor-agent.cmd' -type f -print -quit)" ||
           fail "cannot search $scratch for the cursor-agent.cmd launcher Cursor's installer lays down"
       else
@@ -106,7 +112,10 @@ install_and_report() {
   esac
   [ -n "$bin" ] && [ -e "$bin" ] || fail "$name $version installed no runnable binary (looked for ${bin:-a cursor-agent.cmd launcher})"
   local reported
-  reported="$("$bin" --version 2>&1 | tr -d '\r')" || fail "$name $version did not run: $reported"
+  local status=0
+  reported="$("$bin" --version 2>&1)" || status=$?
+  reported="${reported//$'\r'/}"
+  [ "$status" -eq 0 ] || fail "$name $version --version exited $status: ${reported:-no output}"
   # The pin must be a whole word of the output (`v` prefix and a closing `.`
   # allowed), so 1.0.1140 is not 1.0.114.
   local word found=0 words

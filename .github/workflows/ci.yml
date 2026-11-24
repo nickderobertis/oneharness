@@ -214,7 +214,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           for sha in "$BASE_SHA" "$HEAD_SHA"; do
-            [[ "$sha" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || { echo "::error::'$sha' is not a commit id"; exit 1; }
+            [[ "$sha" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || { echo "::error::'$sha' is not a commit id" >&2; exit 1; }
           done
           if git diff --quiet "$BASE_SHA" "$HEAD_SHA" -- .harness-cli-versions scripts/install-cursor-agent.sh \
             scripts/cursor-installer.ps1 scripts/verify-harness-cli-pins.sh; then

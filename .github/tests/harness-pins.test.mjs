@@ -63,6 +63,8 @@ test("a malformed pin file is refused, never read as a partial allowlist", () =>
     assert.throws(() => parsePins(`goose 1.60.2\n${bad}\n`), /:2: must pin one package to exactly one version/);
   assert.throws(() => parsePins("goose 1.60.2\ngoose 1.60.2\n"), /:2: pins goose twice/);
   assert.deepEqual([...parsePins("cursor-agent 2026.11.22-e9042b2\n")], ["cursor-agent"]);
-  for (const bad of ["cursor-agent 1.2.3", "cursor-agent latest", "goose 2026.11.22-e9042b2"])
+  // The build-id boundary every Cursor validator shares: 7 to 40 hex digits.
+  for (const ok of ["2026.11.22-abcdef1", "2026.11.22-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]) assert.deepEqual([...parsePins(`cursor-agent ${ok}\n`)], ["cursor-agent"]);
+  for (const bad of ["cursor-agent 1.2.3", "cursor-agent latest", "goose 2026.11.22-e9042b2", "cursor-agent 2026.11.22-abcdef", "cursor-agent 2026.11.22-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"])
     assert.throws(() => parsePins(`${bad}\n`), /must pin one package to exactly one version/);
 });

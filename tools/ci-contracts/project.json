@@ -25,6 +25,8 @@
       "{workspaceRoot}/scripts/check-harness-cli-pins.sh",
       "{workspaceRoot}/scripts/check-harness-cli-pins-test.sh",
       "{workspaceRoot}/.harness-cli-versions",
+      "{workspaceRoot}/.gitattributes",
+      "{workspaceRoot}/scripts/check-lf-contracts.sh",
       "{workspaceRoot}/scripts/check-harness-cli-install-test.sh",
       "{workspaceRoot}/scripts/install-cursor-agent.sh",
       "{workspaceRoot}/scripts/cursor-installer.ps1",

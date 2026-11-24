@@ -188,7 +188,14 @@ run_case "a Cursor package at another build" 1 "downloads Cursor build 2026.11.2
 workflow '  npm install -g @github/copilot@1.0.114' "  bash scripts/install-cursor-agent.sh $cursor" \
   '  git diff --quiet a b -- scripts/install-cursor-agent.sh scripts/cursor-installer.ps1'
 run_case "a helper named in a path list" 0 "check-harness-cli-pins: ok"
-for bad in 'cursor-agent 1.2.3' 'cursor-agent latest' 'cursor-agent 2026.11.22'; do
+# The build-id boundary every Cursor validator shares: 7 to 40 hex digits.
+for ok in 2026.11.22-abcdef1 2026.11.22-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; do
+  pins '@github/copilot 1.0.114' "cursor-agent $ok"
+  workflow '  npm install -g @github/copilot@1.0.114' "  bash scripts/install-cursor-agent.sh $ok"
+  run_case "the Cursor pin $ok" 0 "check-harness-cli-pins: ok"
+done
+workflow '  npm install -g @github/copilot@1.0.114'
+for bad in 'cursor-agent 1.2.3' 'cursor-agent latest' 'cursor-agent 2026.11.22' 'cursor-agent 2026.11.22-abcdef' 'cursor-agent 2026.11.22-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; do
   pins '@github/copilot 1.0.114' "$bad"
   run_case "the Cursor pin '$bad'" 1 "must pin one package to exactly one version"
 done
@@ -252,5 +259,12 @@ real_case "Cursor's bare Windows installer in e2e-cursor.yml" 1 \
   ".github/workflows/e2e-cursor.yml:$line: runs Cursor's installer unpinned"
 undrift e2e-cursor.yml
 real_case "every real workflow, restored" 0 "check-harness-cli-pins: ok"
+
+# The pin file is read on every platform, so a Windows checkout must keep it
+# LF: a CRLF one ends each version in \r and no CLI reports that. Checked out
+# under Windows rules here, on every runner.
+out="$(cd "$root" && bash scripts/check-lf-contracts.sh .harness-cli-versions 2>&1)" ||
+  fail "a Windows checkout of .harness-cli-versions is not LF: $out" \
+    "keep '/.harness-cli-versions text eol=lf' in .gitattributes, then rerun"
 
 echo "check-harness-cli-pins-test: ok"

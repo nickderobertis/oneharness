@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Loopback transfers of generated payloads, for the network recorder's tests.
 
-    transfer.py client PORT DOWN UP [--detach] [--heartbeat FILE] [--linger S] [--stubborn]
-                                    [--echo] [--exit N]
+    transfer.py client PORT DOWN UP [--detach] [--heartbeat FILE] [--linger S | --hold]
+                                    [--stubborn] [--echo] [--exit N]
 
 The tests' server (`LoopbackServer` in support.py) listens on the host's
 127.0.0.1; inside the measuring namespace pasta's gateway address stands for
@@ -15,10 +15,11 @@ already exited (a double fork), so only a measurement that follows the whole
 process tree sees them; the launch's own process exits only once that child
 has started — with `--heartbeat`, once its first line is written — so what
 outstays the launch is running whatever the machine's speed. `--heartbeat FILE`
-makes that child append a line to FILE every 0.1 s until it exits; `--linger S` keeps it alive S seconds after
-its transfers; `--stubborn` makes it ignore SIGTERM, so only SIGKILL ends it.
-`--echo` first copies stdin to stdout byte for byte, and `--exit N` is the
-launch's own exit status. A DOWN and UP of 0 moves nothing.
+makes that child append a line to FILE every 0.1 s until it exits; `--linger S`
+keeps it alive S seconds after its transfers, and `--hold` until a signal ends
+it, never by itself; `--stubborn` makes it ignore SIGTERM, so only SIGKILL
+ends it. `--echo` first copies stdin to stdout byte for byte, and `--exit N`
+is the launch's own exit status. A DOWN and UP of 0 moves nothing.
 """
 
 from __future__ import annotations
@@ -115,6 +116,9 @@ def child(args: argparse.Namespace, started: int | None = None) -> None:
     if args.detach:
         time.sleep(0.3)  # the launch's own process has exited by now
     print(json.dumps(asdict(transfer(args.port, args.down, args.up))), file=sys.stderr, flush=True)
+    if args.hold:
+        while True:  # until a signal ends it: no lifetime of its own
+            signal.pause()
     time.sleep(args.linger)
     stop.set()
 
@@ -155,7 +159,9 @@ def main() -> int:
     parser.add_argument("up", type=whole(0, 1 << 34))
     parser.add_argument("--detach", action="store_true")
     parser.add_argument("--heartbeat")
-    parser.add_argument("--linger", type=seconds, default=0.0)
+    lifetime = parser.add_mutually_exclusive_group()
+    lifetime.add_argument("--linger", type=seconds, default=0.0)
+    lifetime.add_argument("--hold", action="store_true")
     parser.add_argument("--stubborn", action="store_true")
     parser.add_argument("--echo", action="store_true")
     parser.add_argument("--exit", type=whole(0, 255), default=0)

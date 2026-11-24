@@ -10,7 +10,10 @@
 # Defaults: .harness-cli-versions and .github/workflows/ci.yml.
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || {
+  echo "check-harness-cli-pins: cannot enter the repository root above $0; run it as 'bash scripts/check-harness-cli-pins.sh' from a checkout" >&2
+  exit 1
+}
 
 pins="${1:-.harness-cli-versions}"
 if [ "$#" -gt 1 ]; then
@@ -39,50 +42,70 @@ done
 findings="$(
   awk -v pins_file="$pins" '
     function finding(where, msg) { print where ": " msg; bad = 1 }
-    function check_npm(where, text,    n, tok, i, at, pkg, ver, seen_install) {
+    # Every `npm install -g` on the line is read, not only the first: a shell
+    # separator ends one install, and the scan carries on to find the next.
+    function check_npm(where, text,    n, tok, i, j, t, at, pkg, ver, in_install) {
+      # Separators become tokens of their own, glued (`a;npm`) or not.
+      gsub(/&&|\|\||;|\|/, " & ", text)
       n = split(text, tok, /[ \t]+/)
-      seen_install = 0
+      in_install = 0
       for (i = 1; i <= n; i++) {
-        if (!seen_install) {
-          if (tok[i] == "npm" && (tok[i + 1] == "install" || tok[i + 1] == "i") &&
+        t = tok[i]
+        if (!in_install) {
+          if (t == "npm" && (tok[i + 1] == "install" || tok[i + 1] == "i") &&
               (tok[i + 2] == "-g" || tok[i + 2] == "--global")) {
-            seen_install = 1
+            in_install = 1
             i += 2
           }
           continue
         }
-        # The install ends at the first shell separator.
-        if (tok[i] ~ /^(&&|\|\||;|\||>|2>)/) break
-        if (tok[i] == "" || tok[i] ~ /^-/) continue
+        if (t ~ /^(&&|\|\||;|\||>|2>|<)/) { in_install = 0; continue }
+        if (t == "" || t ~ /^-/) continue
         # A scoped package starts with @, so the version separator is the
         # LAST @ past position one.
         at = 0
-        for (j = length(tok[i]); j > 1; j--) if (substr(tok[i], j, 1) == "@") { at = j; break }
-        pkg = at ? substr(tok[i], 1, at - 1) : tok[i]
-        ver = at ? substr(tok[i], at + 1) : ""
-        if (!(pkg in pin)) {
-          finding(where, "npm installs " tok[i] ", which " pins_file " does not pin")
-          continue
+        for (j = length(t); j > 1; j--) if (substr(t, j, 1) == "@") { at = j; break }
+        pkg = at ? substr(t, 1, at - 1) : t
+        ver = at ? substr(t, at + 1) : ""
+        if (!(pkg in pin))
+          finding(where, "npm installs " t ", which " pins_file " does not pin")
+        else {
+          installed[pkg] = 1
+          if (ver == "")
+            finding(where, "npm installs " pkg " unpinned; install " pkg "@" pin[pkg])
+          else if (ver != pin[pkg])
+            finding(where, "npm installs " pkg "@" ver " but " pins_file " pins " pin[pkg] "; install " pkg "@" pin[pkg])
         }
-        installed[pkg] = 1
-        if (ver == "")
-          finding(where, "npm installs " pkg " unpinned; install " pkg "@" pin[pkg])
-        else if (ver != pin[pkg])
-          finding(where, "npm installs " pkg "@" ver " but " pins_file " pins " pin[pkg] "; install " pkg "@" pin[pkg])
       }
     }
-    function check_goose(where, text,    want_url, want_env) {
+    # Goose: every installer URL on the line is the pinned vendor URL, compared
+    # whole (host, repository and tag), and every GOOSE_VERSION assignment is the
+    # pin, compared as a string — so a second assignment cannot override it.
+    function check_goose(where, text,    want_url, want_env, n, tok, i, t, urls, envs) {
       if (!("goose" in pin)) {
         finding(where, "installs Goose, which " pins_file " does not pin")
         return
       }
       installed["goose"] = 1
-      want_url = "/releases/download/v" pin["goose"] "/download_cli.sh"
+      want_url = "https://github.com/block/goose/releases/download/v" pin["goose"] "/download_cli.sh"
       want_env = "GOOSE_VERSION=" pin["goose"]
-      if (index(text, want_url) == 0)
-        finding(where, "fetches a Goose installer other than " pins_file "'"'"'s v" pin["goose"] "; fetch .../releases/download/v" pin["goose"] "/download_cli.sh")
-      if (text !~ ("(^|[ \t])" want_env "([ \t]|$)"))
-        finding(where, "installs Goose without " want_env "; pass it to the installer")
+      n = split(text, tok, /[ \t]+/)
+      for (i = 1; i <= n; i++) {
+        t = tok[i]
+        gsub(/^["'"'"']+|["'"'"']+$/, "", t)
+        if (t ~ /download_cli\.(sh|ps1)$/) {
+          urls++
+          if (t != want_url)
+            finding(where, "fetches the Goose installer " t "; fetch " want_url)
+        }
+        if (t ~ /^GOOSE_VERSION=/) {
+          envs++
+          if (t != want_env)
+            finding(where, "passes Goose " t "; pass " want_env)
+        }
+      }
+      if (!urls) finding(where, "installs Goose from no URL this check can read; fetch " want_url)
+      if (!envs) finding(where, "installs Goose without " want_env "; pass it to the installer")
     }
     FILENAME == pins_file {
       if ($0 ~ /^[ \t]*(#|$)/) next

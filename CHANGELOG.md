@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.32.5](https://github.com/nickderobertis/oneharness/compare/v0.32.4...v0.32.5) - 2026-11-25
+
+### Fixed
+
+- *(network-telemetry)* tell a kept descendant grace apart without a wall-clock bound ([#1674](https://github.com/nickderobertis/oneharness/pull/1674))
+
 ## [0.32.4](https://github.com/nickderobertis/oneharness/compare/v0.32.3...v0.32.4) - 2026-11-25
 
 ### Fixed

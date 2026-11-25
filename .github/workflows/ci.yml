@@ -202,6 +202,23 @@ jobs:
         env:
           NX_BASE: ${{ steps.tier.outputs.base }}
         run: just budgets-offline
+      # llmlint: ignore-block[external_service_suite_stays_out_of_the_affected_tier] Installing each pinned harness CLI from npm and its vendor is the proof that a moved pin installs on every OS its workflows use, so it must run on each check runner; .github/budgets.yaml allows one Mac job per run, so it cannot be a workflow of its own. It is not part of Nx's affected tier, runs only on a pull request that changes a pin or an install helper, and makes no model call.
+      - name: Verify the pinned harness CLIs install (scripts/verify-harness-cli-pins.sh)
+        if: github.event_name == 'pull_request' && (matrix.os != 'macos-latest' || needs.macos-policy.outputs.macos_required == 'true')
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          for sha in "$BASE_SHA" "$HEAD_SHA"; do
+            [[ "$sha" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || { echo "::error::'$sha' is not a commit id" >&2; exit 1; }
+          done
+          if git diff --quiet "$BASE_SHA" "$HEAD_SHA" -- .harness-cli-versions scripts/install-cursor-agent.sh \
+            scripts/cursor-installer.ps1 scripts/verify-harness-cli-pins.sh; then
+            echo "No harness CLI pin or install helper changed; nothing to verify."
+          else
+            bash scripts/verify-harness-cli-pins.sh
+          fi
+      # llmlint: ignore-end[external_service_suite_stays_out_of_the_affected_tier]
       # llmlint: ignore-block[external_service_suite_stays_out_of_the_affected_tier] The scheduling contract explicitly requires CI's one Mac check to own the existing real live commands sequentially. They remain separate from Nx's deterministic affected tier, gated to trusted heads and the original workflow paths, while their Linux/Windows workflows retain coverage.
       - name: Select consolidated live paths
         id: live-paths
@@ -226,10 +243,13 @@ jobs:
         if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.claude == 'true'
         with:
           node-version: lts/*
+      # Every harness CLI this workflow installs is pinned to .harness-cli-versions
+      # (scripts/check-harness-cli-pins.sh): a floating install fails a passing
+      # tree whenever a publisher is mid-release.
       - name: Install Claude Code CLI
         if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.claude == 'true'
         run: |
-          npm install -g @anthropic-ai/claude-code
+          npm install -g @anthropic-ai/claude-code@2.1.331
           claude --version
 
       - name: Live e2e against the real CLI
@@ -256,7 +276,7 @@ jobs:
       - name: Install Codex CLI
         if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.codex == 'true'
         run: |
-          npm install -g @openai/codex
+          npm install -g @openai/codex@0.172.0
           codex --version
 
       # Codex does not pick up OPENAI_API_KEY from the env for headless `exec`;
@@ -292,7 +312,7 @@ jobs:
       - name: Install OpenCode CLI
         if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.opencode == 'true'
         run: |
-          npm install -g opencode-ai
+          npm install -g opencode-ai@1.19.6
           opencode --version
 
       - name: Live e2e against the real CLI
@@ -316,7 +336,7 @@ jobs:
         if: (matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.goose == 'true') && (runner.os != 'Windows')
         run: |
           # llmlint: ignore[boundary_inputs_validated] Retain Goose's existing vendor TLS installer trust boundary; see e2e-goose.yml.
-          curl -fsSL https://github.com/block/goose/releases/download/stable/download_cli.sh | CONFIGURE=false bash
+          curl -fsSL https://github.com/block/goose/releases/download/v1.60.2/download_cli.sh | GOOSE_VERSION=1.60.2 CONFIGURE=false bash
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Live e2e against the real CLI
@@ -346,7 +366,7 @@ jobs:
       - name: Install Qwen Code CLI
         if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.qwen == 'true'
         run: |
-          npm install -g @qwen-code/qwen-code
+          npm install -g @qwen-code/qwen-code@0.28.4
           qwen --version
 
       # Qwen's default endpoint is DashScope; to drive it with OPENAI_API_KEY we
@@ -378,7 +398,7 @@ jobs:
       - name: Install Crush CLI
         if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.crush == 'true'
         run: |
-          npm install -g @charmland/crush
+          npm install -g @charmland/crush@0.102.0
           crush --version
 
       - name: Live e2e against the real CLI
@@ -405,7 +425,7 @@ jobs:
       - name: Install Copilot CLI
         if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.copilot == 'true'
         run: |
-          npm install -g @github/copilot
+          npm install -g @github/copilot@1.0.114
           copilot --version
 
       - name: Live e2e against the real CLI
@@ -428,8 +448,8 @@ jobs:
       - name: Install Cursor CLI (Unix)
         if: (matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.cursor == 'true') && (runner.os != 'Windows')
         run: |
-          # llmlint: ignore[boundary_inputs_validated] Retain Cursor's existing vendor TLS installer trust boundary; see e2e-cursor.yml.
-          curl https://cursor.com/install -fsS | bash
+          # llmlint: ignore[boundary_inputs_validated] Cursor's vendor installer over TLS remains the trust boundary; scripts/install-cursor-agent.sh pins the build it downloads and validates its version argument and the installer's download URL.
+          bash scripts/install-cursor-agent.sh 2026.11.22-e9042b2
           if [ -x "$HOME/.local/bin/cursor-agent" ]; then
             echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           else
@@ -477,7 +497,7 @@ jobs:
       - name: Install Claude Code CLI
         if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.schema == 'true'
         run: |
-          npm install -g @anthropic-ai/claude-code
+          npm install -g @anthropic-ai/claude-code@2.1.331
           claude --version
 
       - name: Live e2e against the real CLI
@@ -545,7 +565,7 @@ jobs:
       - name: Install the npm-distributed harness CLIs
         if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.control == 'true'
         run: |
-          npm install -g @anthropic-ai/claude-code @openai/codex opencode-ai @charmland/crush @github/copilot
+          npm install -g @anthropic-ai/claude-code@2.1.331 @openai/codex@0.172.0 opencode-ai@1.19.6 @charmland/crush@0.102.0 @github/copilot@1.0.114
           claude --version
           codex --version
           opencode --version
@@ -556,7 +576,7 @@ jobs:
         if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.control == 'true'
         run: |
           # llmlint: ignore[boundary_inputs_validated] Retain Goose's existing vendor TLS installer trust boundary; see e2e-goose.yml.
-          curl -fsSL https://github.com/block/goose/releases/download/stable/download_cli.sh | CONFIGURE=false bash
+          curl -fsSL https://github.com/block/goose/releases/download/v1.60.2/download_cli.sh | GOOSE_VERSION=1.60.2 CONFIGURE=false bash
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       # Codex does not read OPENAI_API_KEY for headless work; the documented CI
@@ -694,7 +714,7 @@ jobs:
           node-version: lts/*
       - name: Install Codex CLI
         run: |
-          npm install -g @openai/codex
+          npm install -g @openai/codex@0.172.0
           codex --version
       # Codex ignores OPENAI_API_KEY for headless runs; the documented CI pattern
       # is `codex login --with-api-key` (writes ~/.codex/auth.json). Guarded so a

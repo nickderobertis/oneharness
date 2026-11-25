@@ -94,7 +94,7 @@ jobs:
       - name: Install Cursor CLI (Unix)
         if: runner.os != 'Windows'
         run: |
-          curl https://cursor.com/install -fsS | bash
+          bash scripts/install-cursor-agent.sh 2026.11.22-e9042b2
           if [ -x "$HOME/.local/bin/cursor-agent" ]; then
             echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           else
@@ -103,8 +103,10 @@ jobs:
           fi
 
       # Windows has no curl|bash path; Cursor ships a PowerShell installer
-      # (?win32=true). It drops cursor-agent under %USERPROFILE%\.local\bin —
-      # put that on PATH so the bash-default steps below resolve it.
+      # (?win32=true). It takes no version, so scripts/cursor-installer.ps1
+      # returns it pinned to .harness-cli-versions' build. It drops cursor-agent
+      # under %USERPROFILE%\.local\bin — put that on PATH so the bash-default
+      # steps below resolve it.
       - name: Install Cursor CLI (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -113,7 +115,7 @@ jobs:
           # Capture the installer's own output/errors: it prints "Happy coding!"
           # even when it lays down no binary, so run it visibly and inspect the
           # documented install root (%LOCALAPPDATA%\cursor-agent) directly.
-          $script = irm 'https://cursor.com/install?win32=true'
+          $script = & ./scripts/cursor-installer.ps1 -Version 2026.11.22-e9042b2
           Write-Host "=== installer script: $($script.Length) chars; head ==="
           Write-Host ($script.Substring(0, [Math]::Min(800, $script.Length)))
           Write-Host "=== running installer ==="

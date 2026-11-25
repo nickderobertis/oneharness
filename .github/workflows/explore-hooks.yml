@@ -57,11 +57,11 @@ jobs:
 
       - name: Install harness CLIs
         run: |
-          npm install -g @anthropic-ai/claude-code @openai/codex opencode-ai \
-            @qwen-code/qwen-code @charmland/crush @github/copilot
-          curl https://cursor.com/install -fsS | bash
+          npm install -g @anthropic-ai/claude-code@2.1.331 @openai/codex@0.172.0 opencode-ai@1.19.6 \
+            @qwen-code/qwen-code@0.28.4 @charmland/crush@0.102.0 @github/copilot@1.0.114
+          bash scripts/install-cursor-agent.sh 2026.11.22-e9042b2
           if [ -x "$HOME/.local/bin/cursor-agent" ]; then echo "$HOME/.local/bin" >> "$GITHUB_PATH"; fi
-          curl -fsSL https://github.com/block/goose/releases/download/stable/download_cli.sh | CONFIGURE=false bash
+          curl -fsSL https://github.com/block/goose/releases/download/v1.60.2/download_cli.sh | GOOSE_VERSION=1.60.2 CONFIGURE=false bash
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Authenticate Codex (headless)

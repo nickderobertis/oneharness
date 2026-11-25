@@ -8,6 +8,7 @@ standing for every harness executable, so nothing real or paid is launched.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import itertools
 import json
@@ -23,13 +24,14 @@ import unittest
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import NamedTuple
+from typing import Callable, NamedTuple
 
 from support import (
     BASH,
     ROOT,
     WINDOWS,
     LaunchId,
+    Record,
     check_step,
     lines,
     measurements,
@@ -535,6 +537,30 @@ class PendingMarkerOwners(unittest.TestCase):
         self.assertEqual(seen.owners, [seen.parent])
 
 
+def setup_command(
+    tmp: Path,
+    script: str,
+    *,
+    path_first: Path | None = None,
+    telemetry_dir: str | None = None,
+    extra: dict[str, str] | None = None,
+) -> tuple[list[str], dict[str, str]]:
+    """The argv and environment that source oh_telemetry_setup's library, then run `script`."""
+    env = {**suite_env(tmp, "codex"), **(extra or {})}
+    if path_first is not None:
+        env["PATH"] = f"{path_first}{os.pathsep}{env['PATH']}"
+    if telemetry_dir is not None:
+        env["OH_E2E_TELEMETRY_DIR"] = telemetry_dir
+    argv = [
+        BASH,
+        "-c",
+        f'set -euo pipefail; source "$1"; {script}',
+        "_",
+        str(ROOT / "scripts" / "e2e-lib.sh"),
+    ]
+    return argv, env
+
+
 def setup_and(
     tmp: Path,
     script: str,
@@ -544,25 +570,157 @@ def setup_and(
     extra: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """oh_telemetry_setup's library sourced in the test's scratch, then `script`."""
-    env = {**suite_env(tmp, "codex"), **(extra or {})}
-    if path_first is not None:
-        env["PATH"] = f"{path_first}{os.pathsep}{env['PATH']}"
-    if telemetry_dir is not None:
-        env["OH_E2E_TELEMETRY_DIR"] = telemetry_dir
-    return subprocess.run(
-        [
-            BASH,
-            "-c",
-            f'set -euo pipefail; source "$1"; {script}',
-            "_",
-            str(ROOT / "scripts" / "e2e-lib.sh"),
-        ],
-        capture_output=True,
+    argv, env = setup_command(
+        tmp, script, path_first=path_first, telemetry_dir=telemetry_dir, extra=extra
+    )
+    return subprocess.run(argv, capture_output=True, text=True, cwd=tmp, env=env, check=False)
+
+
+# How long a watched launch may run before its test fails as hung. Not a
+# verdict on a working tree, whose leftovers the grace stops in about a
+# second: a leftover that waits for a signal never ends by itself, so without
+# this a tree that lost its grace would hang the suite instead of failing it.
+WATCHDOG = 120.0
+# How long the recorder may take to stop a namespace the watchdog stopped:
+# SIGTERM, then SIGKILL 5 s later, then the line.
+WATCHDOG_STOP = 30.0
+
+
+def watched_setup_and(
+    test: unittest.TestCase,
+    tmp: Path,
+    script: str,
+    *,
+    path_first: Path | None = None,
+    extra: dict[str, str] | None = None,
+    while_running: Callable[[int], None] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """setup_and in a process group of its own, which `while_running` is
+    given the leader of. A run still going after WATCHDOG seconds fails the
+    test, once the group's SIGTERM has had the recorder stop the namespace
+    and the leftover in it (its line then records `requested`)."""
+    argv, env = setup_command(tmp, script, path_first=path_first, extra=extra)
+    run = subprocess.Popen(
+        argv,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
         cwd=tmp,
         env=env,
-        check=False,
+        start_new_session=True,
     )
+
+    def stop() -> tuple[str, str]:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(run.pid, signal.SIGTERM)
+        try:
+            return run.communicate(timeout=WATCHDOG_STOP)
+        except subprocess.TimeoutExpired:
+            # Something still holds its pipes: give up on its output.
+            run.kill()
+            for pipe in (run.stdout, run.stderr):
+                if pipe is not None:
+                    pipe.close()
+            run.wait(timeout=WATCHDOG_STOP)
+            return "", f"(it still held its output {WATCHDOG_STOP:.0f} s after the SIGTERM)"
+
+    try:
+        if while_running is not None:
+            while_running(run.pid)
+        out, err = run.communicate(timeout=WATCHDOG)
+    except subprocess.TimeoutExpired:
+        _, err = stop()
+        test.fail(
+            f"the launch still ran after the {WATCHDOG:.0f} s watchdog: nothing stopped "
+            f"its leftover, so the watchdog did; its stderr:\n{err}"
+        )
+    except BaseException:
+        stop()
+        raise
+    return subprocess.CompletedProcess(argv, run.returncode, out, err)
+
+
+class ProcessEntry(NamedTuple):
+    """One process's parent pid and state letter (`Z` a zombie, `T` stopped), from /proc."""
+
+    ppid: int
+    state: str
+
+
+def process_table() -> dict[int, ProcessEntry]:
+    """Every process's parent pid and state letter, from /proc."""
+    found: dict[int, ProcessEntry] = {}
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            # The command name in parentheses may hold spaces; the fields after it do not.
+            fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
+        except (OSError, IndexError):
+            continue  # gone since the listing
+        found[int(entry.name)] = ProcessEntry(ppid=int(fields[1]), state=fields[0])
+    return found
+
+
+def descendants(root: int) -> list[int]:
+    """The pids below `root` in the process tree: processes this test started."""
+    table = process_table()
+    below: list[int] = []
+    frontier = [root]
+    while frontier:
+        parent = frontier.pop()
+        children = [pid for pid, entry in table.items() if entry.ppid == parent]
+        below += children
+        frontier += children
+    return below
+
+
+def namespace_pid(pid: int) -> list[str]:
+    """`pid`'s ids in each PID namespace it is in, outermost first; none once it is gone."""
+    try:
+        status = Path(f"/proc/{pid}/status").read_text()
+    except OSError:
+        return []
+    return next((line.split()[1:] for line in status.splitlines() if line.startswith("NSpid:")), [])
+
+
+def launching_init_below(root: int) -> int | None:
+    """The host pid of the recorder's namespace init below `root`, once it
+    has started the launch: the pid 1 of a namespace whose child is not one.
+    (pasta's own namespace has a pid 1 too — the init's parent, before it
+    unshares — so being a pid 1 alone does not single it out.)"""
+    table = process_table()
+    for pid in descendants(root):
+        if namespace_pid(pid)[-1:] != ["1"]:
+            continue
+        children = [child for child, entry in table.items() if entry.ppid == pid]
+        if any(namespace_pid(child)[-1:] not in (["1"], []) for child in children):
+            return pid
+    return None
+
+
+def is_stopped(pid: int) -> bool:
+    """Whether `pid` is stopped by a signal (state T), as SIGSTOP leaves it."""
+    entry = process_table().get(pid)
+    return entry is not None and entry.state == "T"
+
+
+def live_children(pid: int) -> list[int]:
+    """`pid`'s children that have not exited (a zombie is one that has, unreaped)."""
+    return [
+        child
+        for child, entry in process_table().items()
+        if entry.ppid == pid and entry.state != "Z"
+    ]
+
+
+def until(test: unittest.TestCase, what: str, ready: Callable[[], bool]) -> None:
+    """Poll `ready` until it holds, failing the test after WATCHDOG seconds."""
+    give_up = time.monotonic() + WATCHDOG
+    while not ready():
+        if time.monotonic() > give_up:
+            test.fail(f"{what} did not happen within the {WATCHDOG:.0f} s watchdog")
+        time.sleep(0.01)
 
 
 def plain_codex(directory: Path) -> None:
@@ -659,6 +817,52 @@ class WindowsFormDirectory(unittest.TestCase):
         )
 
 
+def leftover_codex(tmp: Path, *lifetime: str, release: Path | None = None) -> tuple[Path, Path]:
+    """A PATH directory whose codex exits as soon as it has left a detached
+    command beating into the returned heartbeat file, living as `lifetime`
+    (transfer.py's `--linger S` or `--hold`) says. Given `release`, the
+    launch first waits for that file to exist: until the test makes it, the
+    launch cannot exit, so no grace can start."""
+    real = tmp / "real-bin"
+    real.mkdir()
+    words = transfer_argv(0, 0, 0, "--detach", *lifetime)
+    wait = (
+        ""
+        if release is None
+        else f"until [ -e {shlex.quote(str(release))} ]; do sleep 0.05; done\n"
+    )
+    (real / "codex").write_text(
+        f'#!/usr/bin/env bash\n{wait}exec {shlex.join(words)} --heartbeat "$OH_TEST_BEAT"\n'
+    )
+    (real / "codex").chmod(0o755)
+    return real, tmp / "heartbeat"
+
+
+def grace_env(heartbeat: Path, grace: float) -> dict[str, str]:
+    """The measurer's grace, and no deadline: nothing but the grace can stop a leftover."""
+    return {
+        "OH_TEST_BEAT": str(heartbeat),
+        "OH_E2E_NET_DESCENDANT_GRACE": str(grace),
+        "OH_E2E_NET_DEADLINE": "0",
+    }
+
+
+def beat_times(heartbeat: Path) -> list[float]:
+    """The heartbeat's timestamps; none until its first whole line."""
+    if not heartbeat.exists():
+        return []
+    return [float(b.split()[1]) for b in heartbeat.read_text().splitlines() if len(b.split()) == 2]
+
+
+def measured(test: unittest.TestCase, path: Path) -> Record:
+    """The one launch's measurement line in a suite's telemetry file."""
+    records = lines(path)
+    (start,) = starts(records)
+    (line,) = measurements(records, start["launch_id"])
+    test.assertEqual(line["method"], "netns-pasta", line)
+    return line
+
+
 class GraceCase(NamedTuple):
     """One launch the shared-server grace test runs under a suite's setup."""
 
@@ -705,6 +909,20 @@ class Setup(unittest.TestCase):
         # runner the escape-marker fault passed. The control suite's own setup
         # exempts its shared-server launches; its other launches, and every
         # other suite's shared servers, keep the grace.
+        #
+        # Each case reads the recorder's own record — the grace its init held
+        # the launch to (`descendant_grace`) and why it stopped the tree
+        # (`stopped`) — never how long anything took: a loaded runner
+        # stretches the setup, the shim and every interpreter's start around
+        # the grace (11.9 s against a 1 s grace on one CI run), but cannot
+        # change either. No case has a deadline, so no stop but the grace can
+        # fire, and the double's launch exits only once its leftover is
+        # beating. A kept leftover is given no grace and ends by itself,
+        # unstopped, whenever that is. A reaped one has no lifetime at all: it
+        # waits for a signal, so however late the recorder gets to it, the
+        # only way it ends is being stopped — never by an exit of its own that
+        # would leave the line saying nothing. A tree that lost its grace
+        # leaves it running, and the watchdog fails the test.
         need_builds(self)
         need_recorder(self)
         control = re.search(
@@ -713,7 +931,7 @@ class Setup(unittest.TestCase):
             re.MULTILINE,
         )
         assert control is not None, "scripts/e2e-control.sh no longer sets up its recorder"
-        grace, deadline = 1, 8
+        grace = 1
         server = ["app-server", "--listen", "unix:///nonexistent/app.sock"]
         for case in (
             GraceCase("control", control.group(0), server, keeps_leftovers=True),
@@ -723,43 +941,94 @@ class Setup(unittest.TestCase):
             suite, setup, args = case.suite, case.setup, case.argv
             with self.subTest(suite=suite, launch=args[0]):
                 tmp = scratch(self)
-                heartbeat = tmp / "heartbeat"
-                # A codex whose launch exits at once, leaving a detached
-                # command beating until something stops it.
-                real = tmp / "real-bin"
-                real.mkdir()
-                words = transfer_argv(0, 0, 0, "--detach", "--linger", "600")
-                (real / "codex").write_text(
-                    f'#!/usr/bin/env bash\nexec {shlex.join(words)} --heartbeat "$OH_TEST_BEAT"\n'
-                )
-                (real / "codex").chmod(0o755)
-                started = time.monotonic()
-                run = setup_and(
+                lifetime = ("--linger", "2") if case.keeps_leftovers else ("--hold",)
+                real, heartbeat = leftover_codex(tmp, *lifetime)
+                run = watched_setup_and(
+                    self,
                     tmp,
                     f"{setup}; codex {shlex.join(args)}",
                     path_first=real,
-                    extra={
-                        "OH_TEST_BEAT": str(heartbeat),
-                        "OH_E2E_NET_DESCENDANT_GRACE": str(grace),
-                        "OH_E2E_NET_DEADLINE": str(deadline),
-                    },
+                    extra=grace_env(heartbeat, grace),
                 )
-                took = time.monotonic() - started
                 self.assertEqual(run.returncode, 0, run.stderr)
-                beats = [float(b.split()[1]) for b in heartbeat.read_text().splitlines()]
-                if case.keeps_leftovers:
-                    self.assertGreater(took, deadline - 0.5, "the server's command was reaped")
-                    self.assertGreater(beats[-1] - beats[0], 6, "it did not outlive the grace")
-                else:
-                    self.assertLess(took, grace + 4, "the launch kept no grace")
-                    self.assertLess(beats[-1] - beats[0], grace + 2, "it outlived the grace")
+                self.assertTrue(heartbeat.read_text(), "the detached command never ran")
                 size = heartbeat.stat().st_size
                 time.sleep(0.5)
                 self.assertEqual(heartbeat.stat().st_size, size, "the command is still alive")
-                records = lines(tmp / "telemetry" / f"{suite}.jsonl")
-                (start,) = starts(records)
-                (line,) = measurements(records, start["launch_id"])
-                self.assertEqual(line["method"], "netns-pasta", line)
+                line = measured(self, tmp / "telemetry" / f"{suite}.jsonl")
+                if case.keeps_leftovers:
+                    self.assertNotIn("descendant_grace", line, "the server was given a grace")
+                    self.assertNotIn("stopped", line, "the server's command was reaped")
+                else:
+                    self.assertEqual(
+                        line.get("descendant_grace"), grace, "the launch kept no grace"
+                    )
+                    self.assertEqual(
+                        line.get("stopped"), "descendant-grace", "its command was not reaped"
+                    )
+
+    def test_a_reaped_leftover_is_stopped_however_long_the_recorder_is_held_up(self) -> None:
+        # The recorder held up (frozen, as a starved runner deschedules it)
+        # from before the launch's exit until its leftover has outlived the
+        # lifetime a lingering one would have had. A leftover that ended by
+        # itself meanwhile would leave the resumed recorder nothing to stop
+        # and the line no `stopped`; one that waits for a signal is still
+        # there, and is stopped for its grace.
+        #
+        # A handshake orders it, never a race with the grace: the launch
+        # waits for a release file before it does anything, so it cannot exit
+        # — and the grace, which runs from its exit, cannot start — until
+        # this test has found the init, frozen it and seen it stopped. However
+        # late this test runs, the init is frozen first.
+        need_builds(self)
+        need_recorder(self)
+        grace, lifetime = 1, 2.0
+        tmp = scratch(self)
+        release = tmp / "release"
+        real, heartbeat = leftover_codex(tmp, "--hold", release=release)
+        frozen: list[int] = []
+
+        def hold_up_the_recorder(root: int) -> None:
+            def found() -> bool:
+                pid = launching_init_below(root)
+                if pid is not None:
+                    os.kill(pid, signal.SIGSTOP)
+                    frozen.append(pid)
+                return bool(frozen)
+
+            until(self, "the recorder's namespace init starting the launch", found)
+            init = frozen[0]
+
+            def outlived() -> bool:
+                beats = beat_times(heartbeat)
+                # Ended by itself: the frozen init has nothing left alive below it.
+                gone = bool(beats) and not live_children(init)
+                return gone or (len(beats) > 1 and beats[-1] - beats[0] > lifetime + 1)
+
+            try:
+                until(self, "the frozen init stopping", lambda: is_stopped(init))
+                release.touch()  # only now may the launch run on, and exit
+                until(self, f"the leftover outliving a {lifetime:.0f} s lifetime", outlived)
+            finally:
+                # Resumed before anything else: the watchdog's stop must reach
+                # a running init, and a frozen one must never be left behind.
+                os.kill(init, signal.SIGCONT)
+
+        run = watched_setup_and(
+            self,
+            tmp,
+            "oh_telemetry_setup codex; codex app-server --listen unix:///nonexistent/s",
+            path_first=real,
+            extra=grace_env(heartbeat, grace),
+            while_running=hold_up_the_recorder,
+        )
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertTrue(frozen, "the recorder was never held up")
+        line = measured(self, tmp / "telemetry" / "codex.jsonl")
+        self.assertEqual(line.get("descendant_grace"), grace, line)
+        self.assertEqual(
+            line.get("stopped"), "descendant-grace", "a held-up recorder found nothing to stop"
+        )
 
     def test_a_shared_server_grace_that_is_no_number_stops_the_setup(self) -> None:
         need_builds(self)
@@ -1108,6 +1377,15 @@ class Settings(unittest.TestCase):
         self.assertEqual(
             netmeasure.NamespaceResult.from_json(json.dumps(good)).line("x").rx_bytes, 10
         )
+        self.assertIsNone(
+            netmeasure.NamespaceResult.from_json(json.dumps(good)).line("x").descendant_grace
+        )
+        reaped = netmeasure.NamespaceResult.from_json(
+            json.dumps({**good, "stopped": "descendant-grace", "descendant_grace": 1.5})
+        )
+        self.assertEqual(reaped.line("x").stopped, "descendant-grace")
+        self.assertEqual(reaped.line("x").descendant_grace, 1.5)
+        self.assertEqual(netmeasure.NamespaceResult.from_json(reaped.to_json()), reaped)
         for name, change in (
             ("a negative count", {"moved": [-1, 1, 5, 1]}),
             ("a boolean count", {"moved": [True, 1, 5, 1]}),
@@ -1120,6 +1398,9 @@ class Settings(unittest.TestCase):
             ("a window that ends before it begins", {"start": {"before_ns": 5, "after_ns": 2}}),
             ("windows out of order", {"start": {"before_ns": 6, "after_ns": 7}}),
             ("a window that is not an object", {"end": [3, 4]}),
+            ("a stop the init never makes", {"stopped": "tired"}),
+            ("a negative grace", {"descendant_grace": -1}),
+            ("a grace that is no number", {"descendant_grace": "5"}),
         ):
             with self.subTest(result=name):
                 with self.assertRaises(ValueError):

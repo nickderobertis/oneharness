@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Loopback transfers of generated payloads, for the network recorder's tests.
 
-    transfer.py client PORT DOWN UP [--detach] [--heartbeat FILE] [--linger S] [--stubborn]
-                                    [--echo] [--exit N]
+    transfer.py client PORT DOWN UP [--detach] [--heartbeat FILE] [--linger S | --hold]
+                                    [--stubborn] [--echo] [--exit N]
 
 The tests' server (`LoopbackServer` in support.py) listens on the host's
 127.0.0.1; inside the measuring namespace pasta's gateway address stands for
@@ -12,11 +12,14 @@ to stderr saying what it moved.
 
 `--detach` hands the transfers to a child in a new session whose parent has
 already exited (a double fork), so only a measurement that follows the whole
-process tree sees them. `--heartbeat FILE` makes that child append a line to
-FILE every 0.1 s until it exits; `--linger S` keeps it alive S seconds after
-its transfers; `--stubborn` makes it ignore SIGTERM, so only SIGKILL ends it.
-`--echo` first copies stdin to stdout byte for byte, and `--exit N` is the
-launch's own exit status. A DOWN and UP of 0 moves nothing.
+process tree sees them; the launch's own process exits only once that child
+has started — with `--heartbeat`, once its first line is written — so what
+outstays the launch is running whatever the machine's speed. `--heartbeat FILE`
+makes that child append a line to FILE every 0.1 s until it exits; `--linger S`
+keeps it alive S seconds after its transfers, and `--hold` until a signal ends
+it, never by itself; `--stubborn` makes it ignore SIGTERM, so only SIGKILL
+ends it. `--echo` first copies stdin to stdout byte for byte, and `--exit N`
+is the launch's own exit status. A DOWN and UP of 0 moves nothing.
 """
 
 from __future__ import annotations
@@ -89,22 +92,33 @@ def transfer(port: int, down: int, up: int) -> Moved:
 # llmlint: ignore-end[async_typed_clients_at_boundaries]
 
 
-def beat(path: str, stop: threading.Event) -> None:
+def beat(path: str, stop: threading.Event, beating: threading.Event) -> None:
     while not stop.is_set():
         with open(path, "a") as out:
             out.write(f"{os.getpid()} {time.time()}\n")
+        beating.set()
         stop.wait(0.1)
 
 
-def child(args: argparse.Namespace) -> None:
+def child(args: argparse.Namespace, started: int | None = None) -> None:
+    """The transfers, the heartbeat and the linger; `started`, a pipe's write
+    end, is told (and closed) once they are under way."""
     if args.stubborn:
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
     stop = threading.Event()
+    beating = threading.Event()
     if args.heartbeat:
-        threading.Thread(target=beat, args=(args.heartbeat, stop), daemon=True).start()
+        threading.Thread(target=beat, args=(args.heartbeat, stop, beating), daemon=True).start()
+        beating.wait()
+    if started is not None:
+        os.write(started, b"s")
+        os.close(started)
     if args.detach:
         time.sleep(0.3)  # the launch's own process has exited by now
     print(json.dumps(asdict(transfer(args.port, args.down, args.up))), file=sys.stderr, flush=True)
+    if args.hold:
+        while True:  # until a signal ends it: no lifetime of its own
+            signal.pause()
     time.sleep(args.linger)
     stop.set()
 
@@ -145,7 +159,9 @@ def main() -> int:
     parser.add_argument("up", type=whole(0, 1 << 34))
     parser.add_argument("--detach", action="store_true")
     parser.add_argument("--heartbeat")
-    parser.add_argument("--linger", type=seconds, default=0.0)
+    lifetime = parser.add_mutually_exclusive_group()
+    lifetime.add_argument("--linger", type=seconds, default=0.0)
+    lifetime.add_argument("--hold", action="store_true")
     parser.add_argument("--stubborn", action="store_true")
     parser.add_argument("--echo", action="store_true")
     parser.add_argument("--exit", type=whole(0, 255), default=0)
@@ -158,15 +174,19 @@ def main() -> int:
     if not args.detach:
         child(args)
         return int(args.exit)
+    reader, started = os.pipe()
     if os.fork():
+        os.close(started)
+        os.read(reader, 1)  # the child has started (or is gone: EOF)
         return int(args.exit)
+    os.close(reader)
     os.setsid()
     if os.fork():
         os._exit(0)
     devnull = os.open(os.devnull, os.O_RDWR)
     for fd in (0, 1):
         os.dup2(devnull, fd)
-    child(args)
+    child(args, started)
     os._exit(0)
 
 

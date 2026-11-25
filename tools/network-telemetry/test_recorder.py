@@ -372,6 +372,8 @@ class MeasuredLaunch(unittest.TestCase):
         (start,) = starts(records)
         (line,) = measurements(records, start["launch_id"])
         self.assertEqual((line["method"], line["exit"]), ("netns-pasta", 7))
+        self.assertNotIn("stopped", line, "a tree that ended by itself was recorded as stopped")
+        self.assertEqual(line.get("descendant_grace"), 5, "the default grace went unrecorded")
 
     def test_a_detached_descendant_is_stopped_at_the_deadline_and_recorded_once(self) -> None:
         need_recorder(self)
@@ -399,6 +401,7 @@ class MeasuredLaunch(unittest.TestCase):
         (start,) = starts(records)
         (line,) = measurements(records, start["launch_id"])
         self.assertEqual(line["method"], "netns-pasta")
+        self.assertEqual(line.get("stopped"), "deadline", line)
         self.assertGreaterEqual(line["seconds"], deadline)
 
     def test_a_descendant_outstaying_its_launch_is_stopped_after_the_grace(self) -> None:
@@ -433,6 +436,8 @@ class MeasuredLaunch(unittest.TestCase):
                 (start,) = starts(records)
                 (line,) = measurements(records, start["launch_id"])
                 self.assertEqual((line["method"], line["exit"]), ("netns-pasta", 3), line)
+                self.assertEqual(line.get("stopped"), "descendant-grace", line)
+                self.assertEqual(line.get("descendant_grace"), grace, line)
 
     def test_a_zero_grace_follows_the_descendants_until_the_deadline(self) -> None:
         # The opt-out: OH_E2E_NET_DESCENDANT_GRACE=0 measures a resident
@@ -461,6 +466,8 @@ class MeasuredLaunch(unittest.TestCase):
         (start,) = starts(records)
         (line,) = measurements(records, start["launch_id"])
         self.assertEqual(line["method"], "netns-pasta", line)
+        self.assertEqual(line.get("stopped"), "deadline", line)
+        self.assertNotIn("descendant_grace", line, "a launch given no grace recorded one")
         self.assertGreaterEqual(line["seconds"], deadline)
 
     def test_a_shim_its_caller_kills_with_its_process_group_still_records_once(self) -> None:
@@ -517,6 +524,9 @@ class MeasuredLaunch(unittest.TestCase):
         (start,) = starts(records)
         (line,) = measurements(records, start["launch_id"])
         self.assertEqual(line["method"], "netns-pasta", line)
+        # Its caller gone, the recorder stopped the launch: neither the grace
+        # (the launch itself still ran) nor the 1800 s default deadline did.
+        self.assertEqual(line.get("stopped"), "requested", line)
         size = heartbeat.stat().st_size
         time.sleep(0.5)
         self.assertEqual(heartbeat.stat().st_size, size, "the launch outlived the stop")
@@ -592,6 +602,7 @@ class MeasuredLaunch(unittest.TestCase):
         written = measurements(records, start["launch_id"])
         self.assertEqual(len(written), 1, f"lines {written}; pending markers left: {left}")
         self.assertEqual(written[0]["method"], "netns-pasta", written)
+        self.assertEqual(written[0].get("stopped"), "requested", written)
         self.assertEqual(left, [], "its marker was left")
 
 

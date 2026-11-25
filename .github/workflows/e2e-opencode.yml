@@ -96,7 +96,7 @@ jobs:
           node-version: lts/*
       - name: Install OpenCode CLI
         run: |
-          npm install -g opencode-ai
+          npm install -g opencode-ai@1.19.6
           opencode --version
 
       - name: Live e2e against the real CLI

@@ -97,7 +97,7 @@ jobs:
           node-version: lts/*
       - name: Install Claude Code CLI
         run: |
-          npm install -g @anthropic-ai/claude-code
+          npm install -g @anthropic-ai/claude-code@2.1.331
           claude --version
 
       - name: Live e2e against the real CLI

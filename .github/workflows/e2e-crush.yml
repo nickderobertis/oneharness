@@ -96,7 +96,7 @@ jobs:
           node-version: lts/*
       - name: Install Crush CLI
         run: |
-          npm install -g @charmland/crush
+          npm install -g @charmland/crush@0.102.0
           crush --version
 
       - name: Live e2e against the real CLI

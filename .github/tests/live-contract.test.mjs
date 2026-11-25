@@ -6,7 +6,17 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { parse, stringify } from "yaml";
 import { history } from "./history.mjs";
 import { evaluate, workflows, triggered, resolveJobs } from "../workflow-graph.mjs";
+import { unpinnedRun } from "../harness-pins.mjs";
 import { tmpdir } from "node:os";
+// A ci.yml copy runs its source's command; a CLI ci.yml pins is the source's
+// install at that pin (harness-pins.mjs).
+const command = (s) =>
+  unpinnedRun(
+    s
+      .split("\n")
+      .filter((l) => !l.trim().startsWith("#"))
+      .join("\n"),
+  );
 // Paid Mac CLI execution requires hosted credentials and a Mac runner.
 // Structural command/credential checks do not claim native execution.
 // llmlint: ignore-block[shell_test_tiers_stay_split] The required offline real Git/Python workflow suite runs in github-workflows:test, measured about 10 seconds, with no installs or model calls; artifact installation remains in the separate integration tier.
@@ -35,11 +45,6 @@ test("consolidated Mac job retains real live commands and credential bindings fr
     for (const step of original.steps.filter(
       (s) => s.run && (!s.if || evaluate(s.if, { runner: { os: "macOS" } })),
     )) {
-      const command = (s) =>
-        s
-          .split("\n")
-          .filter((l) => !l.trim().startsWith("#"))
-          .join("\n");
       const copies = ci.steps.filter(
         (s) =>
           s.run &&
@@ -206,4 +211,21 @@ test("live variants preflight accepts the actual consolidated graph and rejects 
     assert.notEqual(missing.status, 0);
     assert.match(missing.stderr, /--workflow requires a workflow file path/);
   } finally { rmSync(cwd, { recursive: true, force: true }); }
+});
+test("a pinned Mac copy matches its source, but a swapped, dropped or floating install does not", () => {
+  const ci = parse(readFileSync(".github/workflows/ci.yml", "utf8")).jobs.check;
+  const source = parse(readFileSync(".github/workflows/e2e-copilot.yml", "utf8")).jobs.live.steps
+    .find((s) => s.name === "Install Copilot CLI");
+  const copy = ci.steps.find((s) => s.name === "Install Copilot CLI" && s.if?.includes("outputs.copilot == 'true'"));
+  assert.match(copy.run, /@github\/copilot@\d+\.\d+\.\d+/, "ci.yml's Copilot install is no longer pinned");
+  assert.equal(command(copy.run), command(source.run));
+  const pinned = /@github\/copilot@\d+\.\d+\.\d+/;
+  for (const drifted of [
+    copy.run.replace(pinned, "@github/copilot-fork@1.0.114"),
+    copy.run.replace(/npm install -g .*\n/, ""),
+    copy.run.replace(pinned, "@github/copilot@latest"),
+  ]) {
+    assert.notEqual(drifted, copy.run);
+    assert.notEqual(command(drifted), command(source.run), `accepted drifted copy: ${drifted}`);
+  }
 });

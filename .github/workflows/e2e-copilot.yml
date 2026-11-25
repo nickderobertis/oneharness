@@ -96,7 +96,7 @@ jobs:
           node-version: lts/*
       - name: Install Copilot CLI
         run: |
-          npm install -g @github/copilot
+          npm install -g @github/copilot@1.0.114
           copilot --version
 
       - name: Live e2e against the real CLI

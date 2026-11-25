@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.32.4](https://github.com/nickderobertis/oneharness/compare/v0.32.3...v0.32.4) - 2026-11-25
+
+### Fixed
+
+- *(ci)* install the Copilot CLI at a pinned version ([#1676](https://github.com/nickderobertis/oneharness/pull/1676))
+
 ## [0.32.3](https://github.com/nickderobertis/oneharness/compare/v0.32.2...v0.32.3) - 2026-11-23
 
 ### Fixed
